@@ -3,6 +3,7 @@ use sea_orm::*;
 use spring::plugin::service::Service;
 use spring_sea_orm::DbConn;
 
+use common::error::{ApiErrors, ApiResult};
 use model::dto::sys_user::CreateUserDto;
 use model::entity::sys_user::{self, Entity as SysUser};
 
@@ -14,7 +15,7 @@ pub struct SysUserService {
 
 impl SysUserService {
     /// 创建用户（含业务校验）
-    pub async fn create_user(&self, dto: CreateUserDto) -> anyhow::Result<sys_user::Model> {
+    pub async fn create_user(&self, dto: CreateUserDto) -> ApiResult<sys_user::Model> {
         // 检查用户名是否重复
         let existing = SysUser::find()
             .filter(sys_user::Column::Username.eq(&dto.username))
@@ -23,7 +24,10 @@ impl SysUserService {
             .context("检查用户名失败")?;
 
         if existing.is_some() {
-            return Err(anyhow::anyhow!("用户名已存在: {}", dto.username));
+            return Err(ApiErrors::Conflict(format!(
+                "用户名已存在: {}",
+                dto.username
+            )));
         }
 
         // 检查邮箱是否重复
@@ -35,7 +39,10 @@ impl SysUserService {
                 .context("检查邮箱失败")?;
 
             if existing.is_some() {
-                return Err(anyhow::anyhow!("邮箱已被注册: {}", email));
+                return Err(ApiErrors::Conflict(format!(
+                    "邮箱已被注册: {}",
+                    email
+                )));
             }
         }
 
@@ -61,12 +68,12 @@ impl SysUserService {
         &self,
         user_id: i64,
         new_password: String,
-    ) -> anyhow::Result<()> {
+    ) -> ApiResult<()> {
         let user = SysUser::find_by_id(user_id)
             .one(&self.db)
             .await
             .context("查询用户失败")?
-            .ok_or_else(|| anyhow::anyhow!("用户不存在"))?;
+            .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
 
         // TODO: 密码加密
         let password = new_password;

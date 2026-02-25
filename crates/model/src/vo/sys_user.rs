@@ -1,8 +1,9 @@
 use chrono::NaiveDateTime;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 /// 用户信息响应
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct UserVo {
     pub id: i64,
     pub username: String,

@@ -4,7 +4,8 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
+chrono = { workspace = true, features = ["serde"] }
 common = { workspace = true }
-sea-orm = { workspace = true }
-serde = { workspace = true }
-chrono = { workspace = true }
+schemars = { workspace = true, features = ["derive", "chrono04"] }
+sea-orm = { workspace = true, features = ["with-chrono"] }
+serde = { workspace = true, features = ["derive"] }

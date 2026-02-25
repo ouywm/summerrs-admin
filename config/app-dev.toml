@@ -1,10 +1,32 @@
-# Development Configuration
+[logger]
+level = "debug"
+
 [web]
 port = 8081
 graceful = true
 
+[web.openapi]
+doc_prefix = "/docs"
+info = { title = "spring-web openapi example document", version = "0.0.1" }
+
+[web.middlewares]
+static = { enable = true }
+compression = { enable = true }
+logger = { enable = true, level = "warn" }
+catch_panic = { enable = true }
+timeout_request = { enable = true, timeout = 30000 }
+cors = { enable = true, allow_origins = [
+    "*",
+], allow_headers = [
+    "Authentication",
+], allow_methods = [
+    "GET",
+    "POST",
+], max_age = 60 }
+
+
 [sea-orm]
-uri = "postgres://postgres:postgres@localhost/postgres"
+uri = "postgres://admin:123456@localhost/postgres"
 enable_logging = true
 
 [redis]

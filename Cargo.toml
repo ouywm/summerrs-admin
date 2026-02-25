@@ -7,47 +7,34 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-# 内部 crate
+anyhow = "1.0.102"
+base64 = "0.22.1"
+bytes = "1.11.1"
+chrono = "0.4.43"
 common = { path = "crates/common" }
-model = { path = "crates/model" }
-
-# spring 全家桶
-spring = "0.4.8"
-spring-web = { version = "0.4.17", features = ["openapi"] }
-spring-sea-orm = { version = "0.4.8", features = ["postgres", "with-web"] }
-spring-redis = "0.4.4"
-spring-job = "0.4.7"
-spring-sa-token = "0.4.1"
-
-# ORM / 数据
-sea-orm = { version = "1.1.19", features = ["with-chrono"] }
-
-# 序列化
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-schemars = { version = "1.1", features = ["derive", "chrono04"] }
-
-# 异步 / 运行时
-tokio = { version = "1.49.0", features = ["full"] }
 futures = "0.3.32"
-
-# Web / HTTP
+garde = "0.22.1"
+mime = "0.3.17"
+model = { path = "crates/model" }
+parking_lot = "0.12.5"
+rand = "0.10.0"
+regex = "1.12.3"
 reqwest = "0.13.2"
+schema = "0.1.0"
+schemars = "1.1"
+sea-orm = "1.1.19"
+serde = "1.0.228"
+serde_json = "1.0.149"
+spring = "0.4.8"
+spring-job = "0.4.7"
+spring-redis = "0.4.4"
+spring-sa-token = "0.4.1"
+spring-sea-orm = "0.4.8"
+spring-web = "0.4.17"
+thiserror = "2.0.18"
+tokio = "1.49.0"
 tower = "0.5.3"
 tower-http = "0.6.8"
-
-# 工具库
-anyhow = "1.0.102"
-thiserror = "2.0.18"
-chrono = { version = "0.4.43", features = ["serde"] }
-uuid = "1.21.0"
-regex = "1.12.3"
-base64 = "0.22.1"
 url = "2.5.8"
-bytes = "1.11.1"
-parking_lot = "0.12.5"
-mime = "0.3.17"
-rand = "0.10.0"
+uuid = "1.21.0"
 validator = "0.20.0"
-garde = "0.22.1"
-schema = "0.1.0"
