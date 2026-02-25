@@ -1,0 +1,20 @@
+# Development Configuration
+[web]
+port = 8081
+graceful = true
+
+[sea-orm]
+uri = "postgres://postgres:postgres@localhost/postgres"
+enable_logging = true
+
+[redis]
+uri = "redis://127.0.0.1/"
+
+[sa-token]
+token_name = "Authorization"
+timeout = 86400
+active_timeout = 3600
+auto_renew = true
+is_concurrent = true
+is_share = true
+token_style = "Uuid"

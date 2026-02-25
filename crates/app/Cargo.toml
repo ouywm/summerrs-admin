@@ -1,0 +1,24 @@
+[package]
+name = "app"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+common = { workspace = true }
+model = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+spring = { workspace = true }
+spring-web = { workspace = true }
+spring-sea-orm = { workspace = true }
+spring-redis = { workspace = true }
+spring-job = { workspace = true }
+spring-sa-token = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+sea-orm = { workspace = true }
+serde = { workspace = true }
+schemars = { workspace = true }
+schema = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
