@@ -31,7 +31,7 @@ cors = { enable = true, allow_origins = [
 
 
 [sea-orm]
-uri = "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia/Shanghai"
+uri = "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai"
 enable_logging = true
 
 [redis]

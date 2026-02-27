@@ -88,7 +88,7 @@ impl ActiveModelBehavior for ActiveModel {
     where
         C: ConnectionTrait,
     {
-        let now = chrono::Utc::now().naive_utc();
+        let now = chrono::Local::now().naive_local();
         self.update_time = Set(now);
         if insert {
             self.create_time = Set(now);
