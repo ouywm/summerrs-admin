@@ -5,20 +5,24 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+axum-valid = { workspace = true }
+chrono = { workspace = true }
 common = { workspace = true }
 model = { workspace = true }
+regex = { workspace = true }
 schema = { workspace = true }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
-sea-orm = { workspace = true, features = ["with-chrono"] }
+sea-orm = { workspace = true, features = ["with-chrono", "sqlx-postgres", "runtime-tokio-rustls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 spring = { workspace = true }
 spring-job = { workspace = true }
 spring-redis = { workspace = true }
 spring-sa-token = { workspace = true, features = ["with-web", "with-spring-redis", "openapi"] }
-spring-sea-orm = { workspace = true, features = ["postgres", "with-web"] }
 spring-web = { workspace = true, features = ["openapi", "openapi-swagger"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower = { workspace = true }
 tower-http = { workspace = true }
+tracing = { workspace = true }
+validator = { workspace = true }

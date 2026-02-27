@@ -1,32 +1,37 @@
 [logger]
 level = "debug"
 
+
 [web]
-port = 8081
+port = 8080
 graceful = true
+global_prefix = "/api"
 
 [web.openapi]
 doc_prefix = "/docs"
-info = { title = "spring-web openapi example document", version = "0.0.1" }
+info = { title = "summerrs-admin", version = "0.0.1" }
 
 [web.middlewares]
 static = { enable = true }
 compression = { enable = true }
 logger = { enable = true, level = "warn" }
-catch_panic = { enable = true }
+catch_panic = { enable = false }
 timeout_request = { enable = true, timeout = 30000 }
 cors = { enable = true, allow_origins = [
     "*",
 ], allow_headers = [
-    "Authentication",
+    "Authorization",
+    "Content-Type",
 ], allow_methods = [
     "GET",
     "POST",
+    "PUT",
+    "DELETE",
 ], max_age = 60 }
 
 
 [sea-orm]
-uri = "postgres://admin:123456@localhost/postgres"
+uri = "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia/Shanghai"
 enable_logging = true
 
 [redis]
@@ -39,4 +44,5 @@ active_timeout = 3600
 auto_renew = true
 is_concurrent = true
 is_share = true
-token_style = "Uuid"
+token_style = "Jwt"
+jwt_secret_key = "sfdjjlkasdfuoifwel,./rwe,rweopdsfijlkasjdf"

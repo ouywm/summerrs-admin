@@ -1,0 +1,48 @@
+[
+  {
+    "children": [
+      {
+        "component": "/dashboard/console",
+        "meta": {
+          "fixedTab": true,
+          "icon": "ri:home-smile-2-line",
+          "keepAlive": false,
+          "title": "menus.dashboard.console"
+        },
+        "name": "Console",
+        "path": "console"
+      },
+      {
+        "component": "/dashboard/analysis",
+        "meta": {
+          "icon": "ri:align-item-bottom-line",
+          "keepAlive": false,
+          "title": "menus.dashboard.analysis"
+        },
+        "name": "Analysis",
+        "path": "analysis"
+      },
+      {
+        "component": "/dashboard/ecommerce",
+        "meta": {
+          "icon": "ri:bar-chart-box-line",
+          "keepAlive": false,
+          "title": "menus.dashboard.ecommerce"
+        },
+        "name": "Ecommerce",
+        "path": "ecommerce"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:pie-chart-line",
+      "roles": [
+        "R_SUPER",
+        "R_ADMIN"
+      ],
+      "title": "menus.dashboard.title"
+    },
+    "name": "Dashboard",
+    "path": "/dashboard"
+  }
+]

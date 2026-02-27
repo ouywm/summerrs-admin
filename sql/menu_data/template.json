@@ -1,0 +1,84 @@
+[
+  {
+    "children": [
+      {
+        "component": "/template/cards",
+        "meta": {
+          "icon": "ri:wallet-line",
+          "keepAlive": false,
+          "title": "menus.template.cards"
+        },
+        "name": "Cards",
+        "path": "cards"
+      },
+      {
+        "component": "/template/banners",
+        "meta": {
+          "icon": "ri:rectangle-line",
+          "keepAlive": false,
+          "title": "menus.template.banners"
+        },
+        "name": "Banners",
+        "path": "banners"
+      },
+      {
+        "component": "/template/charts",
+        "meta": {
+          "icon": "ri:bar-chart-box-line",
+          "keepAlive": false,
+          "title": "menus.template.charts"
+        },
+        "name": "Charts",
+        "path": "charts"
+      },
+      {
+        "component": "/template/map",
+        "meta": {
+          "icon": "ri:map-pin-line",
+          "keepAlive": true,
+          "title": "menus.template.map"
+        },
+        "name": "Map",
+        "path": "map"
+      },
+      {
+        "component": "/template/chat",
+        "meta": {
+          "icon": "ri:message-3-line",
+          "keepAlive": true,
+          "title": "menus.template.chat"
+        },
+        "name": "Chat",
+        "path": "chat"
+      },
+      {
+        "component": "/template/calendar",
+        "meta": {
+          "icon": "ri:calendar-2-line",
+          "keepAlive": true,
+          "title": "menus.template.calendar"
+        },
+        "name": "Calendar",
+        "path": "calendar"
+      },
+      {
+        "component": "/template/pricing",
+        "meta": {
+          "icon": "ri:money-cny-box-line",
+          "isFullPage": true,
+          "keepAlive": true,
+          "title": "menus.template.pricing"
+        },
+        "name": "Pricing",
+        "path": "pricing"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:apps-2-line",
+      "title": "menus.template.title"
+    },
+    "name": "Template",
+    "path": "/template"
+  }
+]

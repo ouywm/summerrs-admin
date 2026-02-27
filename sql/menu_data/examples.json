@@ -1,0 +1,161 @@
+[
+  {
+    "children": [
+      {
+        "children": [
+          {
+            "component": "/examples/permission/switch-role",
+            "meta": {
+              "icon": "ri:contacts-line",
+              "keepAlive": true,
+              "title": "menus.examples.permission.switchRole"
+            },
+            "name": "PermissionSwitchRole",
+            "path": "switch-role"
+          },
+          {
+            "component": "/examples/permission/button-auth",
+            "meta": {
+              "authList": [
+                {
+                  "authMark": "add",
+                  "title": "新增"
+                },
+                {
+                  "authMark": "edit",
+                  "title": "编辑"
+                },
+                {
+                  "authMark": "delete",
+                  "title": "删除"
+                },
+                {
+                  "authMark": "export",
+                  "title": "导出"
+                },
+                {
+                  "authMark": "view",
+                  "title": "查看"
+                },
+                {
+                  "authMark": "publish",
+                  "title": "发布"
+                },
+                {
+                  "authMark": "config",
+                  "title": "配置"
+                },
+                {
+                  "authMark": "manage",
+                  "title": "管理"
+                }
+              ],
+              "icon": "ri:mouse-line",
+              "keepAlive": true,
+              "title": "menus.examples.permission.buttonAuth"
+            },
+            "name": "PermissionButtonAuth",
+            "path": "button-auth"
+          },
+          {
+            "component": "/examples/permission/page-visibility",
+            "meta": {
+              "icon": "ri:user-3-line",
+              "keepAlive": true,
+              "roles": [
+                "R_SUPER"
+              ],
+              "title": "menus.examples.permission.pageVisibility"
+            },
+            "name": "PermissionPageVisibility",
+            "path": "page-visibility"
+          }
+        ],
+        "component": "",
+        "meta": {
+          "icon": "ri:fingerprint-line",
+          "title": "menus.examples.permission.title"
+        },
+        "name": "Permission",
+        "path": "permission"
+      },
+      {
+        "component": "/examples/tabs",
+        "meta": {
+          "icon": "ri:price-tag-line",
+          "title": "menus.examples.tabs"
+        },
+        "name": "Tabs",
+        "path": "tabs"
+      },
+      {
+        "component": "/examples/tables/basic",
+        "meta": {
+          "icon": "ri:layout-grid-line",
+          "keepAlive": true,
+          "title": "menus.examples.tablesBasic"
+        },
+        "name": "TablesBasic",
+        "path": "tables/basic"
+      },
+      {
+        "component": "/examples/tables",
+        "meta": {
+          "icon": "ri:table-3",
+          "keepAlive": true,
+          "title": "menus.examples.tables"
+        },
+        "name": "Tables",
+        "path": "tables"
+      },
+      {
+        "component": "/examples/forms",
+        "meta": {
+          "icon": "ri:table-view",
+          "keepAlive": true,
+          "title": "menus.examples.forms"
+        },
+        "name": "Forms",
+        "path": "forms"
+      },
+      {
+        "component": "/examples/forms/search-bar",
+        "meta": {
+          "icon": "ri:table-line",
+          "keepAlive": true,
+          "title": "menus.examples.searchBar"
+        },
+        "name": "SearchBar",
+        "path": "form/search-bar"
+      },
+      {
+        "component": "/examples/tables/tree",
+        "meta": {
+          "icon": "ri:layout-2-line",
+          "keepAlive": true,
+          "title": "menus.examples.tablesTree"
+        },
+        "name": "TablesTree",
+        "path": "tables/tree"
+      },
+      {
+        "component": "/examples/socket-chat",
+        "meta": {
+          "icon": "ri:shake-hands-line",
+          "keepAlive": true,
+          "showTextBadge": "New",
+          "title": "menus.examples.socketChat"
+        },
+        "name": "SocketChat",
+        "path": "socket-chat"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:sparkling-line",
+      "title": "menus.examples.title"
+    },
+    "name": "Examples",
+    "path": "/examples"
+  }
+]

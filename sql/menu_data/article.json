@@ -1,0 +1,74 @@
+[
+  {
+    "children": [
+      {
+        "component": "/article/list",
+        "meta": {
+          "authList": [
+            {
+              "authMark": "add",
+              "title": "新增"
+            },
+            {
+              "authMark": "edit",
+              "title": "编辑"
+            }
+          ],
+          "icon": "ri:article-line",
+          "keepAlive": true,
+          "title": "menus.article.articleList"
+        },
+        "name": "ArticleList",
+        "path": "article-list"
+      },
+      {
+        "component": "/article/detail",
+        "meta": {
+          "activePath": "/article/article-list",
+          "isHide": true,
+          "keepAlive": true,
+          "title": "menus.article.articleDetail"
+        },
+        "name": "ArticleDetail",
+        "path": "detail/:id"
+      },
+      {
+        "component": "/article/comment",
+        "meta": {
+          "icon": "ri:mail-line",
+          "keepAlive": true,
+          "title": "menus.article.comment"
+        },
+        "name": "ArticleComment",
+        "path": "comment"
+      },
+      {
+        "component": "/article/publish",
+        "meta": {
+          "authList": [
+            {
+              "authMark": "add",
+              "title": "发布"
+            }
+          ],
+          "icon": "ri:telegram-2-line",
+          "keepAlive": true,
+          "title": "menus.article.articlePublish"
+        },
+        "name": "ArticlePublish",
+        "path": "publish"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:book-2-line",
+      "roles": [
+        "R_SUPER",
+        "R_ADMIN"
+      ],
+      "title": "menus.article.title"
+    },
+    "name": "Article",
+    "path": "/article"
+  }
+]

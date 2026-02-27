@@ -1,0 +1,168 @@
+[
+  {
+    "children": [
+      {
+        "component": "/system/user",
+        "meta": {
+          "icon": "ri:user-line",
+          "keepAlive": true,
+          "roles": [
+            "R_SUPER",
+            "R_ADMIN"
+          ],
+          "title": "menus.system.user"
+        },
+        "name": "User",
+        "path": "user"
+      },
+      {
+        "component": "/system/role",
+        "meta": {
+          "icon": "ri:user-settings-line",
+          "keepAlive": true,
+          "roles": [
+            "R_SUPER"
+          ],
+          "title": "menus.system.role"
+        },
+        "name": "Role",
+        "path": "role"
+      },
+      {
+        "component": "/system/user-center",
+        "meta": {
+          "icon": "ri:user-line",
+          "isHide": true,
+          "isHideTab": true,
+          "keepAlive": true,
+          "title": "menus.system.userCenter"
+        },
+        "name": "UserCenter",
+        "path": "user-center"
+      },
+      {
+        "component": "/system/menu",
+        "meta": {
+          "authList": [
+            {
+              "authMark": "add",
+              "title": "新增"
+            },
+            {
+              "authMark": "edit",
+              "title": "编辑"
+            },
+            {
+              "authMark": "delete",
+              "title": "删除"
+            }
+          ],
+          "icon": "ri:menu-line",
+          "keepAlive": true,
+          "roles": [
+            "R_SUPER"
+          ],
+          "title": "menus.system.menu"
+        },
+        "name": "Menus",
+        "path": "menu"
+      },
+      {
+        "children": [
+          {
+            "component": "/system/nested/menu1",
+            "meta": {
+              "icon": "ri:align-justify",
+              "keepAlive": true,
+              "title": "menus.system.menu1"
+            },
+            "name": "NestedMenu1",
+            "path": "menu1"
+          },
+          {
+            "children": [
+              {
+                "component": "/system/nested/menu2",
+                "meta": {
+                  "icon": "ri:align-justify",
+                  "keepAlive": true,
+                  "title": "menus.system.menu21"
+                },
+                "name": "NestedMenu2-1",
+                "path": "menu2-1"
+              }
+            ],
+            "component": "",
+            "meta": {
+              "icon": "ri:align-justify",
+              "keepAlive": true,
+              "title": "menus.system.menu2"
+            },
+            "name": "NestedMenu2",
+            "path": "menu2"
+          },
+          {
+            "children": [
+              {
+                "component": "/system/nested/menu3",
+                "meta": {
+                  "keepAlive": true,
+                  "title": "menus.system.menu31"
+                },
+                "name": "NestedMenu3-1",
+                "path": "menu3-1"
+              },
+              {
+                "children": [
+                  {
+                    "component": "/system/nested/menu3/menu3-2",
+                    "meta": {
+                      "keepAlive": true,
+                      "title": "menus.system.menu321"
+                    },
+                    "name": "NestedMenu3-2-1",
+                    "path": "menu3-2-1"
+                  }
+                ],
+                "component": "",
+                "meta": {
+                  "keepAlive": true,
+                  "title": "menus.system.menu32"
+                },
+                "name": "NestedMenu3-2",
+                "path": "menu3-2"
+              }
+            ],
+            "component": "",
+            "meta": {
+              "icon": "ri:align-justify",
+              "keepAlive": true,
+              "title": "menus.system.menu3"
+            },
+            "name": "NestedMenu3",
+            "path": "menu3"
+          }
+        ],
+        "component": "",
+        "meta": {
+          "icon": "ri:menu-unfold-3-line",
+          "keepAlive": true,
+          "title": "menus.system.nested"
+        },
+        "name": "Nested",
+        "path": "nested"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:user-3-line",
+      "roles": [
+        "R_SUPER",
+        "R_ADMIN"
+      ],
+      "title": "menus.system.title"
+    },
+    "name": "System",
+    "path": "/system"
+  }
+]

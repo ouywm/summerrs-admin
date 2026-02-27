@@ -1,0 +1,33 @@
+[
+  {
+    "children": [
+      {
+        "component": "/result/success",
+        "meta": {
+          "icon": "ri:checkbox-circle-line",
+          "keepAlive": true,
+          "title": "menus.result.success"
+        },
+        "name": "ResultSuccess",
+        "path": "success"
+      },
+      {
+        "component": "/result/fail",
+        "meta": {
+          "icon": "ri:close-circle-line",
+          "keepAlive": true,
+          "title": "menus.result.fail"
+        },
+        "name": "ResultFail",
+        "path": "fail"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:checkbox-circle-line",
+      "title": "menus.result.title"
+    },
+    "name": "Result",
+    "path": "/result"
+  }
+]

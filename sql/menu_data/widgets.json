@@ -1,0 +1,146 @@
+[
+  {
+    "children": [
+      {
+        "component": "/widgets/icon",
+        "meta": {
+          "icon": "ri:palette-line",
+          "keepAlive": true,
+          "title": "menus.widgets.icon"
+        },
+        "name": "Icon",
+        "path": "icon"
+      },
+      {
+        "component": "/widgets/image-crop",
+        "meta": {
+          "icon": "ri:screenshot-line",
+          "keepAlive": true,
+          "title": "menus.widgets.imageCrop"
+        },
+        "name": "ImageCrop",
+        "path": "image-crop"
+      },
+      {
+        "component": "/widgets/excel",
+        "meta": {
+          "icon": "ri:download-2-line",
+          "keepAlive": true,
+          "title": "menus.widgets.excel"
+        },
+        "name": "Excel",
+        "path": "excel"
+      },
+      {
+        "component": "/widgets/video",
+        "meta": {
+          "icon": "ri:vidicon-line",
+          "keepAlive": true,
+          "title": "menus.widgets.video"
+        },
+        "name": "Video",
+        "path": "video"
+      },
+      {
+        "component": "/widgets/count-to",
+        "meta": {
+          "icon": "ri:anthropic-line",
+          "keepAlive": false,
+          "title": "menus.widgets.countTo"
+        },
+        "name": "CountTo",
+        "path": "count-to"
+      },
+      {
+        "component": "/widgets/wang-editor",
+        "meta": {
+          "icon": "ri:t-box-line",
+          "keepAlive": true,
+          "title": "menus.widgets.wangEditor"
+        },
+        "name": "WangEditor",
+        "path": "wang-editor"
+      },
+      {
+        "component": "/widgets/watermark",
+        "meta": {
+          "icon": "ri:water-flash-line",
+          "keepAlive": true,
+          "title": "menus.widgets.watermark"
+        },
+        "name": "Watermark",
+        "path": "watermark"
+      },
+      {
+        "component": "/widgets/context-menu",
+        "meta": {
+          "icon": "ri:menu-2-line",
+          "keepAlive": true,
+          "title": "menus.widgets.contextMenu"
+        },
+        "name": "ContextMenu",
+        "path": "context-menu"
+      },
+      {
+        "component": "/widgets/qrcode",
+        "meta": {
+          "icon": "ri:qr-code-line",
+          "keepAlive": true,
+          "title": "menus.widgets.qrcode"
+        },
+        "name": "Qrcode",
+        "path": "qrcode"
+      },
+      {
+        "component": "/widgets/drag",
+        "meta": {
+          "icon": "ri:drag-move-fill",
+          "keepAlive": true,
+          "title": "menus.widgets.drag"
+        },
+        "name": "Drag",
+        "path": "drag"
+      },
+      {
+        "component": "/widgets/text-scroll",
+        "meta": {
+          "icon": "ri:input-method-line",
+          "keepAlive": true,
+          "title": "menus.widgets.textScroll"
+        },
+        "name": "TextScroll",
+        "path": "text-scroll"
+      },
+      {
+        "component": "/widgets/fireworks",
+        "meta": {
+          "icon": "ri:magic-line",
+          "keepAlive": true,
+          "showTextBadge": "Hot",
+          "title": "menus.widgets.fireworks"
+        },
+        "name": "Fireworks",
+        "path": "fireworks"
+      },
+      {
+        "component": "",
+        "meta": {
+          "icon": "ri:apps-2-line",
+          "isIframe": true,
+          "keepAlive": false,
+          "link": "https://element-plus.org/zh-CN/component/overview.html",
+          "title": "menus.widgets.elementUI"
+        },
+        "name": "ElementUI",
+        "path": "/outside/iframe/elementui"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:apps-2-add-line",
+      "title": "menus.widgets.title"
+    },
+    "name": "Widgets",
+    "path": "/widgets"
+  }
+]

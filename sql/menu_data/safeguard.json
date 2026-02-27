@@ -1,0 +1,24 @@
+[
+  {
+    "children": [
+      {
+        "component": "/safeguard/server",
+        "meta": {
+          "icon": "ri:hard-drive-3-line",
+          "keepAlive": true,
+          "title": "menus.safeguard.server"
+        },
+        "name": "SafeguardServer",
+        "path": "server"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:shield-check-line",
+      "keepAlive": false,
+      "title": "menus.safeguard.title"
+    },
+    "name": "Safeguard",
+    "path": "/safeguard"
+  }
+]

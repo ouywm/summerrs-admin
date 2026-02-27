@@ -7,5 +7,8 @@ edition = "2024"
 chrono = { workspace = true, features = ["serde"] }
 common = { workspace = true }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
-sea-orm = { workspace = true, features = ["with-chrono"] }
+sea-orm = { workspace = true, features = ["with-chrono","with-time","postgres-vector","postgres-array","debug-print"] }
 serde = { workspace = true, features = ["derive"] }
+serde_repr.workspace = true
+validator = { workspace = true, features = ["derive"] }
+axum-valid = { workspace = true }

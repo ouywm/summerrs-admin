@@ -1,0 +1,22 @@
+-- ============================================================
+-- 自动生成的菜单数据
+-- ============================================================
+
+INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (300, 0, 1, 'Template', '/template', '/index/index', '', 'ri:apps-2-line', 'menus.template.title', '', false, false, false, false, false, false, false, false, '', '', '', '', 1, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (301, 300, 1, 'Cards', 'cards', '/template/cards', '', 'ri:wallet-line', 'menus.template.cards', '', false, false, false, false, false, false, false, false, '', '', '', '', 1, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (302, 300, 1, 'Banners', 'banners', '/template/banners', '', 'ri:rectangle-line', 'menus.template.banners', '', false, false, false, false, false, false, false, false, '', '', '', '', 2, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (303, 300, 1, 'Charts', 'charts', '/template/charts', '', 'ri:bar-chart-box-line', 'menus.template.charts', '', false, false, false, false, false, false, false, false, '', '', '', '', 3, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (304, 300, 1, 'Map', 'map', '/template/map', '', 'ri:map-pin-line', 'menus.template.map', '', false, false, false, false, false, true, false, false, '', '', '', '', 4, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (305, 300, 1, 'Chat', 'chat', '/template/chat', '', 'ri:message-3-line', 'menus.template.chat', '', false, false, false, false, false, true, false, false, '', '', '', '', 5, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (306, 300, 1, 'Calendar', 'calendar', '/template/calendar', '', 'ri:calendar-2-line', 'menus.template.calendar', '', false, false, false, false, false, true, false, false, '', '', '', '', 6, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (307, 300, 1, 'Pricing', 'pricing', '/template/pricing', '', 'ri:money-cny-box-line', 'menus.template.pricing', '', false, false, false, true, false, true, false, false, '', '', '', '', 7, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- 重置序列
+SELECT setval('sys_menu_id_seq', (SELECT MAX(id) FROM sys_menu));

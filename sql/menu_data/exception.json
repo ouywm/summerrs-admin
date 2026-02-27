@@ -1,0 +1,46 @@
+[
+  {
+    "children": [
+      {
+        "component": "/exception/403",
+        "meta": {
+          "isFullPage": true,
+          "isHideTab": true,
+          "keepAlive": true,
+          "title": "menus.exception.forbidden"
+        },
+        "name": "Exception403",
+        "path": "403"
+      },
+      {
+        "component": "/exception/404",
+        "meta": {
+          "isFullPage": true,
+          "isHideTab": true,
+          "keepAlive": true,
+          "title": "menus.exception.notFound"
+        },
+        "name": "Exception404",
+        "path": "404"
+      },
+      {
+        "component": "/exception/500",
+        "meta": {
+          "isFullPage": true,
+          "isHideTab": true,
+          "keepAlive": true,
+          "title": "menus.exception.serverError"
+        },
+        "name": "Exception500",
+        "path": "500"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:error-warning-line",
+      "title": "menus.exception.title"
+    },
+    "name": "Exception",
+    "path": "/exception"
+  }
+]

@@ -1,0 +1,49 @@
+[
+  {
+    "name": "Document",
+    "path": "",
+    "component": "",
+    "meta": {
+      "title": "menus.help.document",
+      "icon": "ri:bill-line",
+      "link": "https://docs.example.com",
+      "isIframe": false,
+      "keepAlive": false
+    }
+  },
+  {
+    "name": "LiteVersion",
+    "path": "",
+    "component": "",
+    "meta": {
+      "title": "menus.help.liteVersion",
+      "icon": "ri:bus-2-line",
+      "link": "https://lite.example.com",
+      "isIframe": false,
+      "keepAlive": false
+    }
+  },
+  {
+    "name": "OldVersion",
+    "path": "",
+    "component": "",
+    "meta": {
+      "title": "menus.help.oldVersion",
+      "icon": "ri:subway-line",
+      "link": "https://old.example.com",
+      "isIframe": false,
+      "keepAlive": false
+    }
+  },
+  {
+    "name": "ChangeLog",
+    "path": "/change/log",
+    "component": "/change/log",
+    "meta": {
+      "title": "menus.plan.log",
+      "showTextBadge": "v3.0.1",
+      "icon": "ri:gamepad-line",
+      "keepAlive": false
+    }
+  }
+]
