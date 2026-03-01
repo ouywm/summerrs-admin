@@ -1,7 +1,9 @@
 use anyhow::Context;
 use common::crypto::verify_password;
 use common::error::{ApiErrors, ApiResult};
+use common::user_agent::UserAgentInfo;
 use model::dto::auth::LoginDto;
+use model::entity::sys_login_log;
 use model::entity::sys_menu;
 use model::entity::sys_role;
 use model::entity::sys_user;
@@ -10,30 +12,65 @@ use model::vo::auth::LoginVo;
 use sea_orm::{ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
 use spring::plugin::Service;
 use spring_sa_token::StpUtil;
+use std::net::IpAddr;
 
 use crate::plugin::sea_orm_plugin::DbConn;
+use crate::service::login_log_service::LoginLogService;
 
 #[derive(Clone, Service)]
 pub struct AuthService {
     #[inject(component)]
     db: DbConn,
+    #[inject(component)]
+    login_log_service: LoginLogService,
 }
 
 impl AuthService {
-    pub async fn login(&self, dto: LoginDto) -> ApiResult<LoginVo> {
+    pub async fn login(&self, dto: LoginDto, client_ip: IpAddr, ua_info: UserAgentInfo) -> ApiResult<LoginVo> {
         // 根据用户名查询用户
         let user = sys_user::Entity::find()
             .filter(sys_user::Column::UserName.eq(&dto.user_name))
             .one(&self.db)
             .await
-            .context("查询用户失败")?
-            .ok_or_else(|| ApiErrors::Unauthorized("用户名或密码错误".to_string()))?;
+            .context("查询用户失败")?;
+
+        // 用户不存在
+        if user.is_none() {
+            // 异步记录失败日志
+            self.login_log_service.record_login_async(
+                0,
+                dto.user_name.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("用户不存在".to_string()),
+            );
+            return Err(ApiErrors::Unauthorized("用户名或密码错误".to_string()));
+        }
+
+        let user = user.unwrap();
 
         // 验证用户状态
         if user.status == sys_user::UserStatus::Cancelled {
+            self.login_log_service.record_login_async(
+                user.id,
+                user.user_name.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("账号已注销".to_string()),
+            );
             return Err(ApiErrors::Forbidden("账号已注销".to_string()));
         }
         if user.status == sys_user::UserStatus::Abnormal {
+            self.login_log_service.record_login_async(
+                user.id,
+                user.user_name.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("账号状态异常".to_string()),
+            );
             return Err(ApiErrors::Forbidden("账号状态异常".to_string()));
         }
 
@@ -41,6 +78,14 @@ impl AuthService {
         let valid = verify_password(&dto.password, &user.password)
             .map_err(|_| ApiErrors::Unauthorized("用户名或密码错误".to_string()))?;
         if !valid {
+            self.login_log_service.record_login_async(
+                user.id,
+                user.user_name.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("密码错误".to_string()),
+            );
             return Err(ApiErrors::Unauthorized("用户名或密码错误".to_string()));
         }
 
@@ -77,6 +122,16 @@ impl AuthService {
         StpUtil::set_permissions(&login_id, permissions)
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
+
+        // 异步记录登录成功日志
+        self.login_log_service.record_login_async(
+            user.id,
+            user.user_name.clone(),
+            client_ip,
+            ua_info,
+            sys_login_log::LoginStatus::Success,
+            None,
+        );
 
         Ok(LoginVo {
             token: token.as_str().to_string(),

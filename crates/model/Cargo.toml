@@ -6,9 +6,11 @@ edition = "2024"
 [dependencies]
 chrono = { workspace = true, features = ["serde"] }
 common = { workspace = true }
+ipnetwork = { workspace = true, features = ["serde"] }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
-sea-orm = { workspace = true, features = ["with-chrono","with-time","postgres-vector","postgres-array","debug-print"] }
+sea-orm = { workspace = true, features = ["with-chrono","with-time","with-json","postgres-vector","postgres-array","debug-print","with-ipnetwork"] }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 serde_repr.workspace = true
 validator = { workspace = true, features = ["derive"] }
 axum-valid = { workspace = true }

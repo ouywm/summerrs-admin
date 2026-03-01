@@ -5,9 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+axum-client-ip = { workspace = true, features = ["connect-info", "serde", "forwarded-header"] }
 axum-valid = { workspace = true }
 chrono = { workspace = true }
 common = { workspace = true }
+futures = { workspace = true }
+macros = { workspace = true }
 model = { workspace = true }
 regex = { workspace = true }
 schema = { workspace = true }
@@ -26,3 +29,5 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 validator = { workspace = true }
+woothee = { workspace = true }
+ip2region = { workspace = true }

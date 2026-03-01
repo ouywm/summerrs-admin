@@ -1,5 +1,4 @@
 use chrono::NaiveDate;
-use common::request::PageQuery;
 use schemars::JsonSchema;
 use sea_orm::Set;
 use serde::Deserialize;
@@ -59,8 +58,6 @@ impl UpdateRoleDto {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RoleQueryDto {
-    #[serde(flatten)]
-    pub page: PageQuery,
     pub role_name: Option<String>,
     pub role_code: Option<String>,
     pub description: Option<String>,

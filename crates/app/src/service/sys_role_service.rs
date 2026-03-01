@@ -1,6 +1,5 @@
 use anyhow::Context;
 use common::error::{ApiErrors, ApiResult};
-use common::response::PageResponse;
 use model::dto::sys_role::{CreateRoleDto, RolePermissionDto, RoleQueryDto, UpdateRoleDto};
 use model::entity::sys_role;
 use model::entity::sys_role_menu;
@@ -9,6 +8,7 @@ use model::vo::sys_role::{RolePermissionVo, RoleVo};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use spring::plugin::Service;
 
+use crate::plugin::pagination::{Page, Pagination, PaginationExt};
 use crate::plugin::sea_orm_plugin::DbConn;
 
 #[derive(Clone, Service)]
@@ -19,7 +19,7 @@ pub struct SysRoleService {
 
 impl SysRoleService {
     /// 角色列表（分页+筛选）
-    pub async fn list_roles(&self, query: RoleQueryDto) -> ApiResult<PageResponse<RoleVo>> {
+    pub async fn list_roles(&self, query: RoleQueryDto, pagination: Pagination) -> ApiResult<Page<RoleVo>> {
         let mut select = sys_role::Entity::find();
 
         if let Some(ref name) = query.role_name {
@@ -41,16 +41,13 @@ impl SysRoleService {
             select = select.filter(sys_role::Column::CreateTime.lte(end_dt));
         }
 
-        let paginator = select.paginate(&self.db, query.page.size);
-        let total = paginator.num_items().await.context("查询角色总数失败")?;
-        let roles = paginator
-            .fetch_page(query.page.page_index())
+        let page = select
+            .page(&self.db, &pagination)
             .await
             .context("查询角色列表失败")?;
 
-        let records: Vec<RoleVo> = roles.into_iter().map(RoleVo::from).collect();
-
-        Ok(PageResponse::new(records, query.page.current, query.page.size, total))
+        let page = page.map(RoleVo::from);
+        Ok(page)
     }
 
     /// 创建角色

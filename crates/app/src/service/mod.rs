@@ -1,4 +1,6 @@
 pub mod auth_service;
+pub mod login_log_service;
+pub mod operation_log_service;
 pub mod sys_menu_service;
 pub mod sys_role_service;
 pub mod sys_user_service;

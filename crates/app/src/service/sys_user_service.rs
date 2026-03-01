@@ -1,8 +1,8 @@
 use anyhow::Context;
-use common::crypto::hash_password;
+use common::crypto::{hash_password, verify_password};
 use common::error::{ApiErrors, ApiResult};
-use common::response::PageResponse;
-use model::dto::sys_user::{CreateUserDto, UpdateUserDto, UserQueryDto};
+use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
+use model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
 use model::entity::sys_menu;
 use model::entity::sys_role;
 use model::entity::sys_role_menu;
@@ -10,14 +10,16 @@ use model::entity::sys_user;
 use model::entity::sys_user_role;
 use model::vo::sys_role::RoleDetailVo;
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
+use model::vo::user_profile::UserProfileVo;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, JoinType, PaginatorTrait, QueryFilter, QuerySelect,
+    ActiveModelTrait, ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect,
     RelationTrait, Set, TransactionTrait,
 };
 use spring::plugin::Service;
 
 use spring_sa_token::StpUtil;
 
+use crate::plugin::pagination::{Page, Pagination, PaginationExt};
 use crate::plugin::sea_orm_plugin::DbConn;
 
 #[derive(Clone, Service)]
@@ -137,7 +139,7 @@ impl SysUserService {
     }
 
     /// 用户列表（分页+筛选）
-    pub async fn list_users(&self, query: UserQueryDto) -> ApiResult<PageResponse<UserVo>> {
+    pub async fn list_users(&self, query: UserQueryDto, pagination: Pagination) -> ApiResult<Page<UserVo>> {
         let mut select = sys_user::Entity::find();
 
         if let Some(ref name) = query.user_name {
@@ -156,21 +158,13 @@ impl SysUserService {
             select = select.filter(sys_user::Column::Gender.eq(gender));
         }
 
-        let paginator = select.paginate(&self.db, query.page.size);
-        let total = paginator.num_items().await.context("查询用户总数失败")?;
-        let users = paginator
-            .fetch_page(query.page.page_index())
+        let page = select
+            .page(&self.db, &pagination)
             .await
             .context("查询用户列表失败")?;
 
-        let records: Vec<UserVo> = users.into_iter().map(UserVo::from_model).collect();
-
-        Ok(PageResponse::new(
-            records,
-            query.page.current,
-            query.page.size,
-            total,
-        ))
+        let page = page.map(UserVo::from_model);
+        Ok(page)
     }
 
     /// 创建用户
@@ -344,5 +338,105 @@ impl SysUserService {
                 }
                 sea_orm::TransactionError::Transaction(err) => err,
             })
+    }
+
+    /// 重置用户密码
+    pub async fn reset_password(&self, id: i64, dto: ResetPasswordDto) -> ApiResult<()> {
+        // 查询用户是否存在
+        let user = sys_user::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("查询用户失败")?
+            .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
+
+        // 加密新密码
+        let hashed_password = hash_password(&dto.new_password)
+            .context("密码加密失败")?;
+
+        // 更新密码
+        let mut active: sys_user::ActiveModel = user.into();
+        active.password = Set(hashed_password);
+        active
+            .update(&self.db)
+            .await
+            .context("更新密码失败")?;
+
+        Ok(())
+    }
+
+    /// 修改个人密码
+    pub async fn change_password(&self, login_id: &str, dto: ChangePasswordDto) -> ApiResult<()> {
+        let user_id: i64 = login_id
+            .parse()
+            .map_err(|_| ApiErrors::BadRequest("无效的用户ID".to_string()))?;
+
+        // 查询用户
+        let user = sys_user::Entity::find_by_id(user_id)
+            .one(&self.db)
+            .await
+            .context("查询用户失败")?
+            .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
+
+        // 验证旧密码
+        let is_valid = verify_password(&dto.old_password, &user.password)
+            .context("密码验证失败")?;
+        if !is_valid {
+            return Err(ApiErrors::BadRequest("当前密码不正确".to_string()));
+        }
+
+        // 加密新密码
+        let hashed_password = hash_password(&dto.new_password)
+            .context("密码加密失败")?;
+
+        // 更新密码
+        let mut active: sys_user::ActiveModel = user.into();
+        active.password = Set(hashed_password);
+        active
+            .update(&self.db)
+            .await
+            .context("更新密码失败")?;
+
+        Ok(())
+    }
+
+    /// 更新个人信息
+    pub async fn update_profile(&self, login_id: &str, dto: UpdateProfileDto) -> ApiResult<UserProfileVo> {
+        let user_id: i64 = login_id
+            .parse()
+            .map_err(|_| ApiErrors::BadRequest("无效的用户ID".to_string()))?;
+
+        // 查询用户
+        let user = sys_user::Entity::find_by_id(user_id)
+            .one(&self.db)
+            .await
+            .context("查询用户失败")?
+            .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
+
+        // 检查邮箱是否被其他用户使用
+        if let Some(ref email) = dto.email {
+            if !email.is_empty() {
+                let existing = sys_user::Entity::find()
+                    .filter(sys_user::Column::Email.eq(email))
+                    .filter(sys_user::Column::Id.ne(user_id))
+                    .one(&self.db)
+                    .await
+                    .context("检查邮箱失败")?;
+
+                if existing.is_some() {
+                    return Err(ApiErrors::Conflict("该邮箱已被其他用户使用".to_string()));
+                }
+            }
+        }
+
+        // 更新用户信息
+        let mut active: sys_user::ActiveModel = user.into();
+        dto.apply_to(&mut active);
+
+        let updated_user = active
+            .update(&self.db)
+            .await
+            .context("更新个人信息失败")?;
+
+        Ok(UserProfileVo::from_model(updated_user))
     }
 }

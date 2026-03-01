@@ -16,3 +16,4 @@ contrib-plugins/
 *.swp
 *.swo
 *.log
+data/

@@ -1,4 +1,3 @@
-use common::request::PageQuery;
 use schemars::JsonSchema;
 use sea_orm::Set;
 use serde::Deserialize;
@@ -86,11 +85,18 @@ impl UpdateUserDto {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UserQueryDto {
-    #[serde(flatten)]
-    pub page: PageQuery,
     pub user_name: Option<String>,
     pub user_phone: Option<String>,
     pub user_email: Option<String>,
     pub status: Option<UserStatus>,
     pub user_gender: Option<Gender>,
+}
+
+/// 重置密码请求参数
+#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetPasswordDto {
+    /// 新密码（长度至少6位）
+    #[validate(length(min = 6, message = "密码长度至少6位"))]
+    pub new_password: String,
 }

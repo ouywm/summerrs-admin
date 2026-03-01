@@ -2,8 +2,11 @@ mod plugin;
 mod router;
 mod service;
 
-use spring::App;
+use crate::plugin::ip2region_plugin::Ip2RegionPlugin;
+use crate::plugin::sea_orm_plugin::SeaOrmPlugin;
+use axum_client_ip::ClientIpSource;
 use spring::auto_config;
+use spring::App;
 use spring_job::JobConfigurator;
 use spring_job::JobPlugin;
 use spring_redis::RedisPlugin;
@@ -15,8 +18,6 @@ use spring_web::WebConfigurator;
 use spring_web::WebPlugin;
 use tower_http::catch_panic::CatchPanicLayer;
 
-use crate::plugin::sea_orm_plugin::SeaOrmPlugin;
-
 #[auto_config(WebConfigurator, JobConfigurator)]
 #[tokio::main]
 async fn main() {
@@ -26,22 +27,19 @@ async fn main() {
         .add_plugin(RedisPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(SaTokenPlugin)
-        .sa_token_auth(
-            PathAuthBuilder::new()
-                .include("/**")
-                .exclude("/auth/login"),
-        )
+        .add_plugin(Ip2RegionPlugin)
+        .sa_token_auth(PathAuthBuilder::new().include("/**").exclude("/auth/login"))
         .add_router_layer(|router| {
-            router.layer(CatchPanicLayer::custom(handle_panic))
+            router
+                .layer(ClientIpSource::ConnectInfo.into_extension())
+                .layer(CatchPanicLayer::custom(handle_panic))
         })
         .run()
         .await;
 }
 
 /// 全局 panic 处理：将 panic 转为 ProblemDetails (RFC 7807) 格式响应
-fn handle_panic(
-    err: Box<dyn std::any::Any + Send + 'static>,
-) -> http::Response<Body> {
+fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> http::Response<Body> {
     let detail = if let Some(s) = err.downcast_ref::<String>() {
         s.clone()
     } else if let Some(s) = err.downcast_ref::<&str>() {

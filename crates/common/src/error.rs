@@ -9,10 +9,12 @@ pub enum ApiErrors {
     BadRequest(String),
 
     #[status_code(401)]
+    #[problem_type("about:blank")]
     #[error("{0}")]
     Unauthorized(String),
 
     #[status_code(403)]
+    #[problem_type("about:blank")]
     #[error("{0}")]
     Forbidden(String),
 
@@ -33,10 +35,12 @@ pub enum ApiErrors {
     TooManyRequests(String),
 
     #[status_code(500)]
+    #[problem_type("about:blank")]
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 
     #[status_code(503)]
+    #[problem_type("about:blank")]
     #[error("{0}")]
     ServiceUnavailable(String),
 }

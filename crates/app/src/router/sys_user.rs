@@ -1,15 +1,18 @@
 use common::error::ApiResult;
 use common::extractor::ValidatedJson;
-use common::response::{ApiResponse, PageResponse};
-use model::dto::sys_user::{CreateUserDto, UpdateUserDto, UserQueryDto};
+use common::response::ApiResponse;
+use macros::log;
+use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
 use spring_sa_token::LoginIdExtractor;
-use spring_web::axum::extract::Path;
+use spring_web::axum::extract::{Path, Query};
 use spring_web::extractor::Component;
 use spring_web::{delete, get, post, put};
 
+use crate::plugin::pagination::{Page, Pagination};
 use crate::service::sys_user_service::SysUserService;
 
+#[log(module = "用户管理", action = "获取用户信息", biz_type = Query)]
 #[get("/user/info")]
 pub async fn get_user_info(
     LoginIdExtractor(login_id): LoginIdExtractor,
@@ -19,6 +22,7 @@ pub async fn get_user_info(
     Ok(ApiResponse::ok(vo))
 }
 
+#[log(module = "用户管理", action = "获取用户详情", biz_type = Query)]
 #[get("/user/{id}")]
 pub async fn get_user_detail(
     Component(svc): Component<SysUserService>,
@@ -28,15 +32,18 @@ pub async fn get_user_detail(
     Ok(ApiResponse::ok(vo))
 }
 
+#[log(module = "用户管理", action = "查询用户列表", biz_type = Query)]
 #[get("/user/list")]
 pub async fn list_users(
     Component(svc): Component<SysUserService>,
-    spring_web::axum::extract::Query(query): spring_web::axum::extract::Query<UserQueryDto>,
-) -> ApiResult<ApiResponse<PageResponse<UserVo>>> {
-    let vo = svc.list_users(query).await?;
+    Query(query): Query<UserQueryDto>,
+    pagination: Pagination,
+) -> ApiResult<ApiResponse<Page<UserVo>>> {
+    let vo = svc.list_users(query, pagination).await?;
     Ok(ApiResponse::ok(vo))
 }
 
+#[log(module = "用户管理", action = "创建用户", biz_type = Create)]
 #[post("/user")]
 pub async fn create_user(
     LoginIdExtractor(login_id): LoginIdExtractor,
@@ -47,6 +54,7 @@ pub async fn create_user(
     Ok(ApiResponse::empty_with_msg("创建成功"))
 }
 
+#[log(module = "用户管理", action = "更新用户", biz_type = Update)]
 #[put("/user/{id}")]
 pub async fn update_user(
     LoginIdExtractor(login_id): LoginIdExtractor,
@@ -58,6 +66,7 @@ pub async fn update_user(
     Ok(ApiResponse::empty_with_msg("更新成功"))
 }
 
+#[log(module = "用户管理", action = "删除用户", biz_type = Delete)]
 #[delete("/user/{id}")]
 pub async fn delete_user(
     Component(svc): Component<SysUserService>,
@@ -65,4 +74,15 @@ pub async fn delete_user(
 ) -> ApiResult<ApiResponse<()>> {
     svc.delete_user(id).await?;
     Ok(ApiResponse::empty_with_msg("删除成功"))
+}
+
+#[log(module = "用户管理", action = "重置用户密码", biz_type = Update, save_params = false)]
+#[put("/user/{id}/reset-password")]
+pub async fn reset_user_password(
+    Component(svc): Component<SysUserService>,
+    Path(id): Path<i64>,
+    ValidatedJson(dto): ValidatedJson<ResetPasswordDto>,
+) -> ApiResult<ApiResponse<()>> {
+    svc.reset_password(id, dto).await?;
+    Ok(ApiResponse::empty_with_msg("密码重置成功"))
 }

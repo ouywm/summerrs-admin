@@ -6,6 +6,7 @@ level = "debug"
 port = 8080
 graceful = true
 global_prefix = "/api"
+connect_info = true
 
 [web.openapi]
 doc_prefix = "/docs"
@@ -34,8 +35,17 @@ cors = { enable = true, allow_origins = [
 uri = "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai"
 enable_logging = true
 
+[sea-orm-web]
+one_indexed = true
+default_page_size = 20
+max_page_size = 2000
+
 [redis]
 uri = "redis://127.0.0.1/"
+
+[ip2region]
+ipv4_db_path = "./data/ip2region_v4.xdb"
+# ipv6_db_path = "./data/ip2region_v6.xdb"
 
 [sa-token]
 token_name = "Authorization"

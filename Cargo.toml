@@ -3,12 +3,14 @@ members = [
     "crates/app",
     "crates/model",
     "crates/common",
+    "crates/macros",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
 argon2 = "0.5"
+axum-client-ip = "1.3.1"
 axum-valid = "0.22.0"
 base64 = "0.22.1"
 bytes = "1.11.1"
@@ -17,6 +19,8 @@ chrono = "0.4.43"
 common = { path = "crates/common" }
 futures = "0.3.32"
 garde = "0.22.1"
+ipnetwork = "0.21.1"
+macros = { path = "crates/macros" }
 mime = "0.3.17"
 model = { path = "crates/model" }
 parking_lot = "0.12.5"
@@ -44,3 +48,5 @@ tracing = "0.1.41"
 url = "2.5.8"
 uuid = "1.21.0"
 validator = "0.20.0"
+woothee = "0.13"
+ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
