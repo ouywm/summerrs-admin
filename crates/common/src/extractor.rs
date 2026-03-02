@@ -1,5 +1,7 @@
 use serde::de::DeserializeOwned;
-use spring_web::axum::extract::{FromRequest, Request};
+use spring_web::axum::extract::{FromRequest, FromRequestParts, Request};
+use spring_web::axum::http::request::Parts;
+use spring_web::axum::response::IntoResponse;
 use spring_web::axum::Json;
 use validator::Validate;
 
@@ -51,3 +53,65 @@ where
         Ok(ValidatedJson(data))
     }
 }
+
+/// ValidatedJson 对 OpenAPI 文档：生成请求体 schema（委托给 Json<T>）
+impl<T: schemars::JsonSchema> spring_web::aide::OperationInput for ValidatedJson<T> {
+    fn operation_input(
+        ctx: &mut spring_web::aide::generate::GenContext,
+        operation: &mut spring_web::aide::openapi::Operation,
+    ) {
+        <spring_web::axum::Json<T> as spring_web::aide::OperationInput>::operation_input(ctx, operation);
+    }
+}
+
+/// 登录用户 ID 提取器
+///
+/// 从请求 Extensions 中提取 sa-token 写入的 login_id（String）。
+/// 未登录时返回 401。
+pub struct LoginIdExtractor(pub String);
+
+impl<S: Send + Sync> FromRequestParts<S> for LoginIdExtractor {
+    type Rejection = spring_web::axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match parts.extensions.get::<String>() {
+            Some(login_id) => Ok(LoginIdExtractor(login_id.clone())),
+            None => Err((
+                spring_web::axum::http::StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "code": 401,
+                    "message": "未登录或登录已过期"
+                })),
+            )
+                .into_response()),
+        }
+    }
+}
+
+/// LoginIdExtractor 对 OpenAPI 文档透明（不生成参数描述）
+impl spring_web::aide::OperationInput for LoginIdExtractor {}
+
+/// 客户端 IP 提取器（包装 axum_client_ip::ClientIp）
+///
+/// 因 axum_client_ip::ClientIp 来自外部 crate，无法为其实现 OperationInput
+/// 此包装类型委托提取逻辑给原版，同时实现 OperationInput 使其对 OpenAPI 文档透明。
+pub struct ClientIp(pub std::net::IpAddr);
+
+impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+    type Rejection = <axum_client_ip::ClientIp as spring_web::axum::extract::FromRequestParts<S>>::Rejection;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let axum_client_ip::ClientIp(ip) =
+            axum_client_ip::ClientIp::from_request_parts(parts, state).await?;
+        Ok(ClientIp(ip))
+    }
+}
+
+/// ClientIp 对 OpenAPI 文档透明（不生成参数描述）
+impl spring_web::aide::OperationInput for ClientIp {}

@@ -1,10 +1,10 @@
 use schemars::JsonSchema;
 use sea_orm::Set;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use validator::Validate;
 use crate::entity::sys_user::{self, Gender, UserStatus};
 
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateUserDto {
     #[validate(length(min = 1, max = 64, message = "用户名长度必须在1-64之间"))]
@@ -41,7 +41,7 @@ impl CreateUserDto {
     }
 }
 
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateUserDto {
     #[validate(length(min = 1, max = 64, message = "昵称长度必须在1-64之间"))]
@@ -93,7 +93,7 @@ pub struct UserQueryDto {
 }
 
 /// 重置密码请求参数
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetPasswordDto {
     /// 新密码（长度至少6位）

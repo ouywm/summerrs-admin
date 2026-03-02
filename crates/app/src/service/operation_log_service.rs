@@ -1,11 +1,15 @@
 use crate::plugin::background_task::BackgroundTaskQueue;
 use crate::plugin::ip2region_plugin::Ip2RegionSearcher;
 use crate::plugin::log_batch_collector::OperationLogCollector;
+use crate::plugin::pagination::{Page, Pagination, PaginationExt};
 use crate::plugin::sea_orm_plugin::DbConn;
-use model::dto::operation_log::CreateOperationLogDto;
+use anyhow::Context;
+use common::error::ApiResult;
+use model::dto::operation_log::{CreateOperationLogDto, OperationLogQueryDto};
 use model::entity::sys_operation_log;
+use model::vo::operation_log::{OperationLogDetailVo, OperationLogVo};
 use sea_orm::prelude::IpNetwork;
-use sea_orm::Set;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use spring::plugin::Service;
 use spring_sa_token::StpUtil;
 use spring_web::axum::extract::FromRequestParts;
@@ -62,7 +66,7 @@ impl<S: Send + Sync> FromRequestParts<S> for OperationLogContext {
             .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
 
         // 提取当前登录用户 ID，未登录时为 0
-        let user_id = spring_sa_token::LoginIdExtractor::from_request_parts(parts, _state)
+        let user_id = common::extractor::LoginIdExtractor::from_request_parts(parts, _state)
             .await
             .map(|ext| ext.0.parse::<i64>().unwrap_or(0))
             .unwrap_or(0);
@@ -81,6 +85,9 @@ impl<S: Send + Sync> FromRequestParts<S> for OperationLogContext {
         })
     }
 }
+
+/// OperationLogContext 是内部日志提取器，对 OpenAPI 文档透明（不生成任何参数描述）
+impl spring_web::aide::OperationInput for OperationLogContext {}
 
 impl OperationLogService {
     /// 从 JWT extra data 获取操作人昵称，失败时返回 None
@@ -134,5 +141,60 @@ impl OperationLogService {
 
             op_collector.push(model);
         });
+    }
+
+    /// 查询操作日志（分页 + 条件筛选）
+    pub async fn get_operation_logs(
+        &self,
+        query: OperationLogQueryDto,
+        pagination: Pagination,
+    ) -> ApiResult<Page<OperationLogVo>> {
+        let mut select = sys_operation_log::Entity::find();
+
+        if let Some(user_name) = &query.user_name {
+            if !user_name.is_empty() {
+                select = select
+                    .filter(sys_operation_log::Column::UserName.contains(user_name.as_str()));
+            }
+        }
+        if let Some(module) = &query.module {
+            if !module.is_empty() {
+                select =
+                    select.filter(sys_operation_log::Column::Module.contains(module.as_str()));
+            }
+        }
+        if let Some(business_type) = query.business_type {
+            select =
+                select.filter(sys_operation_log::Column::BusinessType.eq(business_type));
+        }
+        if let Some(status) = query.status {
+            select = select.filter(sys_operation_log::Column::Status.eq(status));
+        }
+        if let Some(start_time) = query.start_time {
+            select = select.filter(sys_operation_log::Column::CreateTime.gte(start_time));
+        }
+        if let Some(end_time) = query.end_time {
+            select = select.filter(sys_operation_log::Column::CreateTime.lte(end_time));
+        }
+
+        select = select.order_by_desc(sys_operation_log::Column::CreateTime);
+
+        let page = select
+            .page(&self.db, &pagination)
+            .await
+            .context("查询操作日志失败")?;
+
+        Ok(page.map(OperationLogVo::from_model))
+    }
+
+    /// 查询操作日志详情
+    pub async fn get_operation_log_detail(&self, id: i64) -> ApiResult<OperationLogDetailVo> {
+        let model = sys_operation_log::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("查询操作日志详情失败")?
+            .ok_or_else(|| common::error::ApiErrors::NotFound("操作日志不存在".to_string()))?;
+
+        Ok(OperationLogDetailVo::from_model(model))
     }
 }

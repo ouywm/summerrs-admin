@@ -54,3 +54,8 @@ validator = "0.20.0"
 woothee = "0.13"
 criterion = "0.5"
 ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
+indexmap = "2.13.0"
+[patch.crates-io]
+spring = { path = "/Volumes/990pro/code/rust/spring-rs/spring" }
+spring-macros = { path = "/Volumes/990pro/code/rust/spring-rs/spring-macros" }
+spring-web = { path = "/Volumes/990pro/code/rust/spring-rs/spring-web" }

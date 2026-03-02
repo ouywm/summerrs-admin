@@ -1,10 +1,9 @@
 use common::error::ApiResult;
-use common::extractor::ValidatedJson;
+use common::extractor::{LoginIdExtractor, ValidatedJson};
 use common::response::ApiResponse;
 use macros::log;
 use model::dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto};
 use model::vo::sys_menu::MenuTreeVo;
-use spring_sa_token::LoginIdExtractor;
 use spring_web::axum::extract::Path;
 use spring_web::extractor::Component;
 use spring_web::{delete, get, post, put};

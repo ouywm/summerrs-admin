@@ -1,12 +1,12 @@
 use chrono::NaiveDate;
 use schemars::JsonSchema;
 use sea_orm::Set;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use validator::Validate;
 
 use crate::entity::sys_role;
 
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRoleDto {
     #[validate(length(min = 1, max = 64, message = "角色名称长度必须在1-64之间"))]
@@ -30,7 +30,7 @@ impl From<CreateRoleDto> for sys_role::ActiveModel {
     }
 }
 
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateRoleDto {
     #[validate(length(min = 1, max = 64, message = "角色名称长度必须在1-64之间"))]
@@ -66,7 +66,7 @@ pub struct RoleQueryDto {
     pub end_time: Option<NaiveDate>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RolePermissionDto {
     pub menu_ids: Vec<i64>,

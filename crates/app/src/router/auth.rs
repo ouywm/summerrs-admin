@@ -1,21 +1,19 @@
 use crate::service::auth_service::AuthService;
-use axum_client_ip::ClientIp;
 use common::error::ApiResult;
-use common::extractor::ValidatedJson;
+use common::extractor::{ClientIp, LoginIdExtractor, ValidatedJson};
 use common::response::ApiResponse;
 use common::user_agent::UserAgentInfo;
 use macros::log;
 use model::dto::auth::LoginDto;
 use model::vo::auth::LoginVo;
 use spring_sa_token::sa_ignore;
-use spring_sa_token::LoginIdExtractor;
 use spring_web::axum::http::HeaderMap;
 use spring_web::extractor::Component;
-use spring_web::post;
+use spring_web::{post, post_api};
 
 #[log(module = "认证管理", action = "用户登录", biz_type = Auth, save_params = false)]
 #[sa_ignore]
-#[post("/auth/login")]
+#[post_api("/auth/login")]
 pub async fn login(
     Component(svc): Component<AuthService>,
     ClientIp(client_ip): ClientIp,

@@ -1,12 +1,12 @@
 use schemars::JsonSchema;
 use sea_orm::Set;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use validator::Validate;
 
 use crate::entity::sys_user::{self, Gender};
 
 /// 修改个人密码请求参数
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangePasswordDto {
     /// 当前密码
@@ -19,7 +19,7 @@ pub struct ChangePasswordDto {
 }
 
 /// 更新个人信息请求参数
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProfileDto {
     /// 昵称

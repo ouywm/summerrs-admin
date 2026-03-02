@@ -6,7 +6,7 @@ use spring_web::axum::{self, Json};
 const SUCCESS_CODE: i32 = 200;
 
 /// 统一成功响应包装，始终返回 {"code": ..., "msg": "...", "data": ...}
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ApiResponse<T: Serialize> {
     pub code: i32,
     pub msg: String,
@@ -74,6 +74,50 @@ impl ApiResponse<()> {
 impl<T: Serialize> IntoResponse for ApiResponse<T> {
     fn into_response(self) -> axum::response::Response {
         Json(self).into_response()
+    }
+}
+
+/// 为 aide OpenAPI 文档生成提供支持
+impl<T: Serialize + schemars::JsonSchema> spring_web::aide::OperationOutput for ApiResponse<T> {
+    type Inner = Self;
+
+    fn operation_response(
+        ctx: &mut spring_web::aide::generate::GenContext,
+        _operation: &mut spring_web::aide::openapi::Operation,
+    ) -> Option<spring_web::aide::openapi::Response> {
+        let json_schema = ctx.schema.subschema_for::<Self>();
+        let resolved = ctx.resolve_schema(&json_schema);
+
+        Some(spring_web::aide::openapi::Response {
+            description: resolved
+                .get("description")
+                .and_then(|d| d.as_str())
+                .map(String::from)
+                .unwrap_or_default(),
+            content: indexmap::IndexMap::from_iter([(
+                "application/json".into(),
+                spring_web::aide::openapi::MediaType {
+                    schema: Some(spring_web::aide::openapi::SchemaObject {
+                        json_schema,
+                        example: None,
+                        external_docs: None,
+                    }),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        })
+    }
+
+    fn inferred_responses(
+        ctx: &mut spring_web::aide::generate::GenContext,
+        operation: &mut spring_web::aide::openapi::Operation,
+    ) -> Vec<(Option<spring_web::aide::openapi::StatusCode>, spring_web::aide::openapi::Response)> {
+        if let Some(res) = Self::operation_response(ctx, operation) {
+            vec![(Some(spring_web::aide::openapi::StatusCode::Code(200)), res)]
+        } else {
+            vec![]
+        }
     }
 }
 

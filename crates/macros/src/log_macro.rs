@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, ItemFn, LitBool, LitStr, ReturnType, Token};
+use syn::{FnArg, Ident, ItemFn, LitBool, LitStr, Pat, ReturnType, Token};
 
 /// 操作类型枚举，对应数据库 business_type 字段
 ///
@@ -140,6 +140,34 @@ impl Parse for LogArgs {
 }
 
 
+/// 从函数参数列表中查找 `Json(xxx)` 或 `ValidatedJson(xxx)` 模式，返回内部变量名 `xxx`
+///
+/// 匹配 `Json(dto): Json<T>` 和 `ValidatedJson(dto): ValidatedJson<T>` 两种提取器。
+/// 仅匹配路径末段为 `Json` 或 `ValidatedJson` 的 TupleStruct 模式。
+fn find_json_body_ident(inputs: &syn::punctuated::Punctuated<FnArg, Token![,]>) -> Option<Ident> {
+    for arg in inputs {
+        let FnArg::Typed(pat_type) = arg else {
+            continue;
+        };
+        let Pat::TupleStruct(tuple_struct) = pat_type.pat.as_ref() else {
+            continue;
+        };
+        // 检查路径末段是否为 Json 或 ValidatedJson
+        let Some(last_seg) = tuple_struct.path.segments.last() else {
+            continue;
+        };
+        let name = last_seg.ident.to_string();
+        if name != "Json" && name != "ValidatedJson" {
+            continue;
+        }
+        // 提取括号内第一个元素的标识符
+        if let Some(Pat::Ident(pat_ident)) = tuple_struct.elems.first() {
+            return Some(pat_ident.ident.clone());
+        }
+    }
+    None
+}
+
 /// 宏展开核心逻辑
 ///
 /// 将 `#[log(...)]` 标注的 handler 函数转换为带有操作日志记录的函数。
@@ -187,11 +215,39 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
         ReturnType::Type(_, ty) => quote! { #ty },
     };
 
-    // 6. 根据 save_params 生成请求参数捕获代码
+    // 6. 查找 Json/ValidatedJson 请求体参数
+    let json_body_ident = find_json_body_ident(original_inputs);
+
+    // 7. 根据 save_params 生成请求参数捕获代码
+    //    - 仅有 query：记录为 String
+    //    - 仅有 body：序列化 DTO 为 JSON
+    //    - 两者都有：合并为 {"query": "...", "body": {...}}
     let params_capture = if save_params {
-        quote! {
-            let __log_request_params: Option<serde_json::Value> = __log_query
-                .map(|q| serde_json::Value::String(q));
+        match json_body_ident {
+            Some(body_ident) => {
+                // 有 Json body，需要序列化 DTO（要求 T: Serialize）
+                quote! {
+                    let __log_body_value: Option<serde_json::Value> =
+                        serde_json::to_value(&#body_ident).ok();
+
+                    let __log_request_params: Option<serde_json::Value> = match (__log_query, __log_body_value) {
+                        (Some(q), Some(b)) => Some(serde_json::json!({
+                            "query": q,
+                            "body": b,
+                        })),
+                        (None, Some(b)) => Some(b),
+                        (Some(q), None) => Some(serde_json::Value::String(q)),
+                        (None, None) => None,
+                    };
+                }
+            }
+            None => {
+                // 没有 Json body，仅记录 query string
+                quote! {
+                    let __log_request_params: Option<serde_json::Value> = __log_query
+                        .map(|q| serde_json::Value::String(q));
+                }
+            }
         }
     } else {
         quote! {
@@ -199,7 +255,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
-    // 7. 根据 save_response 生成响应捕获代码（匹配 catch_unwind 三态结果）
+    // 8. 根据 save_response 生成响应捕获代码（匹配 catch_unwind 三态结果）
     //    - Ok(Ok(resp))：成功，序列化响应体
     //    - Ok(Err(e))：业务失败，构造 RFC 7807 ProblemDetails 风格 JSON
     //    - Err(panic)：异常，构造 status=500 的 ProblemDetails 风格 JSON
@@ -229,7 +285,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
-    // 8. 生成转换后的函数（仅注入单一 OperationLogContext 提取器）
+    // 9. 生成转换后的函数（仅注入单一 OperationLogContext 提取器）
     quote! {
         #(#attrs)*
         #vis #asyncness fn #fn_name #generics(

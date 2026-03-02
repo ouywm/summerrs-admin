@@ -1,7 +1,7 @@
 use crate::entity::sys_menu::{self, MenuType};
 use schemars::JsonSchema;
 use sea_orm::Set;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use validator::Validate;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -15,7 +15,7 @@ pub struct MenuQueryDto {
 }
 
 /// 创建菜单 DTO（menu_type = 1）
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateMenuDto {
     pub parent_id: Option<i64>,
@@ -81,7 +81,7 @@ impl From<CreateMenuDto> for sys_menu::ActiveModel {
 }
 
 /// 创建按钮 DTO（menu_type = 2）
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateButtonDto {
     #[validate(range(min = 1, message = "父菜单ID必须大于0"))]
@@ -126,7 +126,7 @@ impl From<CreateButtonDto> for sys_menu::ActiveModel {
 }
 
 /// 更新菜单 DTO
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateMenuDto {
     pub parent_id: Option<i64>,
@@ -161,7 +161,7 @@ pub struct UpdateMenuDto {
 }
 
 /// 更新按钮 DTO
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateButtonDto {
     pub parent_id: Option<i64>,

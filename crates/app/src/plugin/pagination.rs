@@ -14,6 +14,9 @@ pub struct Pagination {
     pub page: u64,
     #[serde(default = "default_size")]
     pub size: u64,
+    /// 是否为 1-based 分页（内部使用，不序列化到响应）
+    #[serde(skip)]
+    pub one_indexed: bool,
 }
 
 fn default_page() -> u64 {
@@ -100,7 +103,7 @@ mod web {
                 pagination.page.unwrap_or(0)
             };
 
-            Ok(Pagination { page, size })
+            Ok(Pagination { page, size, one_indexed: config.one_indexed })
         }
     }
 
@@ -142,10 +145,16 @@ pub struct Page<T> {
 
 impl<T> Page<T> {
     pub fn new(content: Vec<T>, pagination: &Pagination, total: u64) -> Self {
+        // 返回给前端时，如果是 one_indexed 模式，将 0-based page 转回 1-based
+        let page = if pagination.one_indexed {
+            pagination.page + 1
+        } else {
+            pagination.page
+        };
         Self {
             content,
             size: pagination.size,
-            page: pagination.page,
+            page,
             total_elements: total,
             total_pages: Self::total_pages(total, pagination.size),
         }

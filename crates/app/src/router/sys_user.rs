@@ -1,19 +1,18 @@
 use common::error::ApiResult;
-use common::extractor::ValidatedJson;
+use common::extractor::{LoginIdExtractor, ValidatedJson};
 use common::response::ApiResponse;
 use macros::log;
 use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
-use spring_sa_token::LoginIdExtractor;
 use spring_web::axum::extract::{Path, Query};
 use spring_web::extractor::Component;
-use spring_web::{delete, get, post, put};
+use spring_web::{delete, get, get_api, post, put};
 
 use crate::plugin::pagination::{Page, Pagination};
 use crate::service::sys_user_service::SysUserService;
 
 #[log(module = "用户管理", action = "获取用户信息", biz_type = Query)]
-#[get("/user/info")]
+#[get_api("/user/info")]
 pub async fn get_user_info(
     LoginIdExtractor(login_id): LoginIdExtractor,
     Component(svc): Component<SysUserService>,
