@@ -56,3 +56,6 @@ is_concurrent = true
 is_share = true
 token_style = "Jwt"
 jwt_secret_key = "sfdjjlkasdfuoifwel,./rwe,rweopdsfijlkasjdf"
+
+[log-batch]
+batch_size = 100

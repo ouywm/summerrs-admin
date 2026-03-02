@@ -96,4 +96,8 @@ impl Plugin for Ip2RegionPlugin {
 
         app.add_component(Ip2RegionSearcher(Arc::new(Ip2RegionInner { ipv4, ipv6 })));
     }
+
+    fn name(&self) -> &str {
+        "ip2region"
+    }
 }

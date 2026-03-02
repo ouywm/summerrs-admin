@@ -1,0 +1,89 @@
+//! 通用后台任务队列插件（kanal 版本）
+//!
+//! 基于 `kanal` MPMC 有界通道 + 多 worker 实现。
+//! kanal 在提交延迟上比 flume 快 5x，适合对延迟敏感的高吞吐场景。
+//!
+//! 启用方式：将此文件重命名为 background_task.rs，替换 flume 版本。
+//! 同时在 app/Cargo.toml 中将 kanal 从 dev-dependencies 移到 dependencies。
+
+use std::future::Future;
+use std::pin::Pin;
+
+use serde::Deserialize;
+use spring::app::AppBuilder;
+use spring::async_trait;
+use spring::config::{ConfigRegistry, Configurable};
+use spring::plugin::{MutableComponentRegistry, Plugin};
+
+/// 后台任务类型
+type BoxTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+#[derive(Debug, Deserialize, Configurable)]
+#[config_prefix = "background-task"]
+pub struct BackgroundTaskConfig {
+    #[serde(default = "default_capacity")]
+    pub capacity: usize,
+    #[serde(default = "default_workers")]
+    pub workers: usize,
+}
+
+fn default_capacity() -> usize {
+    4096
+}
+
+fn default_workers() -> usize {
+    4
+}
+
+#[derive(Clone)]
+pub struct BackgroundTaskQueue {
+    sender: kanal::AsyncSender<BoxTask>,
+}
+
+impl BackgroundTaskQueue {
+    pub fn spawn<F>(&self, task: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        match self.sender.try_send(Box::pin(task)) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!("后台任务队列已满，任务被丢弃");
+            }
+            Err(_) => {
+                tracing::error!("后台任务队列已关闭，任务被丢弃");
+            }
+        }
+    }
+}
+
+pub struct BackgroundTaskPlugin;
+
+#[async_trait]
+impl Plugin for BackgroundTaskPlugin {
+    async fn build(&self, app: &mut AppBuilder) {
+        let (capacity, workers) = app
+            .get_config::<BackgroundTaskConfig>()
+            .map(|c| (c.capacity, c.workers))
+            .unwrap_or_else(|_| (default_capacity(), default_workers()));
+
+        let (tx, rx) = kanal::bounded_async::<BoxTask>(capacity);
+
+        for i in 0..workers {
+            let rx = rx.clone();
+            tokio::spawn(async move {
+                while let Ok(task) = rx.recv().await {
+                    task.await;
+                }
+                tracing::info!("后台任务队列 worker-{} 已退出", i);
+            });
+        }
+
+        app.add_component(BackgroundTaskQueue { sender: tx });
+        tracing::info!(
+            "后台任务队列已启动 (kanal): {} workers, 容量 {}",
+            workers,
+            capacity
+        );
+    }
+}

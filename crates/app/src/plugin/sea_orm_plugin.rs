@@ -104,6 +104,10 @@ impl Plugin for SeaOrmPlugin {
 
         app.add_component(conn);
     }
+
+    fn name(&self) -> &str {
+        "sea-orm"
+    }
 }
 
 impl SeaOrmPlugin {

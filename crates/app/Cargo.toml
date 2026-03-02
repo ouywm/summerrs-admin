@@ -9,6 +9,7 @@ axum-client-ip = { workspace = true, features = ["connect-info", "serde", "forwa
 axum-valid = { workspace = true }
 chrono = { workspace = true }
 common = { workspace = true }
+flume = { workspace = true }
 futures = { workspace = true }
 macros = { workspace = true }
 model = { workspace = true }
@@ -31,3 +32,12 @@ tracing = { workspace = true }
 validator = { workspace = true }
 woothee = { workspace = true }
 ip2region = { workspace = true }
+rustc-hash = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+kanal = { workspace = true }
+
+[[bench]]
+name = "task_queue"
+harness = false

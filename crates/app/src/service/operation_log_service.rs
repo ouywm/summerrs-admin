@@ -1,9 +1,11 @@
+use crate::plugin::background_task::BackgroundTaskQueue;
 use crate::plugin::ip2region_plugin::Ip2RegionSearcher;
+use crate::plugin::log_batch_collector::OperationLogCollector;
 use crate::plugin::sea_orm_plugin::DbConn;
 use model::dto::operation_log::CreateOperationLogDto;
 use model::entity::sys_operation_log;
 use sea_orm::prelude::IpNetwork;
-use sea_orm::{ActiveModelTrait, Set};
+use sea_orm::Set;
 use spring::plugin::Service;
 use spring_sa_token::StpUtil;
 use spring_web::axum::extract::FromRequestParts;
@@ -17,6 +19,10 @@ pub struct OperationLogService {
     db: DbConn,
     #[inject(component)]
     ip_searcher: Ip2RegionSearcher,
+    #[inject(component)]
+    task_queue: BackgroundTaskQueue,
+    #[inject(component)]
+    op_collector: OperationLogCollector,
 }
 
 /// 操作日志上下文提取器
@@ -87,12 +93,12 @@ impl OperationLogService {
             .map(String::from)
     }
 
-    /// 异步记录操作日志（不阻塞响应）
+    /// 异步记录操作日志（通过后台任务队列预处理，批量收集器写入）
     pub fn record_async(&self, dto: CreateOperationLogDto) {
-        let db = self.db.clone();
         let ip_location = self.ip_searcher.search_location(&dto.client_ip);
+        let op_collector = self.op_collector.clone();
 
-        tokio::spawn(async move {
+        self.task_queue.spawn(async move {
             // 通过 login_id 获取操作人昵称
             let user_name = if dto.user_id > 0 {
                 Self::get_user_name(&dto.user_id.to_string()).await
@@ -121,12 +127,12 @@ impl OperationLogService {
                 status: Set(dto.status),
                 error_msg: Set(dto.error_msg),
                 duration: Set(dto.duration),
+                // insert_many 不触发 before_save，手动设置时间戳
+                create_time: Set(chrono::Local::now().naive_local()),
                 ..Default::default()
             };
 
-            if let Err(e) = model.insert(&db).await {
-                tracing::error!("记录操作日志失败: {}", e);
-            }
+            op_collector.push(model);
         });
     }
 }

@@ -2,7 +2,9 @@ mod plugin;
 mod router;
 mod service;
 
+use crate::plugin::background_task::BackgroundTaskPlugin;
 use crate::plugin::ip2region_plugin::Ip2RegionPlugin;
+use crate::plugin::log_batch_collector::LogBatchCollectorPlugin;
 use crate::plugin::sea_orm_plugin::SeaOrmPlugin;
 use axum_client_ip::ClientIpSource;
 use spring::auto_config;
@@ -28,6 +30,8 @@ async fn main() {
         .add_plugin(JobPlugin)
         .add_plugin(SaTokenPlugin)
         .add_plugin(Ip2RegionPlugin)
+        .add_plugin(BackgroundTaskPlugin)
+        .add_plugin(LogBatchCollectorPlugin)
         .sa_token_auth(PathAuthBuilder::new().include("/**").exclude("/auth/login"))
         .add_router_layer(|router| {
             router
