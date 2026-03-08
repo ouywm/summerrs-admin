@@ -10,7 +10,6 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
 };
 use summer::plugin::Service;
-use summer_sa_token::StpUtil;
 
 use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
 use crate::plugin::sea_orm::DbConn;
@@ -22,24 +21,6 @@ pub struct SysDictService {
 }
 
 impl SysDictService {
-    /// 从 JWT payload 获取操作人昵称
-    async fn get_operator_name(&self, login_id: &str) -> ApiResult<String> {
-        let token = StpUtil::get_token_by_login_id(login_id)
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-        let extra = StpUtil::get_extra_data(&token)
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-        let name = extra
-            .and_then(|v| {
-                v.get("nick_name")
-                    .and_then(|n| n.as_str())
-                    .map(String::from)
-            })
-            .ok_or_else(|| ApiErrors::Internal(anyhow::anyhow!("无法获取操作人昵称")))?;
-        Ok(name)
-    }
-
     /// 字典类型列表（分页+筛选）
     pub async fn list_dict_types(
         &self,
@@ -57,9 +38,7 @@ impl SysDictService {
     }
 
     /// 创建字典类型
-    pub async fn create_dict_type(&self, dto: CreateDictTypeDto, login_id: &str) -> ApiResult<()> {
-        let operator = self.get_operator_name(login_id).await?;
-
+    pub async fn create_dict_type(&self, dto: CreateDictTypeDto, operator: &str) -> ApiResult<()> {
         // 检查字典类型编码是否已存在
         let existing = sys_dict_type::Entity::find()
             .filter(sys_dict_type::Column::DictType.eq(&dto.dict_type))
@@ -74,7 +53,7 @@ impl SysDictService {
             )));
         }
 
-        let dict_type = dto.into_active_model(operator);
+        let dict_type = dto.into_active_model(operator.to_string());
         dict_type
             .insert(&self.db)
             .await
@@ -87,10 +66,8 @@ impl SysDictService {
         &self,
         id: i64,
         dto: UpdateDictTypeDto,
-        login_id: &str,
+        operator: &str,
     ) -> ApiResult<()> {
-        let operator = self.get_operator_name(login_id).await?;
-
         let dict_type = sys_dict_type::Entity::find_by_id(id)
             .one(&self.db)
             .await
@@ -105,7 +82,7 @@ impl SysDictService {
         }
 
         let mut active: sys_dict_type::ActiveModel = dict_type.into();
-        dto.apply_to(&mut active, &operator);
+        dto.apply_to(&mut active, operator);
         active.update(&self.db).await.context("更新字典类型失败")?;
         Ok(())
     }
@@ -208,9 +185,7 @@ impl SysDictService {
     }
 
     /// 创建字典数据
-    pub async fn create_dict_data(&self, dto: CreateDictDataDto, login_id: &str) -> ApiResult<()> {
-        let operator = self.get_operator_name(login_id).await?;
-
+    pub async fn create_dict_data(&self, dto: CreateDictDataDto, operator: &str) -> ApiResult<()> {
         // 检查字典类型是否存在
         let dict_type_exists = sys_dict_type::Entity::find()
             .filter(sys_dict_type::Column::DictType.eq(&dto.dict_type))
@@ -240,7 +215,7 @@ impl SysDictService {
             )));
         }
 
-        let dict_data = dto.into_active_model(operator);
+        let dict_data = dto.into_active_model(operator.to_string());
         dict_data
             .insert(&self.db)
             .await
@@ -253,10 +228,8 @@ impl SysDictService {
         &self,
         id: i64,
         dto: UpdateDictDataDto,
-        login_id: &str,
+        operator: &str,
     ) -> ApiResult<()> {
-        let operator = self.get_operator_name(login_id).await?;
-
         let dict_data = sys_dict_data::Entity::find_by_id(id)
             .one(&self.db)
             .await
@@ -271,7 +244,7 @@ impl SysDictService {
         }
 
         let mut active: sys_dict_data::ActiveModel = dict_data.into();
-        dto.apply_to(&mut active, &operator);
+        dto.apply_to(&mut active, operator);
         active.update(&self.db).await.context("更新字典数据失败")?;
         Ok(())
     }

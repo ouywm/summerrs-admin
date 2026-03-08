@@ -1,9 +1,10 @@
 use common::error::ApiResult;
-use common::extractor::{LoginIdExtractor, Path, ValidatedJson};
-use common::response::ApiResponse;
+use common::extractor::{Path, ValidatedJson};
 use macros::log;
 use model::dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto};
 use model::vo::sys_menu::MenuTreeVo;
+use common::response::Json;
+use summer_auth::AdminUser;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
@@ -13,11 +14,11 @@ use crate::service::sys_menu_service::SysMenuService;
 #[log(module = "菜单管理", action = "获取菜单树", biz_type = Query)]
 #[get_api("/v3/system/menus")]
 pub async fn get_menu_tree(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, .. }: AdminUser,
     Component(svc): Component<SysMenuService>,
-) -> ApiResult<ApiResponse<Vec<MenuTreeVo>>> {
+) -> ApiResult<Json<Vec<MenuTreeVo>>> {
     let vo = svc.get_menu_tree(&login_id).await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 /// 获取所有菜单列表（管理用）
@@ -25,9 +26,9 @@ pub async fn get_menu_tree(
 #[get_api("/system/menu/list")]
 pub async fn list_menus(
     Component(svc): Component<SysMenuService>,
-) -> ApiResult<ApiResponse<Vec<MenuTreeVo>>> {
+) -> ApiResult<Json<Vec<MenuTreeVo>>> {
     let vo = svc.list_menus().await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 /// 创建菜单
@@ -36,9 +37,9 @@ pub async fn list_menus(
 pub async fn create_menu(
     Component(svc): Component<SysMenuService>,
     ValidatedJson(dto): ValidatedJson<CreateMenuDto>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.create_menu(dto).await?;
-    Ok(ApiResponse::empty_with_msg("创建成功"))
+    Ok(())
 }
 
 /// 创建按钮
@@ -47,9 +48,9 @@ pub async fn create_menu(
 pub async fn create_button(
     Component(svc): Component<SysMenuService>,
     ValidatedJson(dto): ValidatedJson<CreateButtonDto>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.create_button(dto).await?;
-    Ok(ApiResponse::empty_with_msg("创建成功"))
+    Ok(())
 }
 
 /// 更新菜单
@@ -59,9 +60,9 @@ pub async fn update_menu(
     Component(svc): Component<SysMenuService>,
     Path(id): Path<i64>,
     ValidatedJson(dto): ValidatedJson<UpdateMenuDto>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.update_menu(id, dto).await?;
-    Ok(ApiResponse::empty_with_msg("更新成功"))
+    Ok(())
 }
 
 /// 更新按钮
@@ -71,9 +72,9 @@ pub async fn update_button(
     Component(svc): Component<SysMenuService>,
     Path(id): Path<i64>,
     ValidatedJson(dto): ValidatedJson<UpdateButtonDto>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.update_button(id, dto).await?;
-    Ok(ApiResponse::empty_with_msg("更新成功"))
+    Ok(())
 }
 
 /// 删除菜单/按钮
@@ -82,7 +83,7 @@ pub async fn update_button(
 pub async fn delete_menu(
     Component(svc): Component<SysMenuService>,
     Path(id): Path<i64>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.delete_menu(id).await?;
-    Ok(ApiResponse::empty_with_msg("删除成功"))
+    Ok(())
 }

@@ -23,6 +23,7 @@ regex = { workspace = true }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+summer-auth = { workspace = true }
 summer-web = { workspace = true, features = ["openapi", "multipart"] }
 thiserror = { workspace = true }
 url = { workspace = true }

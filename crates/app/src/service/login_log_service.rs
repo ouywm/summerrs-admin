@@ -11,6 +11,7 @@ use model::entity::sys_login_log;
 use model::vo::login_log::LoginLogVo;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use summer::plugin::Service;
+use summer_auth::LoginId;
 use std::net::IpAddr;
 
 #[derive(Clone, Service)]
@@ -81,13 +82,11 @@ impl LoginLogService {
     /// 获取用户登录日志
     pub async fn get_user_login_logs(
         &self,
-        login_id: &str,
+        login_id: &LoginId,
         query: LoginLogQueryDto,
         pagination: Pagination,
     ) -> ApiResult<Page<LoginLogVo>> {
-        let user_id: i64 = login_id
-            .parse()
-            .map_err(|_| common::error::ApiErrors::BadRequest("无效的用户ID".to_string()))?;
+        let user_id = login_id.user_id;
 
         let page = sys_login_log::Entity::find()
             .filter(sys_login_log::Column::UserId.eq(user_id))

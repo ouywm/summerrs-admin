@@ -15,7 +15,7 @@ use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
 use summer_redis::RedisPlugin;
-use summer_sa_token::{PathAuthBuilder, SaTokenAuthConfigurator, SaTokenPlugin};
+use summer_auth::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin, UserType};
 use summer_web::axum::body::Body;
 use summer_web::axum::extract::DefaultBodyLimit;
 use summer_web::axum::http;
@@ -33,12 +33,12 @@ async fn main() {
         .add_plugin(RedisPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
-        .add_plugin(SaTokenPlugin)
+        .add_plugin(SummerAuthPlugin)
         .add_plugin(Ip2RegionPlugin)
         .add_plugin(S3Plugin)
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
-        .sa_token_configure(PathAuthBuilder::new().include("/**").exclude("/auth/login"))
+        .auth_configure(PathAuthBuilder::new().include("/**").exclude_all(UserType::all_login_paths()).exclude("/auth/refresh"))
         .add_router_layer(|router| {
             router
                 .layer(DefaultBodyLimit::max(1024 * 1024 * 1024)) // 1GB
@@ -51,6 +51,8 @@ async fn main() {
 
 /// 全局 panic 处理：将 panic 转为 ProblemDetails (RFC 7807) 格式响应
 fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> http::Response<Body> {
+    use summer_web::axum::response::IntoResponse;
+
     let detail = if let Some(s) = err.downcast_ref::<String>() {
         s.clone()
     } else if let Some(s) = err.downcast_ref::<&str>() {
@@ -61,16 +63,9 @@ fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> http::Response<
 
     tracing::error!("Service panicked: {detail}");
 
-    let body = serde_json::json!({
-        "type": "about:blank",
-        "title": "Internal Server Error",
-        "status": 500,
-        "detail": detail
-    });
-
-    http::Response::builder()
-        .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-        .header("content-type", "application/problem+json")
-        .body(Body::from(body.to_string()))
-        .unwrap()
+    summer_web::problem_details::ProblemDetails::new(
+        "internal-error", "Internal Server Error", 500,
+    )
+    .with_detail(detail)
+    .into_response()
 }

@@ -1,9 +1,9 @@
 use common::error::ApiResult;
 use common::extractor::Query;
-use common::response::ApiResponse;
 use macros::log;
 use model::dto::login_log::LoginLogQueryDto;
 use model::vo::login_log::LoginLogVo;
+use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::get_api;
 
@@ -16,7 +16,7 @@ pub async fn list_login_logs(
     Component(svc): Component<LoginLogService>,
     Query(query): Query<LoginLogQueryDto>,
     pagination: Pagination,
-) -> ApiResult<ApiResponse<Page<LoginLogVo>>> {
+) -> ApiResult<Json<Page<LoginLogVo>>> {
     let page = svc.get_all_login_logs(query, pagination).await?;
-    Ok(ApiResponse::ok(page))
+    Ok(Json(page))
 }

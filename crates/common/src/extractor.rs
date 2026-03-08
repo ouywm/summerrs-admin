@@ -2,7 +2,6 @@ use serde::de::DeserializeOwned;
 use summer_web::axum::Json;
 use summer_web::axum::extract::{FromRequest, FromRequestParts, Request};
 use summer_web::axum::http::request::Parts;
-use summer_web::axum::response::IntoResponse;
 use validator::Validate;
 
 use crate::error::ApiErrors;
@@ -155,35 +154,6 @@ impl<T: schemars::JsonSchema> summer_web::aide::OperationInput for ValidatedJson
         );
     }
 }
-
-// ─── LoginIdExtractor ────────────────────────────────────────────────────────
-
-/// 登录用户 ID 提取器
-///
-/// 从请求 Extensions 中提取 sa-token 写入的 login_id（String）。
-/// 未登录时返回 401。
-pub struct LoginIdExtractor(pub String);
-
-impl<S: Send + Sync> FromRequestParts<S> for LoginIdExtractor {
-    type Rejection = summer_web::axum::response::Response;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        match parts.extensions.get::<String>() {
-            Some(login_id) => Ok(LoginIdExtractor(login_id.clone())),
-            None => Err((
-                summer_web::axum::http::StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "code": 401,
-                    "message": "未登录或登录已过期"
-                })),
-            )
-                .into_response()),
-        }
-    }
-}
-
-/// LoginIdExtractor 对 OpenAPI 文档透明（不生成参数描述）
-impl summer_web::aide::OperationInput for LoginIdExtractor {}
 
 // ─── ClientIp ────────────────────────────────────────────────────────────────
 

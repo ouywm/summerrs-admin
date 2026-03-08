@@ -1,3 +1,7 @@
+pub mod biz_role;
+pub mod biz_user;
+pub mod biz_user_role;
+pub mod customer;
 pub mod sys_dict_data;
 pub mod sys_dict_type;
 pub mod sys_file;

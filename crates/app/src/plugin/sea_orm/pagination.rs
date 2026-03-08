@@ -1,4 +1,3 @@
-use common::response::PageResponse;
 use schemars::JsonSchema;
 use sea_orm::{
     ConnectionTrait, EntityTrait, FromQueryResult, PaginatorTrait, Select, Selector, SelectorTrait,
@@ -212,20 +211,6 @@ impl<T> Page<T> {
     #[inline]
     pub fn is_last(&self) -> bool {
         self.page + 1 >= self.total_pages
-    }
-}
-
-impl<T> From<Page<T>> for PageResponse<T>
-where
-    T: Serialize,
-{
-    fn from(page: Page<T>) -> Self {
-        Self {
-            records: page.content,
-            current: page.page,
-            size: page.size,
-            total: page.total_elements,
-        }
     }
 }
 

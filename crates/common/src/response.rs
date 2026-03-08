@@ -1,112 +1,79 @@
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use summer_web::axum::extract::{FromRequest, Request};
 use summer_web::axum::response::IntoResponse;
-use summer_web::axum::{self, Json};
 
-/// 业务成功码
-const SUCCESS_CODE: i32 = 200;
+/// JSON 包装器 — 替代 `axum::Json<T>`，同时用于请求提取和响应返回。
+///
+/// 与 `axum::Json<T>` 的区别：额外实现了 `Serialize`（`#[serde(transparent)]`），
+/// 使得 `#[log]` 宏能够直接序列化成功响应体存入操作日志。
+///
+/// # 用法
+///
+/// ```rust,ignore
+/// use common::response::Json;
+///
+/// // 作为响应
+/// async fn get_user() -> ApiResult<Json<UserVo>> {
+///     Ok(Json(vo))
+/// }
+///
+/// // 作为请求体提取器
+/// async fn create_user(Json(dto): Json<CreateDto>) -> ApiResult<()> {
+///     Ok(())
+/// }
+/// ```
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct Json<T>(pub T);
 
-/// 统一成功响应包装，始终返回 {"code": ..., "msg": "...", "data": ...}
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct ApiResponse<T: Serialize> {
-    pub code: i32,
-    pub msg: String,
-    pub data: T,
-}
+// ─── 请求提取器 ──────────────────────────────────────────────────────────────
 
-impl<T: Serialize> ApiResponse<T> {
-    /// 成功 → {"code": 200, "msg": "", "data": ...}
-    pub fn ok(data: T) -> Self {
-        Self {
-            code: SUCCESS_CODE,
-            msg: String::new(),
-            data,
-        }
-    }
+impl<T, S> FromRequest<S> for Json<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = <summer_web::axum::Json<T> as FromRequest<S>>::Rejection;
 
-    /// 成功 + 提示消息 → {"code": 200, "msg": "xxx", "data": ...}
-    pub fn ok_with_msg(data: T, msg: impl Into<String>) -> Self {
-        Self {
-            code: SUCCESS_CODE,
-            msg: msg.into(),
-            data,
-        }
-    }
-
-    /// 业务警告 → {"code": 1001, "msg": "xxx", "data": ...}
-    pub fn warn(code: i32, data: T, msg: impl Into<String>) -> Self {
-        Self {
-            code,
-            msg: msg.into(),
-            data,
-        }
-    }
-
-    /// 业务警告（无消息） → {"code": 1001, "msg": "", "data": ...}
-    pub fn warn_code(code: i32, data: T) -> Self {
-        Self {
-            code,
-            msg: String::new(),
-            data,
-        }
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let summer_web::axum::Json(val) =
+            summer_web::axum::Json::<T>::from_request(req, state).await?;
+        Ok(Json(val))
     }
 }
 
-impl ApiResponse<()> {
-    /// 成功（无数据） → {"code": 200, "msg": "", "data": null}
-    pub fn empty() -> Self {
-        Self {
-            code: SUCCESS_CODE,
-            msg: String::new(),
-            data: (),
-        }
-    }
-
-    /// 成功（无数据）+ 提示消息 → {"code": 200, "msg": "xxx", "data": null}
-    pub fn empty_with_msg(msg: impl Into<String>) -> Self {
-        Self {
-            code: SUCCESS_CODE,
-            msg: msg.into(),
-            data: (),
-        }
+/// 请求体 OpenAPI 文档 — 委托给 `axum::Json<T>`
+impl<T: schemars::JsonSchema> summer_web::aide::OperationInput for Json<T> {
+    fn operation_input(
+        ctx: &mut summer_web::aide::generate::GenContext,
+        operation: &mut summer_web::aide::openapi::Operation,
+    ) {
+        <summer_web::axum::Json<T> as summer_web::aide::OperationInput>::operation_input(
+            ctx, operation,
+        );
     }
 }
 
-impl<T: Serialize> IntoResponse for ApiResponse<T> {
-    fn into_response(self) -> axum::response::Response {
-        Json(self).into_response()
+// ─── 响应返回 ────────────────────────────────────────────────────────────────
+
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> summer_web::axum::response::Response {
+        summer_web::axum::Json(self.0).into_response()
     }
 }
 
-/// 为 aide OpenAPI 文档生成提供支持
-impl<T: Serialize + schemars::JsonSchema> summer_web::aide::OperationOutput for ApiResponse<T> {
-    type Inner = Self;
+/// 响应体 OpenAPI 文档 — 委托给 `axum::Json<T>`
+impl<T: Serialize + schemars::JsonSchema> summer_web::aide::OperationOutput for Json<T> {
+    type Inner = T;
 
     fn operation_response(
         ctx: &mut summer_web::aide::generate::GenContext,
-        _operation: &mut summer_web::aide::openapi::Operation,
+        operation: &mut summer_web::aide::openapi::Operation,
     ) -> Option<summer_web::aide::openapi::Response> {
-        let json_schema = ctx.schema.subschema_for::<Self>();
-        let resolved = ctx.resolve_schema(&json_schema);
-
-        Some(summer_web::aide::openapi::Response {
-            description: resolved
-                .get("description")
-                .and_then(|d| d.as_str())
-                .map(String::from)
-                .unwrap_or_default(),
-            content: indexmap::IndexMap::from_iter([(
-                "application/json".into(),
-                summer_web::aide::openapi::MediaType {
-                    schema: Some(summer_web::aide::openapi::SchemaObject {
-                        json_schema,
-                        example: None,
-                        external_docs: None,
-                    }),
-                    ..Default::default()
-                },
-            )]),
-            ..Default::default()
-        })
+        <summer_web::axum::Json<T> as summer_web::aide::OperationOutput>::operation_response(
+            ctx, operation,
+        )
     }
 
     fn inferred_responses(
@@ -116,44 +83,8 @@ impl<T: Serialize + schemars::JsonSchema> summer_web::aide::OperationOutput for 
         Option<summer_web::aide::openapi::StatusCode>,
         summer_web::aide::openapi::Response,
     )> {
-        if let Some(res) = Self::operation_response(ctx, operation) {
-            vec![(Some(summer_web::aide::openapi::StatusCode::Code(200)), res)]
-        } else {
-            vec![]
-        }
-    }
-}
-
-/// 分页响应，配合 ApiResponse 使用：ApiResponse<PageResponse<T>>
-///
-/// 输出格式：
-/// ```json
-/// {
-///   "code": 200,
-///   "msg": "",
-///   "data": {
-///     "records": [...],
-///     "current": 1,
-///     "size": 10,
-///     "total": 56
-///   }
-/// }
-/// ```
-#[derive(Debug, Serialize)]
-pub struct PageResponse<T: Serialize> {
-    pub records: Vec<T>,
-    pub current: u64,
-    pub size: u64,
-    pub total: u64,
-}
-
-impl<T: Serialize> PageResponse<T> {
-    pub fn new(records: Vec<T>, current: u64, size: u64, total: u64) -> Self {
-        Self {
-            records,
-            current,
-            size,
-            total,
-        }
+        <summer_web::axum::Json<T> as summer_web::aide::OperationOutput>::inferred_responses(
+            ctx, operation,
+        )
     }
 }

@@ -16,8 +16,7 @@ use sea_orm::{
     Set, TransactionTrait,
 };
 use summer::plugin::Service;
-
-use summer_sa_token::StpUtil;
+use summer_auth::LoginId;
 
 use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
 use crate::plugin::sea_orm::DbConn;
@@ -29,29 +28,9 @@ pub struct SysUserService {
 }
 
 impl SysUserService {
-    /// 从 JWT payload 获取操作人昵称
-    async fn get_operator_name(&self, login_id: &str) -> ApiResult<String> {
-        let token = StpUtil::get_token_by_login_id(login_id)
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-        let extra = StpUtil::get_extra_data(&token)
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-        let name = extra
-            .and_then(|v| {
-                v.get("nick_name")
-                    .and_then(|n| n.as_str())
-                    .map(String::from)
-            })
-            .ok_or_else(|| ApiErrors::Internal(anyhow::anyhow!("无法获取操作人昵称")))?;
-        Ok(name)
-    }
-
     /// 获取当前登录用户信息（含角色和按钮权限）
-    pub async fn get_user_info(&self, login_id: &str) -> ApiResult<UserInfoVo> {
-        let user_id: i64 = login_id
-            .parse()
-            .map_err(|_| ApiErrors::BadRequest("无效的用户ID".to_string()))?;
+    pub async fn get_user_info(&self, login_id: &LoginId) -> ApiResult<UserInfoVo> {
+        let user_id = login_id.user_id;
 
         let user = sys_user::Entity::find_by_id(user_id)
             .one(&self.db)
@@ -155,9 +134,9 @@ impl SysUserService {
     }
 
     /// 创建用户
-    pub async fn create_user(&self, dto: CreateUserDto, login_id: &str) -> ApiResult<()> {
+    pub async fn create_user(&self, dto: CreateUserDto, operator: &str) -> ApiResult<()> {
         let role_ids = dto.role_ids.clone();
-        let operator = self.get_operator_name(login_id).await?;
+        let operator = operator.to_string();
 
         self.db
             .transaction::<_, (), ApiErrors>(|txn| {
@@ -222,9 +201,9 @@ impl SysUserService {
     }
 
     /// 更新用户
-    pub async fn update_user(&self, id: i64, dto: UpdateUserDto, login_id: &str) -> ApiResult<()> {
+    pub async fn update_user(&self, id: i64, dto: UpdateUserDto, operator: &str) -> ApiResult<()> {
         let role_ids = dto.role_ids.clone();
-        let operator = self.get_operator_name(login_id).await?;
+        let operator = operator.to_string();
 
         self.db
             .transaction::<_, (), ApiErrors>(|txn| {
@@ -348,10 +327,8 @@ impl SysUserService {
     }
 
     /// 修改个人密码
-    pub async fn change_password(&self, login_id: &str, dto: ChangePasswordDto) -> ApiResult<()> {
-        let user_id: i64 = login_id
-            .parse()
-            .map_err(|_| ApiErrors::BadRequest("无效的用户ID".to_string()))?;
+    pub async fn change_password(&self, login_id: &LoginId, dto: ChangePasswordDto) -> ApiResult<()> {
+        let user_id = login_id.user_id;
 
         // 查询用户
         let user = sys_user::Entity::find_by_id(user_id)
@@ -381,12 +358,10 @@ impl SysUserService {
     /// 更新个人信息
     pub async fn update_profile(
         &self,
-        login_id: &str,
+        login_id: &LoginId,
         dto: UpdateProfileDto,
     ) -> ApiResult<UserProfileVo> {
-        let user_id: i64 = login_id
-            .parse()
-            .map_err(|_| ApiErrors::BadRequest("无效的用户ID".to_string()))?;
+        let user_id = login_id.user_id;
 
         // 查询用户
         let user = sys_user::Entity::find_by_id(user_id)

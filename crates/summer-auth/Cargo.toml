@@ -1,0 +1,33 @@
+[package]
+name = "summer-auth"
+description = "Authentication and authorization plugin for summer-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+summer = { workspace = true }
+summer-web = { workspace = true, features = ["openapi"], optional = true }
+summer-redis = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+chrono = { workspace = true }
+async-trait = "0.1"
+parking_lot = { workspace = true }
+schemars = { workspace = true, features = ["derive"] }
+tower-layer = { version = "0.3", optional = true }
+tower-service = { version = "0.3", optional = true }
+jsonwebtoken = { workspace = true }
+
+[features]
+default = ["memory", "web"]
+memory = []
+redis = ["summer-redis"]
+web = ["summer-web", "tower-layer", "tower-service"]
+openapi = ["summer-web/openapi"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -2,16 +2,20 @@ use anyhow::Context;
 use common::crypto::verify_password;
 use common::error::{ApiErrors, ApiResult};
 use common::user_agent::UserAgentInfo;
-use model::dto::auth::LoginDto;
+use model::dto::auth::{BizLoginDto, CustomerLoginDto, LoginDto};
 use model::entity::sys_login_log;
 use model::entity::sys_menu;
 use model::entity::sys_role;
 use model::entity::sys_user;
 use model::entity::sys_user_role;
-use model::vo::auth::LoginVo;
+use model::entity::{biz_role, biz_user, biz_user_role, customer};
+use model::vo::auth::{DeviceSessionVo, LoginVo};
 use sea_orm::{ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
 use summer::plugin::Service;
-use summer_sa_token::StpUtil;
+use summer_auth::{
+    AdminProfile, BusinessProfile, CustomerProfile, DeviceType, LoginId, LoginParams,
+    SessionManager, UserProfile,
+};
 use std::net::IpAddr;
 
 use crate::plugin::sea_orm::DbConn;
@@ -23,10 +27,13 @@ pub struct AuthService {
     db: DbConn,
     #[inject(component)]
     login_log_service: LoginLogService,
+    #[inject(component)]
+    auth: SessionManager,
 }
 
 impl AuthService {
-    pub async fn login(
+    /// Admin 登录（原 login 方法）
+    pub async fn admin_login(
         &self,
         dto: LoginDto,
         client_ip: IpAddr,
@@ -41,7 +48,6 @@ impl AuthService {
 
         // 用户不存在
         if user.is_none() {
-            // 异步记录失败日志
             self.login_log_service.record_login_async(
                 0,
                 dto.user_name.clone(),
@@ -94,18 +100,6 @@ impl AuthService {
             return Err(ApiErrors::Unauthorized("用户名或密码错误".to_string()));
         }
 
-        // 登录并获取 token（将用户名和昵称嵌入 JWT payload）
-        let login_id = user.id.to_string();
-        let token = StpUtil::login_with_extra(
-            &login_id,
-            serde_json::json!({
-                "user_name": &user.user_name,
-                "nick_name": &user.nick_name
-            }),
-        )
-        .await
-        .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-
         // 查询用户角色
         let roles: Vec<String> = sys_user_role::Entity::find()
             .filter(sys_user_role::Column::UserId.eq(user.id))
@@ -120,11 +114,23 @@ impl AuthService {
         // 查询用户权限（按钮权限标识）
         let permissions: Vec<String> = self.get_user_permissions(user.id).await?;
 
-        // 设置角色和权限到 sa-token
-        StpUtil::set_roles(&login_id, roles)
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-        StpUtil::set_permissions(&login_id, permissions)
+        // 登录并获取 TokenPair
+        let login_id = LoginId::admin(user.id);
+        let token_pair = self
+            .auth
+            .login(LoginParams {
+                login_id,
+                device: DeviceType::Web,
+                login_ip: client_ip.to_string(),
+                user_agent: ua_info.raw.clone(),
+                profile: UserProfile::Admin(AdminProfile {
+                    user_name: user.user_name.clone(),
+                    nick_name: user.nick_name.clone(),
+                    avatar: user.avatar.clone(),
+                    roles,
+                    permissions,
+                }),
+            })
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
 
@@ -139,13 +145,286 @@ impl AuthService {
         );
 
         Ok(LoginVo {
-            token: token.as_str().to_string(),
+            access_token: token_pair.access_token,
+            refresh_token: token_pair.refresh_token,
+            expires_in: token_pair.expires_in,
+        })
+    }
+
+    /// B 端登录
+    pub async fn biz_login(
+        &self,
+        dto: BizLoginDto,
+        client_ip: IpAddr,
+        ua_info: UserAgentInfo,
+    ) -> ApiResult<LoginVo> {
+        // 查询 B 端用户
+        let user = biz_user::Entity::find()
+            .filter(biz_user::Column::UserName.eq(&dto.user_name))
+            .one(&self.db)
+            .await
+            .context("查询B端用户失败")?;
+
+        if user.is_none() {
+            self.login_log_service.record_login_async(
+                0,
+                dto.user_name.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("用户不存在".to_string()),
+            );
+            return Err(ApiErrors::Unauthorized("用户名或密码错误".to_string()));
+        }
+
+        let user = user.unwrap();
+
+        // 验证状态
+        if user.status == biz_user::BizUserStatus::Cancelled {
+            self.login_log_service.record_login_async(
+                user.id,
+                user.user_name.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("账号已注销".to_string()),
+            );
+            return Err(ApiErrors::Forbidden("账号已注销".to_string()));
+        }
+        if user.status == biz_user::BizUserStatus::Disabled {
+            self.login_log_service.record_login_async(
+                user.id,
+                user.user_name.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("账号已被禁用".to_string()),
+            );
+            return Err(ApiErrors::Forbidden("账号已被禁用".to_string()));
+        }
+
+        // 验证密码
+        let valid = verify_password(&dto.password, &user.password)
+            .map_err(|_| ApiErrors::Unauthorized("用户名或密码错误".to_string()))?;
+        if !valid {
+            self.login_log_service.record_login_async(
+                user.id,
+                user.user_name.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("密码错误".to_string()),
+            );
+            return Err(ApiErrors::Unauthorized("用户名或密码错误".to_string()));
+        }
+
+        // 查询 B 端角色
+        let roles: Vec<String> = biz_user_role::Entity::find()
+            .filter(biz_user_role::Column::UserId.eq(user.id))
+            .find_also_related(biz_role::Entity)
+            .all(&self.db)
+            .await
+            .context("查询B端用户角色失败")?
+            .into_iter()
+            .filter_map(|(_, role)| role.map(|r| r.role_code))
+            .collect();
+
+        let login_id = LoginId::business(user.id);
+        let token_pair = self
+            .auth
+            .login(LoginParams {
+                login_id,
+                device: DeviceType::Web,
+                login_ip: client_ip.to_string(),
+                user_agent: ua_info.raw.clone(),
+                profile: UserProfile::Business(BusinessProfile {
+                    user_name: user.user_name.clone(),
+                    nick_name: user.nick_name.clone(),
+                    avatar: user.avatar.clone(),
+                    roles,
+                    permissions: vec![],
+                }),
+            })
+            .await
+            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
+
+        self.login_log_service.record_login_async(
+            user.id,
+            user.user_name.clone(),
+            client_ip,
+            ua_info,
+            sys_login_log::LoginStatus::Success,
+            None,
+        );
+
+        Ok(LoginVo {
+            access_token: token_pair.access_token,
+            refresh_token: token_pair.refresh_token,
+            expires_in: token_pair.expires_in,
+        })
+    }
+
+    /// C 端登录（手机号 + 密码）
+    pub async fn customer_login(
+        &self,
+        dto: CustomerLoginDto,
+        client_ip: IpAddr,
+        ua_info: UserAgentInfo,
+    ) -> ApiResult<LoginVo> {
+        // 根据手机号查询 C 端用户
+        let user = customer::Entity::find()
+            .filter(customer::Column::Phone.eq(&dto.phone))
+            .one(&self.db)
+            .await
+            .context("查询C端用户失败")?;
+
+        if user.is_none() {
+            self.login_log_service.record_login_async(
+                0,
+                dto.phone.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("用户不存在".to_string()),
+            );
+            return Err(ApiErrors::Unauthorized("手机号或密码错误".to_string()));
+        }
+
+        let user = user.unwrap();
+
+        // 验证状态
+        if user.status == customer::CustomerStatus::Cancelled {
+            self.login_log_service.record_login_async(
+                user.id,
+                dto.phone.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("账号已注销".to_string()),
+            );
+            return Err(ApiErrors::Forbidden("账号已注销".to_string()));
+        }
+        if user.status == customer::CustomerStatus::Disabled {
+            self.login_log_service.record_login_async(
+                user.id,
+                dto.phone.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("账号已被禁用".to_string()),
+            );
+            return Err(ApiErrors::Forbidden("账号已被禁用".to_string()));
+        }
+
+        // 验证密码
+        let valid = verify_password(&dto.password, &user.password)
+            .map_err(|_| ApiErrors::Unauthorized("手机号或密码错误".to_string()))?;
+        if !valid {
+            self.login_log_service.record_login_async(
+                user.id,
+                dto.phone.clone(),
+                client_ip,
+                ua_info,
+                sys_login_log::LoginStatus::Failed,
+                Some("密码错误".to_string()),
+            );
+            return Err(ApiErrors::Unauthorized("手机号或密码错误".to_string()));
+        }
+
+        let login_id = LoginId::customer(user.id);
+        let token_pair = self
+            .auth
+            .login(LoginParams {
+                login_id,
+                device: DeviceType::Web,
+                login_ip: client_ip.to_string(),
+                user_agent: ua_info.raw.clone(),
+                profile: UserProfile::Customer(CustomerProfile {
+                    nick_name: user.nick_name.clone(),
+                    avatar: user.avatar.clone(),
+                }),
+            })
+            .await
+            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
+
+        self.login_log_service.record_login_async(
+            user.id,
+            dto.phone.clone(),
+            client_ip,
+            ua_info,
+            sys_login_log::LoginStatus::Success,
+            None,
+        );
+
+        Ok(LoginVo {
+            access_token: token_pair.access_token,
+            refresh_token: token_pair.refresh_token,
+            expires_in: token_pair.expires_in,
         })
     }
 
     /// 登出
-    pub async fn logout(&self, login_id: &str) -> ApiResult<()> {
-        StpUtil::logout_by_login_id(login_id)
+    pub async fn logout(&self, login_id: &LoginId) -> ApiResult<()> {
+        self.auth
+            .logout(login_id, &DeviceType::Web)
+            .await
+            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
+        Ok(())
+    }
+
+    /// 刷新 Token
+    pub async fn refresh_token(&self, refresh_token: &str) -> ApiResult<LoginVo> {
+        let pair = self
+            .auth
+            .refresh(refresh_token)
+            .await
+            .map_err(|e| ApiErrors::Unauthorized(e.to_string()))?;
+        Ok(LoginVo {
+            access_token: pair.access_token,
+            refresh_token: pair.refresh_token,
+            expires_in: pair.expires_in,
+        })
+    }
+
+    /// 登出所有设备
+    pub async fn logout_all(&self, login_id: &LoginId) -> ApiResult<()> {
+        self.auth
+            .logout_all(login_id)
+            .await
+            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
+        Ok(())
+    }
+
+    /// 获取当前用户的所有设备会话
+    pub async fn get_sessions(&self, login_id: &LoginId) -> ApiResult<Vec<DeviceSessionVo>> {
+        let session = self
+            .auth
+            .get_session(login_id)
+            .await
+            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
+
+        let devices = session.map(|s| s.devices).unwrap_or_default();
+
+        Ok(devices
+            .into_iter()
+            .map(|d| {
+                let ua = UserAgentInfo::parse(&d.user_agent);
+                DeviceSessionVo {
+                    device: d.device.to_string(),
+                    login_time: d.login_time,
+                    last_active_time: d.last_active_time,
+                    login_ip: d.login_ip,
+                    browser: ua.browser,
+                    os: ua.os,
+                }
+            })
+            .collect())
+    }
+
+    /// 踢下指定设备
+    pub async fn kick_device(&self, login_id: &LoginId, device: DeviceType) -> ApiResult<()> {
+        self.auth
+            .kick_out(login_id, Some(&device))
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
         Ok(())

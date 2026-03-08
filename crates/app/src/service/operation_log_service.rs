@@ -10,7 +10,7 @@ use model::entity::sys_operation_log;
 use model::vo::operation_log::{OperationLogDetailVo, OperationLogVo};
 use sea_orm::{EntityTrait, QueryFilter, QueryOrder};
 use summer::plugin::Service;
-use summer_sa_token::StpUtil;
+use summer_auth::{LoginId, SessionManager, UserType};
 use summer_web::axum::extract::FromRequestParts;
 use summer_web::axum::http::request::Parts;
 use summer_web::extractor::RequestPartsExt;
@@ -26,6 +26,8 @@ pub struct OperationLogService {
     task_queue: BackgroundTaskQueue,
     #[inject(component)]
     op_collector: OperationLogCollector,
+    #[inject(component)]
+    auth: SessionManager,
 }
 
 /// 操作日志上下文提取器
@@ -62,9 +64,8 @@ impl<S: Send + Sync> FromRequestParts<S> for OperationLogContext {
             .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
 
         // 提取当前登录用户 ID，未登录时为 0
-        let user_id = common::extractor::LoginIdExtractor::from_request_parts(parts, _state)
-            .await
-            .map(|ext| ext.0.parse::<i64>().unwrap_or(0))
+        let user_id = parts.extensions.get::<LoginId>()
+            .map(|lid| lid.user_id)
             .unwrap_or(0);
 
         // 提取 OperationLogService 组件
@@ -86,14 +87,16 @@ impl<S: Send + Sync> FromRequestParts<S> for OperationLogContext {
 impl summer_web::aide::OperationInput for OperationLogContext {}
 
 impl OperationLogService {
-    /// 从 JWT extra data 获取操作人昵称，失败时返回 None
-    async fn get_user_name(login_id: &str) -> Option<String> {
-        let token = StpUtil::get_token_by_login_id(login_id).await.ok()?;
-        let extra = StpUtil::get_extra_data(&token).await.ok()??;
-        extra
-            .get("nick_name")
-            .and_then(|n| n.as_str())
-            .map(String::from)
+    /// 从 session 获取操作人昵称，失败时返回 None
+    async fn get_user_name(auth: &SessionManager, user_id: i64) -> Option<String> {
+        // 尝试所有用户类型
+        for user_type in UserType::all() {
+            let login_id = user_type.login_id(user_id);
+            if let Ok(Some(session)) = auth.get_session(&login_id).await {
+                return Some(session.profile.nick_name().to_string());
+            }
+        }
+        None
     }
 
     /// 异步记录操作日志（通过后台任务队列预处理，批量收集器写入）
@@ -101,11 +104,12 @@ impl OperationLogService {
         let ip_location = self.ip_searcher.search_location(&dto.client_ip);
         let op_collector = self.op_collector.clone();
         let user_id = dto.user_id;
+        let auth = self.auth.clone();
 
         self.task_queue.spawn(async move {
             // 通过 login_id 获取操作人昵称，获取失败（如退出登录后 token 已销毁）时回退为"未知用户"
             let user_name = if user_id > 0 {
-                Self::get_user_name(&user_id.to_string())
+                Self::get_user_name(&auth, user_id)
                     .await
                     .or_else(|| Some("未知用户".to_string()))
             } else {

@@ -19,11 +19,11 @@ use proc_macro::TokenStream;
 /// ```rust,ignore
 /// #[log(module = "用户管理", action = "创建用户", biz_type = Create)]
 /// #[post("/user")]
-/// pub async fn create_user(...) -> ApiResult<ApiResponse<()>> { ... }
+/// pub async fn create_user(...) -> ApiResult<()> { ... }
 ///
 /// #[log(module = "认证管理", action = "用户登录", biz_type = Other, save_params = false)]
 /// #[post("/auth/login")]
-/// pub async fn login(...) -> ApiResult<LoginVo> { ... }
+/// pub async fn login(...) -> ApiResult<Json<LoginVo>> { ... }
 /// ```
 #[proc_macro_attribute]
 pub fn log(args: TokenStream, input: TokenStream) -> TokenStream {

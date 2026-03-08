@@ -1,9 +1,9 @@
 use common::error::ApiResult;
 use common::extractor::{Path, Query};
-use common::response::ApiResponse;
 use macros::log;
 use model::dto::monitor::{CacheDeleteQuery, CacheKeysQuery};
 use model::vo::monitor::{CacheInfoVo, CacheKeyDetailVo, CacheKeysVo, ServerInfoVo};
+use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api};
 
@@ -15,9 +15,9 @@ use crate::service::monitor_service::{CacheMonitorService, ServerMonitorService}
 #[log(module = "服务监控", action = "查询服务器信息", biz_type = Query)]
 pub async fn server_info(
     Component(svc): Component<ServerMonitorService>,
-) -> ApiResult<ApiResponse<ServerInfoVo>> {
+) -> ApiResult<Json<ServerInfoVo>> {
     let vo = svc.get_server_info().await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 // ─── 缓存监控 ────────────────────────────────────────────────────────────────
@@ -26,9 +26,9 @@ pub async fn server_info(
 #[get_api("/monitor/cache/info")]
 pub async fn cache_info(
     Component(svc): Component<CacheMonitorService>,
-) -> ApiResult<ApiResponse<CacheInfoVo>> {
+) -> ApiResult<Json<CacheInfoVo>> {
     let vo = svc.get_cache_info().await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 #[log(module = "缓存监控", action = "查询缓存键列表", biz_type = Query)]
@@ -36,9 +36,9 @@ pub async fn cache_info(
 pub async fn cache_keys(
     Component(svc): Component<CacheMonitorService>,
     Query(query): Query<CacheKeysQuery>,
-) -> ApiResult<ApiResponse<CacheKeysVo>> {
+) -> ApiResult<Json<CacheKeysVo>> {
     let vo = svc.get_cache_keys(query).await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 #[log(module = "缓存监控", action = "查询缓存键详情", biz_type = Query)]
@@ -46,9 +46,9 @@ pub async fn cache_keys(
 pub async fn cache_key_detail(
     Component(svc): Component<CacheMonitorService>,
     Path(key): Path<String>,
-) -> ApiResult<ApiResponse<CacheKeyDetailVo>> {
+) -> ApiResult<Json<CacheKeyDetailVo>> {
     let vo = svc.get_cache_key_detail(&key).await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 #[log(module = "缓存监控", action = "删除缓存键", biz_type = Delete)]
@@ -56,9 +56,9 @@ pub async fn cache_key_detail(
 pub async fn delete_cache_key(
     Component(svc): Component<CacheMonitorService>,
     Path(key): Path<String>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.delete_cache_key(&key).await?;
-    Ok(ApiResponse::empty_with_msg("删除成功"))
+    Ok(())
 }
 
 #[log(module = "缓存监控", action = "批量删除缓存键", biz_type = Delete)]
@@ -66,9 +66,7 @@ pub async fn delete_cache_key(
 pub async fn delete_cache_keys_by_pattern(
     Component(svc): Component<CacheMonitorService>,
     Query(query): Query<CacheDeleteQuery>,
-) -> ApiResult<ApiResponse<()>> {
-    let total = svc.delete_cache_keys_by_pattern(query).await?;
-    Ok(ApiResponse::empty_with_msg(format!(
-        "批量删除完成，共删除 {total} 个键"
-    )))
+) -> ApiResult<()> {
+    svc.delete_cache_keys_by_pattern(query).await?;
+    Ok(())
 }

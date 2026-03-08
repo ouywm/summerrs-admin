@@ -48,15 +48,18 @@ uri = "redis://127.0.0.1/"
 ipv4_db_path = "./data/ip2region_v4.xdb"
 # ipv6_db_path = "./data/ip2region_v6.xdb"
 
-[sa-token]
+[auth]
 token_name = "Authorization"
-timeout = 86400
-active_timeout = 3600
+token_prefix = "Bearer "
+access_timeout = 86400
+refresh_timeout = 604800
 auto_renew = true
-is_concurrent = true
-is_share = true
-token_style = "Jwt"
-jwt_secret_key = "sfdjjlkasdfuoifwel,./rwe,rweopdsfijlkasjdf"
+concurrent_login = true
+share_token = true
+token_style = "uuid"
+max_devices = 5
+is_read_cookie = false
+# cookie_name = "token"
 
 [log-batch]
 batch_size = 100

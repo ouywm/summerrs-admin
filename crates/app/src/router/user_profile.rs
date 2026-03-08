@@ -1,11 +1,12 @@
 use common::error::ApiResult;
-use common::extractor::{LoginIdExtractor, Query, ValidatedJson};
-use common::response::ApiResponse;
+use common::extractor::{Query, ValidatedJson};
 use macros::log;
 use model::dto::login_log::LoginLogQueryDto;
 use model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
 use model::vo::login_log::LoginLogVo;
 use model::vo::user_profile::UserProfileVo;
+use common::response::Json;
+use summer_auth::AdminUser;
 use summer_web::extractor::Component;
 use summer_web::{get_api, put_api};
 
@@ -17,37 +18,37 @@ use crate::service::sys_user_service::SysUserService;
 #[log(module = "个人中心", action = "修改密码", biz_type = Update, save_params = false)]
 #[put_api("/user/profile/password")]
 pub async fn change_password(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, .. }: AdminUser,
     Component(svc): Component<SysUserService>,
     ValidatedJson(dto): ValidatedJson<ChangePasswordDto>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.change_password(&login_id, dto).await?;
-    Ok(ApiResponse::empty_with_msg("密码修改成功"))
+    Ok(())
 }
 
 /// 更新个人信息
 #[log(module = "个人中心", action = "更新个人信息", biz_type = Update)]
 #[put_api("/user/profile")]
 pub async fn update_profile(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, .. }: AdminUser,
     Component(svc): Component<SysUserService>,
     ValidatedJson(dto): ValidatedJson<UpdateProfileDto>,
-) -> ApiResult<ApiResponse<UserProfileVo>> {
+) -> ApiResult<Json<UserProfileVo>> {
     let profile = svc.update_profile(&login_id, dto).await?;
-    Ok(ApiResponse::ok_with_msg(profile, "个人信息更新成功"))
+    Ok(Json(profile))
 }
 
 /// 获取登录日志
 #[log(module = "个人中心", action = "查询登录日志", biz_type = Query)]
 #[get_api("/user/profile/login-logs")]
 pub async fn get_login_logs(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, .. }: AdminUser,
     Component(svc): Component<LoginLogService>,
     Query(query): Query<LoginLogQueryDto>,
     pagination: Pagination,
-) -> ApiResult<ApiResponse<Page<LoginLogVo>>> {
+) -> ApiResult<Json<Page<LoginLogVo>>> {
     let logs = svc
         .get_user_login_logs(&login_id, query, pagination)
         .await?;
-    Ok(ApiResponse::ok(logs))
+    Ok(Json(logs))
 }

@@ -10,6 +10,7 @@ use sea_orm::{
     QueryOrder, QuerySelect, RelationTrait,
 };
 use summer::plugin::Service;
+use summer_auth::LoginId;
 
 use crate::plugin::sea_orm::DbConn;
 
@@ -21,10 +22,8 @@ pub struct SysMenuService {
 
 impl SysMenuService {
     /// 获取当前用户的菜单树（前端路由）
-    pub async fn get_menu_tree(&self, login_id: &str) -> ApiResult<Vec<MenuTreeVo>> {
-        let user_id: i64 = login_id
-            .parse()
-            .map_err(|_| ApiErrors::BadRequest("无效的用户ID".to_string()))?;
+    pub async fn get_menu_tree(&self, login_id: &LoginId) -> ApiResult<Vec<MenuTreeVo>> {
+        let user_id = login_id.user_id;
 
         // 查询用户角色
         let role_ids: Vec<i64> = sys_user_role::Entity::find()

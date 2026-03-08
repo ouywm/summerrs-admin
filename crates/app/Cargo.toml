@@ -31,7 +31,7 @@ sysinfo = { workspace = true }
 summer-job = { workspace = true }
 summer-mail = { workspace = true }
 summer-redis = { workspace = true }
-summer-sa-token = { workspace = true, features = ["with-web", "with-summer-redis", "openapi"] }
+summer-auth = { workspace = true, features = ["web", "redis", "openapi"] }
 #summer-web = { workspace = true, features = ["openapi", "openapi-swagger", "openapi-scalar", "openapi-redoc"] }
 summer-web = { workspace = true, features = ["openapi", "openapi-swagger", "multipart"] }
 thiserror = { workspace = true }

@@ -1,9 +1,8 @@
 //! 文件上传 / 下载路由
 
 use common::error::{ApiErrors, ApiResult};
-use common::extractor::{LoginIdExtractor, Multipart, Path, Query, ValidatedJson};
+use common::extractor::{Multipart, Path, Query, ValidatedJson};
 use common::file_util::read_multipart_files;
-use common::response::ApiResponse;
 use macros::log;
 use model::dto::sys_file::{
     MultipartAbortDto, MultipartCompleteDto, MultipartInitDto, MultipartListPartsDto,
@@ -13,9 +12,11 @@ use model::vo::sys_file::{
     BatchUploadVo, FileUploadVo, MultipartInitVo, MultipartListPartsVo, PresignedDownloadVo,
     PresignedUploadVo,
 };
+use summer_auth::AdminUser;
 use summer_web::axum::body::Body;
 use summer_web::axum::http::{header, StatusCode};
 use summer_web::axum::response::IntoResponse;
+use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::{get_api, post_api};
 
@@ -27,10 +28,10 @@ use crate::service::sys_file_upload_service::SysFileUploadService;
 #[log(module = "文件管理", action = "上传文件", biz_type = Create, save_params = false)]
 #[post_api("/file/upload")]
 pub async fn upload_file(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, profile }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     Multipart(mut multipart): Multipart,
-) -> ApiResult<ApiResponse<FileUploadVo>> {
+) -> ApiResult<Json<FileUploadVo>> {
     let mut files = read_multipart_files(&mut multipart).await?;
     let file = files
         .pop()
@@ -42,20 +43,21 @@ pub async fn upload_file(
             file.content_type.as_deref(),
             file.data,
             &login_id,
+            &profile.nick_name,
         )
         .await?;
 
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 /// 批量文件上传（multipart/form-data，多文件）
 #[log(module = "文件管理", action = "批量上传", biz_type = Create, save_params = false)]
 #[post_api("/file/upload/batch")]
 pub async fn batch_upload(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, profile }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     Multipart(mut multipart): Multipart,
-) -> ApiResult<ApiResponse<BatchUploadVo>> {
+) -> ApiResult<Json<BatchUploadVo>> {
     let files = read_multipart_files(&mut multipart).await?;
     if files.is_empty() {
         return Err(ApiErrors::BadRequest("未找到上传文件".to_string()));
@@ -66,9 +68,9 @@ pub async fn batch_upload(
         .map(|f| (f.file_name, f.content_type, f.data))
         .collect();
 
-    let vo = svc.batch_upload(files, &login_id).await?;
+    let vo = svc.batch_upload(files, &login_id, &profile.nick_name).await?;
 
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 // ─── Presigned URL ──────────────────────────────────────────────────────────
@@ -77,42 +79,41 @@ pub async fn batch_upload(
 #[log(module = "文件管理", action = "获取上传链接", biz_type = Query)]
 #[post_api("/file/presign/upload")]
 pub async fn presign_upload(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, profile }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<PresignUploadDto>,
-) -> ApiResult<ApiResponse<PresignedUploadVo>> {
-    let vo = svc.generate_presigned_upload(dto, &login_id).await?;
-    Ok(ApiResponse::ok(vo))
+) -> ApiResult<Json<PresignedUploadVo>> {
+    let vo = svc.generate_presigned_upload(dto, &login_id, &profile.nick_name).await?;
+    Ok(Json(vo))
 }
 
 /// 前端直传完成回调
 #[log(module = "文件管理", action = "确认上传", biz_type = Create)]
 #[post_api("/file/presign/upload/callback")]
 pub async fn presign_upload_callback(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, profile }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<PresignUploadCallbackDto>,
-) -> ApiResult<ApiResponse<FileUploadVo>> {
-    let vo = svc.confirm_presigned_upload(dto, &login_id).await?;
-    Ok(ApiResponse::ok(vo))
+) -> ApiResult<Json<FileUploadVo>> {
+    let vo = svc.confirm_presigned_upload(dto, &login_id, &profile.nick_name).await?;
+    Ok(Json(vo))
 }
 
 /// 获取下载用 presigned URL
 #[log(module = "文件管理", action = "获取下载链接", biz_type = Query)]
 #[get_api("/file/{id}/presign/download")]
 pub async fn presign_download(
-    LoginIdExtractor(_login_id): LoginIdExtractor,
     Component(svc): Component<SysFileUploadService>,
     Path(id): Path<i64>,
-) -> ApiResult<ApiResponse<PresignedDownloadVo>> {
+) -> ApiResult<Json<PresignedDownloadVo>> {
     let vo = svc.generate_presigned_download(id).await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 /// 服务端代理下载（返回二进制流）
 #[get_api("/file/{id}/download")]
 pub async fn download_file(
-    LoginIdExtractor(_login_id): LoginIdExtractor,
+    AdminUser { .. }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     Path(id): Path<i64>,
 ) -> Result<summer_web::axum::response::Response, ApiErrors> {
@@ -153,46 +154,45 @@ pub async fn download_file(
 #[log(module = "文件管理", action = "初始化分片上传", biz_type = Create)]
 #[post_api("/file/multipart/init")]
 pub async fn multipart_init(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, profile }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<MultipartInitDto>,
-) -> ApiResult<ApiResponse<MultipartInitVo>> {
-    let vo = svc.init_multipart_upload(dto, &login_id).await?;
-    Ok(ApiResponse::ok(vo))
+) -> ApiResult<Json<MultipartInitVo>> {
+    let vo = svc.init_multipart_upload(dto, &login_id, &profile.nick_name).await?;
+    Ok(Json(vo))
 }
 
 /// 查询已上传分片（断点续传）
 #[log(module = "文件管理", action = "查询已上传分片", biz_type = Query)]
 #[get_api("/file/multipart/parts")]
 pub async fn multipart_list_parts(
-    LoginIdExtractor(_login_id): LoginIdExtractor,
     Component(svc): Component<SysFileUploadService>,
     Query(dto): Query<MultipartListPartsDto>,
-) -> ApiResult<ApiResponse<MultipartListPartsVo>> {
+) -> ApiResult<Json<MultipartListPartsVo>> {
     let vo = svc.list_uploaded_parts(dto).await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 /// 完成分片上传
 #[log(module = "文件管理", action = "完成分片上传", biz_type = Create)]
 #[post_api("/file/multipart/complete")]
 pub async fn multipart_complete(
-    LoginIdExtractor(login_id): LoginIdExtractor,
+    AdminUser { login_id, profile }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<MultipartCompleteDto>,
-) -> ApiResult<ApiResponse<FileUploadVo>> {
-    let vo = svc.complete_multipart_upload(dto, &login_id).await?;
-    Ok(ApiResponse::ok(vo))
+) -> ApiResult<Json<FileUploadVo>> {
+    let vo = svc.complete_multipart_upload(dto, &login_id, &profile.nick_name).await?;
+    Ok(Json(vo))
 }
 
 /// 取消分片上传
 #[log(module = "文件管理", action = "取消分片上传", biz_type = Delete)]
 #[post_api("/file/multipart/abort")]
 pub async fn multipart_abort(
-    LoginIdExtractor(_login_id): LoginIdExtractor,
+    AdminUser { .. }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<MultipartAbortDto>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.abort_multipart_upload(dto).await?;
-    Ok(ApiResponse::empty_with_msg("已取消分片上传"))
+    Ok(())
 }

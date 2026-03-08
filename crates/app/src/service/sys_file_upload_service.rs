@@ -19,7 +19,7 @@ use model::vo::sys_file::{
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::time::Duration;
 use summer::plugin::Service;
-use summer_sa_token::StpUtil;
+use summer_auth::LoginId;
 
 use crate::plugin::s3::config::S3Config;
 use crate::plugin::sea_orm::DbConn;
@@ -42,31 +42,14 @@ pub struct SysFileUploadService {
 }
 
 impl SysFileUploadService {
-    /// 从 JWT payload 获取操作人昵称
-    async fn get_operator_name(&self, login_id: &str) -> ApiResult<String> {
-        let token = StpUtil::get_token_by_login_id(login_id)
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-        let extra = StpUtil::get_extra_data(&token)
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-        let name = extra
-            .and_then(|v| {
-                v.get("nick_name")
-                    .and_then(|n| n.as_str())
-                    .map(String::from)
-            })
-            .ok_or_else(|| ApiErrors::Internal(anyhow::anyhow!("无法获取操作人昵称")))?;
-        Ok(name)
-    }
-
     /// 秒传检查：MD5 + bucket 命中已有文件时，复用 S3 key 创建新 DB 记录
     async fn try_fast_upload(
         &self,
         file_md5: &str,
         original_name: &str,
         suffix: &str,
-        login_id: &str,
+        login_id: &LoginId,
+        operator: &str,
     ) -> ApiResult<Option<FileUploadVo>> {
         let bucket_name = self.bucket();
 
@@ -81,8 +64,7 @@ impl SysFileUploadService {
             return Ok(None);
         };
 
-        let operator = self.get_operator_name(login_id).await.unwrap_or_default();
-        let upload_by_id: Option<i64> = login_id.parse().ok();
+        let upload_by_id: Option<i64> = Some(login_id.user_id);
         let file_name = file_util::generate_file_name(suffix);
 
         let active = sys_file::ActiveModel {
@@ -94,7 +76,7 @@ impl SysFileUploadService {
             mime_type: Set(existing.mime_type.clone()),
             bucket: Set(bucket_name.to_string()),
             file_md5: Set(file_md5.to_string()),
-            upload_by: Set(operator),
+            upload_by: Set(operator.to_string()),
             upload_by_id: Set(upload_by_id),
             ..Default::default()
         };
@@ -174,7 +156,8 @@ impl SysFileUploadService {
         original_name: &str,
         content_type: Option<&str>,
         data: Bytes,
-        login_id: &str,
+        login_id: &LoginId,
+        operator: &str,
     ) -> ApiResult<FileUploadVo> {
         let suffix = file_util::extract_suffix(original_name);
         let file_size = data.len() as i64;
@@ -185,7 +168,7 @@ impl SysFileUploadService {
 
         // 秒传检查
         if let Some(vo) = self
-            .try_fast_upload(&file_md5, original_name, &suffix, login_id)
+            .try_fast_upload(&file_md5, original_name, &suffix, login_id, operator)
             .await?
         {
             return Ok(vo);
@@ -218,8 +201,7 @@ impl SysFileUploadService {
                 .context("S3 上传失败")?;
         }
 
-        let operator = self.get_operator_name(login_id).await.unwrap_or_default();
-        let upload_by_id: Option<i64> = login_id.parse().ok();
+        let upload_by_id: Option<i64> = Some(login_id.user_id);
 
         let url = self.s3_config.file_url(&object_key);
         let active = sys_file::ActiveModel {
@@ -231,7 +213,7 @@ impl SysFileUploadService {
             mime_type: Set(mime.to_string()),
             bucket: Set(bucket_name.to_string()),
             file_md5: Set(file_md5),
-            upload_by: Set(operator),
+            upload_by: Set(operator.to_string()),
             upload_by_id: Set(upload_by_id),
             ..Default::default()
         };
@@ -341,15 +323,17 @@ impl SysFileUploadService {
     pub async fn batch_upload(
         &self,
         files: Vec<(String, Option<String>, Bytes)>,
-        login_id: &str,
+        login_id: &LoginId,
+        operator: &str,
     ) -> ApiResult<BatchUploadVo> {
         let futs: Vec<_> = files
             .into_iter()
             .map(|(original_name, content_type, data)| {
-                let login_id = login_id.to_string();
+                let login_id = login_id.clone();
+                let operator = operator.to_string();
                 async move {
                     let result = self
-                        .upload_file(&original_name, content_type.as_deref(), data, &login_id)
+                        .upload_file(&original_name, content_type.as_deref(), data, &login_id, &operator)
                         .await;
                     (original_name, result)
                 }
@@ -378,7 +362,8 @@ impl SysFileUploadService {
     pub async fn generate_presigned_upload(
         &self,
         dto: PresignUploadDto,
-        login_id: &str,
+        login_id: &LoginId,
+        operator: &str,
     ) -> ApiResult<PresignedUploadVo> {
         let suffix = file_util::extract_suffix(&dto.file_name);
         self.validate_file(dto.file_size, &suffix)?;
@@ -386,7 +371,7 @@ impl SysFileUploadService {
         // 秒传检查（前端传入 file_md5 时触发）
         if let Some(ref file_md5) = dto.file_md5 {
             if let Some(vo) = self
-                .try_fast_upload(file_md5, &dto.file_name, &suffix, login_id)
+                .try_fast_upload(file_md5, &dto.file_name, &suffix, login_id, operator)
                 .await?
             {
                 return Ok(PresignedUploadVo {
@@ -431,7 +416,8 @@ impl SysFileUploadService {
     pub async fn confirm_presigned_upload(
         &self,
         dto: PresignUploadCallbackDto,
-        login_id: &str,
+        login_id: &LoginId,
+        operator: &str,
     ) -> ApiResult<FileUploadVo> {
         let bucket_name = self.bucket();
 
@@ -453,8 +439,7 @@ impl SysFileUploadService {
 
         let file_name = file_util::extract_file_name_from_path(&dto.file_path).to_string();
 
-        let operator = self.get_operator_name(login_id).await.unwrap_or_default();
-        let upload_by_id: Option<i64> = login_id.parse().ok();
+        let upload_by_id: Option<i64> = Some(login_id.user_id);
 
         let active = sys_file::ActiveModel {
             file_name: Set(file_name),
@@ -465,7 +450,7 @@ impl SysFileUploadService {
             mime_type: Set(content_type),
             bucket: Set(bucket_name.to_string()),
             file_md5: Set(dto.file_md5.unwrap_or_default()),
-            upload_by: Set(operator),
+            upload_by: Set(operator.to_string()),
             upload_by_id: Set(upload_by_id),
             ..Default::default()
         };
@@ -536,14 +521,15 @@ impl SysFileUploadService {
     pub async fn init_multipart_upload(
         &self,
         dto: MultipartInitDto,
-        login_id: &str,
+        login_id: &LoginId,
+        operator: &str,
     ) -> ApiResult<MultipartInitVo> {
         let suffix = file_util::extract_suffix(&dto.file_name);
         self.validate_file(dto.file_size, &suffix)?;
 
         // 秒传检查
         if let Some(vo) = self
-            .try_fast_upload(&dto.file_md5, &dto.file_name, &suffix, login_id)
+            .try_fast_upload(&dto.file_md5, &dto.file_name, &suffix, login_id, operator)
             .await?
         {
             return Ok(MultipartInitVo {
@@ -677,7 +663,8 @@ impl SysFileUploadService {
     pub async fn complete_multipart_upload(
         &self,
         dto: MultipartCompleteDto,
-        login_id: &str,
+        login_id: &LoginId,
+        operator: &str,
     ) -> ApiResult<FileUploadVo> {
         let client = &self.s3;
         let bucket_name = self.bucket();
@@ -750,8 +737,7 @@ impl SysFileUploadService {
 
         let file_name = file_util::extract_file_name_from_path(&dto.file_path).to_string();
 
-        let operator = self.get_operator_name(login_id).await.unwrap_or_default();
-        let upload_by_id: Option<i64> = login_id.parse().ok();
+        let upload_by_id: Option<i64> = Some(login_id.user_id);
 
         let active = sys_file::ActiveModel {
             file_name: Set(file_name),
@@ -762,7 +748,7 @@ impl SysFileUploadService {
             mime_type: Set(content_type),
             bucket: Set(bucket_name.to_string()),
             file_md5: Set(dto.file_md5.unwrap_or_default()),
-            upload_by: Set(operator),
+            upload_by: Set(operator.to_string()),
             upload_by_id: Set(upload_by_id),
             ..Default::default()
         };

@@ -255,27 +255,31 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     // 8. 根据 save_response 生成响应捕获代码（匹配 catch_unwind 三态结果）
-    //    - Ok(Ok(resp))：成功，序列化响应体
-    //    - Ok(Err(e))：业务失败，构造 RFC 7807 ProblemDetails 风格 JSON
-    //    - Err(panic)：异常，构造 status=500 的 ProblemDetails 风格 JSON
+    //    - Ok(Ok(resp))：成功，序列化响应体（common::response::Json 实现了 Serialize）
+    //    - Ok(Err(e))：业务失败，构造 ProblemDetails 并序列化
+    //    - Err(panic)：异常，构造 status=500 的 ProblemDetails 并序列化
     let response_capture = if save_response {
         quote! {
             let __log_response_body: Option<serde_json::Value> = match &__log_catch_result {
                 Ok(Ok(resp)) => serde_json::to_value(resp).ok(),
-                Ok(Err(e)) => Some(serde_json::json!({
-                    "type": "about:blank",
-                    "title": "Error",
-                    "status": __log_response_code,
-                    "detail": format!("{:#}", e),
-                    "instance": __log_request_url.as_str(),
-                })),
-                Err(_) => Some(serde_json::json!({
-                    "type": "about:blank",
-                    "title": "Internal Server Error",
-                    "status": 500,
-                    "detail": __log_error_msg.as_deref(),
-                    "instance": __log_request_url.as_str(),
-                })),
+                Ok(Err(e)) => {
+                    let __log_pd = summer_web::problem_details::ProblemDetails::new(
+                        "internal-error", "Internal Server Error", __log_response_code as u16,
+                    )
+                    .with_detail(format!("{:#}", e))
+                    .with_instance(__log_request_url.clone());
+                    serde_json::to_value(&__log_pd).ok()
+                }
+                Err(_) => {
+                    let mut __log_pd = summer_web::problem_details::ProblemDetails::new(
+                        "internal-error", "Internal Server Error", 500u16,
+                    )
+                    .with_instance(__log_request_url.clone());
+                    if let Some(__log_msg) = __log_error_msg.as_deref() {
+                        __log_pd = __log_pd.with_detail(__log_msg);
+                    }
+                    serde_json::to_value(&__log_pd).ok()
+                }
             };
         }
     } else {

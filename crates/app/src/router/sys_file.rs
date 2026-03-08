@@ -2,10 +2,10 @@
 
 use common::error::ApiResult;
 use common::extractor::{Path, Query};
-use common::response::ApiResponse;
 use macros::log;
 use model::dto::sys_file::FileQueryDto;
 use model::vo::sys_file::FileVo;
+use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api};
 
@@ -19,9 +19,9 @@ pub async fn list_files(
     Component(svc): Component<SysFileService>,
     Query(query): Query<FileQueryDto>,
     pagination: Pagination,
-) -> ApiResult<ApiResponse<Page<FileVo>>> {
+) -> ApiResult<Json<Page<FileVo>>> {
     let page = svc.list_files(query, pagination).await?;
-    Ok(ApiResponse::ok(page))
+    Ok(Json(page))
 }
 
 /// 文件详情
@@ -30,9 +30,9 @@ pub async fn list_files(
 pub async fn get_file(
     Component(svc): Component<SysFileService>,
     Path(id): Path<i64>,
-) -> ApiResult<ApiResponse<FileVo>> {
+) -> ApiResult<Json<FileVo>> {
     let vo = svc.get_file(id).await?;
-    Ok(ApiResponse::ok(vo))
+    Ok(Json(vo))
 }
 
 /// 删除文件
@@ -41,7 +41,7 @@ pub async fn get_file(
 pub async fn delete_file(
     Component(svc): Component<SysFileService>,
     Path(id): Path<i64>,
-) -> ApiResult<ApiResponse<()>> {
+) -> ApiResult<()> {
     svc.delete_file(id).await?;
-    Ok(ApiResponse::empty_with_msg("删除成功"))
+    Ok(())
 }
