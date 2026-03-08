@@ -12,15 +12,15 @@ use model::vo::sys_role::RoleDetailVo;
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
 use model::vo::user_profile::UserProfileVo;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect,
-    RelationTrait, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait,
+    Set, TransactionTrait,
 };
-use spring::plugin::Service;
+use summer::plugin::Service;
 
-use spring_sa_token::StpUtil;
+use summer_sa_token::StpUtil;
 
-use crate::plugin::pagination::{Page, Pagination, PaginationExt};
-use crate::plugin::sea_orm_plugin::DbConn;
+use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
+use crate::plugin::sea_orm::DbConn;
 
 #[derive(Clone, Service)]
 pub struct SysUserService {
@@ -139,26 +139,13 @@ impl SysUserService {
     }
 
     /// 用户列表（分页+筛选）
-    pub async fn list_users(&self, query: UserQueryDto, pagination: Pagination) -> ApiResult<Page<UserVo>> {
-        let mut select = sys_user::Entity::find();
-
-        if let Some(ref name) = query.user_name {
-            select = select.filter(sys_user::Column::UserName.contains(name));
-        }
-        if let Some(ref phone) = query.user_phone {
-            select = select.filter(sys_user::Column::Phone.contains(phone));
-        }
-        if let Some(ref email) = query.user_email {
-            select = select.filter(sys_user::Column::Email.contains(email));
-        }
-        if let Some(status) = query.status {
-            select = select.filter(sys_user::Column::Status.eq(status));
-        }
-        if let Some(gender) = query.user_gender {
-            select = select.filter(sys_user::Column::Gender.eq(gender));
-        }
-
-        let page = select
+    pub async fn list_users(
+        &self,
+        query: UserQueryDto,
+        pagination: Pagination,
+    ) -> ApiResult<Page<UserVo>> {
+        let page = sys_user::Entity::find()
+            .filter(query)
             .page(&self.db, &pagination)
             .await
             .context("查询用户列表失败")?;
@@ -350,16 +337,12 @@ impl SysUserService {
             .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
 
         // 加密新密码
-        let hashed_password = hash_password(&dto.new_password)
-            .context("密码加密失败")?;
+        let hashed_password = hash_password(&dto.new_password).context("密码加密失败")?;
 
         // 更新密码
         let mut active: sys_user::ActiveModel = user.into();
         active.password = Set(hashed_password);
-        active
-            .update(&self.db)
-            .await
-            .context("更新密码失败")?;
+        active.update(&self.db).await.context("更新密码失败")?;
 
         Ok(())
     }
@@ -378,29 +361,29 @@ impl SysUserService {
             .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
 
         // 验证旧密码
-        let is_valid = verify_password(&dto.old_password, &user.password)
-            .context("密码验证失败")?;
+        let is_valid =
+            verify_password(&dto.old_password, &user.password).context("密码验证失败")?;
         if !is_valid {
             return Err(ApiErrors::BadRequest("当前密码不正确".to_string()));
         }
 
         // 加密新密码
-        let hashed_password = hash_password(&dto.new_password)
-            .context("密码加密失败")?;
+        let hashed_password = hash_password(&dto.new_password).context("密码加密失败")?;
 
         // 更新密码
         let mut active: sys_user::ActiveModel = user.into();
         active.password = Set(hashed_password);
-        active
-            .update(&self.db)
-            .await
-            .context("更新密码失败")?;
+        active.update(&self.db).await.context("更新密码失败")?;
 
         Ok(())
     }
 
     /// 更新个人信息
-    pub async fn update_profile(&self, login_id: &str, dto: UpdateProfileDto) -> ApiResult<UserProfileVo> {
+    pub async fn update_profile(
+        &self,
+        login_id: &str,
+        dto: UpdateProfileDto,
+    ) -> ApiResult<UserProfileVo> {
         let user_id: i64 = login_id
             .parse()
             .map_err(|_| ApiErrors::BadRequest("无效的用户ID".to_string()))?;
@@ -432,10 +415,7 @@ impl SysUserService {
         let mut active: sys_user::ActiveModel = user.into();
         dto.apply_to(&mut active);
 
-        let updated_user = active
-            .update(&self.db)
-            .await
-            .context("更新个人信息失败")?;
+        let updated_user = active.update(&self.db).await.context("更新个人信息失败")?;
 
         Ok(UserProfileVo::from_model(updated_user))
     }

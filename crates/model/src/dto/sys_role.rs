@@ -1,6 +1,6 @@
 use chrono::NaiveDate;
 use schemars::JsonSchema;
-use sea_orm::Set;
+use sea_orm::{ColumnTrait, Condition, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -64,6 +64,31 @@ pub struct RoleQueryDto {
     pub enabled: Option<bool>,
     pub start_time: Option<NaiveDate>,
     pub end_time: Option<NaiveDate>,
+}
+
+impl From<RoleQueryDto> for Condition {
+    fn from(query: RoleQueryDto) -> Self {
+        let mut cond = Condition::all();
+        if let Some(name) = query.role_name {
+            cond = cond.add(sys_role::Column::RoleName.contains(name));
+        }
+        if let Some(code) = query.role_code {
+            cond = cond.add(sys_role::Column::RoleCode.contains(code));
+        }
+        if let Some(desc) = query.description {
+            cond = cond.add(sys_role::Column::Description.contains(desc));
+        }
+        if let Some(enabled) = query.enabled {
+            cond = cond.add(sys_role::Column::Enabled.eq(enabled));
+        }
+        if let Some(start) = query.start_time {
+            cond = cond.add(sys_role::Column::CreateTime.gte(start));
+        }
+        if let Some(end) = query.end_time {
+            cond = cond.add(sys_role::Column::CreateTime.lte(end));
+        }
+        cond
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

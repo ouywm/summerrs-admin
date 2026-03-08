@@ -23,44 +23,23 @@
 //! - 多 worker 并发消费，吞吐量随 worker 数线性提升
 //! - 非阻塞提交（`try_send`），不影响主请求响应速度
 
+pub mod config;
+#[allow(dead_code)]
+pub mod typed_batch;
+
+pub use config::BackgroundTaskConfig;
+
 use std::future::Future;
 use std::pin::Pin;
 
-use serde::Deserialize;
-use spring::app::AppBuilder;
-use spring::async_trait;
-use spring::config::{ConfigRegistry, Configurable};
-use spring::plugin::{MutableComponentRegistry, Plugin};
+use config::{default_capacity, default_workers};
+use summer::app::AppBuilder;
+use summer::async_trait;
+use summer::config::ConfigRegistry;
+use summer::plugin::{MutableComponentRegistry, Plugin};
 
 /// 后台任务类型：一个 Send + 'static 的异步闭包
 type BoxTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-
-/// 后台任务队列配置
-///
-/// 在 TOML 中配置示例：
-/// ```toml
-/// [background-task]
-/// capacity = 4096
-/// workers = 4
-/// ```
-#[derive(Debug, Deserialize, Configurable)]
-#[config_prefix = "background-task"]
-pub struct BackgroundTaskConfig {
-    /// 队列容量（默认 4096，所有 worker 共享同一个队列）
-    #[serde(default = "default_capacity")]
-    pub capacity: usize,
-    /// worker 数量（默认 4，即 4 个并发消费者）
-    #[serde(default = "default_workers")]
-    pub workers: usize,
-}
-
-fn default_capacity() -> usize {
-    4096
-}
-
-fn default_workers() -> usize {
-    4
-}
 
 /// 通用后台任务队列
 ///
@@ -117,11 +96,7 @@ impl Plugin for BackgroundTaskPlugin {
         }
 
         app.add_component(BackgroundTaskQueue { sender: tx });
-        tracing::info!(
-            "后台任务队列已启动: {} workers, 容量 {}",
-            workers,
-            capacity
-        );
+        tracing::info!("后台任务队列已启动: {} workers, 容量 {}", workers, capacity);
     }
 
     fn name(&self) -> &str {

@@ -1,4 +1,4 @@
-use spring_web::axum::http::HeaderMap;
+use summer_web::axum::http::HeaderMap;
 use woothee::parser::Parser;
 
 /// User-Agent 解析结果
@@ -29,23 +29,24 @@ impl UserAgentInfo {
         let raw = user_agent.into();
         let parser = Parser::new();
 
-        let (browser, browser_version, os, os_version, device) = if let Some(result) = parser.parse(&raw) {
-            (
-                result.name.to_string(),
-                result.version.to_string(),
-                result.os.to_string(),
-                result.os_version.to_string(),
-                result.category.to_string(),
-            )
-        } else {
-            (
-                "Unknown".to_string(),
-                String::new(),
-                "Unknown".to_string(),
-                String::new(),
-                "Unknown".to_string(),
-            )
-        };
+        let (browser, browser_version, os, os_version, device) =
+            if let Some(result) = parser.parse(&raw) {
+                (
+                    result.name.to_string(),
+                    result.version.to_string(),
+                    result.os.to_string(),
+                    result.os_version.to_string(),
+                    result.category.to_string(),
+                )
+            } else {
+                (
+                    "Unknown".to_string(),
+                    String::new(),
+                    "Unknown".to_string(),
+                    String::new(),
+                    "Unknown".to_string(),
+                )
+            };
 
         Self {
             raw,

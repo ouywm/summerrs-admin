@@ -3,8 +3,8 @@ use common::serde_utils::datetime_format;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::entity::sys_user::{self, Gender, UserStatus};
 use super::sys_role::RoleDetailVo;
+use crate::entity::sys_user::{self, Gender, UserStatus};
 
 /// 登录后获取的用户信息（含角色和按钮权限）
 #[derive(Debug, Serialize, JsonSchema)]

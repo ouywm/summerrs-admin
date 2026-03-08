@@ -9,9 +9,9 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, JoinType, Order, PaginatorTrait, QueryFilter,
     QueryOrder, QuerySelect, RelationTrait,
 };
-use spring::plugin::Service;
+use summer::plugin::Service;
 
-use crate::plugin::sea_orm_plugin::DbConn;
+use crate::plugin::sea_orm::DbConn;
 
 #[derive(Clone, Service)]
 pub struct SysMenuService {

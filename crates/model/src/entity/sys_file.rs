@@ -1,0 +1,50 @@
+//! 系统文件实体
+
+use sea_orm::Set;
+use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[sea_orm::model]
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+#[sea_orm(table_name = "sys_file")]
+pub struct Model {
+    /// 主键 ID
+    #[sea_orm(primary_key)]
+    pub id: i64,
+    /// 存储文件名
+    pub file_name: String,
+    /// 用户上传的原始文件名
+    pub original_name: String,
+    /// S3 对象 key
+    pub file_path: String,
+    /// 文件大小（字节）
+    pub file_size: i64,
+    /// 文件后缀
+    pub file_suffix: String,
+    /// MIME 类型
+    pub mime_type: String,
+    /// 存储桶名称
+    pub bucket: String,
+    /// 文件 MD5 摘要
+    pub file_md5: String,
+    /// 上传人昵称
+    pub upload_by: String,
+    /// 上传人 ID
+    pub upload_by_id: Option<i64>,
+    /// 创建时间
+    pub create_time: DateTime,
+}
+
+#[async_trait::async_trait]
+impl ActiveModelBehavior for ActiveModel {
+    /// 保存前自动设置时间戳
+    async fn before_save<C>(mut self, _db: &C, insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        if insert {
+            self.create_time = Set(chrono::Local::now().naive_local());
+        }
+        Ok(self)
+    }
+}

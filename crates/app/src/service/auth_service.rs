@@ -10,11 +10,11 @@ use model::entity::sys_user;
 use model::entity::sys_user_role;
 use model::vo::auth::LoginVo;
 use sea_orm::{ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
-use spring::plugin::Service;
-use spring_sa_token::StpUtil;
+use summer::plugin::Service;
+use summer_sa_token::StpUtil;
 use std::net::IpAddr;
 
-use crate::plugin::sea_orm_plugin::DbConn;
+use crate::plugin::sea_orm::DbConn;
 use crate::service::login_log_service::LoginLogService;
 
 #[derive(Clone, Service)]
@@ -26,7 +26,12 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    pub async fn login(&self, dto: LoginDto, client_ip: IpAddr, ua_info: UserAgentInfo) -> ApiResult<LoginVo> {
+    pub async fn login(
+        &self,
+        dto: LoginDto,
+        client_ip: IpAddr,
+        ua_info: UserAgentInfo,
+    ) -> ApiResult<LoginVo> {
         // 根据用户名查询用户
         let user = sys_user::Entity::find()
             .filter(sys_user::Column::UserName.eq(&dto.user_name))
@@ -62,16 +67,16 @@ impl AuthService {
             );
             return Err(ApiErrors::Forbidden("账号已注销".to_string()));
         }
-        if user.status == sys_user::UserStatus::Abnormal {
+        if user.status == sys_user::UserStatus::Disabled {
             self.login_log_service.record_login_async(
                 user.id,
                 user.user_name.clone(),
                 client_ip,
                 ua_info,
                 sys_login_log::LoginStatus::Failed,
-                Some("账号状态异常".to_string()),
+                Some("账号已被禁用".to_string()),
             );
-            return Err(ApiErrors::Forbidden("账号状态异常".to_string()));
+            return Err(ApiErrors::Forbidden("账号已被禁用".to_string()));
         }
 
         // 验证密码

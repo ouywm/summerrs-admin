@@ -8,7 +8,7 @@
 //!
 //! 运行: cargo bench -p app --bench task_queue
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -93,109 +93,93 @@ fn bench_end_to_end(c: &mut Criterion) {
 
     for n in [50, 200] {
         // tokio::spawn: 全部并发
-        group.bench_with_input(
-            BenchmarkId::new("tokio_spawn", n),
-            &n,
-            |b, &n| {
-                b.to_async(&rt).iter(|| async move {
-                    let mut handles = Vec::with_capacity(n);
-                    for _ in 0..n {
-                        handles.push(tokio::spawn(async {
-                            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                        }));
-                    }
-                    for h in handles {
-                        let _ = h.await;
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("tokio_spawn", n), &n, |b, &n| {
+            b.to_async(&rt).iter(|| async move {
+                let mut handles = Vec::with_capacity(n);
+                for _ in 0..n {
+                    handles.push(tokio::spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }));
+                }
+                for h in handles {
+                    let _ = h.await;
+                }
+            });
+        });
 
         // tokio::mpsc round-robin 4 workers
-        group.bench_with_input(
-            BenchmarkId::new("tokio_mpsc_rr4", n),
-            &n,
-            |b, &n| {
-                b.to_async(&rt).iter(|| async move {
-                    let mut txs = Vec::new();
-                    let mut consumers = Vec::new();
-                    for _ in 0..4 {
-                        let (tx, mut rx) = mpsc::channel::<BoxTask>(n);
-                        txs.push(tx);
-                        consumers.push(tokio::spawn(async move {
-                            while let Some(t) = rx.recv().await {
-                                t.await;
-                            }
-                        }));
-                    }
-                    for i in 0..n {
-                        let _ = txs[i % 4].try_send(Box::pin(async {
-                            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                        }));
-                    }
-                    drop(txs);
-                    for c in consumers {
-                        let _ = c.await;
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("tokio_mpsc_rr4", n), &n, |b, &n| {
+            b.to_async(&rt).iter(|| async move {
+                let mut txs = Vec::new();
+                let mut consumers = Vec::new();
+                for _ in 0..4 {
+                    let (tx, mut rx) = mpsc::channel::<BoxTask>(n);
+                    txs.push(tx);
+                    consumers.push(tokio::spawn(async move {
+                        while let Some(t) = rx.recv().await {
+                            t.await;
+                        }
+                    }));
+                }
+                for i in 0..n {
+                    let _ = txs[i % 4].try_send(Box::pin(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }));
+                }
+                drop(txs);
+                for c in consumers {
+                    let _ = c.await;
+                }
+            });
+        });
 
         // flume MPMC 4 workers
-        group.bench_with_input(
-            BenchmarkId::new("flume_mpmc_4w", n),
-            &n,
-            |b, &n| {
-                b.to_async(&rt).iter(|| async move {
-                    let (tx, rx) = flume::bounded::<BoxTask>(n);
-                    let mut consumers = Vec::new();
-                    for _ in 0..4 {
-                        let rx = rx.clone();
-                        consumers.push(tokio::spawn(async move {
-                            while let Ok(t) = rx.recv_async().await {
-                                t.await;
-                            }
-                        }));
-                    }
-                    for _ in 0..n {
-                        let _ = tx.try_send(Box::pin(async {
-                            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                        }));
-                    }
-                    drop(tx);
-                    for c in consumers {
-                        let _ = c.await;
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("flume_mpmc_4w", n), &n, |b, &n| {
+            b.to_async(&rt).iter(|| async move {
+                let (tx, rx) = flume::bounded::<BoxTask>(n);
+                let mut consumers = Vec::new();
+                for _ in 0..4 {
+                    let rx = rx.clone();
+                    consumers.push(tokio::spawn(async move {
+                        while let Ok(t) = rx.recv_async().await {
+                            t.await;
+                        }
+                    }));
+                }
+                for _ in 0..n {
+                    let _ = tx.try_send(Box::pin(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }));
+                }
+                drop(tx);
+                for c in consumers {
+                    let _ = c.await;
+                }
+            });
+        });
 
         // kanal MPMC 4 workers
-        group.bench_with_input(
-            BenchmarkId::new("kanal_mpmc_4w", n),
-            &n,
-            |b, &n| {
-                b.to_async(&rt).iter(|| async move {
-                    let (tx, rx) = kanal::bounded_async::<BoxTask>(n);
-                    let mut consumers = Vec::new();
-                    for _ in 0..4 {
-                        let rx = rx.clone();
-                        consumers.push(tokio::spawn(async move {
-                            while let Ok(t) = rx.recv().await {
-                                t.await;
-                            }
-                        }));
-                    }
-                    for _ in 0..n {
-                        let _ = tx.try_send(Box::pin(async {}));
-                    }
-                    drop(tx);
-                    for c in consumers {
-                        let _ = c.await;
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("kanal_mpmc_4w", n), &n, |b, &n| {
+            b.to_async(&rt).iter(|| async move {
+                let (tx, rx) = kanal::bounded_async::<BoxTask>(n);
+                let mut consumers = Vec::new();
+                for _ in 0..4 {
+                    let rx = rx.clone();
+                    consumers.push(tokio::spawn(async move {
+                        while let Ok(t) = rx.recv().await {
+                            t.await;
+                        }
+                    }));
+                }
+                for _ in 0..n {
+                    let _ = tx.try_send(Box::pin(async {}));
+                }
+                drop(tx);
+                for c in consumers {
+                    let _ = c.await;
+                }
+            });
+        });
     }
 
     group.finish();
@@ -269,5 +253,10 @@ fn bench_burst(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_submission_overhead, bench_end_to_end, bench_burst);
+criterion_group!(
+    benches,
+    bench_submission_overhead,
+    bench_end_to_end,
+    bench_burst
+);
 criterion_main!(benches);

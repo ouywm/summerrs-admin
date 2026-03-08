@@ -1,19 +1,18 @@
 use common::error::ApiResult;
-use common::extractor::ValidatedJson;
+use common::extractor::{Path, Query, ValidatedJson};
 use common::response::ApiResponse;
 use macros::log;
 use model::dto::sys_role::{CreateRoleDto, RolePermissionDto, RoleQueryDto, UpdateRoleDto};
 use model::vo::sys_role::{RolePermissionVo, RoleVo};
-use spring_web::axum::extract::{Path, Query};
-use spring_web::axum::Json;
-use spring_web::extractor::Component;
-use spring_web::{delete, get, post, put};
+use summer_web::axum::Json;
+use summer_web::extractor::Component;
+use summer_web::{delete_api, get_api, post_api, put_api};
 
-use crate::plugin::pagination::{Page, Pagination};
+use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::sys_role_service::SysRoleService;
 
 #[log(module = "角色管理", action = "查询角色列表", biz_type = Query)]
-#[get("/role/list")]
+#[get_api("/role/list")]
 pub async fn list_roles(
     Component(svc): Component<SysRoleService>,
     Query(query): Query<RoleQueryDto>,
@@ -24,7 +23,7 @@ pub async fn list_roles(
 }
 
 #[log(module = "角色管理", action = "创建角色", biz_type = Create)]
-#[post("/role")]
+#[post_api("/role")]
 pub async fn create_role(
     Component(svc): Component<SysRoleService>,
     ValidatedJson(dto): ValidatedJson<CreateRoleDto>,
@@ -34,7 +33,7 @@ pub async fn create_role(
 }
 
 #[log(module = "角色管理", action = "更新角色", biz_type = Update)]
-#[put("/role/{role_id}")]
+#[put_api("/role/{role_id}")]
 pub async fn update_role(
     Component(svc): Component<SysRoleService>,
     Path(role_id): Path<i64>,
@@ -45,7 +44,7 @@ pub async fn update_role(
 }
 
 #[log(module = "角色管理", action = "删除角色", biz_type = Delete)]
-#[delete("/role/{role_id}")]
+#[delete_api("/role/{role_id}")]
 pub async fn delete_role(
     Component(svc): Component<SysRoleService>,
     Path(role_id): Path<i64>,
@@ -55,7 +54,7 @@ pub async fn delete_role(
 }
 
 #[log(module = "角色管理", action = "查询角色权限", biz_type = Query)]
-#[get("/role/{role_id}/permissions")]
+#[get_api("/role/{role_id}/permissions")]
 pub async fn get_role_permissions(
     Component(svc): Component<SysRoleService>,
     Path(role_id): Path<i64>,
@@ -65,7 +64,7 @@ pub async fn get_role_permissions(
 }
 
 #[log(module = "角色管理", action = "保存角色权限", biz_type = Update)]
-#[put("/role/{role_id}/permissions")]
+#[put_api("/role/{role_id}/permissions")]
 pub async fn save_role_permissions(
     Component(svc): Component<SysRoleService>,
     Path(role_id): Path<i64>,

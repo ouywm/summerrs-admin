@@ -6,20 +6,20 @@
 //! # 架构
 //!
 //! ```text
-//!  ┌──────────────────────────────────────────────────────────┐
-//!  │                    TypedBatchQueue                       │
+//!  ┌─────────────────────────────────────────────────────────┐
+//!  │                    TypedBatchQueue                      │
 //!  ├──────────────────┬──────────────────────────────────────┤
 //!  │  spawn(future)   │  push::<T>(item)                     │
-//!  │  通用异步任务      │  类型化批量收集（按 TypeId 路由）       │
+//!  │  通用异步任务      │  类型化批量收集（按 TypeId 路由）        │
 //!  │                  │                                      │
-//!  │  ┌─────────┐    │  ┌──────────┐   ┌──────────┐         │
-//!  │  │  flume   │    │  │ flume<A> │   │ flume<B> │  ...    │
-//!  │  │  MPMC    │    │  │ bounded  │   │ bounded  │         │
-//!  │  └─┬──┬──┬─┘    │  └─────┬────┘   └─────┬────┘         │
-//!  │    │  │  │      │        │               │              │
-//!  │    ▼  ▼  ▼      │        ▼               ▼              │
-//!  │   W0  W1 W2     │   FlushWorker     FlushWorker         │
-//!  │                  │   (count/timeout)  (count/timeout)    │
+//!  │  ┌─────────┐     │  ┌──────────┐   ┌──────────┐         │
+//!  │  │  flume  │     │  │ flume<A> │   │ flume<B> │  ...    │
+//!  │  │  MPMC   │     │  │ bounded  │   │ bounded  │         │
+//!  │  └─┬──┬──┬─┘     │  └─────┬────┘   └─────┬────┘         │
+//!  │    │  │  │       │        │              │              │
+//!  │    ▼  ▼  ▼       │        ▼              ▼              │
+//!  │   W0  W1 W2      │   FlushWorker     FlushWorker        │
+//!  │                  │   (count/timeout)  (count/timeout)   │
 //!  └──────────────────┴──────────────────────────────────────┘
 //! ```
 //!
@@ -90,8 +90,7 @@ impl BatchRegistry {
 
     /// 注册一个类型化的 sender
     fn register<T: Send + 'static>(&mut self, sender: flume::Sender<T>) {
-        self.senders
-            .insert(TypeId::of::<T>(), Box::new(sender));
+        self.senders.insert(TypeId::of::<T>(), Box::new(sender));
     }
 
     /// 获取指定类型的 sender

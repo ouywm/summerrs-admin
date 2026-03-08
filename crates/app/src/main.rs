@@ -1,23 +1,27 @@
+mod job;
 mod plugin;
 mod router;
 mod service;
 
 use crate::plugin::background_task::BackgroundTaskPlugin;
-use crate::plugin::ip2region_plugin::Ip2RegionPlugin;
+use crate::plugin::ip2region::Ip2RegionPlugin;
 use crate::plugin::log_batch_collector::LogBatchCollectorPlugin;
-use crate::plugin::sea_orm_plugin::SeaOrmPlugin;
+use crate::plugin::s3::S3Plugin;
+use crate::plugin::sea_orm::SeaOrmPlugin;
 use axum_client_ip::ClientIpSource;
-use spring::auto_config;
-use spring::App;
-use spring_job::JobConfigurator;
-use spring_job::JobPlugin;
-use spring_redis::RedisPlugin;
-use spring_sa_token::{PathAuthBuilder, SaTokenAuthConfigurator, SaTokenPlugin};
-use spring_web::axum::body::Body;
-use spring_web::axum::http;
-use spring_web::LayerConfigurator;
-use spring_web::WebConfigurator;
-use spring_web::WebPlugin;
+use summer::auto_config;
+use summer::App;
+use summer_job::JobConfigurator;
+use summer_job::JobPlugin;
+use summer_mail::MailPlugin;
+use summer_redis::RedisPlugin;
+use summer_sa_token::{PathAuthBuilder, SaTokenAuthConfigurator, SaTokenPlugin};
+use summer_web::axum::body::Body;
+use summer_web::axum::extract::DefaultBodyLimit;
+use summer_web::axum::http;
+use summer_web::LayerConfigurator;
+use summer_web::WebConfigurator;
+use summer_web::WebPlugin;
 use tower_http::catch_panic::CatchPanicLayer;
 
 #[auto_config(WebConfigurator, JobConfigurator)]
@@ -28,13 +32,16 @@ async fn main() {
         .add_plugin(SeaOrmPlugin)
         .add_plugin(RedisPlugin)
         .add_plugin(JobPlugin)
+        .add_plugin(MailPlugin)
         .add_plugin(SaTokenPlugin)
         .add_plugin(Ip2RegionPlugin)
+        .add_plugin(S3Plugin)
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
-        .sa_token_auth(PathAuthBuilder::new().include("/**").exclude("/auth/login"))
+        .sa_token_configure(PathAuthBuilder::new().include("/**").exclude("/auth/login"))
         .add_router_layer(|router| {
             router
+                .layer(DefaultBodyLimit::max(1024 * 1024 * 1024)) // 1GB
                 .layer(ClientIpSource::ConnectInfo.into_extension())
                 .layer(CatchPanicLayer::custom(handle_panic))
         })

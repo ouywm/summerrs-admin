@@ -22,49 +22,21 @@
 //! 注意：SeaORM 的 `insert_many` 不会触发 `ActiveModelBehavior::before_save`，
 //! 因此 service 层必须在 push 之前手动设置 `create_time` 等时间戳字段。
 
+pub mod config;
+
+pub use config::LogBatchConfig;
+
 use std::time::Duration;
 
-use serde::Deserialize;
-use spring::app::AppBuilder;
-use spring::async_trait;
-use spring::config::{ConfigRegistry, Configurable};
-use spring::plugin::{ComponentRegistry, MutableComponentRegistry, Plugin};
-
-use crate::plugin::sea_orm_plugin::DbConn;
+use config::{default_batch_size, default_capacity, default_flush_interval_ms};
 use model::entity::{sys_login_log, sys_operation_log};
 use sea_orm::{ActiveModelTrait, EntityTrait};
+use summer::app::AppBuilder;
+use summer::async_trait;
+use summer::config::ConfigRegistry;
+use summer::plugin::{ComponentRegistry, MutableComponentRegistry, Plugin};
 
-/// 批量收集器配置
-///
-/// ```toml
-/// [log-batch]
-/// batch_size = 50
-/// flush_interval_ms = 500
-/// capacity = 4096
-/// ```
-#[derive(Debug, Deserialize, Configurable)]
-#[config_prefix = "log-batch"]
-pub struct LogBatchConfig {
-    /// 批量大小阈值（累积多少条后触发一次 INSERT，默认 50）
-    #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
-    /// 刷新间隔毫秒（即使不足 batch_size 也强制刷新，默认 500）
-    #[serde(default = "default_flush_interval_ms")]
-    pub flush_interval_ms: u64,
-    /// 通道容量（默认 4096）
-    #[serde(default = "default_capacity")]
-    pub capacity: usize,
-}
-
-fn default_batch_size() -> usize {
-    50
-}
-fn default_flush_interval_ms() -> u64 {
-    500
-}
-fn default_capacity() -> usize {
-    4096
-}
+use crate::plugin::sea_orm::DbConn;
 
 /// 通用日志批量收集器
 #[derive(Clone)]

@@ -1,20 +1,19 @@
 use crate::plugin::background_task::BackgroundTaskQueue;
-use crate::plugin::ip2region_plugin::Ip2RegionSearcher;
+use crate::plugin::ip2region::Ip2RegionSearcher;
 use crate::plugin::log_batch_collector::OperationLogCollector;
-use crate::plugin::pagination::{Page, Pagination, PaginationExt};
-use crate::plugin::sea_orm_plugin::DbConn;
+use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
+use crate::plugin::sea_orm::DbConn;
 use anyhow::Context;
 use common::error::ApiResult;
 use model::dto::operation_log::{CreateOperationLogDto, OperationLogQueryDto};
 use model::entity::sys_operation_log;
 use model::vo::operation_log::{OperationLogDetailVo, OperationLogVo};
-use sea_orm::prelude::IpNetwork;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
-use spring::plugin::Service;
-use spring_sa_token::StpUtil;
-use spring_web::axum::extract::FromRequestParts;
-use spring_web::axum::http::request::Parts;
-use spring_web::extractor::RequestPartsExt;
+use sea_orm::{EntityTrait, QueryFilter, QueryOrder};
+use summer::plugin::Service;
+use summer_sa_token::StpUtil;
+use summer_web::axum::extract::FromRequestParts;
+use summer_web::axum::http::request::Parts;
+use summer_web::extractor::RequestPartsExt;
 use std::net::IpAddr;
 
 #[derive(Clone, Service)]
@@ -44,12 +43,9 @@ pub struct OperationLogContext {
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for OperationLogContext {
-    type Rejection = spring_web::error::WebError;
+    type Rejection = summer_web::error::WebError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let method = parts.method.to_string();
         let query = parts.uri.query().map(|q| q.to_string());
         let uri = parts.uri.to_string();
@@ -87,7 +83,7 @@ impl<S: Send + Sync> FromRequestParts<S> for OperationLogContext {
 }
 
 /// OperationLogContext 是内部日志提取器，对 OpenAPI 文档透明（不生成任何参数描述）
-impl spring_web::aide::OperationInput for OperationLogContext {}
+impl summer_web::aide::OperationInput for OperationLogContext {}
 
 impl OperationLogService {
     /// 从 JWT extra data 获取操作人昵称，失败时返回 None
@@ -104,42 +100,19 @@ impl OperationLogService {
     pub fn record_async(&self, dto: CreateOperationLogDto) {
         let ip_location = self.ip_searcher.search_location(&dto.client_ip);
         let op_collector = self.op_collector.clone();
+        let user_id = dto.user_id;
 
         self.task_queue.spawn(async move {
-            // 通过 login_id 获取操作人昵称
-            let user_name = if dto.user_id > 0 {
-                Self::get_user_name(&dto.user_id.to_string()).await
+            // 通过 login_id 获取操作人昵称，获取失败（如退出登录后 token 已销毁）时回退为"未知用户"
+            let user_name = if user_id > 0 {
+                Self::get_user_name(&user_id.to_string())
+                    .await
+                    .or_else(|| Some("未知用户".to_string()))
             } else {
-                None
+                Some("未知用户".to_string())
             };
 
-            let model = sys_operation_log::ActiveModel {
-                user_id: Set(if dto.user_id > 0 {
-                    Some(dto.user_id)
-                } else {
-                    None
-                }),
-                user_name: Set(user_name),
-                module: Set(dto.module),
-                action: Set(dto.action),
-                business_type: Set(dto.business_type),
-                request_method: Set(dto.request_method),
-                request_url: Set(dto.request_url),
-                request_params: Set(dto.request_params),
-                response_body: Set(dto.response_body),
-                response_code: Set(dto.response_code),
-                client_ip: Set(Some(IpNetwork::from(dto.client_ip))),
-                ip_location: Set(Some(ip_location)),
-                user_agent: Set(dto.user_agent),
-                status: Set(dto.status),
-                error_msg: Set(dto.error_msg),
-                duration: Set(dto.duration),
-                // insert_many 不触发 before_save，手动设置时间戳
-                create_time: Set(chrono::Local::now().naive_local()),
-                ..Default::default()
-            };
-
-            op_collector.push(model);
+            op_collector.push(dto.into_active_model(user_name, ip_location));
         });
     }
 
@@ -149,33 +122,7 @@ impl OperationLogService {
         query: OperationLogQueryDto,
         pagination: Pagination,
     ) -> ApiResult<Page<OperationLogVo>> {
-        let mut select = sys_operation_log::Entity::find();
-
-        if let Some(user_name) = &query.user_name {
-            if !user_name.is_empty() {
-                select = select
-                    .filter(sys_operation_log::Column::UserName.contains(user_name.as_str()));
-            }
-        }
-        if let Some(module) = &query.module {
-            if !module.is_empty() {
-                select =
-                    select.filter(sys_operation_log::Column::Module.contains(module.as_str()));
-            }
-        }
-        if let Some(business_type) = query.business_type {
-            select =
-                select.filter(sys_operation_log::Column::BusinessType.eq(business_type));
-        }
-        if let Some(status) = query.status {
-            select = select.filter(sys_operation_log::Column::Status.eq(status));
-        }
-        if let Some(start_time) = query.start_time {
-            select = select.filter(sys_operation_log::Column::CreateTime.gte(start_time));
-        }
-        if let Some(end_time) = query.end_time {
-            select = select.filter(sys_operation_log::Column::CreateTime.lte(end_time));
-        }
+        let mut select = sys_operation_log::Entity::find().filter(query);
 
         select = select.order_by_desc(sys_operation_log::Column::CreateTime);
 

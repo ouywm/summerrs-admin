@@ -1,9 +1,9 @@
 //! 系统登录日志实体
 
 use schemars::JsonSchema;
+use sea_orm::Set;
 use sea_orm::entity::prelude::IpNetwork;
 use sea_orm::entity::prelude::*;
-use sea_orm::Set;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 

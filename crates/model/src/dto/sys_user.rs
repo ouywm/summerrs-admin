@@ -1,8 +1,8 @@
+use crate::entity::sys_user::{self, Gender, UserStatus};
 use schemars::JsonSchema;
-use sea_orm::Set;
+use sea_orm::{ColumnTrait, Condition, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
-use crate::entity::sys_user::{self, Gender, UserStatus};
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +24,11 @@ pub struct CreateUserDto {
 
 impl CreateUserDto {
     /// 转换为 ActiveModel
-    pub fn into_active_model(self, hashed_password: String, operator: String) -> sys_user::ActiveModel {
+    pub fn into_active_model(
+        self,
+        hashed_password: String,
+        operator: String,
+    ) -> sys_user::ActiveModel {
         sys_user::ActiveModel {
             user_name: Set(self.user_name),
             password: Set(hashed_password),
@@ -33,7 +37,7 @@ impl CreateUserDto {
             phone: Set(self.phone.unwrap_or_default()),
             email: Set(self.email.unwrap_or_default()),
             avatar: Set(self.avatar.unwrap_or_default()),
-            status: Set(self.status.unwrap_or(UserStatus::Online)),
+            status: Set(self.status.unwrap_or(UserStatus::Enabled)),
             create_by: Set(operator.clone()),
             update_by: Set(operator),
             ..Default::default()
@@ -90,6 +94,28 @@ pub struct UserQueryDto {
     pub user_email: Option<String>,
     pub status: Option<UserStatus>,
     pub user_gender: Option<Gender>,
+}
+
+impl From<UserQueryDto> for Condition {
+    fn from(query: UserQueryDto) -> Self {
+        let mut cond = Condition::all();
+        if let Some(name) = query.user_name {
+            cond = cond.add(sys_user::Column::UserName.contains(name));
+        }
+        if let Some(phone) = query.user_phone {
+            cond = cond.add(sys_user::Column::Phone.contains(phone));
+        }
+        if let Some(email) = query.user_email {
+            cond = cond.add(sys_user::Column::Email.contains(email));
+        }
+        if let Some(status) = query.status {
+            cond = cond.add(sys_user::Column::Status.eq(status));
+        }
+        if let Some(gender) = query.user_gender {
+            cond = cond.add(sys_user::Column::Gender.eq(gender));
+        }
+        cond
+    }
 }
 
 /// 重置密码请求参数

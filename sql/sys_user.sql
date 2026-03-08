@@ -29,7 +29,7 @@ COMMENT ON COLUMN sys_user.gender IS '性别：0-未知 1-男 2-女';
 COMMENT ON COLUMN sys_user.phone IS '手机号';
 COMMENT ON COLUMN sys_user.email IS '邮箱';
 COMMENT ON COLUMN sys_user.avatar IS '头像URL';
-COMMENT ON COLUMN sys_user.status IS '状态：1-在线 2-离线 3-异常 4-注销';
+COMMENT ON COLUMN sys_user.status IS '状态：1-启用 2-禁用 3-注销';
 COMMENT ON COLUMN sys_user.create_by IS '创建人';
 COMMENT ON COLUMN sys_user.create_time IS '创建时间';
 COMMENT ON COLUMN sys_user.update_by IS '更新人';

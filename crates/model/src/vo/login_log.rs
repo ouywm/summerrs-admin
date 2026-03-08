@@ -1,5 +1,5 @@
-use common::serde_utils::datetime_format;
 use chrono::NaiveDateTime;
+use common::serde_utils::datetime_format;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::net::IpAddr;

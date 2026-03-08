@@ -1,14 +1,13 @@
 use common::error::ApiResult;
-use common::extractor::{LoginIdExtractor, ValidatedJson};
+use common::extractor::{LoginIdExtractor, Path, Query, ValidatedJson};
 use common::response::ApiResponse;
 use macros::log;
 use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
-use spring_web::axum::extract::{Path, Query};
-use spring_web::extractor::Component;
-use spring_web::{delete, get, get_api, post, put};
+use summer_web::extractor::Component;
+use summer_web::{delete_api, get_api, post_api, put_api};
 
-use crate::plugin::pagination::{Page, Pagination};
+use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::sys_user_service::SysUserService;
 
 #[log(module = "用户管理", action = "获取用户信息", biz_type = Query)]
@@ -22,7 +21,7 @@ pub async fn get_user_info(
 }
 
 #[log(module = "用户管理", action = "获取用户详情", biz_type = Query)]
-#[get("/user/{id}")]
+#[get_api("/user/{id}")]
 pub async fn get_user_detail(
     Component(svc): Component<SysUserService>,
     Path(id): Path<i64>,
@@ -32,7 +31,7 @@ pub async fn get_user_detail(
 }
 
 #[log(module = "用户管理", action = "查询用户列表", biz_type = Query)]
-#[get("/user/list")]
+#[get_api("/user/list")]
 pub async fn list_users(
     Component(svc): Component<SysUserService>,
     Query(query): Query<UserQueryDto>,
@@ -43,7 +42,7 @@ pub async fn list_users(
 }
 
 #[log(module = "用户管理", action = "创建用户", biz_type = Create)]
-#[post("/user")]
+#[post_api("/user")]
 pub async fn create_user(
     LoginIdExtractor(login_id): LoginIdExtractor,
     Component(svc): Component<SysUserService>,
@@ -54,7 +53,7 @@ pub async fn create_user(
 }
 
 #[log(module = "用户管理", action = "更新用户", biz_type = Update)]
-#[put("/user/{id}")]
+#[put_api("/user/{id}")]
 pub async fn update_user(
     LoginIdExtractor(login_id): LoginIdExtractor,
     Component(svc): Component<SysUserService>,
@@ -66,7 +65,7 @@ pub async fn update_user(
 }
 
 #[log(module = "用户管理", action = "删除用户", biz_type = Delete)]
-#[delete("/user/{id}")]
+#[delete_api("/user/{id}")]
 pub async fn delete_user(
     Component(svc): Component<SysUserService>,
     Path(id): Path<i64>,
@@ -76,7 +75,7 @@ pub async fn delete_user(
 }
 
 #[log(module = "用户管理", action = "重置用户密码", biz_type = Update, save_params = false)]
-#[put("/user/{id}/reset-password")]
+#[put_api("/user/{id}/reset-password")]
 pub async fn reset_user_password(
     Component(svc): Component<SysUserService>,
     Path(id): Path<i64>,

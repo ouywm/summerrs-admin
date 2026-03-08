@@ -1,26 +1,17 @@
 //! ip2region 插件：通过 IP 地址查询地理位置
 
+pub mod config;
+
+pub use config::Ip2RegionConfig;
+
 use std::net::IpAddr;
 use std::sync::Arc;
 
 use ip2region::{CachePolicy, Searcher};
-use serde::Deserialize;
-use spring::app::AppBuilder;
-use spring::async_trait;
-use spring::config::{ConfigRegistry, Configurable};
-use spring::plugin::{MutableComponentRegistry, Plugin};
-
-#[derive(Debug, Clone, Deserialize, Configurable)]
-#[config_prefix = "ip2region"]
-pub struct Ip2RegionConfig {
-    #[serde(default = "default_ipv4_db_path")]
-    pub ipv4_db_path: String,
-    pub ipv6_db_path: Option<String>,
-}
-
-fn default_ipv4_db_path() -> String {
-    "./data/ip2region_v4.xdb".to_string()
-}
+use summer::app::AppBuilder;
+use summer::async_trait;
+use summer::config::ConfigRegistry;
+use summer::plugin::{MutableComponentRegistry, Plugin};
 
 struct Ip2RegionInner {
     ipv4: Searcher,

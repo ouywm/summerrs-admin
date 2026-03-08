@@ -1,4 +1,4 @@
-use spring_web::ProblemDetails;
+use summer_web::ProblemDetails;
 
 pub type ApiResult<T, E = ApiErrors> = Result<T, E>;
 
@@ -25,6 +25,12 @@ pub enum ApiErrors {
     #[status_code(409)]
     #[error("{0}")]
     Conflict(String),
+
+    /// 分片上传不完整（前端应调用 list_parts 获取缺失分片并续传）
+    #[status_code(409)]
+    #[problem_type("multipart-incomplete")]
+    #[error("{0}")]
+    IncompleteUpload(String),
 
     #[status_code(422)]
     #[error("{0}")]

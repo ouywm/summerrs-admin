@@ -1,5 +1,5 @@
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 
 fn main() {
@@ -112,7 +112,9 @@ fn convert_to_json(js_str: &str) -> Result<Value, String> {
 
     // 处理对象开头的键名
     let obj_start_key_re = Regex::new(r#"(\{\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:"#).unwrap();
-    json_str = obj_start_key_re.replace_all(&json_str, r#"$1"$2":"#).to_string();
+    json_str = obj_start_key_re
+        .replace_all(&json_str, r#"$1"$2":"#)
+        .to_string();
 
     // 移除尾随逗号
     let trailing_comma_re = Regex::new(r",(\s*[}\]])").unwrap();

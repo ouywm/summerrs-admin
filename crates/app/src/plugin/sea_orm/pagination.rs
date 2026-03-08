@@ -4,7 +4,7 @@ use sea_orm::{
     ConnectionTrait, EntityTrait, FromQueryResult, PaginatorTrait, Select, Selector, SelectorTrait,
 };
 use serde::{Deserialize, Serialize};
-use spring::async_trait;
+use summer::async_trait;
 use thiserror::Error;
 
 /// pagination information.
@@ -34,14 +34,14 @@ impl Pagination {
 
 mod web {
     use super::Pagination;
-    use crate::plugin::sea_orm_plugin::SeaOrmWebConfig;
+    use crate::plugin::sea_orm::SeaOrmWebConfig;
     use schemars::JsonSchema;
     use serde::Deserialize;
-    use spring_web::axum::extract::rejection::QueryRejection;
-    use spring_web::axum::extract::{FromRequestParts, Query};
-    use spring_web::axum::http::request::Parts;
-    use spring_web::axum::response::IntoResponse;
-    use spring_web::extractor::RequestPartsExt;
+    use summer_web::axum::extract::rejection::QueryRejection;
+    use summer_web::axum::extract::{FromRequestParts, Query};
+    use summer_web::axum::http::request::Parts;
+    use summer_web::axum::response::IntoResponse;
+    use summer_web::extractor::RequestPartsExt;
     use std::result::Result as StdResult;
     use thiserror::Error;
 
@@ -51,11 +51,11 @@ mod web {
         QueryRejection(#[from] QueryRejection),
 
         #[error(transparent)]
-        WebError(#[from] spring_web::error::WebError),
+        WebError(#[from] summer_web::error::WebError),
     }
 
     impl IntoResponse for SeaOrmWebErr {
-        fn into_response(self) -> spring_web::axum::response::Response {
+        fn into_response(self) -> summer_web::axum::response::Response {
             match self {
                 Self::QueryRejection(e) => e.into_response(),
                 Self::WebError(e) => e.into_response(),
@@ -103,28 +103,32 @@ mod web {
                 pagination.page.unwrap_or(0)
             };
 
-            Ok(Pagination { page, size, one_indexed: config.one_indexed })
+            Ok(Pagination {
+                page,
+                size,
+                one_indexed: config.one_indexed,
+            })
         }
     }
 
-    impl spring_web::aide::OperationInput for Pagination {
+    impl summer_web::aide::OperationInput for Pagination {
         fn operation_input(
-            ctx: &mut spring_web::aide::generate::GenContext,
-            operation: &mut spring_web::aide::openapi::Operation,
+            ctx: &mut summer_web::aide::generate::GenContext,
+            operation: &mut summer_web::aide::openapi::Operation,
         ) {
-            <Query<OptionalPagination> as spring_web::aide::OperationInput>::operation_input(
+            <Query<OptionalPagination> as summer_web::aide::OperationInput>::operation_input(
                 ctx, operation,
             );
         }
 
         fn inferred_early_responses(
-            ctx: &mut spring_web::aide::generate::GenContext,
-            operation: &mut spring_web::aide::openapi::Operation,
+            ctx: &mut summer_web::aide::generate::GenContext,
+            operation: &mut summer_web::aide::openapi::Operation,
         ) -> Vec<(
-            Option<spring_web::aide::openapi::StatusCode>,
-            spring_web::aide::openapi::Response,
+            Option<summer_web::aide::openapi::StatusCode>,
+            summer_web::aide::openapi::Response,
         )> {
-            <Query<OptionalPagination> as spring_web::aide::OperationInput>::inferred_early_responses(ctx, operation)
+            <Query<OptionalPagination> as summer_web::aide::OperationInput>::inferred_early_responses(ctx, operation)
         }
     }
 }

@@ -9,6 +9,10 @@ resolver = "2"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
+aws-config = "1.8.14"
+aws-credential-types = "1.2.13"
+aws-sdk-s3 = "1.124.0"
+aws-smithy-types = "1.4.6"
 argon2 = "0.5"
 axum-client-ip = "1.3.1"
 axum-valid = "0.22.0"
@@ -24,6 +28,8 @@ kanal = "0.1"
 ipnetwork = "0.21.1"
 macros = { path = "crates/macros" }
 mime = "0.3.17"
+mime_guess = "2"
+md-5 = "0.10"
 model = { path = "crates/model" }
 parking_lot = "0.12.5"
 password-hash = "0.5"
@@ -36,13 +42,16 @@ schema = "0.1.0"
 schemars = "1.1"
 sea-orm = "2.0.0-rc.34"
 serde = "1.0.228"
+sysinfo = "0.35"
 serde_repr = "0.1"
 serde_json = "1.0.149"
-spring = "0.4.8"
-spring-job = "0.4.7"
-spring-redis = "0.4.4"
-spring-sa-token = "0.4.1"
-spring-web = "0.4.17"
+lettre = "0.11"
+summer = "0.5.0"
+summer-job = "0.5.0"
+summer-mail = "0.5.0"
+summer-redis = "0.5.0"
+summer-sa-token = "0.5.0"
+summer-web = "0.5.0"
 thiserror = "2.0.18"
 tokio = "1.49.0"
 tower = "0.5.3"
@@ -53,9 +62,14 @@ uuid = "1.21.0"
 validator = "0.20.0"
 woothee = "0.13"
 criterion = "0.5"
-ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
+ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master" }
+#ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
 indexmap = "2.13.0"
 [patch.crates-io]
-spring = { path = "/Volumes/990pro/code/rust/spring-rs/spring" }
-spring-macros = { path = "/Volumes/990pro/code/rust/spring-rs/spring-macros" }
-spring-web = { path = "/Volumes/990pro/code/rust/spring-rs/spring-web" }
+summer = { path = "/Volumes/990pro/code/rust/spring-rs/summer" }
+summer-macros = { path = "/Volumes/990pro/code/rust/spring-rs/summer-macros" }
+summer-web = { path = "/Volumes/990pro/code/rust/spring-rs/summer-web" }
+summer-job = { path = "/Volumes/990pro/code/rust/spring-rs/summer-job" }
+summer-mail = { path = "/Volumes/990pro/code/rust/spring-rs/summer-mail" }
+summer-redis = { path = "/Volumes/990pro/code/rust/spring-rs/summer-redis" }
+summer-sa-token = { path = "/Volumes/990pro/code/rust/spring-rs/summer-sa-token" }

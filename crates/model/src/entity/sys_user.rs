@@ -1,13 +1,24 @@
 //! 系统用户实体
 
 use schemars::JsonSchema;
-use sea_orm::entity::prelude::*;
 use sea_orm::Set;
+use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// 性别（0: 未知, 1: 男, 2: 女）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize_repr, Deserialize_repr, JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    EnumIter,
+    DeriveActiveEnum,
+    Serialize_repr,
+    Deserialize_repr,
+    JsonSchema,
+)]
 #[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
 #[repr(i16)]
 pub enum Gender {
@@ -22,23 +33,31 @@ pub enum Gender {
     Female = 2,
 }
 
-/// 用户状态（1: 在线, 2: 离线, 3: 异常, 4: 注销）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize_repr, Deserialize_repr, JsonSchema)]
+/// 用户账号状态（1: 启用, 2: 禁用, 3: 注销）
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    EnumIter,
+    DeriveActiveEnum,
+    Serialize_repr,
+    Deserialize_repr,
+    JsonSchema,
+)]
 #[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
 #[repr(i16)]
 pub enum UserStatus {
-    /// 在线
+    /// 启用 - 账号正常可用
     #[sea_orm(num_value = 1)]
-    Online = 1,
-    /// 离线
+    Enabled = 1,
+    /// 禁用 - 管理员封禁，禁止登录
     #[sea_orm(num_value = 2)]
-    Offline = 2,
-    /// 异常
+    Disabled = 2,
+    /// 注销 - 用户主动注销或管理员删除（逻辑删除）
     #[sea_orm(num_value = 3)]
-    Abnormal = 3,
-    /// 注销
-    #[sea_orm(num_value = 4)]
-    Cancelled = 4,
+    Cancelled = 3,
 }
 
 #[sea_orm::model]

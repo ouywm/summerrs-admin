@@ -1,13 +1,24 @@
 //! 系统操作日志实体
 
 use schemars::JsonSchema;
-use sea_orm::entity::prelude::*;
 use sea_orm::Set;
+use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// 操作类型（0=其他, 1=新增, 2=修改, 3=删除, 4=查询, 5=导出, 6=导入, 7=授权）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize_repr, Deserialize_repr, JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    EnumIter,
+    DeriveActiveEnum,
+    Serialize_repr,
+    Deserialize_repr,
+    JsonSchema,
+)]
 #[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
 #[repr(i16)]
 pub enum BusinessType {
@@ -38,7 +49,18 @@ pub enum BusinessType {
 }
 
 /// 操作状态（1=成功, 2=失败, 3=异常）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize_repr, Deserialize_repr, JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    EnumIter,
+    DeriveActiveEnum,
+    Serialize_repr,
+    Deserialize_repr,
+    JsonSchema,
+)]
 #[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
 #[repr(i16)]
 pub enum OperationStatus {

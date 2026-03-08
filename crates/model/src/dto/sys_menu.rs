@@ -4,16 +4,6 @@ use sea_orm::Set;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct MenuQueryDto {
-    pub name: Option<String>,
-    pub path: Option<String>,
-    pub title: Option<String>,
-    pub menu_type: Option<MenuType>,
-    pub enabled: Option<bool>,
-}
-
 /// 创建菜单 DTO（menu_type = 1）
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]

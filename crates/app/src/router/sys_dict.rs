@@ -1,0 +1,130 @@
+use common::error::ApiResult;
+use common::extractor::{LoginIdExtractor, Path, Query, ValidatedJson};
+use common::response::ApiResponse;
+use macros::log;
+use model::dto::sys_dict::{
+    CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto, UpdateDictDataDto,
+    UpdateDictTypeDto,
+};
+use model::vo::sys_dict::{DictDataSimpleVo, DictDataVo, DictTypeVo};
+use summer_web::extractor::Component;
+use summer_web::{delete_api, get_api, post_api, put_api};
+use std::collections::HashMap;
+
+use crate::plugin::sea_orm::pagination::{Page, Pagination};
+use crate::service::sys_dict_service::SysDictService;
+
+// ============================================================
+// 字典类型路由
+// ============================================================
+
+#[log(module = "字典管理", action = "查询字典类型列表", biz_type = Query)]
+#[get_api("/dict/type/list")]
+pub async fn list_dict_types(
+    Component(svc): Component<SysDictService>,
+    Query(query): Query<DictTypeQueryDto>,
+    pagination: Pagination,
+) -> ApiResult<ApiResponse<Page<DictTypeVo>>> {
+    let vo = svc.list_dict_types(query, pagination).await?;
+    Ok(ApiResponse::ok(vo))
+}
+
+#[log(module = "字典管理", action = "创建字典类型", biz_type = Create)]
+#[post_api("/dict/type")]
+pub async fn create_dict_type(
+    LoginIdExtractor(login_id): LoginIdExtractor,
+    Component(svc): Component<SysDictService>,
+    ValidatedJson(dto): ValidatedJson<CreateDictTypeDto>,
+) -> ApiResult<ApiResponse<()>> {
+    svc.create_dict_type(dto, &login_id).await?;
+    Ok(ApiResponse::empty_with_msg("创建成功"))
+}
+
+#[log(module = "字典管理", action = "更新字典类型", biz_type = Update)]
+#[put_api("/dict/type/{id}")]
+pub async fn update_dict_type(
+    LoginIdExtractor(login_id): LoginIdExtractor,
+    Component(svc): Component<SysDictService>,
+    Path(id): Path<i64>,
+    ValidatedJson(dto): ValidatedJson<UpdateDictTypeDto>,
+) -> ApiResult<ApiResponse<()>> {
+    svc.update_dict_type(id, dto, &login_id).await?;
+    Ok(ApiResponse::empty_with_msg("更新成功"))
+}
+
+#[log(module = "字典管理", action = "删除字典类型", biz_type = Delete)]
+#[delete_api("/dict/type/{id}")]
+pub async fn delete_dict_type(
+    Component(svc): Component<SysDictService>,
+    Path(id): Path<i64>,
+) -> ApiResult<ApiResponse<()>> {
+    svc.delete_dict_type(id).await?;
+    Ok(ApiResponse::empty_with_msg("删除成功"))
+}
+
+// ============================================================
+// 字典数据路由
+// ============================================================
+
+#[log(module = "字典管理", action = "查询字典数据列表", biz_type = Query)]
+#[get_api("/dict/data/list")]
+pub async fn list_dict_data(
+    Component(svc): Component<SysDictService>,
+    Query(query): Query<DictDataQueryDto>,
+    pagination: Pagination,
+) -> ApiResult<ApiResponse<Page<DictDataVo>>> {
+    let vo = svc.list_dict_data(query, pagination).await?;
+    Ok(ApiResponse::ok(vo))
+}
+
+#[log(module = "字典管理", action = "根据类型获取字典数据", biz_type = Query, save_params = false)]
+#[get_api("/dict/data/by-type/{dict_type}")]
+pub async fn get_dict_data_by_type(
+    Component(svc): Component<SysDictService>,
+    Path(dict_type): Path<String>,
+) -> ApiResult<ApiResponse<Vec<DictDataSimpleVo>>> {
+    let vo = svc.get_dict_data_by_type(&dict_type).await?;
+    Ok(ApiResponse::ok(vo))
+}
+
+#[log(module = "字典管理", action = "获取全量字典数据", biz_type = Query, save_params = false)]
+#[get_api("/dict/all")]
+pub async fn get_all_dict_data(
+    Component(svc): Component<SysDictService>,
+) -> ApiResult<ApiResponse<HashMap<String, Vec<DictDataSimpleVo>>>> {
+    let vo = svc.get_all_dict_data().await?;
+    Ok(ApiResponse::ok(vo))
+}
+
+#[log(module = "字典管理", action = "创建字典数据", biz_type = Create)]
+#[post_api("/dict/data")]
+pub async fn create_dict_data(
+    LoginIdExtractor(login_id): LoginIdExtractor,
+    Component(svc): Component<SysDictService>,
+    ValidatedJson(dto): ValidatedJson<CreateDictDataDto>,
+) -> ApiResult<ApiResponse<()>> {
+    svc.create_dict_data(dto, &login_id).await?;
+    Ok(ApiResponse::empty_with_msg("创建成功"))
+}
+
+#[log(module = "字典管理", action = "更新字典数据", biz_type = Update)]
+#[put_api("/dict/data/{id}")]
+pub async fn update_dict_data(
+    LoginIdExtractor(login_id): LoginIdExtractor,
+    Component(svc): Component<SysDictService>,
+    Path(id): Path<i64>,
+    ValidatedJson(dto): ValidatedJson<UpdateDictDataDto>,
+) -> ApiResult<ApiResponse<()>> {
+    svc.update_dict_data(id, dto, &login_id).await?;
+    Ok(ApiResponse::empty_with_msg("更新成功"))
+}
+
+#[log(module = "字典管理", action = "删除字典数据", biz_type = Delete)]
+#[delete_api("/dict/data/{id}")]
+pub async fn delete_dict_data(
+    Component(svc): Component<SysDictService>,
+    Path(id): Path<i64>,
+) -> ApiResult<ApiResponse<()>> {
+    svc.delete_dict_data(id).await?;
+    Ok(ApiResponse::empty_with_msg("删除成功"))
+}

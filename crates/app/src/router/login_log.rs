@@ -1,17 +1,17 @@
 use common::error::ApiResult;
+use common::extractor::Query;
 use common::response::ApiResponse;
 use macros::log;
 use model::dto::login_log::LoginLogQueryDto;
 use model::vo::login_log::LoginLogVo;
-use spring_web::axum::extract::Query;
-use spring_web::extractor::Component;
-use spring_web::get;
+use summer_web::extractor::Component;
+use summer_web::get_api;
 
-use crate::plugin::pagination::{Page, Pagination};
+use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::login_log_service::LoginLogService;
 
 #[log(module = "登录日志", action = "查询登录日志", biz_type = Query)]
-#[get("/login-log/list")]
+#[get_api("/login-log/list")]
 pub async fn list_login_logs(
     Component(svc): Component<LoginLogService>,
     Query(query): Query<LoginLogQueryDto>,

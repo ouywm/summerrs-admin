@@ -106,7 +106,13 @@ impl SqlGenerator {
         }
     }
 
-    fn generate_menu_insert(&self, id: i64, parent_id: i64, route: &RouteRecord, sort: i32) -> String {
+    fn generate_menu_insert(
+        &self,
+        id: i64,
+        parent_id: i64,
+        route: &RouteRecord,
+        sort: i32,
+    ) -> String {
         let component = if route.component.is_empty() {
             String::new()
         } else {
@@ -183,18 +189,16 @@ fn main() {
     };
 
     // 读取 JSON 文件
-    let content = fs::read_to_string(json_path)
-        .unwrap_or_else(|e| {
-            eprintln!("读取文件失败: {}", e);
-            std::process::exit(1);
-        });
+    let content = fs::read_to_string(json_path).unwrap_or_else(|e| {
+        eprintln!("读取文件失败: {}", e);
+        std::process::exit(1);
+    });
 
     // 解析 JSON
-    let routes: Vec<RouteRecord> = serde_json::from_str(&content)
-        .unwrap_or_else(|e| {
-            eprintln!("解析 JSON 失败: {}", e);
-            std::process::exit(1);
-        });
+    let routes: Vec<RouteRecord> = serde_json::from_str(&content).unwrap_or_else(|e| {
+        eprintln!("解析 JSON 失败: {}", e);
+        std::process::exit(1);
+    });
 
     // 生成 SQL
     let mut generator = SqlGenerator::new(start_id);
@@ -206,7 +210,10 @@ fn main() {
             eprintln!("写入文件失败: {}", e);
             std::process::exit(1);
         });
-        eprintln!("✅ 生成成功: {} -> {} (起始ID: {})", json_path, output_path, start_id);
+        eprintln!(
+            "✅ 生成成功: {} -> {} (起始ID: {})",
+            json_path, output_path, start_id
+        );
     } else {
         println!("{}", sql);
     }

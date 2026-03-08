@@ -12,8 +12,10 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 garde = { workspace = true }
-indexmap = {workspace = true}
+indexmap = { workspace = true }
+md-5 = { workspace = true }
 mime = { workspace = true }
+mime_guess = { workspace = true }
 parking_lot = { workspace = true }
 password-hash = { workspace = true }
 rand = { workspace = true }
@@ -21,7 +23,7 @@ regex = { workspace = true }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-spring-web = { workspace = true, features = ["openapi"] }
+summer-web = { workspace = true, features = ["openapi", "multipart"] }
 thiserror = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }

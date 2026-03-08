@@ -1,13 +1,24 @@
 //! 系统菜单实体（包含菜单和按钮权限）
 
 use schemars::JsonSchema;
-use sea_orm::entity::prelude::*;
 use sea_orm::Set;
+use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// 菜单类型（1: 菜单, 2: 按钮权限）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize_repr, Deserialize_repr, JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    EnumIter,
+    DeriveActiveEnum,
+    Serialize_repr,
+    Deserialize_repr,
+    JsonSchema,
+)]
 #[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
 #[repr(i16)]
 pub enum MenuType {

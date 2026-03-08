@@ -6,10 +6,10 @@ use common::user_agent::UserAgentInfo;
 use macros::log;
 use model::dto::auth::LoginDto;
 use model::vo::auth::LoginVo;
-use spring_sa_token::sa_ignore;
-use spring_web::axum::http::HeaderMap;
-use spring_web::extractor::Component;
-use spring_web::{post, post_api};
+use summer_sa_token::sa_ignore;
+use summer_web::axum::http::HeaderMap;
+use summer_web::extractor::Component;
+use summer_web::post_api;
 
 #[log(module = "认证管理", action = "用户登录", biz_type = Auth, save_params = false)]
 #[sa_ignore]
@@ -26,7 +26,7 @@ pub async fn login(
 }
 
 #[log(module = "认证管理", action = "退出登录", biz_type = Auth)]
-#[post("/auth/logout")]
+#[post_api("/auth/logout")]
 pub async fn logout(
     LoginIdExtractor(login_id): LoginIdExtractor,
     Component(svc): Component<AuthService>,

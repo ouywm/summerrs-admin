@@ -1,4 +1,4 @@
-pub mod entity;
 pub mod dto;
-pub mod vo;
+pub mod entity;
 pub mod views;
+pub mod vo;

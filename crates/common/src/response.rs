@@ -1,6 +1,6 @@
 use serde::Serialize;
-use spring_web::axum::response::IntoResponse;
-use spring_web::axum::{self, Json};
+use summer_web::axum::response::IntoResponse;
+use summer_web::axum::{self, Json};
 
 /// 业务成功码
 const SUCCESS_CODE: i32 = 200;
@@ -78,17 +78,17 @@ impl<T: Serialize> IntoResponse for ApiResponse<T> {
 }
 
 /// 为 aide OpenAPI 文档生成提供支持
-impl<T: Serialize + schemars::JsonSchema> spring_web::aide::OperationOutput for ApiResponse<T> {
+impl<T: Serialize + schemars::JsonSchema> summer_web::aide::OperationOutput for ApiResponse<T> {
     type Inner = Self;
 
     fn operation_response(
-        ctx: &mut spring_web::aide::generate::GenContext,
-        _operation: &mut spring_web::aide::openapi::Operation,
-    ) -> Option<spring_web::aide::openapi::Response> {
+        ctx: &mut summer_web::aide::generate::GenContext,
+        _operation: &mut summer_web::aide::openapi::Operation,
+    ) -> Option<summer_web::aide::openapi::Response> {
         let json_schema = ctx.schema.subschema_for::<Self>();
         let resolved = ctx.resolve_schema(&json_schema);
 
-        Some(spring_web::aide::openapi::Response {
+        Some(summer_web::aide::openapi::Response {
             description: resolved
                 .get("description")
                 .and_then(|d| d.as_str())
@@ -96,8 +96,8 @@ impl<T: Serialize + schemars::JsonSchema> spring_web::aide::OperationOutput for 
                 .unwrap_or_default(),
             content: indexmap::IndexMap::from_iter([(
                 "application/json".into(),
-                spring_web::aide::openapi::MediaType {
-                    schema: Some(spring_web::aide::openapi::SchemaObject {
+                summer_web::aide::openapi::MediaType {
+                    schema: Some(summer_web::aide::openapi::SchemaObject {
                         json_schema,
                         example: None,
                         external_docs: None,
@@ -110,11 +110,14 @@ impl<T: Serialize + schemars::JsonSchema> spring_web::aide::OperationOutput for 
     }
 
     fn inferred_responses(
-        ctx: &mut spring_web::aide::generate::GenContext,
-        operation: &mut spring_web::aide::openapi::Operation,
-    ) -> Vec<(Option<spring_web::aide::openapi::StatusCode>, spring_web::aide::openapi::Response)> {
+        ctx: &mut summer_web::aide::generate::GenContext,
+        operation: &mut summer_web::aide::openapi::Operation,
+    ) -> Vec<(
+        Option<summer_web::aide::openapi::StatusCode>,
+        summer_web::aide::openapi::Response,
+    )> {
         if let Some(res) = Self::operation_response(ctx, operation) {
-            vec![(Some(spring_web::aide::openapi::StatusCode::Code(200)), res)]
+            vec![(Some(summer_web::aide::openapi::StatusCode::Code(200)), res)]
         } else {
             vec![]
         }

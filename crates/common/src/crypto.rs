@@ -1,8 +1,8 @@
 //! 密码哈希与验证工具（基于 Argon2id）
 
 use anyhow::{Context, Result};
-use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
+use argon2::password_hash::rand_core::OsRng;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 
 /// 默认密码

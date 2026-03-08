@@ -2,7 +2,8 @@ use chrono::NaiveDateTime;
 use common::user_agent::UserAgentInfo;
 use schemars::JsonSchema;
 use sea_orm::prelude::IpNetwork;
-use sea_orm::Set;
+use sea_orm::sea_query::{Alias, Expr};
+use sea_orm::{ColumnTrait, Condition, ExprTrait, Set};
 use serde::Deserialize;
 use std::net::IpAddr;
 
@@ -17,6 +18,37 @@ pub struct LoginLogQueryDto {
     pub start_time: Option<NaiveDateTime>,
     pub end_time: Option<NaiveDateTime>,
     pub status: Option<LoginStatus>,
+}
+
+impl From<LoginLogQueryDto> for Condition {
+    fn from(query: LoginLogQueryDto) -> Self {
+        let mut cond = Condition::all();
+        if let Some(user_name) = query.user_name {
+            if !user_name.is_empty() {
+                cond = cond.add(sys_login_log::Column::UserName.contains(user_name));
+            }
+        }
+        // 特殊处理：IP 字段需要 cast 为 text
+        if let Some(login_ip) = query.login_ip {
+            if !login_ip.is_empty() {
+                cond = cond.add(
+                    Expr::col((sys_login_log::Entity, sys_login_log::Column::LoginIp))
+                        .cast_as(Alias::new("text"))
+                        .like(format!("%{}%", login_ip)),
+                );
+            }
+        }
+        if let Some(start) = query.start_time {
+            cond = cond.add(sys_login_log::Column::LoginTime.gte(start));
+        }
+        if let Some(end) = query.end_time {
+            cond = cond.add(sys_login_log::Column::LoginTime.lte(end));
+        }
+        if let Some(status) = query.status {
+            cond = cond.add(sys_login_log::Column::Status.eq(status));
+        }
+        cond
+    }
 }
 
 /// 创建登录日志
