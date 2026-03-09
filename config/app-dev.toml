@@ -51,15 +51,20 @@ ipv4_db_path = "./data/ip2region_v4.xdb"
 [auth]
 token_name = "Authorization"
 token_prefix = "Bearer "
-access_timeout = 86400
-refresh_timeout = 604800
+access_timeout = 5
+refresh_timeout = 10
 auto_renew = true
 concurrent_login = true
 share_token = true
-token_style = "uuid"
+token_style = "jwt"
 max_devices = 5
 is_read_cookie = false
 # cookie_name = "token"
+#jwt_algorithm = "HS256"
+#jwt_secret = "SRKhqjfTyXMjnfMW0419DJfZFqxnsF97AQMk5soPlnk2dI/O0dUR3GIp/OUHXTptzR7DqlXJsQ99GUK6v28YcA=="
+jwt_algorithm = "RS256"
+jwt_private_key = "./data/rsa_private.pem"
+jwt_public_key = "./data/rsa_public.pem"
 
 [log-batch]
 batch_size = 100

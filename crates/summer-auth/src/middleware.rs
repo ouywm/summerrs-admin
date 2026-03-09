@@ -102,8 +102,16 @@ where
                         }
 
                         // 加载完整 UserSession 并注入 extensions
-                        if let Ok(Some(session)) = manager.get_session(&login_id).await {
-                            req.extensions_mut().insert(session);
+                        match manager.get_session(&login_id).await {
+                            Ok(Some(session)) => {
+                                req.extensions_mut().insert(session);
+                            }
+                            Ok(None) => {
+                                tracing::warn!("Session not found for authenticated user: {:?}", login_id);
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to load session for {:?}: {}", login_id, e);
+                            }
                         }
 
                         // 注入 LoginId 到 extensions

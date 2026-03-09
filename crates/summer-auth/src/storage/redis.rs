@@ -40,10 +40,16 @@ impl AuthStorage for RedisStorage {
         let mut conn = self.conn.clone();
         let val: Option<String> = conn.get(key).await?;
         match val {
-            Some(json) => {
-                let session: UserSession = serde_json::from_str(&json)?;
-                Ok(Some(session))
-            }
+            Some(json) => match serde_json::from_str::<UserSession>(&json) {
+                Ok(session) => Ok(Some(session)),
+                Err(e) => {
+                    // 旧格式数据无法反序列化，清除后返回 None
+                    tracing::warn!("Session deserialization failed for key '{}', clearing: {}", key, e);
+                    let mut conn2 = self.conn.clone();
+                    let _ = conn2.del::<_, ()>(key).await;
+                    Ok(None)
+                }
+            },
             None => Ok(None),
         }
     }

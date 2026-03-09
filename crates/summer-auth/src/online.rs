@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::{AuthError, AuthResult};
+use crate::error::AuthResult;
 use crate::session::SessionManager;
 use crate::user_type::{DeviceType, LoginId, UserType};
 
@@ -49,8 +49,7 @@ impl SessionManager {
             let keys = self
                 .storage
                 .keys_by_prefix(&session_prefix)
-                .await
-                .map_err(|e| AuthError::StorageError(e.to_string()))?;
+                .await?;
 
             for key in keys {
                 if let Ok(Some(session)) = self.storage.get_session(&key).await {

@@ -1,8 +1,7 @@
 use crate::error::{AuthError, AuthResult};
 use crate::session::manager::LoginParams;
 use crate::session::SessionManager;
-use crate::token::generator::TokenGenerator;
-use crate::token::pair::TokenPair;
+use crate::token::{TokenGenerator, TokenPair};
 use crate::user_type::LoginId;
 
 fn qr_key(code: &str) -> String {
@@ -28,13 +27,11 @@ impl SessionManager {
     pub async fn create_qr_code(&self) -> AuthResult<String> {
         let code = TokenGenerator::uuid();
         let state = QrCodeState::Pending;
-        let json =
-            serde_json::to_string(&state).map_err(|e| AuthError::Internal(e.to_string()))?;
+        let json = serde_json::to_string(&state).map_err(|e| AuthError::Internal(e.to_string()))?;
 
         self.storage
             .set_string(&qr_key(&code), &json, self.config.qr_code_timeout)
-            .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+            .await?;
 
         Ok(code)
     }
@@ -54,8 +51,7 @@ impl SessionManager {
             serde_json::to_string(&new_state).map_err(|e| AuthError::Internal(e.to_string()))?;
         self.storage
             .set_string(&qr_key(code), &json, self.config.qr_code_timeout)
-            .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+            .await?;
 
         Ok(())
     }
@@ -76,8 +72,7 @@ impl SessionManager {
             serde_json::to_string(&new_state).map_err(|e| AuthError::Internal(e.to_string()))?;
         self.storage
             .set_string(&qr_key(code), &json, self.config.qr_code_timeout)
-            .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+            .await?;
 
         Ok(())
     }
@@ -95,8 +90,7 @@ impl SessionManager {
             serde_json::to_string(&new_state).map_err(|e| AuthError::Internal(e.to_string()))?;
         self.storage
             .set_string(&qr_key(code), &json, self.config.qr_code_timeout)
-            .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+            .await?;
 
         Ok(())
     }
@@ -111,8 +105,7 @@ impl SessionManager {
         let json = self
             .storage
             .get_string(&qr_key(code))
-            .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .await?
             .ok_or(AuthError::QrCodeNotFound)?;
 
         serde_json::from_str(&json).map_err(|e| AuthError::Internal(e.to_string()))

@@ -29,6 +29,24 @@ impl<S: Send + Sync> FromRequestParts<S> for LoginUser {
     }
 }
 
+impl LoginUser {
+    pub fn login_id(&self) -> &LoginId {
+        &self.session.login_id
+    }
+
+    pub fn profile(&self) -> &UserProfile {
+        &self.session.profile
+    }
+
+    pub fn roles(&self) -> &[String] {
+        self.session.profile.roles()
+    }
+
+    pub fn permissions(&self) -> &[String] {
+        self.session.profile.permissions()
+    }
+}
+
 /// LoginUser 对 OpenAPI 文档透明
 #[cfg(feature = "openapi")]
 impl summer_web::aide::OperationInput for LoginUser {}

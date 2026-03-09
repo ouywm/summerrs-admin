@@ -1,6 +1,6 @@
 use common::error::ApiResult;
 use common::extractor::{Path, Query, ValidatedJson};
-use macros::log;
+use macros::{check_permission, log};
 use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
 use common::response::Json;
@@ -21,6 +21,17 @@ pub async fn get_user_info(
     Ok(Json(vo))
 }
 
+#[get_api("/user/list")]
+#[log(module = "用户管理", action = "查询用户列表", biz_type = Query)]
+pub async fn list_users(
+    Component(svc): Component<SysUserService>,
+    Query(query): Query<UserQueryDto>,
+    pagination: Pagination,
+) -> ApiResult<Json<Page<UserVo>>> {
+    let vo = svc.list_users(query, pagination).await?;
+    Ok(Json(vo))
+}
+
 #[log(module = "用户管理", action = "获取用户详情", biz_type = Query)]
 #[get_api("/user/{id}")]
 pub async fn get_user_detail(
@@ -31,17 +42,7 @@ pub async fn get_user_detail(
     Ok(Json(vo))
 }
 
-#[log(module = "用户管理", action = "查询用户列表", biz_type = Query)]
-#[get_api("/user/list")]
-pub async fn list_users(
-    Component(svc): Component<SysUserService>,
-    Query(query): Query<UserQueryDto>,
-    pagination: Pagination,
-) -> ApiResult<Json<Page<UserVo>>> {
-    let vo = svc.list_users(query, pagination).await?;
-    Ok(Json(vo))
-}
-
+#[check_permission("system:user:create")]
 #[log(module = "用户管理", action = "创建用户", biz_type = Create)]
 #[post_api("/user")]
 pub async fn create_user(

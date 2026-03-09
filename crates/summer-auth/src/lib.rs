@@ -22,9 +22,9 @@ pub use online::{OnlineUser, OnlineUserPage, OnlineUserQuery};
 pub use qrcode::QrCodeState;
 pub use session::{
     AdminProfile, BusinessProfile, CustomerProfile, LoginParams, SessionManager, UserProfile,
+    permission_matches,
 };
 pub use token::TokenPair;
-pub use token::{JwtClaims, JwtHandler};
 pub use user_type::{DeviceType, LoginId, UserType};
 
 #[cfg(feature = "web")]

@@ -253,12 +253,18 @@ async fn refresh_token_works() {
 
     // 新 access token 不同
     assert_ne!(new_pair.access_token, pair.access_token);
-    // refresh token 保持不变
-    assert_eq!(new_pair.refresh_token, pair.refresh_token);
+    // refresh token 轮转：新的不同于旧的
+    assert_ne!(new_pair.refresh_token, pair.refresh_token);
     // 新 access token 有效
     assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
     // 旧 access token 失效
     assert!(mgr.validate_token(&pair.access_token).await.is_err());
+    // 旧 refresh token 不能再次使用
+    assert!(mgr.refresh(&pair.refresh_token).await.is_err());
+    // 新 refresh token 可以继续刷新
+    let third_pair = mgr.refresh(&new_pair.refresh_token).await.unwrap();
+    assert_ne!(third_pair.refresh_token, new_pair.refresh_token);
+    assert!(mgr.validate_token(&third_pair.access_token).await.is_ok());
 }
 
 #[tokio::test]
@@ -744,12 +750,18 @@ mod jwt_tests {
 
         // 新 access token 不同
         assert_ne!(new_pair.access_token, pair.access_token);
-        // refresh token 保持不变
-        assert_eq!(new_pair.refresh_token, pair.refresh_token);
+        // refresh token 轮转：新的不同于旧的
+        assert_ne!(new_pair.refresh_token, pair.refresh_token);
         // 新 access token 有效
         assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
         // 旧 access token 失效（被黑名单）
         assert!(mgr.validate_token(&pair.access_token).await.is_err());
+        // 旧 refresh token 不能再次使用（被黑名单）
+        assert!(mgr.refresh(&pair.refresh_token).await.is_err());
+        // 新 refresh token 可以继续刷新
+        let third_pair = mgr.refresh(&new_pair.refresh_token).await.unwrap();
+        assert_ne!(third_pair.refresh_token, new_pair.refresh_token);
+        assert!(mgr.validate_token(&third_pair.access_token).await.is_ok());
     }
 
     #[tokio::test]
@@ -844,4 +856,165 @@ mod jwt_tests {
         let result = mgr.validate_token(&pair.refresh_token).await;
         assert!(matches!(result, Err(AuthError::InvalidToken)));
     }
+}
+
+// ── 权限通配符 + 批量 RBAC 测试 ──
+
+#[tokio::test]
+async fn permission_wildcard_trailing() {
+    let mgr = make_manager();
+    let mut params = admin_login_params(1);
+    // 设置通配符权限
+    if let UserProfile::Admin(ref mut p) = params.profile {
+        p.permissions = vec!["system:*".to_string(), "order:item:*".to_string()];
+    }
+    mgr.login(params).await.unwrap();
+
+    let id = LoginId::admin(1);
+
+    // system:* 匹配 system 下所有
+    assert!(mgr.has_permission(&id, "system:user:list").await.unwrap());
+    assert!(mgr.has_permission(&id, "system:role:add").await.unwrap());
+    assert!(mgr.has_permission(&id, "system:menu:delete").await.unwrap());
+
+    // order:item:* 匹配 order:item 下所有
+    assert!(mgr.has_permission(&id, "order:item:list").await.unwrap());
+    assert!(mgr.has_permission(&id, "order:item:edit").await.unwrap());
+
+    // 不匹配其他模块
+    assert!(!mgr.has_permission(&id, "order:list").await.unwrap());
+    assert!(!mgr.has_permission(&id, "finance:report").await.unwrap());
+}
+
+#[tokio::test]
+async fn permission_wildcard_super() {
+    let mgr = make_manager();
+    let mut params = admin_login_params(1);
+    if let UserProfile::Admin(ref mut p) = params.profile {
+        p.permissions = vec!["*".to_string()];
+    }
+    mgr.login(params).await.unwrap();
+
+    let id = LoginId::admin(1);
+    assert!(mgr.has_permission(&id, "system:user:list").await.unwrap());
+    assert!(mgr.has_permission(&id, "any:thing:at:all").await.unwrap());
+}
+
+#[tokio::test]
+async fn permission_wildcard_middle() {
+    let mgr = make_manager();
+    let mut params = admin_login_params(1);
+    if let UserProfile::Admin(ref mut p) = params.profile {
+        p.permissions = vec!["system:*:list".to_string()];
+    }
+    mgr.login(params).await.unwrap();
+
+    let id = LoginId::admin(1);
+    assert!(mgr.has_permission(&id, "system:user:list").await.unwrap());
+    assert!(mgr.has_permission(&id, "system:role:list").await.unwrap());
+    assert!(!mgr.has_permission(&id, "system:user:add").await.unwrap());
+}
+
+#[tokio::test]
+async fn has_any_role_works() {
+    let mgr = make_manager();
+    mgr.login(admin_login_params(1)).await.unwrap();
+
+    let id = LoginId::admin(1);
+    // admin_login_params 有 roles: ["admin"]
+    assert!(mgr.has_any_role(&id, &["admin", "user"]).await.unwrap());
+    assert!(mgr.has_any_role(&id, &["user", "admin"]).await.unwrap());
+    assert!(!mgr.has_any_role(&id, &["user", "editor"]).await.unwrap());
+}
+
+#[tokio::test]
+async fn has_all_roles_works() {
+    let mgr = make_manager();
+    let mut params = admin_login_params(1);
+    if let UserProfile::Admin(ref mut p) = params.profile {
+        p.roles = vec!["admin".to_string(), "editor".to_string()];
+    }
+    mgr.login(params).await.unwrap();
+
+    let id = LoginId::admin(1);
+    assert!(mgr.has_all_roles(&id, &["admin", "editor"]).await.unwrap());
+    assert!(mgr.has_all_roles(&id, &["admin"]).await.unwrap());
+    assert!(!mgr.has_all_roles(&id, &["admin", "superadmin"]).await.unwrap());
+}
+
+#[tokio::test]
+async fn check_any_role_error() {
+    let mgr = make_manager();
+    mgr.login(admin_login_params(1)).await.unwrap();
+
+    let id = LoginId::admin(1);
+    assert!(mgr.check_any_role(&id, &["admin", "user"]).await.is_ok());
+    assert!(matches!(
+        mgr.check_any_role(&id, &["user", "editor"]).await,
+        Err(AuthError::NoRole(_))
+    ));
+}
+
+#[tokio::test]
+async fn check_all_roles_error() {
+    let mgr = make_manager();
+    mgr.login(admin_login_params(1)).await.unwrap();
+
+    let id = LoginId::admin(1);
+    assert!(mgr.check_all_roles(&id, &["admin"]).await.is_ok());
+    let result = mgr.check_all_roles(&id, &["admin", "superadmin"]).await;
+    assert!(matches!(result, Err(AuthError::NoRole(r)) if r == "superadmin"));
+}
+
+#[tokio::test]
+async fn has_any_permission_with_wildcard() {
+    let mgr = make_manager();
+    let mut params = admin_login_params(1);
+    if let UserProfile::Admin(ref mut p) = params.profile {
+        p.permissions = vec!["system:user:*".to_string()];
+    }
+    mgr.login(params).await.unwrap();
+
+    let id = LoginId::admin(1);
+    assert!(mgr.has_any_permission(&id, &["system:user:list", "order:list"]).await.unwrap());
+    assert!(!mgr.has_any_permission(&id, &["order:list", "finance:report"]).await.unwrap());
+}
+
+#[tokio::test]
+async fn has_all_permissions_with_wildcard() {
+    let mgr = make_manager();
+    let mut params = admin_login_params(1);
+    if let UserProfile::Admin(ref mut p) = params.profile {
+        p.permissions = vec!["system:*".to_string(), "order:item:list".to_string()];
+    }
+    mgr.login(params).await.unwrap();
+
+    let id = LoginId::admin(1);
+    assert!(mgr.has_all_permissions(&id, &["system:user:list", "order:item:list"]).await.unwrap());
+    assert!(!mgr.has_all_permissions(&id, &["system:user:list", "order:item:edit"]).await.unwrap());
+}
+
+#[tokio::test]
+async fn check_any_permission_error() {
+    let mgr = make_manager();
+    mgr.login(admin_login_params(1)).await.unwrap();
+
+    let id = LoginId::admin(1);
+    // admin_login_params 有 permissions: ["system:user:list", "system:user:add"]
+    assert!(mgr.check_any_permission(&id, &["system:user:list", "nonexist"]).await.is_ok());
+    assert!(matches!(
+        mgr.check_any_permission(&id, &["nonexist1", "nonexist2"]).await,
+        Err(AuthError::NoPermission(_))
+    ));
+}
+
+#[tokio::test]
+async fn check_all_permissions_error() {
+    let mgr = make_manager();
+    mgr.login(admin_login_params(1)).await.unwrap();
+
+    let id = LoginId::admin(1);
+    assert!(mgr.check_all_permissions(&id, &["system:user:list", "system:user:add"]).await.is_ok());
+    let result = mgr.check_all_permissions(&id, &["system:user:list", "system:user:delete"]).await;
+    assert!(matches!(result, Err(AuthError::NoPermission(p)) if p == "system:user:delete"));
 }
