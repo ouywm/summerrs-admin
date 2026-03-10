@@ -2,18 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::user_type::{DeviceType, LoginId};
 
-/// UUID 模式的 Redis session 数据
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UuidSessionData {
-    pub login_id: String,
-    pub device: String,
-    pub iat: i64,
-    pub user_name: String,
-    pub nick_name: String,
-    pub roles: Vec<String>,
-    pub permissions: Vec<String>,
-}
-
 /// Admin 用户档案（含 RBAC）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminProfile {

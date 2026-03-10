@@ -6,7 +6,6 @@ edition = "2024"
 
 [dependencies]
 summer = { workspace = true }
-macros = { path = "../macros" }
 summer-web = { workspace = true, features = ["openapi"], optional = true }
 summer-redis = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }

@@ -51,7 +51,6 @@ ipv4_db_path = "./data/ip2region_v4.xdb"
 [auth]
 token_name = "Authorization"
 token_prefix = "Bearer "
-token_style = "jwt"
 access_timeout = 5
 refresh_timeout = 10
 concurrent_login = true
@@ -65,17 +64,6 @@ jwt_audience = "summer-admin"
 jwt_algorithm = "RS256"
 jwt_private_key = "./data/rsa_private.pem"
 jwt_public_key = "./data/rsa_public.pem"
-
-# Per-UserType 覆盖示例:
-# [auth.customer]
-# token_style = "uuid"
-# access_timeout = 3600
-# refresh_timeout = 86400
-
-[auth.admin]
-token_style = "uuid"
-access_timeout = 7200
-refresh_timeout = 604800
 
 [log-batch]
 batch_size = 100

@@ -374,11 +374,10 @@ impl AuthService {
 
     /// 刷新 Token
     pub async fn refresh_token(&self, refresh_token: &str) -> ApiResult<LoginVo> {
-        // 1. 先解析 refresh token 拿到 login_id
+        // 1. 先解析 refresh JWT 拿到 login_id（不查 Redis）
         let login_id = self
             .auth
             .parse_refresh_token(refresh_token)
-            .await
             .map_err(|e| ApiErrors::Unauthorized(e.to_string()))?;
 
         // 2. 根据用户类型从 DB 查询最新 profile

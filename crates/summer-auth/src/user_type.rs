@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 用户类型枚举 — 通过不同的 prefix 隔离 Redis 键空间
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, macros::MultiAuth)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UserType {
     /// 系统管理员（后台）
     Admin,

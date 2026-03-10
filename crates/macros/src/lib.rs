@@ -1,6 +1,5 @@
 mod auth_macro;
 mod log_macro;
-mod multi_auth_macro;
 
 use proc_macro::TokenStream;
 
@@ -121,24 +120,4 @@ pub fn has_perms(args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
     auth_macro::expand_check_roles(args.into(), input.into()).into()
-}
-
-/// 多类型认证 derive 宏
-///
-/// 为 UserType 枚举生成 `config_key()` 方法，返回变体名的小写形式。
-/// 用于 TOML 配置中按用户类型覆盖认证参数。
-///
-/// # 示例
-///
-/// ```rust,ignore
-/// #[derive(MultiAuth)]
-/// pub enum UserType {
-///     Admin,     // → config_key() = "admin"
-///     Business,  // → config_key() = "business"
-///     Customer,  // → config_key() = "customer"
-/// }
-/// ```
-#[proc_macro_derive(MultiAuth)]
-pub fn multi_auth(input: TokenStream) -> TokenStream {
-    multi_auth_macro::expand(input.into()).into()
 }

@@ -30,7 +30,7 @@ impl SessionManager {
         let json = serde_json::to_string(&state).map_err(|e| AuthError::Internal(e.to_string()))?;
 
         self.storage
-            .set_string(&qr_key(&code), &json, self.config().qr_code_timeout)
+            .set_string(&qr_key(&code), &json, self.config.qr_code_timeout)
             .await?;
 
         Ok(code)
@@ -50,7 +50,7 @@ impl SessionManager {
         let json =
             serde_json::to_string(&new_state).map_err(|e| AuthError::Internal(e.to_string()))?;
         self.storage
-            .set_string(&qr_key(code), &json, self.config().qr_code_timeout)
+            .set_string(&qr_key(code), &json, self.config.qr_code_timeout)
             .await?;
 
         Ok(())
@@ -71,7 +71,7 @@ impl SessionManager {
         let json =
             serde_json::to_string(&new_state).map_err(|e| AuthError::Internal(e.to_string()))?;
         self.storage
-            .set_string(&qr_key(code), &json, self.config().qr_code_timeout)
+            .set_string(&qr_key(code), &json, self.config.qr_code_timeout)
             .await?;
 
         Ok(())
@@ -89,7 +89,7 @@ impl SessionManager {
         let json =
             serde_json::to_string(&new_state).map_err(|e| AuthError::Internal(e.to_string()))?;
         self.storage
-            .set_string(&qr_key(code), &json, self.config().qr_code_timeout)
+            .set_string(&qr_key(code), &json, self.config.qr_code_timeout)
             .await?;
 
         Ok(())
