@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 
-use crate::session::model::UserSession;
 use crate::storage::AuthStorage;
 
 /// 每隔多少次写操作执行一次过期清理
@@ -64,45 +63,6 @@ impl Default for MemoryStorage {
 
 #[async_trait::async_trait]
 impl AuthStorage for MemoryStorage {
-    async fn set_session(
-        &self,
-        key: &str,
-        session: &UserSession,
-        ttl_seconds: i64,
-    ) -> anyhow::Result<()> {
-        let json = serde_json::to_string(session)?;
-        let expires_at = if ttl_seconds > 0 {
-            Some(chrono::Local::now().timestamp() + ttl_seconds)
-        } else {
-            None
-        };
-        self.data.write().insert(
-            key.to_string(),
-            Entry {
-                value: json,
-                expires_at,
-            },
-        );
-        self.maybe_cleanup();
-        Ok(())
-    }
-
-    async fn get_session(&self, key: &str) -> anyhow::Result<Option<UserSession>> {
-        let data = self.data.read();
-        match data.get(key) {
-            Some(entry) if !entry.is_expired() => {
-                let session: UserSession = serde_json::from_str(&entry.value)?;
-                Ok(Some(session))
-            }
-            Some(_) => {
-                drop(data);
-                self.data.write().remove(key);
-                Ok(None)
-            }
-            None => Ok(None),
-        }
-    }
-
     async fn set_string(&self, key: &str, value: &str, ttl_seconds: i64) -> anyhow::Result<()> {
         let expires_at = if ttl_seconds > 0 {
             Some(chrono::Local::now().timestamp() + ttl_seconds)

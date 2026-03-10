@@ -6,7 +6,7 @@ use syn::{Ident, ItemFn, LitStr, Token};
 
 // ── 参数解析 ──
 
-/// 单个字符串参数，用于 `#[check_permission("perm")]` / `#[check_role("role")]`
+/// 单个字符串参数，用于 `#[has_perm("perm")]` / `#[has_role("role")]`
 pub struct SingleArg {
     pub value: String,
 }
@@ -27,7 +27,7 @@ pub enum CheckMode {
     Or,
 }
 
-/// 多值参数，用于 `#[check_permissions(and("a", "b"))]` / `#[check_roles(or("a", "b"))]`
+/// 多值参数，用于 `#[has_perms(and("a", "b"))]` / `#[has_roles(or("a", "b"))]`
 pub struct MultiArgs {
     pub mode: CheckMode,
     pub values: Vec<String>,
@@ -42,7 +42,7 @@ impl Parse for MultiArgs {
             _ => {
                 return Err(syn::Error::new(
                     mode_ident.span(),
-                    "期望 `and` 或 `or`，如 #[check_permissions(and(\"a\", \"b\"))]",
+                    "期望 `and` 或 `or`，如 #[has_perms(and(\"a\", \"b\"))]",
                 ))
             }
         };
@@ -67,7 +67,7 @@ impl Parse for MultiArgs {
 
 // ── 宏展开 ──
 
-/// `#[check_login]` — 注入 LoginUser 提取器确保已登录
+/// `#[login]` — 注入 LoginUser 提取器确保已登录
 ///
 /// 展开后在参数列表中注入 `_: summer_auth::LoginUser`，
 /// 如果用户未登录，LoginUser 提取器会返回 401。
@@ -99,7 +99,7 @@ pub fn expand_check_login(_args: TokenStream, input: TokenStream) -> TokenStream
     }
 }
 
-/// `#[check_permission("perm")]` — 单权限检查（支持通配符匹配）
+/// `#[has_perm("perm")]` — 单权限检查（支持通配符匹配）
 pub fn expand_check_permission(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg = match syn::parse2::<SingleArg>(args) {
         Ok(a) => a,
@@ -126,7 +126,7 @@ pub fn expand_check_permission(args: TokenStream, input: TokenStream) -> TokenSt
     wrap_with_guard(&item_fn, check_code)
 }
 
-/// `#[check_role("role")]` — 单角色检查
+/// `#[has_role("role")]` — 单角色检查
 pub fn expand_check_role(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg = match syn::parse2::<SingleArg>(args) {
         Ok(a) => a,
@@ -151,7 +151,7 @@ pub fn expand_check_role(args: TokenStream, input: TokenStream) -> TokenStream {
     wrap_with_guard(&item_fn, check_code)
 }
 
-/// `#[check_permissions(and("a", "b"))]` 或 `#[check_permissions(or("a", "b"))]`
+/// `#[has_perms(and("a", "b"))]` 或 `#[has_perms(or("a", "b"))]`
 pub fn expand_check_permissions(args: TokenStream, input: TokenStream) -> TokenStream {
     let multi = match syn::parse2::<MultiArgs>(args) {
         Ok(a) => a,
@@ -199,7 +199,7 @@ pub fn expand_check_permissions(args: TokenStream, input: TokenStream) -> TokenS
     wrap_with_guard(&item_fn, check_code)
 }
 
-/// `#[check_roles(and("a", "b"))]` 或 `#[check_roles(or("a", "b"))]`
+/// `#[has_roles(and("a", "b"))]` 或 `#[has_roles(or("a", "b"))]`
 pub fn expand_check_roles(args: TokenStream, input: TokenStream) -> TokenStream {
     let multi = match syn::parse2::<MultiArgs>(args) {
         Ok(a) => a,

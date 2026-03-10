@@ -1,13 +1,17 @@
 use summer_web::axum::body::Body;
 use summer_web::axum::extract::Request;
 use summer_web::axum::http;
+use summer_web::axum::response::IntoResponse;
 use summer_web::problem_details::ProblemDetails;
 use summer_web::axum::response::Response;
 use tower_layer::Layer;
 
 use crate::config::AuthConfig;
+use crate::error::AuthError;
 use crate::path_auth::PathAuthConfig;
+use crate::session::model::{AdminProfile, BusinessProfile, CustomerProfile, UserProfile, UserSession};
 use crate::session::SessionManager;
+use crate::user_type::UserType;
 
 /// AuthLayer — Axum Layer
 #[derive(Clone)]
@@ -84,41 +88,43 @@ where
             if let Some(token) = token {
                 // 有 token，尝试验证
                 match manager.validate_token(&token).await {
-                    Ok(login_id) => {
+                    Ok(validated) => {
                         // 检查用户类型限制
                         if let Some(path_config) = &path_config {
                             if let Some(allowed_types) =
                                 path_config.allowed_user_types(&path)
                             {
-                                if !allowed_types.contains(&login_id.user_type) {
+                                if !allowed_types.contains(&validated.login_id.user_type) {
                                     return Ok(forbidden_response());
                                 }
                             }
                         }
 
-                        // auto_renew：验证成功后续期 access token 的 TTL
-                        if config.auto_renew {
-                            manager.renew_access_token(&token, &login_id).await;
-                        }
+                        // 从 ValidatedAccess 构造 UserSession 并注入 extensions
+                        let login_id = validated.login_id.clone();
+                        let profile = build_profile_from_validated(&validated);
+                        let session = UserSession {
+                            login_id: validated.login_id,
+                            device: validated.device,
+                            profile,
+                        };
 
-                        // 加载完整 UserSession 并注入 extensions
-                        match manager.get_session(&login_id).await {
-                            Ok(Some(session)) => {
-                                req.extensions_mut().insert(session);
-                            }
-                            Ok(None) => {
-                                tracing::warn!("Session not found for authenticated user: {:?}", login_id);
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to load session for {:?}: {}", login_id, e);
-                            }
-                        }
-
-                        // 注入 LoginId 到 extensions
+                        req.extensions_mut().insert(session);
                         req.extensions_mut().insert(login_id);
                     }
+                    Err(AuthError::AccountBanned) if requires_auth => {
+                        return Ok(banned_response());
+                    }
+                    Err(AuthError::AccountBanned) => {
+                        // 不需要鉴权的路径，封禁用户也继续
+                    }
+                    Err(AuthError::RefreshRequired) if requires_auth => {
+                        return Ok(refresh_required_response());
+                    }
+                    Err(AuthError::RefreshRequired) => {
+                        // 不需要鉴权的路径，继续
+                    }
                     Err(_) if requires_auth => {
-                        // Token 无效 + 需要鉴权 → 401
                         return Ok(unauthorized_response());
                     }
                     Err(_) => {
@@ -143,6 +149,8 @@ fn extract_token(req: &Request, config: &AuthConfig) -> Option<String> {
     }
 
     // 2. 从 Cookie 提取（如果启用）
+    // TODO: 启用 Cookie 模式时需要实现 CSRF 防护
+    // 方案：登录时签发 CSRF token，前端在 Header 中携带，中间件双重校验
     if config.is_read_cookie {
         if let Some(token) = extract_token_from_cookie(req, config) {
             return Some(token);
@@ -194,18 +202,54 @@ fn extract_token_from_cookie(req: &Request, config: &AuthConfig) -> Option<Strin
     None
 }
 
-/// 构建 401 未授权响应（RFC 7807 ProblemDetails 格式）
+/// 根据 ValidatedAccess 中的 login_id 用户类型构建 UserProfile
+fn build_profile_from_validated(validated: &crate::session::model::ValidatedAccess) -> UserProfile {
+    match validated.login_id.user_type {
+        UserType::Admin => UserProfile::Admin(AdminProfile {
+            user_name: validated.user_name.clone(),
+            nick_name: validated.nick_name.clone(),
+            avatar: String::new(),
+            roles: validated.roles.clone(),
+            permissions: validated.permissions.clone(),
+        }),
+        UserType::Business => UserProfile::Business(BusinessProfile {
+            user_name: validated.user_name.clone(),
+            nick_name: validated.nick_name.clone(),
+            avatar: String::new(),
+            roles: validated.roles.clone(),
+            permissions: validated.permissions.clone(),
+        }),
+        UserType::Customer => UserProfile::Customer(CustomerProfile {
+            nick_name: validated.nick_name.clone(),
+            avatar: String::new(),
+        }),
+    }
+}
+
+/// 构建 401 未授权响应
 fn unauthorized_response() -> Response<Body> {
-    use summer_web::axum::response::IntoResponse;
     ProblemDetails::new("not-authenticated", "Unauthorized", 401)
         .with_detail("未登录或登录已过期")
         .into_response()
 }
 
-/// 构建 403 禁止访问响应（RFC 7807 ProblemDetails 格式）
+/// 构建 403 禁止访问响应
 fn forbidden_response() -> Response<Body> {
-    use summer_web::axum::response::IntoResponse;
     ProblemDetails::new("forbidden", "Forbidden", 403)
         .with_detail("无权访问该资源")
+        .into_response()
+}
+
+/// 构建 403 封禁响应
+fn banned_response() -> Response<Body> {
+    ProblemDetails::new("account-banned", "Forbidden", 403)
+        .with_detail("账号已被封禁")
+        .into_response()
+}
+
+/// 构建 401 需要刷新响应
+fn refresh_required_response() -> Response<Body> {
+    ProblemDetails::new("token-refresh-required", "Unauthorized", 401)
+        .with_detail("Token 需要刷新")
         .into_response()
 }

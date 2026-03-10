@@ -79,6 +79,9 @@ pub struct Model {
     pub auth_name: String,
     /// 权限标识
     pub auth_mark: String,
+    /// 权限位图位置（按钮权限专用，从 0 开始自增）
+    #[sea_orm(column_type = "Integer", nullable)]
+    pub bit_position: Option<i32>,
     /// 排序值（越小越靠前）
     pub sort: i32,
     /// 是否启用

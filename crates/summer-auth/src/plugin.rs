@@ -6,7 +6,7 @@ use summer::config::ConfigRegistry;
 use summer::plugin::{ComponentRegistry, MutableComponentRegistry, Plugin};
 use summer_web::LayerConfigurator;
 
-use crate::config::AuthConfig;
+use crate::config::MultiAuthConfig;
 use crate::middleware::AuthLayer;
 use crate::path_auth::PathAuthConfig;
 use crate::session::SessionManager;
@@ -18,7 +18,7 @@ pub struct SummerAuthPlugin;
 impl Plugin for SummerAuthPlugin {
     async fn build(&self, app: &mut AppBuilder) {
         let config = app
-            .get_config::<AuthConfig>()
+            .get_config::<MultiAuthConfig>()
             .expect("auth plugin config load failed");
 
         tracing::info!("Initializing summer-auth plugin...");
@@ -26,8 +26,8 @@ impl Plugin for SummerAuthPlugin {
         // 创建存储后端
         let storage: Arc<dyn AuthStorage> = Self::create_storage(app);
 
-        // 创建 SessionManager
-        let manager = SessionManager::new(storage, config);
+        // 创建 SessionManager（使用 MultiAuthConfig）
+        let manager = SessionManager::from_multi_config(storage, config);
         app.add_component(manager.clone());
 
         // 注册中间件

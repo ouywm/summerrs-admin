@@ -6,6 +6,7 @@ mod service;
 use crate::plugin::background_task::BackgroundTaskPlugin;
 use crate::plugin::ip2region::Ip2RegionPlugin;
 use crate::plugin::log_batch_collector::LogBatchCollectorPlugin;
+use crate::plugin::perm_bitmap::PermBitmapPlugin;
 use crate::plugin::s3::S3Plugin;
 use crate::plugin::sea_orm::SeaOrmPlugin;
 use axum_client_ip::ClientIpSource;
@@ -34,6 +35,7 @@ async fn main() {
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
         .add_plugin(SummerAuthPlugin)
+        .add_plugin(PermBitmapPlugin)
         .add_plugin(Ip2RegionPlugin)
         .add_plugin(S3Plugin)
         .add_plugin(BackgroundTaskPlugin)

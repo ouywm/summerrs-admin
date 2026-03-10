@@ -14,7 +14,7 @@ use sea_orm::{ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, Rela
 use summer::plugin::Service;
 use summer_auth::{
     AdminProfile, BusinessProfile, CustomerProfile, DeviceType, LoginId, LoginParams,
-    SessionManager, UserProfile,
+    SessionManager, UserProfile, UserType,
 };
 use std::net::IpAddr;
 
@@ -364,9 +364,9 @@ impl AuthService {
     }
 
     /// 登出
-    pub async fn logout(&self, login_id: &LoginId) -> ApiResult<()> {
+    pub async fn logout(&self, login_id: &LoginId, device: &DeviceType) -> ApiResult<()> {
         self.auth
-            .logout(login_id, &DeviceType::Web)
+            .logout(login_id, device)
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
         Ok(())
@@ -374,11 +374,23 @@ impl AuthService {
 
     /// 刷新 Token
     pub async fn refresh_token(&self, refresh_token: &str) -> ApiResult<LoginVo> {
-        let pair = self
+        // 1. 先解析 refresh token 拿到 login_id
+        let login_id = self
             .auth
-            .refresh(refresh_token)
+            .parse_refresh_token(refresh_token)
             .await
             .map_err(|e| ApiErrors::Unauthorized(e.to_string()))?;
+
+        // 2. 根据用户类型从 DB 查询最新 profile
+        let profile = self.load_user_profile(&login_id).await?;
+
+        // 3. 调用 refresh（会验证 Redis 中 refresh key + deny check + 轮转）
+        let pair = self
+            .auth
+            .refresh(refresh_token, &profile)
+            .await
+            .map_err(|e| ApiErrors::Unauthorized(e.to_string()))?;
+
         Ok(LoginVo {
             access_token: pair.access_token,
             refresh_token: pair.refresh_token,
@@ -397,13 +409,11 @@ impl AuthService {
 
     /// 获取当前用户的所有设备会话
     pub async fn get_sessions(&self, login_id: &LoginId) -> ApiResult<Vec<DeviceSessionVo>> {
-        let session = self
+        let devices = self
             .auth
-            .get_session(login_id)
+            .get_devices(login_id)
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-
-        let devices = session.map(|s| s.devices).unwrap_or_default();
 
         Ok(devices
             .into_iter()
@@ -412,7 +422,6 @@ impl AuthService {
                 DeviceSessionVo {
                     device: d.device.to_string(),
                     login_time: d.login_time,
-                    last_active_time: d.last_active_time,
                     login_ip: d.login_ip,
                     browser: ua.browser,
                     os: ua.os,
@@ -461,5 +470,75 @@ impl AuthService {
             .filter(|m| !m.auth_mark.is_empty())
             .map(|m| m.auth_mark)
             .collect())
+    }
+
+    /// 根据 login_id 从 DB 加载最新的用户 Profile（refresh 时使用）
+    async fn load_user_profile(&self, login_id: &LoginId) -> ApiResult<UserProfile> {
+        match login_id.user_type {
+            UserType::Admin => {
+                let user = sys_user::Entity::find_by_id(login_id.user_id)
+                    .one(&self.db)
+                    .await
+                    .context("查询管理员失败")?
+                    .ok_or_else(|| ApiErrors::Unauthorized("用户不存在".to_string()))?;
+
+                let roles: Vec<String> = sys_user_role::Entity::find()
+                    .filter(sys_user_role::Column::UserId.eq(user.id))
+                    .find_also_related(sys_role::Entity)
+                    .all(&self.db)
+                    .await
+                    .context("查询用户角色失败")?
+                    .into_iter()
+                    .filter_map(|(_, role)| role.map(|r| r.role_code))
+                    .collect();
+
+                let permissions = self.get_user_permissions(user.id).await?;
+
+                Ok(UserProfile::Admin(AdminProfile {
+                    user_name: user.user_name,
+                    nick_name: user.nick_name,
+                    avatar: user.avatar,
+                    roles,
+                    permissions,
+                }))
+            }
+            UserType::Business => {
+                let user = biz_user::Entity::find_by_id(login_id.user_id)
+                    .one(&self.db)
+                    .await
+                    .context("查询B端用户失败")?
+                    .ok_or_else(|| ApiErrors::Unauthorized("用户不存在".to_string()))?;
+
+                let roles: Vec<String> = biz_user_role::Entity::find()
+                    .filter(biz_user_role::Column::UserId.eq(user.id))
+                    .find_also_related(biz_role::Entity)
+                    .all(&self.db)
+                    .await
+                    .context("查询B端用户角色失败")?
+                    .into_iter()
+                    .filter_map(|(_, role)| role.map(|r| r.role_code))
+                    .collect();
+
+                Ok(UserProfile::Business(BusinessProfile {
+                    user_name: user.user_name,
+                    nick_name: user.nick_name,
+                    avatar: user.avatar,
+                    roles,
+                    permissions: vec![],
+                }))
+            }
+            UserType::Customer => {
+                let user = customer::Entity::find_by_id(login_id.user_id)
+                    .one(&self.db)
+                    .await
+                    .context("查询C端用户失败")?
+                    .ok_or_else(|| ApiErrors::Unauthorized("用户不存在".to_string()))?;
+
+                Ok(UserProfile::Customer(CustomerProfile {
+                    nick_name: user.nick_name,
+                    avatar: user.avatar,
+                }))
+            }
+        }
     }
 }

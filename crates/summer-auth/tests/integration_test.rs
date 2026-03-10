@@ -4,7 +4,7 @@ use summer_auth::config::AuthConfig;
 use summer_auth::error::AuthError;
 use summer_auth::online::OnlineUserQuery;
 use summer_auth::qrcode::QrCodeState;
-use summer_auth::session::SessionManager;
+use summer_auth::session::{permission_matches, SessionManager};
 use summer_auth::storage::memory::MemoryStorage;
 use summer_auth::user_type::{DeviceType, LoginId, UserType};
 use summer_auth::{AdminProfile, BusinessProfile, CustomerProfile, UserProfile};
@@ -17,7 +17,8 @@ fn default_config() -> AuthConfig {
             "refresh_timeout": 86400,
             "concurrent_login": true,
             "max_devices": 3,
-            "qr_code_timeout": 300
+            "qr_code_timeout": 300,
+            "jwt_secret": "test-jwt-secret-key-for-integration-tests-32chars!"
         }"#,
     )
     .unwrap()
@@ -73,6 +74,16 @@ fn customer_login_params(user_id: i64) -> summer_auth::session::LoginParams {
     }
 }
 
+fn admin_profile() -> UserProfile {
+    UserProfile::Admin(AdminProfile {
+        user_name: "test_user".to_string(),
+        nick_name: "Test User".to_string(),
+        avatar: String::new(),
+        roles: vec!["admin".to_string()],
+        permissions: vec!["system:user:list".to_string(), "system:user:add".to_string()],
+    })
+}
+
 // ── 登录/登出 ──
 
 #[tokio::test]
@@ -83,26 +94,38 @@ async fn login_returns_token_pair() {
     assert!(!pair.access_token.is_empty());
     assert!(!pair.refresh_token.is_empty());
     assert_eq!(pair.expires_in, 3600);
+    // JWT 格式: 3 段 base64 用 . 分隔
+    assert_eq!(pair.access_token.split('.').count(), 3);
+    assert_eq!(pair.refresh_token.split('.').count(), 3);
 }
 
 #[tokio::test]
-async fn validate_token_after_login() {
+async fn validate_token_returns_user_info() {
     let mgr = make_manager();
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    let login_id = mgr.validate_token(&pair.access_token).await.unwrap();
-    assert_eq!(login_id, LoginId::admin(1));
+    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
+
+    assert_eq!(validated.login_id, LoginId::admin(1));
+    assert_eq!(validated.device, DeviceType::Web);
+    assert_eq!(validated.user_name, "test_user");
+    assert_eq!(validated.nick_name, "Test User");
+    assert_eq!(validated.roles, vec!["admin"]);
+    assert_eq!(
+        validated.permissions,
+        vec!["system:user:list", "system:user:add"]
+    );
 }
 
 #[tokio::test]
 async fn validate_invalid_token_fails() {
     let mgr = make_manager();
-    let result = mgr.validate_token("non-existent-token").await;
+    let result = mgr.validate_token("not.a.valid-jwt").await;
     assert!(matches!(result, Err(AuthError::InvalidToken)));
 }
 
 #[tokio::test]
-async fn logout_invalidates_token() {
+async fn logout_sets_deny_key() {
     let mgr = make_manager();
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
@@ -110,15 +133,15 @@ async fn logout_invalidates_token() {
         .await
         .unwrap();
 
+    // deny key = "refresh:{ts}" → RefreshRequired（旧 token iat <= deny_ts）
     let result = mgr.validate_token(&pair.access_token).await;
-    assert!(matches!(result, Err(AuthError::InvalidToken)));
+    assert!(matches!(result, Err(AuthError::RefreshRequired)));
 }
 
 #[tokio::test]
 async fn logout_all_invalidates_all_devices() {
     let mgr = make_manager();
 
-    // 登录两个设备
     let mut params1 = admin_login_params(1);
     params1.device = DeviceType::Web;
     let pair1 = mgr.login(params1).await.unwrap();
@@ -151,9 +174,9 @@ async fn concurrent_login_multiple_devices() {
     assert!(mgr.validate_token(&pair1.access_token).await.is_ok());
     assert!(mgr.validate_token(&pair2.access_token).await.is_ok());
 
-    // session 中有两个设备
-    let session = mgr.get_session(&LoginId::admin(1)).await.unwrap().unwrap();
-    assert_eq!(session.devices.len(), 2);
+    // 两个设备都在线
+    let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    assert_eq!(devices.len(), 2);
 }
 
 #[tokio::test]
@@ -173,33 +196,51 @@ async fn max_devices_evicts_oldest() {
         p.device = d.clone();
         let pair = mgr.login(p).await.unwrap();
         tokens.push(pair);
+        // 确保 login_time 递增（毫秒精度）
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    // 第 4 个设备登录后，第 1 个（Web）应被踢掉
-    assert!(mgr.validate_token(&tokens[0].access_token).await.is_err());
-    // 后 3 个仍有效
-    assert!(mgr.validate_token(&tokens[1].access_token).await.is_ok());
-    assert!(mgr.validate_token(&tokens[2].access_token).await.is_ok());
-    assert!(mgr.validate_token(&tokens[3].access_token).await.is_ok());
+    // Stateless: access JWT 仍然有效（没有 deny key）
+    // 但设备列表只剩 3 个，且 Web 的 refresh key 被删
+    let device_list = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    assert_eq!(device_list.len(), 3);
 
-    let session = mgr.get_session(&LoginId::admin(1)).await.unwrap().unwrap();
-    assert_eq!(session.devices.len(), 3);
+    // 旧 refresh token（Web）不能使用
+    assert!(mgr
+        .refresh(&tokens[0].refresh_token, &admin_profile())
+        .await
+        .is_err());
+    // 新 refresh token（后 3 个）可以使用
+    assert!(mgr
+        .refresh(&tokens[3].refresh_token, &admin_profile())
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
-async fn same_device_replaces_old_token() {
+async fn same_device_replaces_old_session() {
     let mgr = make_manager();
 
     let pair1 = mgr.login(admin_login_params(1)).await.unwrap();
     let pair2 = mgr.login(admin_login_params(1)).await.unwrap();
 
-    // 旧 token 失效
-    assert!(mgr.validate_token(&pair1.access_token).await.is_err());
     // 新 token 有效
     assert!(mgr.validate_token(&pair2.access_token).await.is_ok());
 
-    let session = mgr.get_session(&LoginId::admin(1)).await.unwrap().unwrap();
-    assert_eq!(session.devices.len(), 1);
+    // 只有一个设备在线
+    let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    assert_eq!(devices.len(), 1);
+
+    // 旧 refresh token 不能使用（rid 已被删除）
+    assert!(mgr
+        .refresh(&pair1.refresh_token, &admin_profile())
+        .await
+        .is_err());
+    // 新 refresh token 可以使用
+    assert!(mgr
+        .refresh(&pair2.refresh_token, &admin_profile())
+        .await
+        .is_ok());
 }
 
 // ── 不允许并发登录 ──
@@ -218,28 +259,15 @@ async fn no_concurrent_login_clears_all_devices() {
     p2.device = DeviceType::Android;
     let _pair2 = mgr.login(p2).await.unwrap();
 
-    // Web 设备的 token 应该失效
-    assert!(mgr.validate_token(&pair1.access_token).await.is_err());
+    // Web 的 refresh token 应该失效
+    assert!(mgr
+        .refresh(&pair1.refresh_token, &admin_profile())
+        .await
+        .is_err());
 
-    let session = mgr.get_session(&LoginId::admin(1)).await.unwrap().unwrap();
-    assert_eq!(session.devices.len(), 1);
-    assert_eq!(session.devices[0].device, DeviceType::Android);
-}
-
-// ── share_token ──
-
-#[tokio::test]
-async fn share_token_reuses_existing() {
-    let mut config = default_config();
-    config.share_token = true;
-    let mgr = SessionManager::new(Arc::new(MemoryStorage::new()), config);
-
-    let pair1 = mgr.login(admin_login_params(1)).await.unwrap();
-    let pair2 = mgr.login(admin_login_params(1)).await.unwrap();
-
-    // 相同设备复用 token
-    assert_eq!(pair1.access_token, pair2.access_token);
-    assert_eq!(pair1.refresh_token, pair2.refresh_token);
+    // 只有 Android 设备在线
+    let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    assert_eq!(devices.len(), 1);
 }
 
 // ── 刷新 Token ──
@@ -249,98 +277,185 @@ async fn refresh_token_works() {
     let mgr = make_manager();
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    let new_pair = mgr.refresh(&pair.refresh_token).await.unwrap();
+    let new_pair = mgr
+        .refresh(&pair.refresh_token, &admin_profile())
+        .await
+        .unwrap();
 
-    // 新 access token 不同
-    assert_ne!(new_pair.access_token, pair.access_token);
-    // refresh token 轮转：新的不同于旧的
+    // 移除 jti 后，同一秒内签发的 access token 是确定性的（相同 claims = 相同 token），
+    // 所以不再断言 access_token 不同。刷新的核心是 refresh token 轮转。
+    // refresh token 轮转
     assert_ne!(new_pair.refresh_token, pair.refresh_token);
     // 新 access token 有效
     assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
-    // 旧 access token 失效
-    assert!(mgr.validate_token(&pair.access_token).await.is_err());
-    // 旧 refresh token 不能再次使用
-    assert!(mgr.refresh(&pair.refresh_token).await.is_err());
+    // 旧 refresh token 不能再次使用（rid 已删除）
+    assert!(mgr
+        .refresh(&pair.refresh_token, &admin_profile())
+        .await
+        .is_err());
     // 新 refresh token 可以继续刷新
-    let third_pair = mgr.refresh(&new_pair.refresh_token).await.unwrap();
+    let third_pair = mgr
+        .refresh(&new_pair.refresh_token, &admin_profile())
+        .await
+        .unwrap();
     assert_ne!(third_pair.refresh_token, new_pair.refresh_token);
-    assert!(mgr.validate_token(&third_pair.access_token).await.is_ok());
+    assert!(mgr
+        .validate_token(&third_pair.access_token)
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn refresh_with_updated_profile() {
+    let mgr = make_manager();
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
+
+    // 刷新时传入更新后的 profile
+    let updated_profile = UserProfile::Admin(AdminProfile {
+        user_name: "test_user".to_string(),
+        nick_name: "Updated Name".to_string(),
+        avatar: "new-avatar.png".to_string(),
+        roles: vec!["admin".to_string(), "editor".to_string()],
+        permissions: vec![
+            "system:user:list".to_string(),
+            "system:user:add".to_string(),
+            "system:user:delete".to_string(),
+        ],
+    });
+
+    let new_pair = mgr
+        .refresh(&pair.refresh_token, &updated_profile)
+        .await
+        .unwrap();
+
+    // 新 token 包含更新后的信息
+    let validated = mgr
+        .validate_token(&new_pair.access_token)
+        .await
+        .unwrap();
+    assert_eq!(validated.nick_name, "Updated Name");
+    assert_eq!(validated.roles, vec!["admin", "editor"]);
+    assert!(validated
+        .permissions
+        .contains(&"system:user:delete".to_string()));
 }
 
 #[tokio::test]
 async fn refresh_with_invalid_token_fails() {
     let mgr = make_manager();
-    let result = mgr.refresh("invalid-refresh-token").await;
+    let result = mgr.refresh("invalid-refresh-token", &admin_profile()).await;
     assert!(matches!(result, Err(AuthError::InvalidRefreshToken)));
 }
 
-// ── RBAC ──
-
 #[tokio::test]
-async fn login_sets_roles_and_permissions() {
+async fn parse_refresh_token_returns_login_id() {
     let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    let login_id = LoginId::admin(1);
-    assert!(mgr.has_role(&login_id, "admin").await.unwrap());
-    assert!(!mgr.has_role(&login_id, "user").await.unwrap());
-
-    assert!(mgr.has_permission(&login_id, "system:user:list").await.unwrap());
-    assert!(!mgr.has_permission(&login_id, "system:user:delete").await.unwrap());
+    let login_id = mgr.parse_refresh_token(&pair.refresh_token).await.unwrap();
+    assert_eq!(login_id, LoginId::admin(1));
 }
 
 #[tokio::test]
-async fn check_role_returns_error_on_missing() {
+async fn refresh_cross_type_rejected() {
     let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    let login_id = LoginId::admin(1);
-    assert!(mgr.check_role(&login_id, "admin").await.is_ok());
-    assert!(matches!(
-        mgr.check_role(&login_id, "superadmin").await,
-        Err(AuthError::NoRole(_))
-    ));
+    // Access token 不能作为 refresh token
+    let result = mgr.refresh(&pair.access_token, &admin_profile()).await;
+    assert!(matches!(result, Err(AuthError::InvalidRefreshToken)));
+
+    // Refresh token 不能作为 access token
+    let result = mgr.validate_token(&pair.refresh_token).await;
+    assert!(matches!(result, Err(AuthError::InvalidToken)));
+}
+
+// ── Deny key 机制 ──
+
+#[tokio::test]
+async fn ban_user_blocks_access() {
+    let mgr = make_manager();
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
+
+    mgr.ban_user(&LoginId::admin(1)).await.unwrap();
+
+    // Access token → AccountBanned
+    let result = mgr.validate_token(&pair.access_token).await;
+    assert!(matches!(result, Err(AuthError::AccountBanned)));
+
+    // Refresh 也失败（rid 被清理 or deny=banned）
+    let result = mgr.refresh(&pair.refresh_token, &admin_profile()).await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]
-async fn check_permission_returns_error_on_missing() {
+async fn unban_user_restores_access() {
     let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
 
-    let login_id = LoginId::admin(1);
-    assert!(mgr.check_permission(&login_id, "system:user:list").await.is_ok());
-    assert!(matches!(
-        mgr.check_permission(&login_id, "system:user:delete").await,
-        Err(AuthError::NoPermission(_))
-    ));
+    mgr.ban_user(&LoginId::admin(1)).await.unwrap();
+    mgr.unban_user(&LoginId::admin(1)).await.unwrap();
+
+    // 重新登录应成功
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
+    assert!(mgr.validate_token(&pair.access_token).await.is_ok());
 }
 
 #[tokio::test]
-async fn set_roles_updates_session() {
+async fn force_refresh_requires_token_refresh() {
     let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    let login_id = LoginId::admin(1);
-    mgr.set_roles(&login_id, vec!["editor".to_string()])
+    mgr.force_refresh(&LoginId::admin(1)).await.unwrap();
+
+    // Access token → RefreshRequired
+    let result = mgr.validate_token(&pair.access_token).await;
+    assert!(matches!(result, Err(AuthError::RefreshRequired)));
+
+    // 等待 1 秒确保 refresh 生成的新 token 的 iat > deny_ts
+    // （deny key 使用秒级时间戳，同一秒内签发的 token 仍被视为"旧"token）
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Refresh 仍然可以成功（deny="refresh:xxx" 不阻止 refresh 操作）
+    let new_pair = mgr
+        .refresh(&pair.refresh_token, &admin_profile())
         .await
         .unwrap();
-
-    assert!(!mgr.has_role(&login_id, "admin").await.unwrap());
-    assert!(mgr.has_role(&login_id, "editor").await.unwrap());
+    assert!(mgr
+        .validate_token(&new_pair.access_token)
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
-async fn set_permissions_updates_session() {
+async fn ban_during_refresh_blocked() {
     let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    let login_id = LoginId::admin(1);
-    mgr.set_permissions(&login_id, vec!["new:perm".to_string()])
-        .await
-        .unwrap();
+    mgr.ban_user(&LoginId::admin(1)).await.unwrap();
 
-    assert!(!mgr.has_permission(&login_id, "system:user:list").await.unwrap());
-    assert!(mgr.has_permission(&login_id, "new:perm").await.unwrap());
+    // 封禁后 refresh 也应失败
+    let result = mgr.refresh(&pair.refresh_token, &admin_profile()).await;
+    assert!(result.is_err());
+}
+
+// ── 设备管理 ──
+
+#[tokio::test]
+async fn get_devices_returns_all() {
+    let mgr = make_manager();
+
+    let mut p1 = admin_login_params(1);
+    p1.device = DeviceType::Web;
+    p1.login_ip = "1.1.1.1".to_string();
+    mgr.login(p1).await.unwrap();
+
+    let mut p2 = admin_login_params(1);
+    p2.device = DeviceType::Android;
+    p2.login_ip = "2.2.2.2".to_string();
+    mgr.login(p2).await.unwrap();
+
+    let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    assert_eq!(devices.len(), 2);
 }
 
 // ── 在线用户 ──
@@ -349,7 +464,6 @@ async fn set_permissions_updates_session() {
 async fn online_users_returns_total_and_items() {
     let mgr = make_manager();
 
-    // 登录 3 个不同用户
     for i in 1..=3 {
         let mut p = admin_login_params(i);
         p.login_id = LoginId::admin(i);
@@ -366,7 +480,7 @@ async fn online_users_returns_total_and_items() {
         .unwrap();
 
     assert_eq!(page.total, 3);
-    assert_eq!(page.items.len(), 2); // 分页限制
+    assert_eq!(page.items.len(), 2);
 }
 
 #[tokio::test]
@@ -402,7 +516,9 @@ async fn kick_out_single_device() {
         .await
         .unwrap();
 
-    assert!(mgr.validate_token(&pair.access_token).await.is_err());
+    // deny="refresh" → RefreshRequired
+    let result = mgr.validate_token(&pair.access_token).await;
+    assert!(matches!(result, Err(AuthError::RefreshRequired)));
 }
 
 #[tokio::test]
@@ -429,31 +545,30 @@ async fn kick_out_all_devices() {
 async fn qr_code_full_flow() {
     let mgr = make_manager();
 
-    // 1. Web 端创建 QR 码
     let code = mgr.create_qr_code().await.unwrap();
     assert!(!code.is_empty());
 
-    // 2. 查询状态 → Pending
     let state = mgr.get_qr_code_state(&code).await.unwrap();
     assert!(matches!(state, QrCodeState::Pending));
 
-    // 3. 移动端扫码
     let login_id = LoginId::admin(1);
     mgr.scan_qr_code(&code, &login_id).await.unwrap();
 
     let state = mgr.get_qr_code_state(&code).await.unwrap();
     assert!(matches!(state, QrCodeState::Scanned { .. }));
 
-    // 4. 移动端确认
-    mgr.confirm_qr_code(&code, admin_login_params(1)).await.unwrap();
+    mgr.confirm_qr_code(&code, admin_login_params(1))
+        .await
+        .unwrap();
 
-    // 5. Web 端拿到 token
     let state = mgr.get_qr_code_state(&code).await.unwrap();
     match state {
         QrCodeState::Confirmed { token_pair } => {
             assert!(!token_pair.access_token.is_empty());
-            // token 应该能验证通过
-            assert!(mgr.validate_token(&token_pair.access_token).await.is_ok());
+            assert!(mgr
+                .validate_token(&token_pair.access_token)
+                .await
+                .is_ok());
         }
         _ => panic!("expected Confirmed state"),
     }
@@ -475,11 +590,9 @@ async fn qr_code_invalid_state_transitions() {
     let mgr = make_manager();
     let code = mgr.create_qr_code().await.unwrap();
 
-    // 不能在 Pending 状态直接 confirm
     let result = mgr.confirm_qr_code(&code, admin_login_params(1)).await;
     assert!(matches!(result, Err(AuthError::QrCodeInvalidState)));
 
-    // 不能对不存在的 code 操作
     let result = mgr.get_qr_code_state("non-existent").await;
     assert!(matches!(result, Err(AuthError::QrCodeNotFound)));
 }
@@ -489,35 +602,31 @@ async fn qr_code_scan_wrong_user_cannot_confirm() {
     let mgr = make_manager();
     let code = mgr.create_qr_code().await.unwrap();
 
-    // 用户 1 扫码
     mgr.scan_qr_code(&code, &LoginId::admin(1)).await.unwrap();
 
-    // 用户 2 尝试确认 → 应该失败（login_id 不匹配）
     let mut params = admin_login_params(2);
     params.login_id = LoginId::admin(2);
     let result = mgr.confirm_qr_code(&code, params).await;
     assert!(matches!(result, Err(AuthError::QrCodeInvalidState)));
 }
 
-// ── MemoryStorage 过期清理 ──
+// ── MemoryStorage ──
+
+use summer_auth::storage::AuthStorage;
+
+use summer_auth::bitmap::PermissionMap;
 
 #[tokio::test]
 async fn memory_storage_purge_expired() {
     let storage = MemoryStorage::new();
 
-    // 存一个 TTL=1 的值
     storage
         .set_string("test:expire", "value", 1)
         .await
         .unwrap();
-
-    // 立即读取应该存在
     assert!(storage.get_string("test:expire").await.unwrap().is_some());
 
-    // 等待过期
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    // 过期后读取返回 None
     assert!(storage.get_string("test:expire").await.unwrap().is_none());
 }
 
@@ -526,101 +635,89 @@ async fn memory_storage_keys_by_prefix() {
     let storage = MemoryStorage::new();
 
     storage
-        .set_string("auth:admin:session:1", "s1", 3600)
+        .set_string("auth:device:admin:1:web", "d1", 3600)
         .await
         .unwrap();
     storage
-        .set_string("auth:admin:session:2", "s2", 3600)
+        .set_string("auth:device:admin:1:android", "d2", 3600)
         .await
         .unwrap();
     storage
-        .set_string("auth:biz:session:1", "s3", 3600)
+        .set_string("auth:device:biz:1:web", "d3", 3600)
         .await
         .unwrap();
 
     let keys = storage
-        .keys_by_prefix("auth:admin:session:")
+        .keys_by_prefix("auth:device:admin:1:")
         .await
         .unwrap();
     assert_eq!(keys.len(), 2);
 
-    let keys = storage.keys_by_prefix("auth:biz:").await.unwrap();
+    let keys = storage
+        .keys_by_prefix("auth:device:biz:")
+        .await
+        .unwrap();
     assert_eq!(keys.len(), 1);
 }
 
-// 需要引入 AuthStorage trait
-use summer_auth::storage::AuthStorage;
-
-// ── 多用户类型测试 ──
+// ── 多用户类型 ──
 
 #[tokio::test]
-async fn business_user_login_and_session() {
+async fn business_user_login_and_validate() {
     let mgr = make_manager();
     let pair = mgr.login(biz_login_params(1)).await.unwrap();
-
     assert!(!pair.access_token.is_empty());
 
-    let login_id = mgr.validate_token(&pair.access_token).await.unwrap();
-    assert_eq!(login_id, LoginId::business(1));
-
-    let session = mgr.get_session(&LoginId::business(1)).await.unwrap().unwrap();
-    assert_eq!(session.profile.nick_name(), "Biz User");
-    assert_eq!(session.profile.user_name(), "biz_user");
-    assert_eq!(session.profile.roles(), &["merchant".to_string()]);
+    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
+    assert_eq!(validated.login_id, LoginId::business(1));
+    assert_eq!(validated.nick_name, "Biz User");
+    assert_eq!(validated.user_name, "biz_user");
+    assert_eq!(validated.roles, vec!["merchant"]);
 }
 
 #[tokio::test]
-async fn customer_user_login_and_session() {
+async fn customer_user_login_and_validate() {
     let mgr = make_manager();
     let pair = mgr.login(customer_login_params(1)).await.unwrap();
-
     assert!(!pair.access_token.is_empty());
 
-    let login_id = mgr.validate_token(&pair.access_token).await.unwrap();
-    assert_eq!(login_id, LoginId::customer(1));
-
-    let session = mgr.get_session(&LoginId::customer(1)).await.unwrap().unwrap();
-    assert_eq!(session.profile.nick_name(), "Customer");
-    assert_eq!(session.profile.user_name(), ""); // Customer 无 user_name
-    assert!(session.profile.roles().is_empty()); // Customer 无 RBAC
-    assert!(session.profile.permissions().is_empty());
+    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
+    assert_eq!(validated.login_id, LoginId::customer(1));
+    assert_eq!(validated.nick_name, "Customer");
+    assert_eq!(validated.user_name, "");
+    assert!(validated.roles.is_empty());
+    assert!(validated.permissions.is_empty());
 }
 
 #[tokio::test]
 async fn different_user_types_isolated() {
     let mgr = make_manager();
 
-    // 同一 user_id 不同类型完全隔离
     let admin_pair = mgr.login(admin_login_params(1)).await.unwrap();
     let biz_pair = mgr.login(biz_login_params(1)).await.unwrap();
     let customer_pair = mgr.login(customer_login_params(1)).await.unwrap();
 
-    // 各自 token 都有效
     assert!(mgr.validate_token(&admin_pair.access_token).await.is_ok());
     assert!(mgr.validate_token(&biz_pair.access_token).await.is_ok());
-    assert!(mgr.validate_token(&customer_pair.access_token).await.is_ok());
+    assert!(mgr
+        .validate_token(&customer_pair.access_token)
+        .await
+        .is_ok());
 
     // 登出 admin 不影响 biz 和 customer
     mgr.logout_all(&LoginId::admin(1)).await.unwrap();
-    assert!(mgr.validate_token(&admin_pair.access_token).await.is_err());
-    assert!(mgr.validate_token(&biz_pair.access_token).await.is_ok());
-    assert!(mgr.validate_token(&customer_pair.access_token).await.is_ok());
-}
-
-#[tokio::test]
-async fn customer_set_roles_is_noop() {
-    let mgr = make_manager();
-    mgr.login(customer_login_params(1)).await.unwrap();
-
-    let login_id = LoginId::customer(1);
-    // set_roles 对 Customer 是无操作
-    mgr.set_roles(&login_id, vec!["some_role".to_string()])
+    assert!(mgr
+        .validate_token(&admin_pair.access_token)
         .await
-        .unwrap();
-
-    // 仍然没有角色
-    assert!(!mgr.has_role(&login_id, "some_role").await.unwrap());
+        .is_err());
+    assert!(mgr.validate_token(&biz_pair.access_token).await.is_ok());
+    assert!(mgr
+        .validate_token(&customer_pair.access_token)
+        .await
+        .is_ok());
 }
+
+// ── 在线用户：混合类型 ──
 
 #[tokio::test]
 async fn online_users_mixed_types() {
@@ -630,7 +727,6 @@ async fn online_users_mixed_types() {
     mgr.login(biz_login_params(1)).await.unwrap();
     mgr.login(customer_login_params(1)).await.unwrap();
 
-    // 查询所有类型
     let page = mgr
         .online_users(OnlineUserQuery {
             user_type: None,
@@ -641,7 +737,6 @@ async fn online_users_mixed_types() {
         .unwrap();
     assert_eq!(page.total, 3);
 
-    // 仅查询 Business
     let page = mgr
         .online_users(OnlineUserQuery {
             user_type: Some(UserType::Business),
@@ -651,370 +746,384 @@ async fn online_users_mixed_types() {
         .await
         .unwrap();
     assert_eq!(page.total, 1);
-    assert_eq!(page.items[0].nick_name, "Biz User");
 }
 
-// ── JWT 模式测试 ──
+// ── permission_matches 纯函数测试 ──
 
-mod jwt_tests {
-    use std::sync::Arc;
+#[test]
+fn permission_wildcard_trailing() {
+    assert!(permission_matches("system:*", "system:user:list"));
+    assert!(permission_matches("system:*", "system:role:add"));
+    assert!(permission_matches("system:*", "system:menu:delete"));
+    assert!(permission_matches("order:item:*", "order:item:list"));
+    assert!(permission_matches("order:item:*", "order:item:edit"));
+    assert!(!permission_matches("system:*", "order:list"));
+    assert!(!permission_matches("order:item:*", "order:list"));
+}
 
-    use summer_auth::config::AuthConfig;
-    use summer_auth::error::AuthError;
-    use summer_auth::session::SessionManager;
-    use summer_auth::storage::memory::MemoryStorage;
-    use summer_auth::user_type::{DeviceType, LoginId};
-    use summer_auth::{AdminProfile, UserProfile};
+#[test]
+fn permission_wildcard_super() {
+    assert!(permission_matches("*", "system:user:list"));
+    assert!(permission_matches("*", "any:thing:at:all"));
+}
 
-    fn jwt_config() -> AuthConfig {
-        serde_json::from_str(
-            r#"{
-                "token_name": "Authorization",
-                "access_timeout": 3600,
-                "refresh_timeout": 86400,
-                "concurrent_login": true,
-                "max_devices": 3,
-                "qr_code_timeout": 300,
-                "token_style": "jwt",
-                "jwt_secret": "test-jwt-secret-key-for-integration-tests-32chars!"
-            }"#,
-        )
-        .unwrap()
-    }
+#[test]
+fn permission_wildcard_middle() {
+    assert!(permission_matches("system:*:list", "system:user:list"));
+    assert!(permission_matches("system:*:list", "system:role:list"));
+    assert!(!permission_matches("system:*:list", "system:user:add"));
+}
 
-    fn make_jwt_manager() -> SessionManager {
-        let storage = Arc::new(MemoryStorage::new());
-        SessionManager::new(storage, jwt_config())
-    }
+#[test]
+fn permission_exact_match() {
+    assert!(permission_matches(
+        "system:user:list",
+        "system:user:list"
+    ));
+    assert!(!permission_matches("system:user:list", "system:user:add"));
+}
 
-    fn admin_login_params(user_id: i64) -> summer_auth::session::LoginParams {
-        summer_auth::session::LoginParams {
-            login_id: LoginId::admin(user_id),
-            device: DeviceType::Web,
-            login_ip: "127.0.0.1".to_string(),
-            user_agent: "test-agent".to_string(),
-            profile: UserProfile::Admin(AdminProfile {
-                user_name: "test_user".to_string(),
-                nick_name: "Test User".to_string(),
-                avatar: String::new(),
-                roles: vec!["admin".to_string()],
-                permissions: vec!["system:user:list".to_string()],
-            }),
-        }
-    }
+#[test]
+fn permission_segment_mismatch() {
+    assert!(!permission_matches("system:user", "system:user:list"));
+    assert!(!permission_matches(
+        "system:user:list:detail",
+        "system:user:list"
+    ));
+}
 
-    #[tokio::test]
-    async fn jwt_login_returns_jwt_tokens() {
-        let mgr = make_jwt_manager();
-        let pair = mgr.login(admin_login_params(1)).await.unwrap();
+// ── 权限位图 (Permission Bitmap) ──
 
-        // JWT 格式：3 段 base64 用 . 分隔
-        assert_eq!(pair.access_token.split('.').count(), 3);
-        assert_eq!(pair.refresh_token.split('.').count(), 3);
-        assert_eq!(pair.expires_in, 3600);
-    }
+fn bitmap_perm_map() -> PermissionMap {
+    PermissionMap::new(vec![
+        ("system:user:list".to_string(), 0),
+        ("system:user:add".to_string(), 1),
+        ("system:role:list".to_string(), 2),
+        ("system:role:add".to_string(), 3),
+        ("order:list".to_string(), 4),
+    ])
+}
 
-    #[tokio::test]
-    async fn jwt_validate_token_works() {
-        let mgr = make_jwt_manager();
-        let pair = mgr.login(admin_login_params(1)).await.unwrap();
+#[tokio::test]
+async fn login_with_bitmap() {
+    let mgr = make_manager();
+    mgr.set_permission_map(bitmap_perm_map());
 
-        let login_id = mgr.validate_token(&pair.access_token).await.unwrap();
-        assert_eq!(login_id, LoginId::admin(1));
-    }
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    #[tokio::test]
-    async fn jwt_logout_blacklists_token() {
-        let mgr = make_jwt_manager();
-        let pair = mgr.login(admin_login_params(1)).await.unwrap();
+    // JWT 应该能验证通过
+    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
+    assert_eq!(validated.login_id, LoginId::admin(1));
 
-        // 验证 token 有效
-        assert!(mgr.validate_token(&pair.access_token).await.is_ok());
+    // 权限应该正确解码
+    let mut perms = validated.permissions.clone();
+    perms.sort();
+    let mut expected = vec!["system:user:list".to_string(), "system:user:add".to_string()];
+    expected.sort();
+    assert_eq!(perms, expected);
+}
 
-        // 登出
-        mgr.logout(&LoginId::admin(1), &DeviceType::Web)
-            .await
-            .unwrap();
+#[tokio::test]
+async fn validate_decodes_bitmap() {
+    let mgr = make_manager();
+    mgr.set_permission_map(bitmap_perm_map());
 
-        // token 被黑名单拦截
-        let result = mgr.validate_token(&pair.access_token).await;
-        assert!(matches!(result, Err(AuthError::InvalidToken)));
-    }
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
+    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
 
-    #[tokio::test]
-    async fn jwt_refresh_works() {
-        let mgr = make_jwt_manager();
-        let pair = mgr.login(admin_login_params(1)).await.unwrap();
+    // 验证 permissions 被正确解码回字符串
+    assert!(validated.permissions.contains(&"system:user:list".to_string()));
+    assert!(validated.permissions.contains(&"system:user:add".to_string()));
+    assert_eq!(validated.permissions.len(), 2);
+}
 
-        let new_pair = mgr.refresh(&pair.refresh_token).await.unwrap();
+#[tokio::test]
+async fn no_perm_map_fallback() {
+    let mgr = make_manager();
+    // 不设置 PermissionMap
 
-        // 新 access token 不同
-        assert_ne!(new_pair.access_token, pair.access_token);
-        // refresh token 轮转：新的不同于旧的
-        assert_ne!(new_pair.refresh_token, pair.refresh_token);
-        // 新 access token 有效
-        assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
-        // 旧 access token 失效（被黑名单）
-        assert!(mgr.validate_token(&pair.access_token).await.is_err());
-        // 旧 refresh token 不能再次使用（被黑名单）
-        assert!(mgr.refresh(&pair.refresh_token).await.is_err());
-        // 新 refresh token 可以继续刷新
-        let third_pair = mgr.refresh(&new_pair.refresh_token).await.unwrap();
-        assert_ne!(third_pair.refresh_token, new_pair.refresh_token);
-        assert!(mgr.validate_token(&third_pair.access_token).await.is_ok());
-    }
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
+    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
 
-    #[tokio::test]
-    async fn jwt_invalid_token_rejected() {
-        let mgr = make_jwt_manager();
+    // 应该使用 permissions 数组回退
+    assert_eq!(
+        validated.permissions,
+        vec!["system:user:list", "system:user:add"]
+    );
+}
 
-        let result = mgr.validate_token("not.a.valid-jwt").await;
-        assert!(matches!(result, Err(AuthError::InvalidToken)));
+#[tokio::test]
+async fn refresh_with_bitmap() {
+    let mgr = make_manager();
+    mgr.set_permission_map(bitmap_perm_map());
 
-        let result = mgr.validate_token("completely-invalid").await;
-        assert!(matches!(result, Err(AuthError::InvalidToken)));
-    }
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    #[tokio::test]
-    async fn jwt_multi_device_and_max_devices() {
-        let mgr = make_jwt_manager(); // max_devices = 3
+    // 刷新时传入更新后的 profile
+    let updated_profile = UserProfile::Admin(AdminProfile {
+        user_name: "test_user".to_string(),
+        nick_name: "Test User".to_string(),
+        avatar: String::new(),
+        roles: vec!["admin".to_string()],
+        permissions: vec![
+            "system:user:list".to_string(),
+            "system:user:add".to_string(),
+            "system:role:list".to_string(),
+        ],
+    });
 
-        let devices = [
-            DeviceType::Web,
-            DeviceType::Android,
-            DeviceType::IOS,
-            DeviceType::Desktop,
-        ];
-        let mut tokens = Vec::new();
+    let new_pair = mgr.refresh(&pair.refresh_token, &updated_profile).await.unwrap();
+    let validated = mgr.validate_token(&new_pair.access_token).await.unwrap();
 
-        for d in &devices {
-            let mut p = admin_login_params(1);
-            p.device = d.clone();
-            let pair = mgr.login(p).await.unwrap();
-            tokens.push(pair);
-        }
+    // 刷新后权限应包含新增的 role:list
+    let mut perms = validated.permissions;
+    perms.sort();
+    assert_eq!(perms, vec!["system:role:list", "system:user:add", "system:user:list"]);
+}
 
-        // 第 4 个设备登录后，第 1 个（Web）应被踢掉（黑名单方式）
-        assert!(mgr.validate_token(&tokens[0].access_token).await.is_err());
-        // 后 3 个仍有效
-        assert!(mgr.validate_token(&tokens[1].access_token).await.is_ok());
-        assert!(mgr.validate_token(&tokens[2].access_token).await.is_ok());
-        assert!(mgr.validate_token(&tokens[3].access_token).await.is_ok());
+// ── Deny Key 多设备竞态修复验证 ──
 
-        let session = mgr.get_session(&LoginId::admin(1)).await.unwrap().unwrap();
-        assert_eq!(session.devices.len(), 3);
-    }
+#[tokio::test]
+async fn deny_key_multi_device_race_condition_fixed() {
+    let mgr = make_manager();
 
-    #[tokio::test]
-    async fn jwt_opaque_coexist_unchanged() {
-        // jwt feature 启用时，opaque 模式（uuid）仍正常工作
-        let config: AuthConfig = serde_json::from_str(
-            r#"{
-                "token_name": "Authorization",
-                "access_timeout": 3600,
-                "refresh_timeout": 86400,
-                "concurrent_login": true,
-                "max_devices": 3,
-                "token_style": "uuid"
-            }"#,
-        )
+    // 两台设备登录同一用户
+    let mut p1 = admin_login_params(1);
+    p1.device = DeviceType::Web;
+    let pair1 = mgr.login(p1).await.unwrap();
+
+    let mut p2 = admin_login_params(1);
+    p2.device = DeviceType::Android;
+    let pair2 = mgr.login(p2).await.unwrap();
+
+    // 管理员修改用户角色 → force_refresh
+    mgr.force_refresh(&LoginId::admin(1)).await.unwrap();
+
+    // 两台设备的旧 token 都应该返回 RefreshRequired
+    assert!(matches!(
+        mgr.validate_token(&pair1.access_token).await,
+        Err(AuthError::RefreshRequired)
+    ));
+    assert!(matches!(
+        mgr.validate_token(&pair2.access_token).await,
+        Err(AuthError::RefreshRequired)
+    ));
+
+    // 等待 1 秒确保新 token 的 iat > deny_ts
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // 设备 A 刷新 → 获得新 token
+    let new_pair1 = mgr
+        .refresh(&pair1.refresh_token, &admin_profile())
+        .await
         .unwrap();
 
-        let mgr = SessionManager::new(Arc::new(MemoryStorage::new()), config);
-        let pair = mgr.login(admin_login_params(1)).await.unwrap();
+    // 关键断言：设备 A 刷新后，新 token 应该通过验证
+    assert!(mgr
+        .validate_token(&new_pair1.access_token)
+        .await
+        .is_ok());
 
-        // UUID 格式（36 字符，含连字符）
-        assert_eq!(pair.access_token.len(), 36);
-        assert!(pair.access_token.contains('-'));
-
-        // 验证 + 登出正常
-        let login_id = mgr.validate_token(&pair.access_token).await.unwrap();
-        assert_eq!(login_id, LoginId::admin(1));
-
-        mgr.logout(&LoginId::admin(1), &DeviceType::Web)
-            .await
-            .unwrap();
-        assert!(mgr.validate_token(&pair.access_token).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn jwt_refresh_with_access_token_fails() {
-        let mgr = make_jwt_manager();
-        let pair = mgr.login(admin_login_params(1)).await.unwrap();
-
-        // 用 access_token 作为 refresh_token 应被拒绝（类型不匹配）
-        let result = mgr.refresh(&pair.access_token).await;
-        assert!(matches!(result, Err(AuthError::InvalidRefreshToken)));
-    }
-
-    #[tokio::test]
-    async fn jwt_validate_with_refresh_token_fails() {
-        let mgr = make_jwt_manager();
-        let pair = mgr.login(admin_login_params(1)).await.unwrap();
-
-        // 用 refresh_token 作为 access_token 应被拒绝（类型不匹配）
-        let result = mgr.validate_token(&pair.refresh_token).await;
-        assert!(matches!(result, Err(AuthError::InvalidToken)));
-    }
-}
-
-// ── 权限通配符 + 批量 RBAC 测试 ──
-
-#[tokio::test]
-async fn permission_wildcard_trailing() {
-    let mgr = make_manager();
-    let mut params = admin_login_params(1);
-    // 设置通配符权限
-    if let UserProfile::Admin(ref mut p) = params.profile {
-        p.permissions = vec!["system:*".to_string(), "order:item:*".to_string()];
-    }
-    mgr.login(params).await.unwrap();
-
-    let id = LoginId::admin(1);
-
-    // system:* 匹配 system 下所有
-    assert!(mgr.has_permission(&id, "system:user:list").await.unwrap());
-    assert!(mgr.has_permission(&id, "system:role:add").await.unwrap());
-    assert!(mgr.has_permission(&id, "system:menu:delete").await.unwrap());
-
-    // order:item:* 匹配 order:item 下所有
-    assert!(mgr.has_permission(&id, "order:item:list").await.unwrap());
-    assert!(mgr.has_permission(&id, "order:item:edit").await.unwrap());
-
-    // 不匹配其他模块
-    assert!(!mgr.has_permission(&id, "order:list").await.unwrap());
-    assert!(!mgr.has_permission(&id, "finance:report").await.unwrap());
-}
-
-#[tokio::test]
-async fn permission_wildcard_super() {
-    let mgr = make_manager();
-    let mut params = admin_login_params(1);
-    if let UserProfile::Admin(ref mut p) = params.profile {
-        p.permissions = vec!["*".to_string()];
-    }
-    mgr.login(params).await.unwrap();
-
-    let id = LoginId::admin(1);
-    assert!(mgr.has_permission(&id, "system:user:list").await.unwrap());
-    assert!(mgr.has_permission(&id, "any:thing:at:all").await.unwrap());
-}
-
-#[tokio::test]
-async fn permission_wildcard_middle() {
-    let mgr = make_manager();
-    let mut params = admin_login_params(1);
-    if let UserProfile::Admin(ref mut p) = params.profile {
-        p.permissions = vec!["system:*:list".to_string()];
-    }
-    mgr.login(params).await.unwrap();
-
-    let id = LoginId::admin(1);
-    assert!(mgr.has_permission(&id, "system:user:list").await.unwrap());
-    assert!(mgr.has_permission(&id, "system:role:list").await.unwrap());
-    assert!(!mgr.has_permission(&id, "system:user:add").await.unwrap());
-}
-
-#[tokio::test]
-async fn has_any_role_works() {
-    let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
-
-    let id = LoginId::admin(1);
-    // admin_login_params 有 roles: ["admin"]
-    assert!(mgr.has_any_role(&id, &["admin", "user"]).await.unwrap());
-    assert!(mgr.has_any_role(&id, &["user", "admin"]).await.unwrap());
-    assert!(!mgr.has_any_role(&id, &["user", "editor"]).await.unwrap());
-}
-
-#[tokio::test]
-async fn has_all_roles_works() {
-    let mgr = make_manager();
-    let mut params = admin_login_params(1);
-    if let UserProfile::Admin(ref mut p) = params.profile {
-        p.roles = vec!["admin".to_string(), "editor".to_string()];
-    }
-    mgr.login(params).await.unwrap();
-
-    let id = LoginId::admin(1);
-    assert!(mgr.has_all_roles(&id, &["admin", "editor"]).await.unwrap());
-    assert!(mgr.has_all_roles(&id, &["admin"]).await.unwrap());
-    assert!(!mgr.has_all_roles(&id, &["admin", "superadmin"]).await.unwrap());
-}
-
-#[tokio::test]
-async fn check_any_role_error() {
-    let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
-
-    let id = LoginId::admin(1);
-    assert!(mgr.check_any_role(&id, &["admin", "user"]).await.is_ok());
+    // 关键断言：设备 B 的旧 token 仍然被拒（deny key 未被删除）
     assert!(matches!(
-        mgr.check_any_role(&id, &["user", "editor"]).await,
-        Err(AuthError::NoRole(_))
+        mgr.validate_token(&pair2.access_token).await,
+        Err(AuthError::RefreshRequired)
     ));
+
+    // 设备 B 也刷新 → 获得新 token
+    let new_pair2 = mgr
+        .refresh(&pair2.refresh_token, &admin_profile())
+        .await
+        .unwrap();
+
+    // 设备 B 的新 token 也应该通过验证
+    assert!(mgr
+        .validate_token(&new_pair2.access_token)
+        .await
+        .is_ok());
 }
 
-#[tokio::test]
-async fn check_all_roles_error() {
-    let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
+// ── UUID 模式测试 ──
 
-    let id = LoginId::admin(1);
-    assert!(mgr.check_all_roles(&id, &["admin"]).await.is_ok());
-    let result = mgr.check_all_roles(&id, &["admin", "superadmin"]).await;
-    assert!(matches!(result, Err(AuthError::NoRole(r)) if r == "superadmin"));
-}
+use summer_auth::config::{MultiAuthConfig, AuthConfigOverride, TokenStyle};
 
-#[tokio::test]
-async fn has_any_permission_with_wildcard() {
-    let mgr = make_manager();
-    let mut params = admin_login_params(1);
-    if let UserProfile::Admin(ref mut p) = params.profile {
-        p.permissions = vec!["system:user:*".to_string()];
+fn uuid_customer_config() -> MultiAuthConfig {
+    let base: AuthConfig = serde_json::from_str(
+        r#"{
+            "token_name": "Authorization",
+            "token_style": "jwt",
+            "access_timeout": 3600,
+            "refresh_timeout": 86400,
+            "concurrent_login": true,
+            "max_devices": 3,
+            "qr_code_timeout": 300,
+            "jwt_secret": "test-jwt-secret-key-for-integration-tests-32chars!"
+        }"#,
+    )
+    .unwrap();
+
+    MultiAuthConfig {
+        base,
+        admin: None,
+        business: None,
+        customer: Some(AuthConfigOverride {
+            token_style: Some(TokenStyle::Uuid),
+            access_timeout: Some(3600),
+            refresh_timeout: Some(86400),
+            ..Default::default()
+        }),
     }
-    mgr.login(params).await.unwrap();
+}
 
-    let id = LoginId::admin(1);
-    assert!(mgr.has_any_permission(&id, &["system:user:list", "order:list"]).await.unwrap());
-    assert!(!mgr.has_any_permission(&id, &["order:list", "finance:report"]).await.unwrap());
+fn make_uuid_manager() -> SessionManager {
+    let storage = Arc::new(MemoryStorage::new());
+    SessionManager::from_multi_config(storage, uuid_customer_config())
 }
 
 #[tokio::test]
-async fn has_all_permissions_with_wildcard() {
-    let mgr = make_manager();
-    let mut params = admin_login_params(1);
-    if let UserProfile::Admin(ref mut p) = params.profile {
-        p.permissions = vec!["system:*".to_string(), "order:item:list".to_string()];
-    }
-    mgr.login(params).await.unwrap();
+async fn uuid_login_validate_refresh() {
+    let mgr = make_uuid_manager();
 
-    let id = LoginId::admin(1);
-    assert!(mgr.has_all_permissions(&id, &["system:user:list", "order:item:list"]).await.unwrap());
-    assert!(!mgr.has_all_permissions(&id, &["system:user:list", "order:item:edit"]).await.unwrap());
+    // Customer 使用 UUID 模式
+    let pair = mgr.login(customer_login_params(1)).await.unwrap();
+
+    // UUID token 不含 '.'（不是 JWT 格式）
+    assert!(!pair.access_token.contains('.'), "UUID access token should not contain '.'");
+    assert!(!pair.refresh_token.contains('.'), "UUID refresh token should not contain '.'");
+    assert_eq!(pair.expires_in, 3600);
+
+    // 验证 token
+    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
+    assert_eq!(validated.login_id, LoginId::customer(1));
+    assert_eq!(validated.nick_name, "Customer");
+    assert_eq!(validated.device, DeviceType::Web);
+
+    // 刷新
+    let customer_profile = UserProfile::Customer(CustomerProfile {
+        nick_name: "Updated Customer".to_string(),
+        avatar: String::new(),
+    });
+    let new_pair = mgr.refresh(&pair.refresh_token, &customer_profile).await.unwrap();
+
+    // 新 token 有效
+    let new_validated = mgr.validate_token(&new_pair.access_token).await.unwrap();
+    assert_eq!(new_validated.nick_name, "Updated Customer");
+
+    // 旧 refresh token 不能再用（轮转）
+    assert!(mgr.refresh(&pair.refresh_token, &customer_profile).await.is_err());
 }
 
 #[tokio::test]
-async fn check_any_permission_error() {
-    let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
+async fn uuid_deny_check() {
+    let mgr = make_uuid_manager();
+    let pair = mgr.login(customer_login_params(1)).await.unwrap();
 
-    let id = LoginId::admin(1);
-    // admin_login_params 有 permissions: ["system:user:list", "system:user:add"]
-    assert!(mgr.check_any_permission(&id, &["system:user:list", "nonexist"]).await.is_ok());
-    assert!(matches!(
-        mgr.check_any_permission(&id, &["nonexist1", "nonexist2"]).await,
-        Err(AuthError::NoPermission(_))
-    ));
+    // 强制刷新 → deny key
+    mgr.force_refresh(&LoginId::customer(1)).await.unwrap();
+
+    // 旧 token → RefreshRequired（iat <= deny_ts）
+    let result = mgr.validate_token(&pair.access_token).await;
+    assert!(matches!(result, Err(AuthError::RefreshRequired)));
+
+    // 等待 1 秒确保新 token 的 iat > deny_ts
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // 刷新仍然可以成功
+    let customer_profile = UserProfile::Customer(CustomerProfile {
+        nick_name: "Customer".to_string(),
+        avatar: String::new(),
+    });
+    let new_pair = mgr.refresh(&pair.refresh_token, &customer_profile).await.unwrap();
+    assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
 }
 
 #[tokio::test]
-async fn check_all_permissions_error() {
-    let mgr = make_manager();
-    mgr.login(admin_login_params(1)).await.unwrap();
+async fn uuid_logout_invalidates() {
+    let mgr = make_uuid_manager();
+    let pair = mgr.login(customer_login_params(1)).await.unwrap();
 
-    let id = LoginId::admin(1);
-    assert!(mgr.check_all_permissions(&id, &["system:user:list", "system:user:add"]).await.is_ok());
-    let result = mgr.check_all_permissions(&id, &["system:user:list", "system:user:delete"]).await;
-    assert!(matches!(result, Err(AuthError::NoPermission(p)) if p == "system:user:delete"));
+    mgr.logout(&LoginId::customer(1), &DeviceType::Web)
+        .await
+        .unwrap();
+
+    // 登出后 token 应该失效（deny key）
+    let result = mgr.validate_token(&pair.access_token).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn mixed_mode_jwt_and_uuid() {
+    let mgr = make_uuid_manager();
+
+    // Admin 用 JWT
+    let admin_pair = mgr.login(admin_login_params(1)).await.unwrap();
+    // Customer 用 UUID
+    let customer_pair = mgr.login(customer_login_params(1)).await.unwrap();
+
+    // Admin token 是 JWT 格式
+    assert_eq!(admin_pair.access_token.split('.').count(), 3);
+    // Customer token 不是 JWT 格式
+    assert!(!customer_pair.access_token.contains('.'));
+
+    // 两者都能通过验证
+    let admin_validated = mgr.validate_token(&admin_pair.access_token).await.unwrap();
+    assert_eq!(admin_validated.login_id, LoginId::admin(1));
+
+    let customer_validated = mgr.validate_token(&customer_pair.access_token).await.unwrap();
+    assert_eq!(customer_validated.login_id, LoginId::customer(1));
+
+    // 登出 Admin 不影响 Customer
+    mgr.logout_all(&LoginId::admin(1)).await.unwrap();
+    assert!(mgr.validate_token(&admin_pair.access_token).await.is_err());
+    assert!(mgr.validate_token(&customer_pair.access_token).await.is_ok());
+}
+
+#[tokio::test]
+async fn jwt_mode_backward_compatible() {
+    // 不配置任何覆盖时，行为与旧版完全一致
+    let mgr = make_manager();
+
+    let pair = mgr.login(admin_login_params(1)).await.unwrap();
+    assert_eq!(pair.access_token.split('.').count(), 3); // JWT 格式
+
+    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
+    assert_eq!(validated.login_id, LoginId::admin(1));
+    assert_eq!(validated.user_name, "test_user");
+
+    // refresh
+    let new_pair = mgr.refresh(&pair.refresh_token, &admin_profile()).await.unwrap();
+    assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
+
+    // parse_refresh_token
+    let login_id = mgr.parse_refresh_token(&pair.refresh_token).await.unwrap();
+    assert_eq!(login_id, LoginId::admin(1));
+}
+
+#[tokio::test]
+async fn uuid_parse_refresh_token() {
+    let mgr = make_uuid_manager();
+    let pair = mgr.login(customer_login_params(1)).await.unwrap();
+
+    let login_id = mgr.parse_refresh_token(&pair.refresh_token).await.unwrap();
+    assert_eq!(login_id, LoginId::customer(1));
+}
+
+#[tokio::test]
+async fn uuid_ban_user() {
+    let mgr = make_uuid_manager();
+    let pair = mgr.login(customer_login_params(1)).await.unwrap();
+
+    mgr.ban_user(&LoginId::customer(1)).await.unwrap();
+
+    // Access token 失效（UUID session 被清理 → InvalidToken，或 deny check → AccountBanned）
+    let result = mgr.validate_token(&pair.access_token).await;
+    assert!(result.is_err());
+
+    // Refresh 也失败（banned deny key）
+    let customer_profile = UserProfile::Customer(CustomerProfile {
+        nick_name: "Customer".to_string(),
+        avatar: String::new(),
+    });
+    let result = mgr.refresh(&pair.refresh_token, &customer_profile).await;
+    assert!(result.is_err());
 }

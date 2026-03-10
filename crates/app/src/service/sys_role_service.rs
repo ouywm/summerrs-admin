@@ -7,6 +7,7 @@ use model::entity::sys_user_role;
 use model::vo::sys_role::{RolePermissionVo, RoleVo};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use summer::plugin::Service;
+use summer_auth::{LoginId, SessionManager};
 
 use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
 use crate::plugin::sea_orm::DbConn;
@@ -15,6 +16,8 @@ use crate::plugin::sea_orm::DbConn;
 pub struct SysRoleService {
     #[inject(component)]
     db: DbConn,
+    #[inject(component)]
+    auth: SessionManager,
 }
 
 impl SysRoleService {
@@ -189,6 +192,20 @@ impl SysRoleService {
                 .exec(&self.db)
                 .await
                 .context("保存角色菜单权限失败")?;
+        }
+
+        // 查询该角色下所有用户，强制刷新 token 以获取最新权限
+        let user_ids: Vec<i64> = sys_user_role::Entity::find()
+            .filter(sys_user_role::Column::RoleId.eq(role_id))
+            .all(&self.db)
+            .await
+            .context("查询角色用户失败")?
+            .into_iter()
+            .map(|ur| ur.user_id)
+            .collect();
+
+        for user_id in user_ids {
+            let _ = self.auth.force_refresh(&LoginId::admin(user_id)).await;
         }
 
         Ok(())

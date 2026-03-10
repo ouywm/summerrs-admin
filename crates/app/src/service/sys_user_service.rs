@@ -16,7 +16,7 @@ use sea_orm::{
     Set, TransactionTrait,
 };
 use summer::plugin::Service;
-use summer_auth::LoginId;
+use summer_auth::{LoginId, SessionManager};
 
 use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
 use crate::plugin::sea_orm::DbConn;
@@ -25,6 +25,8 @@ use crate::plugin::sea_orm::DbConn;
 pub struct SysUserService {
     #[inject(component)]
     db: DbConn,
+    #[inject(component)]
+    auth: SessionManager,
 }
 
 impl SysUserService {
@@ -203,6 +205,7 @@ impl SysUserService {
     /// 更新用户
     pub async fn update_user(&self, id: i64, dto: UpdateUserDto, operator: &str) -> ApiResult<()> {
         let role_ids = dto.role_ids.clone();
+        let has_role_change = role_ids.is_some();
         let operator = operator.to_string();
 
         self.db
@@ -264,7 +267,14 @@ impl SysUserService {
                     ApiErrors::Internal(anyhow::anyhow!("数据库连接错误: {}", err))
                 }
                 sea_orm::TransactionError::Transaction(err) => err,
-            })
+            })?;
+
+        // 角色变更后，强制用户刷新 token 以获取最新权限
+        if has_role_change {
+            let _ = self.auth.force_refresh(&LoginId::admin(id)).await;
+        }
+
+        Ok(())
     }
 
     /// 删除用户（逻辑删除，设置状态为注销）
@@ -303,7 +313,12 @@ impl SysUserService {
                     ApiErrors::Internal(anyhow::anyhow!("数据库连接错误: {}", err))
                 }
                 sea_orm::TransactionError::Transaction(err) => err,
-            })
+            })?;
+
+        // 用户注销后，封禁其所有会话
+        let _ = self.auth.ban_user(&LoginId::admin(id)).await;
+
+        Ok(())
     }
 
     /// 重置用户密码

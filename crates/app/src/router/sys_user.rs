@@ -1,6 +1,6 @@
 use common::error::ApiResult;
 use common::extractor::{Path, Query, ValidatedJson};
-use macros::{check_permission, log};
+use macros::{has_perm, log};
 use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
 use common::response::Json;
@@ -42,7 +42,7 @@ pub async fn get_user_detail(
     Ok(Json(vo))
 }
 
-#[check_permission("system:user:create")]
+#[has_perm("system:user:create")]
 #[log(module = "用户管理", action = "创建用户", biz_type = Create)]
 #[post_api("/user")]
 pub async fn create_user(

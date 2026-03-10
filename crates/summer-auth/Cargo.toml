@@ -6,6 +6,7 @@ edition = "2024"
 
 [dependencies]
 summer = { workspace = true }
+macros = { path = "../macros" }
 summer-web = { workspace = true, features = ["openapi"], optional = true }
 summer-redis = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
@@ -21,6 +22,7 @@ schemars = { workspace = true, features = ["derive"] }
 tower-layer = { version = "0.3", optional = true }
 tower-service = { version = "0.3", optional = true }
 jsonwebtoken = { workspace = true }
+base64 = { workspace = true }
 
 [features]
 default = ["memory", "web"]

@@ -2,7 +2,6 @@ use summer_redis::redis;
 use summer_redis::redis::AsyncCommands;
 use summer_redis::Redis;
 
-use crate::session::model::UserSession;
 use crate::storage::AuthStorage;
 
 /// Redis 存储实现
@@ -19,41 +18,6 @@ impl RedisStorage {
 
 #[async_trait::async_trait]
 impl AuthStorage for RedisStorage {
-    async fn set_session(
-        &self,
-        key: &str,
-        session: &UserSession,
-        ttl_seconds: i64,
-    ) -> anyhow::Result<()> {
-        let json = serde_json::to_string(session)?;
-        let mut conn = self.conn.clone();
-        if ttl_seconds > 0 {
-            conn.set_ex::<_, _, ()>(key, &json, ttl_seconds as u64)
-                .await?;
-        } else {
-            conn.set::<_, _, ()>(key, &json).await?;
-        }
-        Ok(())
-    }
-
-    async fn get_session(&self, key: &str) -> anyhow::Result<Option<UserSession>> {
-        let mut conn = self.conn.clone();
-        let val: Option<String> = conn.get(key).await?;
-        match val {
-            Some(json) => match serde_json::from_str::<UserSession>(&json) {
-                Ok(session) => Ok(Some(session)),
-                Err(e) => {
-                    // 旧格式数据无法反序列化，清除后返回 None
-                    tracing::warn!("Session deserialization failed for key '{}', clearing: {}", key, e);
-                    let mut conn2 = self.conn.clone();
-                    let _ = conn2.del::<_, ()>(key).await;
-                    Ok(None)
-                }
-            },
-            None => Ok(None),
-        }
-    }
-
     async fn set_string(&self, key: &str, value: &str, ttl_seconds: i64) -> anyhow::Result<()> {
         let mut conn = self.conn.clone();
         if ttl_seconds > 0 {

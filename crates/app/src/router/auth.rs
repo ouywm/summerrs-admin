@@ -57,7 +57,7 @@ pub async fn logout(
     LoginUser { session }: LoginUser,
     Component(svc): Component<AuthService>,
 ) -> ApiResult<()> {
-    svc.logout(&session.login_id).await?;
+    svc.logout(&session.login_id, &session.device).await?;
     Ok(())
 }
 

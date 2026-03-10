@@ -15,10 +15,8 @@ pub struct LoginVo {
 pub struct DeviceSessionVo {
     /// 设备类型：web / android / ios / ...
     pub device: String,
-    /// 登录时间（Unix 时间戳，毫秒）
+    /// 登录时间（Unix 时间戳）
     pub login_time: i64,
-    /// 最后活跃时间
-    pub last_active_time: i64,
     /// 登录 IP
     pub login_ip: String,
     /// 浏览器信息

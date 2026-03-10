@@ -1,5 +1,6 @@
 mod auth_macro;
 mod log_macro;
+mod multi_auth_macro;
 
 use proc_macro::TokenStream;
 
@@ -38,12 +39,12 @@ pub fn log(args: TokenStream, input: TokenStream) -> TokenStream {
 /// # 示例
 ///
 /// ```rust,ignore
-/// #[check_login]
+/// #[login]
 /// #[get("/profile")]
 /// pub async fn get_profile() -> ApiResult<Json<Profile>> { ... }
 /// ```
 #[proc_macro_attribute]
-pub fn check_login(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn login(args: TokenStream, input: TokenStream) -> TokenStream {
     auth_macro::expand_check_login(args.into(), input.into()).into()
 }
 
@@ -55,12 +56,12 @@ pub fn check_login(args: TokenStream, input: TokenStream) -> TokenStream {
 /// # 示例
 ///
 /// ```rust,ignore
-/// #[check_permission("system:user:list")]
+/// #[has_perm("system:user:list")]
 /// #[get("/user/list")]
 /// pub async fn list_users(...) -> ApiResult<Json<...>> { ... }
 /// ```
 #[proc_macro_attribute]
-pub fn check_permission(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn has_perm(args: TokenStream, input: TokenStream) -> TokenStream {
     auth_macro::expand_check_permission(args.into(), input.into()).into()
 }
 
@@ -71,12 +72,12 @@ pub fn check_permission(args: TokenStream, input: TokenStream) -> TokenStream {
 /// # 示例
 ///
 /// ```rust,ignore
-/// #[check_role("admin")]
+/// #[has_role("admin")]
 /// #[get("/admin/dashboard")]
 /// pub async fn dashboard(...) -> ApiResult<Json<...>> { ... }
 /// ```
 #[proc_macro_attribute]
-pub fn check_role(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn has_role(args: TokenStream, input: TokenStream) -> TokenStream {
     auth_macro::expand_check_role(args.into(), input.into()).into()
 }
 
@@ -88,16 +89,16 @@ pub fn check_role(args: TokenStream, input: TokenStream) -> TokenStream {
 /// # 示例
 ///
 /// ```rust,ignore
-/// #[check_permissions(and("system:user:list", "system:user:add"))]
+/// #[has_perms(and("system:user:list", "system:user:add"))]
 /// #[post("/user")]
 /// pub async fn create_user(...) -> ApiResult<()> { ... }
 ///
-/// #[check_permissions(or("system:user:list", "system:role:list"))]
+/// #[has_perms(or("system:user:list", "system:role:list"))]
 /// #[get("/overview")]
 /// pub async fn overview(...) -> ApiResult<Json<...>> { ... }
 /// ```
 #[proc_macro_attribute]
-pub fn check_permissions(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn has_perms(args: TokenStream, input: TokenStream) -> TokenStream {
     auth_macro::expand_check_permissions(args.into(), input.into()).into()
 }
 
@@ -109,15 +110,35 @@ pub fn check_permissions(args: TokenStream, input: TokenStream) -> TokenStream {
 /// # 示例
 ///
 /// ```rust,ignore
-/// #[check_roles(and("admin", "editor"))]
+/// #[has_roles(and("admin", "editor"))]
 /// #[put("/content")]
 /// pub async fn edit_content(...) -> ApiResult<()> { ... }
 ///
-/// #[check_roles(or("admin", "moderator"))]
+/// #[has_roles(or("admin", "moderator"))]
 /// #[delete("/post/{id}")]
 /// pub async fn delete_post(...) -> ApiResult<()> { ... }
 /// ```
 #[proc_macro_attribute]
-pub fn check_roles(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
     auth_macro::expand_check_roles(args.into(), input.into()).into()
+}
+
+/// 多类型认证 derive 宏
+///
+/// 为 UserType 枚举生成 `config_key()` 方法，返回变体名的小写形式。
+/// 用于 TOML 配置中按用户类型覆盖认证参数。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// #[derive(MultiAuth)]
+/// pub enum UserType {
+///     Admin,     // → config_key() = "admin"
+///     Business,  // → config_key() = "business"
+///     Customer,  // → config_key() = "customer"
+/// }
+/// ```
+#[proc_macro_derive(MultiAuth)]
+pub fn multi_auth(input: TokenStream) -> TokenStream {
+    multi_auth_macro::expand(input.into()).into()
 }

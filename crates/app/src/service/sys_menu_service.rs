@@ -7,10 +7,10 @@ use model::entity::sys_user_role;
 use model::vo::sys_menu::{AuthItem, MenuMeta, MenuTreeVo};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, JoinType, Order, PaginatorTrait, QueryFilter,
-    QueryOrder, QuerySelect, RelationTrait,
+    QueryOrder, QuerySelect, RelationTrait, Set,
 };
 use summer::plugin::Service;
-use summer_auth::LoginId;
+use summer_auth::{LoginId, PermissionMap, SessionManager};
 
 use crate::plugin::sea_orm::DbConn;
 
@@ -18,6 +18,8 @@ use crate::plugin::sea_orm::DbConn;
 pub struct SysMenuService {
     #[inject(component)]
     db: DbConn,
+    #[inject(component)]
+    auth: SessionManager,
 }
 
 impl SysMenuService {
@@ -112,8 +114,24 @@ impl SysMenuService {
             return Err(ApiErrors::BadRequest("父菜单不存在".to_string()));
         }
 
-        let button: sys_menu::ActiveModel = dto.into();
+        // 自动分配 bit_position
+        let max_pos: Option<Option<i32>> = sys_menu::Entity::find()
+            .filter(sys_menu::Column::BitPosition.is_not_null())
+            .select_only()
+            .column_as(sys_menu::Column::BitPosition.max(), "max_pos")
+            .into_tuple()
+            .one(&self.db)
+            .await
+            .context("查询最大 bit_position 失败")?;
+        let next_pos = max_pos.flatten().map(|p| p + 1).unwrap_or(0);
+
+        let mut button: sys_menu::ActiveModel = dto.into();
+        button.bit_position = Set(Some(next_pos));
         button.insert(&self.db).await.context("创建按钮失败")?;
+
+        // 刷新 PermissionMap 缓存
+        self.reload_permission_map().await;
+
         Ok(())
     }
 
@@ -157,14 +175,31 @@ impl SysMenuService {
             .context("查询按钮失败")?
             .ok_or_else(|| ApiErrors::NotFound("按钮不存在".to_string()))?;
 
+        // auth_mark 或 enabled 变更会影响 PermissionMap
+        let need_reload = dto.auth_mark.is_some() || dto.enabled.is_some();
+
         let mut active: sys_menu::ActiveModel = button.into();
         dto.apply_to(&mut active);
         active.update(&self.db).await.context("更新按钮失败")?;
+
+        if need_reload {
+            self.reload_permission_map().await;
+        }
+
         Ok(())
     }
 
     /// 删除菜单
     pub async fn delete_menu(&self, id: i64) -> ApiResult<()> {
+        // 查询菜单详情（判断类型）
+        let menu = sys_menu::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("查询菜单失败")?
+            .ok_or_else(|| ApiErrors::NotFound("菜单不存在".to_string()))?;
+
+        let is_button = menu.menu_type == sys_menu::MenuType::Button;
+
         // 检查是否有子菜单
         let children = sys_menu::Entity::find()
             .filter(sys_menu::Column::ParentId.eq(id))
@@ -201,7 +236,32 @@ impl SysMenuService {
             return Err(ApiErrors::NotFound("菜单不存在".to_string()));
         }
 
+        // 删除按钮时刷新 PermissionMap 缓存
+        if is_button {
+            self.reload_permission_map().await;
+        }
+
         Ok(())
+    }
+
+    /// 重新从 DB 加载权限位图映射并更新 SessionManager 缓存
+    async fn reload_permission_map(&self) {
+        let menus = sys_menu::Entity::find()
+            .filter(sys_menu::Column::MenuType.eq(sys_menu::MenuType::Button))
+            .filter(sys_menu::Column::Enabled.eq(true))
+            .filter(sys_menu::Column::BitPosition.is_not_null())
+            .all(&self.db)
+            .await;
+
+        if let Ok(menus) = menus {
+            let mappings: Vec<(String, u32)> = menus
+                .into_iter()
+                .filter(|m| !m.auth_mark.is_empty())
+                .map(|m| (m.auth_mark, m.bit_position.unwrap() as u32))
+                .collect();
+
+            self.auth.set_permission_map(PermissionMap::new(mappings));
+        }
     }
 }
 

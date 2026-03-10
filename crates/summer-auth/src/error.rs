@@ -31,6 +31,27 @@ pub enum AuthError {
     #[error("Refresh Token 无效或已过期")]
     InvalidRefreshToken,
 
+    #[cfg_attr(feature = "web", status_code(401))]
+    #[cfg_attr(feature = "web", problem_type("not-authenticated"))]
+    #[cfg_attr(feature = "web", title("Unauthorized"))]
+    #[cfg_attr(feature = "web", detail("Refresh Token 已过期"))]
+    #[error("Refresh Token 已过期")]
+    RefreshTokenExpired,
+
+    #[cfg_attr(feature = "web", status_code(403))]
+    #[cfg_attr(feature = "web", problem_type("account-banned"))]
+    #[cfg_attr(feature = "web", title("Forbidden"))]
+    #[cfg_attr(feature = "web", detail("账号已被封禁"))]
+    #[error("账号已被封禁")]
+    AccountBanned,
+
+    #[cfg_attr(feature = "web", status_code(401))]
+    #[cfg_attr(feature = "web", problem_type("token-refresh-required"))]
+    #[cfg_attr(feature = "web", title("Unauthorized"))]
+    #[cfg_attr(feature = "web", detail("Token 需要刷新"))]
+    #[error("Token 需要刷新")]
+    RefreshRequired,
+
     #[cfg_attr(feature = "web", status_code(403))]
     #[cfg_attr(feature = "web", problem_type("forbidden"))]
     #[cfg_attr(feature = "web", title("Forbidden"))]

@@ -2,6 +2,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::user_type::{DeviceType, LoginId};
 
+/// UUID 模式的 Redis session 数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UuidSessionData {
+    pub login_id: String,
+    pub device: String,
+    pub iat: i64,
+    pub user_name: String,
+    pub nick_name: String,
+    pub roles: Vec<String>,
+    pub permissions: Vec<String>,
+}
+
 /// Admin 用户档案（含 RBAC）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminProfile {
@@ -83,57 +95,51 @@ impl UserProfile {
             UserProfile::Customer(_) => &[],
         }
     }
-
-    /// 设置角色列表（仅 Admin/Business 有效，Customer 忽略）
-    pub fn set_roles(&mut self, roles: Vec<String>) {
-        match self {
-            UserProfile::Admin(p) => p.roles = roles,
-            UserProfile::Business(p) => p.roles = roles,
-            UserProfile::Customer(_) => {}
-        }
-    }
-
-    /// 设置权限列表（仅 Admin/Business 有效，Customer 忽略）
-    pub fn set_permissions(&mut self, perms: Vec<String>) {
-        match self {
-            UserProfile::Admin(p) => p.permissions = perms,
-            UserProfile::Business(p) => p.permissions = perms,
-            UserProfile::Customer(_) => {}
-        }
-    }
 }
 
-/// 用户会话（一个用户可有多个设备会话）
+/// 用户会话（从 Access JWT claims 构造，注入到 request extensions）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSession {
     pub login_id: LoginId,
-    /// 每个设备一个 DeviceSession
-    pub devices: Vec<DeviceSession>,
+    /// 当前请求的设备类型
+    pub device: DeviceType,
     /// 用户档案（按用户类型区分字段）
     pub profile: UserProfile,
 }
 
-/// 设备会话
+/// Redis 设备登录信息（存储在 auth:device:{login_id}:{device}）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceSession {
-    /// 设备标识
-    pub device: DeviceType,
-    /// access token
-    pub access_token: String,
-    /// refresh token
-    pub refresh_token: String,
+pub struct DeviceInfo {
+    /// Refresh Token 的 UUID（rid）
+    pub rid: String,
     /// 登录时间（Unix 时间戳）
     pub login_time: i64,
-    /// 最后活跃时间
-    pub last_active_time: i64,
     /// 登录 IP
     pub login_ip: String,
     /// 用户代理信息
     pub user_agent: String,
-    /// JWT 模式下 access token 的 JTI（opaque 模式为 None）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_jti: Option<String>,
-    /// JWT 模式下 refresh token 的 JTI（opaque 模式为 None）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_jti: Option<String>,
+}
+
+/// 设备会话（用于在线用户查询返回）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceSession {
+    /// 设备标识
+    pub device: DeviceType,
+    /// 登录时间（Unix 时间戳）
+    pub login_time: i64,
+    /// 登录 IP
+    pub login_ip: String,
+    /// 用户代理信息
+    pub user_agent: String,
+}
+
+/// validate_token 返回的验证结果（从 Access JWT claims 提取）
+#[derive(Debug, Clone)]
+pub struct ValidatedAccess {
+    pub login_id: LoginId,
+    pub device: DeviceType,
+    pub user_name: String,
+    pub nick_name: String,
+    pub roles: Vec<String>,
+    pub permissions: Vec<String>,
 }

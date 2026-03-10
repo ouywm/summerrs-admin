@@ -1,120 +1,64 @@
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey};
 use uuid::Uuid;
 
-use crate::config::{AuthConfig, JwtAlgorithm, TokenStyle};
+use crate::config::{AuthConfig, JwtAlgorithm};
 use crate::error::AuthResult;
-use crate::token::jwt::{JwtHandler, TokenType};
-use crate::user_type::LoginId;
+use crate::session::model::UserProfile;
+use crate::token::jwt::{AccessClaims, JwtHandler, RefreshClaims};
+use crate::user_type::{DeviceType, LoginId};
 
-/// 生成的 Token 结果（统一 UUID 和 JWT 两种模式的输出）
-#[derive(Debug, Clone)]
-pub struct GeneratedToken {
-    /// token 字符串（UUID 或 JWT）
-    pub token: String,
-    /// JWT 模式下的 JTI（用于黑名单），UUID 模式为 None
-    pub jti: Option<String>,
-}
-
-/// Token 对（access + refresh）
-#[derive(Debug, Clone)]
-pub struct GeneratedTokenPair {
-    pub access: GeneratedToken,
-    pub refresh: GeneratedToken,
-}
-
-/// Token 生成器（根据配置自动选择 UUID 或 JWT 模式）
+/// Token 生成器（JWT Only，不再支持 UUID 模式）
 ///
 /// 职责边界：
 /// - `JwtHandler` 是纯加密原语包装，只管 encode/decode
 /// - `TokenGenerator` 是适配层，负责从 AuthConfig 构建 JwtHandler 并提供统一生成接口
 #[derive(Clone)]
 pub struct TokenGenerator {
-    style: TokenStyle,
-    jwt_handler: Option<JwtHandler>,
+    jwt_handler: JwtHandler,
 }
 
 impl TokenGenerator {
     /// 根据 AuthConfig 创建 TokenGenerator
     ///
-    /// JWT 模式下根据 jwt_algorithm 自动选择密钥类型：
+    /// 根据 jwt_algorithm 自动选择密钥类型：
     /// - HMAC 系列（HS256/HS384/HS512）：使用 jwt_secret
     /// - 非对称算法（RS256/ES256/EdDSA 等）：读取 jwt_private_key / jwt_public_key 文件
     pub fn new(config: &AuthConfig) -> Self {
-        let jwt_handler = if matches!(config.token_style, TokenStyle::Jwt) {
-            Some(Self::build_jwt_handler(config))
-        } else {
-            None
-        };
-
         Self {
-            style: config.token_style,
-            jwt_handler,
+            jwt_handler: Self::build_jwt_handler(config),
         }
     }
 
-    /// 是否为 JWT 模式
-    pub fn is_jwt(&self) -> bool {
-        self.jwt_handler.is_some()
-    }
-
-    /// 获取 JwtHandler 引用（JWT 模式下必定 Some）
+    /// 获取 JwtHandler 引用
     pub fn jwt(&self) -> &JwtHandler {
-        self.jwt_handler
-            .as_ref()
-            .expect("jwt_handler must be Some in JWT mode")
+        &self.jwt_handler
     }
 
-    /// 生成 access + refresh token 对
-    ///
-    /// TODO: 考虑将 refresh_token 始终使用不透明格式（UUID），即使在 JWT 模式下。
-    /// 理由：refresh_token 每次使用都需要服务端验证（黑名单检查 + 会话匹配），
-    /// JWT 自包含的优势在 refresh 场景下无意义，反而增加了 token 长度和泄漏风险。
-    /// 参考 sa-token-rust 的设计：refresh_token 格式固定为 `refresh_{ts}_{login_id}_{uuid}`。
-    pub fn generate_pair(
+    /// 生成 Access JWT — 自包含用户信息
+    pub fn generate_access(
         &self,
         login_id: &LoginId,
-        access_ttl: i64,
-        refresh_ttl: i64,
-    ) -> AuthResult<GeneratedTokenPair> {
-        match self.style {
-            TokenStyle::Uuid => Ok(GeneratedTokenPair {
-                access: GeneratedToken {
-                    token: Self::uuid(),
-                    jti: None,
-                },
-                refresh: GeneratedToken {
-                    token: Self::uuid(),
-                    jti: None,
-                },
-            }),
-            TokenStyle::Jwt => {
-                let jwt = self.jwt();
-                let (access_token, access_claims) =
-                    jwt.encode(login_id, TokenType::Access, access_ttl)?;
-                let (refresh_token, refresh_claims) =
-                    jwt.encode(login_id, TokenType::Refresh, refresh_ttl)?;
-                Ok(GeneratedTokenPair {
-                    access: GeneratedToken {
-                        token: access_token,
-                        jti: Some(access_claims.jti),
-                    },
-                    refresh: GeneratedToken {
-                        token: refresh_token,
-                        jti: Some(refresh_claims.jti),
-                    },
-                })
-            }
-        }
+        device: &DeviceType,
+        profile: &UserProfile,
+        pb: Option<&str>,
+        ttl_seconds: i64,
+    ) -> AuthResult<(String, AccessClaims)> {
+        self.jwt_handler
+            .encode_access(login_id, device, profile, pb, ttl_seconds)
+    }
+
+    /// 生成 Refresh JWT — 包裹 UUID
+    pub fn generate_refresh(
+        &self,
+        login_id: &LoginId,
+        ttl_seconds: i64,
+    ) -> AuthResult<(String, RefreshClaims)> {
+        self.jwt_handler.encode_refresh(login_id, ttl_seconds)
     }
 
     /// 标准 UUID v4
     pub fn uuid() -> String {
         Uuid::new_v4().to_string()
-    }
-
-    /// 无连字符 UUID（用于 JTI 等内部标识）
-    pub fn simple_uuid() -> String {
-        Uuid::new_v4().simple().to_string()
     }
 
     // ── 私有：config → JwtHandler 构建 ──
@@ -132,10 +76,18 @@ impl TokenGenerator {
                 algorithm,
                 EncodingKey::from_secret(secret.as_bytes()),
                 DecodingKey::from_secret(secret.as_bytes()),
+                config.jwt_issuer.clone(),
+                config.jwt_audience.clone(),
             )
         } else {
             let (encoding_key, decoding_key) = load_asymmetric_keys(config);
-            JwtHandler::new(algorithm, encoding_key, decoding_key)
+            JwtHandler::new(
+                algorithm,
+                encoding_key,
+                decoding_key,
+                config.jwt_issuer.clone(),
+                config.jwt_audience.clone(),
+            )
         }
     }
 }
@@ -202,58 +154,53 @@ fn load_asymmetric_keys(config: &AuthConfig) -> (EncodingKey, DecodingKey) {
 mod tests {
     use super::*;
 
-    fn uuid_config() -> AuthConfig {
-        serde_json::from_str(
-            r#"{
-                "token_name": "Authorization",
-                "access_timeout": 3600,
-                "refresh_timeout": 86400,
-                "token_style": "uuid"
-            }"#,
-        )
-        .unwrap()
-    }
-
     fn jwt_config() -> AuthConfig {
         serde_json::from_str(
             r#"{
                 "token_name": "Authorization",
                 "access_timeout": 3600,
                 "refresh_timeout": 86400,
-                "token_style": "jwt",
                 "jwt_secret": "test-secret-key"
             }"#,
         )
         .unwrap()
     }
 
-    #[test]
-    fn uuid_mode_generate_pair() {
-        let generator = TokenGenerator::new(&uuid_config());
-        assert!(!generator.is_jwt());
-
-        let pair = generator
-            .generate_pair(&LoginId::admin(1), 3600, 86400)
-            .unwrap();
-        assert_eq!(pair.access.token.len(), 36);
-        assert!(pair.access.token.contains('-'));
-        assert!(pair.access.jti.is_none());
-        assert!(pair.refresh.jti.is_none());
+    fn test_profile() -> UserProfile {
+        use crate::session::model::AdminProfile;
+        UserProfile::Admin(AdminProfile {
+            user_name: "admin".to_string(),
+            nick_name: "管理员".to_string(),
+            avatar: "".to_string(),
+            roles: vec!["admin".to_string()],
+            permissions: vec!["system:user:list".to_string()],
+        })
     }
 
     #[test]
-    fn jwt_mode_generate_pair() {
+    fn generate_access_token() {
         let generator = TokenGenerator::new(&jwt_config());
-        assert!(generator.is_jwt());
+        let login_id = LoginId::admin(1);
+        let profile = test_profile();
 
-        let pair = generator
-            .generate_pair(&LoginId::admin(1), 3600, 86400)
+        let (token, claims) = generator
+            .generate_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
-        assert_eq!(pair.access.token.split('.').count(), 3);
-        assert_eq!(pair.refresh.token.split('.').count(), 3);
-        assert!(pair.access.jti.is_some());
-        assert!(pair.refresh.jti.is_some());
-        assert_ne!(pair.access.jti, pair.refresh.jti);
+
+        assert_eq!(token.split('.').count(), 3);
+        assert_eq!(claims.sub, "admin:1");
+        assert_eq!(claims.user_name, "admin");
+    }
+
+    #[test]
+    fn generate_refresh_token() {
+        let generator = TokenGenerator::new(&jwt_config());
+        let login_id = LoginId::admin(1);
+
+        let (token, claims) = generator.generate_refresh(&login_id, 86400).unwrap();
+
+        assert_eq!(token.split('.').count(), 3);
+        assert!(!claims.rid.is_empty());
     }
 
     #[test]
@@ -275,7 +222,6 @@ mod tests {
 
     #[test]
     fn map_algorithm_covers_all() {
-        // 确保所有 JwtAlgorithm 变体都有映射
         let variants = [
             JwtAlgorithm::HS256,
             JwtAlgorithm::HS384,
@@ -288,7 +234,7 @@ mod tests {
             JwtAlgorithm::EdDSA,
         ];
         for v in variants {
-            let _ = map_algorithm(v); // 不 panic 即通过
+            let _ = map_algorithm(v);
         }
     }
 }

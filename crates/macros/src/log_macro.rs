@@ -307,6 +307,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                 user_agent: __log_user_agent,
                 client_ip: __log_client_ip,
                 user_id: __log_user_id,
+                nick_name: __log_nick_name,
                 op_svc: __log_op_svc,
             } = __log_ctx;
 
@@ -354,7 +355,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                 status: __log_status,
                 error_msg: __log_error_msg,
                 duration: __log_duration,
-            });
+            }, __log_nick_name);
 
             // 返回结果；若为 panic 则恢复原始 panic
             match __log_catch_result {

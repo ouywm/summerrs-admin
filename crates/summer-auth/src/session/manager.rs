@@ -1,24 +1,40 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::AuthConfig;
+use base64::Engine;
+use parking_lot::RwLock;
+use uuid::Uuid;
+
+use crate::bitmap::PermissionMap;
+use crate::config::{AuthConfig, MultiAuthConfig, ResolvedTypeConfig, TokenStyle};
 use crate::error::{AuthError, AuthResult};
-use crate::session::model::{DeviceSession, UserProfile, UserSession};
+use crate::session::model::{
+    DeviceInfo, DeviceSession, UuidSessionData, UserProfile, ValidatedAccess,
+};
 use crate::storage::AuthStorage;
-use crate::token::{TokenGenerator, TokenPair, TokenType};
-use crate::user_type::{DeviceType, LoginId};
+use crate::token::{TokenGenerator, TokenPair};
+use crate::user_type::{DeviceType, LoginId, UserType};
 
 // ── Redis key 生成 ──
 
-fn access_key(token: &str) -> String {
-    format!("auth:access:{token}")
+fn refresh_key(rid: &str) -> String {
+    format!("auth:refresh:{rid}")
 }
 
-fn refresh_key(token: &str) -> String {
-    format!("auth:refresh:{token}")
+fn device_key(login_id: &LoginId, device: &DeviceType) -> String {
+    format!("auth:device:{}:{}", login_id.encode(), device.as_str())
 }
 
-fn blacklist_key(jti: &str) -> String {
-    format!("auth:blacklist:{jti}")
+fn deny_key(login_id: &LoginId) -> String {
+    format!("auth:deny:{}", login_id.encode())
+}
+
+fn device_prefix(login_id: &LoginId) -> String {
+    format!("auth:device:{}:", login_id.encode())
+}
+
+fn uuid_access_key(uuid: &str) -> String {
+    format!("auth:uuid:access:{uuid}")
 }
 
 // ── 权限通配符匹配 ──
@@ -70,6 +86,23 @@ pub fn permission_matches(owned: &str, required: &str) -> bool {
     owned_parts.len() == required_parts.len()
 }
 
+// ── Token 格式检测 ──
+
+fn is_jwt_format(token: &str) -> bool {
+    token.split('.').count() == 3
+}
+
+/// 无验证 peek JWT payload 的 sub 字段，获取 UserType
+fn peek_jwt_user_type(token: &str) -> Option<UserType> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let sub = v.get("sub")?.as_str()?;
+    LoginId::decode(sub).map(|id| id.user_type)
+}
+
 /// 登录参数
 #[derive(Debug, Clone)]
 pub struct LoginParams {
@@ -83,595 +116,777 @@ pub struct LoginParams {
 #[derive(Clone)]
 pub struct SessionManager {
     pub(crate) storage: Arc<dyn AuthStorage>,
-    pub(crate) config: AuthConfig,
-    pub(crate) token_gen: TokenGenerator,
+    /// 全局配置（token_name, token_prefix 等提取相关）
+    pub(crate) global_config: AuthConfig,
+    /// 每种用户类型的解析后配置
+    pub(crate) type_configs: HashMap<UserType, ResolvedTypeConfig>,
+    /// JWT 模式的 token 生成器（仅 token_style=Jwt 的类型）
+    pub(crate) jwt_generators: HashMap<UserType, TokenGenerator>,
+    pub(crate) perm_map: Arc<RwLock<Option<PermissionMap>>>,
 }
 
 impl SessionManager {
-    pub fn new(storage: Arc<dyn AuthStorage>, config: AuthConfig) -> Self {
-        let token_gen = TokenGenerator::new(&config);
+    /// 从 MultiAuthConfig 构造（新接口）
+    pub fn from_multi_config(storage: Arc<dyn AuthStorage>, multi_config: MultiAuthConfig) -> Self {
+        let type_configs = multi_config.resolve_all();
+        let mut jwt_generators = HashMap::new();
+        for (ut, resolved) in &type_configs {
+            if resolved.token_style == TokenStyle::Jwt {
+                let auth_config = resolved.to_auth_config(&multi_config.base);
+                jwt_generators.insert(*ut, TokenGenerator::new(&auth_config));
+            }
+        }
         Self {
             storage,
-            config,
-            token_gen,
+            global_config: multi_config.base,
+            type_configs,
+            jwt_generators,
+            perm_map: Arc::new(RwLock::new(None)),
         }
     }
 
+    /// 从单一 AuthConfig 构造（向后兼容，所有类型使用相同配置）
+    pub fn new(storage: Arc<dyn AuthStorage>, config: AuthConfig) -> Self {
+        let multi_config = MultiAuthConfig {
+            base: config,
+            admin: None,
+            business: None,
+            customer: None,
+        };
+        Self::from_multi_config(storage, multi_config)
+    }
+
     pub fn config(&self) -> &AuthConfig {
-        &self.config
+        &self.global_config
+    }
+
+    /// 获取指定用户类型的 resolved 配置
+    fn type_config(&self, ut: &UserType) -> &ResolvedTypeConfig {
+        &self.type_configs[ut]
+    }
+
+    /// 设置权限映射表（启动时或权限变更时调用）
+    pub fn set_permission_map(&self, map: PermissionMap) {
+        *self.perm_map.write() = Some(map);
+    }
+
+    /// 读取权限映射表（clone）
+    pub fn permission_map(&self) -> Option<PermissionMap> {
+        self.perm_map.read().clone()
     }
 
     // ── 内部辅助 ──
 
-    /// 计算 JWT token 的剩余存活秒数（decode 失败或已过期返回 0）
-    fn jwt_remaining_seconds(&self, token: &str) -> i64 {
-        self.token_gen
-            .jwt()
-            .decode(token)
-            .map(|claims| (claims.exp - chrono::Local::now().timestamp()).max(0))
-            .unwrap_or(0)
-    }
-
-    /// 撤销一个设备会话的 token
-    async fn revoke_device_tokens(&self, ds: &DeviceSession) {
-        if self.token_gen.is_jwt() {
-            // JWT 模式：将 JTI 加入黑名单
-            if let Some(jti) = &ds.access_jti {
-                let remaining = self.jwt_remaining_seconds(&ds.access_token);
-                if remaining > 0 {
-                    let _ = self
-                        .storage
-                        .set_string(&blacklist_key(jti), "1", remaining)
-                        .await;
-                }
-            }
-            if let Some(jti) = &ds.refresh_jti {
-                let remaining = self.jwt_remaining_seconds(&ds.refresh_token);
-                if remaining > 0 {
-                    let _ = self
-                        .storage
-                        .set_string(&blacklist_key(jti), "1", remaining)
-                        .await;
-                }
-            }
-        } else {
-            // UUID 模式：删除反查键
-            let _ = self.storage.delete(&access_key(&ds.access_token)).await;
-            let _ = self.storage.delete(&refresh_key(&ds.refresh_token)).await;
-        }
-    }
-
-    /// UUID 模式：写入反查键
-    async fn write_reverse_keys(
+    /// 存储设备信息到 Redis
+    async fn store_device_info(
         &self,
-        access_token: &str,
-        refresh_token: &str,
         login_id: &LoginId,
+        device: &DeviceType,
+        rid: &str,
+        login_ip: &str,
+        user_agent: &str,
+        refresh_timeout: i64,
     ) -> AuthResult<()> {
-        self.storage
-            .set_string(
-                &access_key(access_token),
-                &login_id.encode(),
-                self.config.access_timeout,
-            )
-            .await?;
+        let info = DeviceInfo {
+            rid: rid.to_string(),
+            login_time: chrono::Local::now().timestamp_millis(),
+            login_ip: login_ip.to_string(),
+            user_agent: user_agent.to_string(),
+        };
+        let json =
+            serde_json::to_string(&info).map_err(|e| AuthError::Internal(e.to_string()))?;
 
         self.storage
-            .set_string(
-                &refresh_key(refresh_token),
-                &login_id.encode(),
-                self.config.refresh_timeout,
-            )
+            .set_string(&device_key(login_id, device), &json, refresh_timeout)
             .await?;
-
         Ok(())
     }
 
-    async fn get_or_create_session(
-        &self,
-        login_id: &LoginId,
-        profile: &UserProfile,
-    ) -> AuthResult<UserSession> {
-        let opt = self.storage.get_session(&login_id.session_key()).await?;
-        Ok(opt.unwrap_or_else(|| UserSession {
-            login_id: login_id.clone(),
-            devices: Vec::new(),
-            profile: profile.clone(),
-        }))
+    /// 清理单个设备（删除 device key + 对应 refresh key）
+    async fn cleanup_device(&self, login_id: &LoginId, device: &DeviceType) {
+        let dk = device_key(login_id, device);
+        if let Ok(Some(json)) = self.storage.get_string(&dk).await {
+            if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
+                let _ = self.storage.delete(&refresh_key(&info.rid)).await;
+                // UUID 模式：rid 同时是 uuid access key 的标识
+                let _ = self.storage.delete(&uuid_access_key(&info.rid)).await;
+            }
+        }
+        let _ = self.storage.delete(&dk).await;
     }
 
-    async fn save_session(&self, session: &UserSession) -> AuthResult<()> {
-        self.storage
-            .set_session(
-                &session.login_id.session_key(),
-                session,
-                self.config.refresh_timeout,
-            )
-            .await?;
-        Ok(())
+    /// 从 device key 解析设备类型
+    fn parse_device_from_key(key: &str, login_id: &LoginId) -> Option<DeviceType> {
+        let prefix = format!("auth:device:{}:", login_id.encode());
+        key.strip_prefix(&prefix).map(DeviceType::from)
     }
 
     /// 处理设备策略（并发登录、最大设备数）
     async fn handle_device_policy(
         &self,
-        session: &mut UserSession,
+        login_id: &LoginId,
         device: &DeviceType,
-        new_device_session: &DeviceSession,
+        config: &ResolvedTypeConfig,
     ) -> AuthResult<()> {
-        if !self.config.concurrent_login {
-            for ds in &session.devices {
-                self.revoke_device_tokens(ds).await;
+        if !config.concurrent_login {
+            // 不允许并发登录：清除所有设备
+            let keys = self
+                .storage
+                .keys_by_prefix(&device_prefix(login_id))
+                .await?;
+            for key in &keys {
+                if let Some(d) = Self::parse_device_from_key(key, login_id) {
+                    self.cleanup_device(login_id, &d).await;
+                }
             }
-            session.devices.clear();
         } else {
-            if let Some(idx) = session.devices.iter().position(|d| &d.device == device) {
-                let old = session.devices.remove(idx);
-                self.revoke_device_tokens(&old).await;
+            // 同设备重复登录：清除旧设备
+            self.cleanup_device(login_id, device).await;
+        }
+
+        // 检查最大设备数
+        if config.max_devices > 0 {
+            let keys = self
+                .storage
+                .keys_by_prefix(&device_prefix(login_id))
+                .await?;
+            if keys.len() >= config.max_devices {
+                // 踢掉最旧的设备（按 login_time 排序）
+                let mut devices_with_time = Vec::new();
+                for key in &keys {
+                    if let Ok(Some(json)) = self.storage.get_string(key).await {
+                        if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
+                            devices_with_time.push((key.clone(), info));
+                        }
+                    }
+                }
+                devices_with_time.sort_by_key(|(_, info)| info.login_time);
+
+                // 需要移除的数量
+                let to_remove = devices_with_time.len() + 1 - config.max_devices;
+                for (key, info) in devices_with_time.iter().take(to_remove) {
+                    let _ = self.storage.delete(&refresh_key(&info.rid)).await;
+                    let _ = self.storage.delete(&uuid_access_key(&info.rid)).await;
+                    let _ = self.storage.delete(key).await;
+                }
             }
         }
 
-        if self.config.max_devices > 0 && session.devices.len() >= self.config.max_devices {
-            let oldest = session.devices.remove(0);
-            self.revoke_device_tokens(&oldest).await;
-        }
+        Ok(())
+    }
 
-        session.devices.push(new_device_session.clone());
+    // ── deny check 共享逻辑 ──
+
+    /// deny check: 比较 iat 与 deny_ts，返回 Ok(()) 或错误
+    async fn check_deny(&self, login_id: &LoginId, iat: i64) -> AuthResult<()> {
+        if let Some(deny_value) = self.storage.get_string(&deny_key(login_id)).await? {
+            match deny_value.as_str() {
+                "banned" => return Err(AuthError::AccountBanned),
+                v if v.starts_with("refresh:") => {
+                    if let Ok(deny_ts) = v[8..].parse::<i64>() {
+                        if iat <= deny_ts {
+                            return Err(AuthError::RefreshRequired);
+                        }
+                    } else {
+                        tracing::warn!(
+                            "畸形 deny 值: {}, login_id: {}",
+                            deny_value,
+                            login_id.encode()
+                        );
+                        return Err(AuthError::InvalidToken);
+                    }
+                }
+                _ => {
+                    tracing::warn!(
+                        "未知 deny 值: {}, login_id: {}",
+                        deny_value,
+                        login_id.encode()
+                    );
+                    return Err(AuthError::InvalidToken);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// deny check for refresh: banned → error, 其他 → allow
+    async fn check_deny_for_refresh(&self, login_id: &LoginId) -> AuthResult<()> {
+        if let Some(deny_value) = self.storage.get_string(&deny_key(login_id)).await? {
+            if deny_value == "banned" {
+                return Err(AuthError::AccountBanned);
+            }
+        }
         Ok(())
     }
 
     // ── 登录 ──
 
     pub async fn login(&self, params: LoginParams) -> AuthResult<TokenPair> {
-        let mut session = self
-            .get_or_create_session(&params.login_id, &params.profile)
+        let ut = &params.login_id.user_type;
+        let config = self.type_config(ut);
+
+        // 处理设备策略
+        self.handle_device_policy(&params.login_id, &params.device, config)
             .await?;
-        session.profile = params.profile.clone();
 
-        // share_token：复用已有 token
-        if self.config.concurrent_login && self.config.share_token {
-            if let Some(existing) = session.devices.iter().find(|d| d.device == params.device) {
-                // JWT 模式：检查已有 access token 是否仍然有效
-                let should_reuse = if self.token_gen.is_jwt() {
-                    self.token_gen.jwt().decode(&existing.access_token).is_ok()
-                } else {
-                    true
-                };
-
-                if should_reuse {
-                    let pair = TokenPair {
-                        access_token: existing.access_token.clone(),
-                        refresh_token: existing.refresh_token.clone(),
-                        expires_in: self.config.access_timeout,
-                    };
-                    self.save_session(&session).await?;
-                    return Ok(pair);
-                }
-                // JWT 已过期 → 继续往下生成新 token
-            }
+        match config.token_style {
+            TokenStyle::Jwt => self.jwt_login(params, config).await,
+            TokenStyle::Uuid => self.uuid_login(params, config).await,
         }
+    }
 
-        // TODO: refresh_token 应始终使用不透明格式（如 "refresh_{timestamp}_{login_id}_{uuid}"），
-        //       而非跟随 token_style 使用 JWT。JWT refresh_token 存在泄露 payload 和无法真正撤销的风险。
-        //       参考 sa-token-rust 的设计：refresh token 固定为 opaque 格式。
-        let generated = self.token_gen.generate_pair(
+    /// JWT 模式登录
+    async fn jwt_login(
+        &self,
+        params: LoginParams,
+        config: &ResolvedTypeConfig,
+    ) -> AuthResult<TokenPair> {
+        let ut = &params.login_id.user_type;
+        let tg = self
+            .jwt_generators
+            .get(ut)
+            .expect("JWT generator missing for JWT-mode user type");
+
+        // 编码权限位图（如果有映射表）
+        let pb = self.perm_map.read().as_ref().and_then(|map| {
+            crate::bitmap::encode(params.profile.permissions(), map)
+        });
+
+        // 生成 Access JWT
+        let (access_token, _) = tg.generate_access(
             &params.login_id,
-            self.config.access_timeout,
-            self.config.refresh_timeout,
+            &params.device,
+            &params.profile,
+            pb.as_deref(),
+            config.access_timeout,
         )?;
 
-        let now = chrono::Local::now().timestamp();
-        let device_session = DeviceSession {
-            device: params.device.clone(),
-            access_token: generated.access.token.clone(),
-            refresh_token: generated.refresh.token.clone(),
-            login_time: now,
-            last_active_time: now,
-            login_ip: params.login_ip,
-            user_agent: params.user_agent,
-            access_jti: generated.access.jti,
-            refresh_jti: generated.refresh.jti,
-        };
+        // 生成 Refresh JWT
+        let (refresh_token, refresh_claims) =
+            tg.generate_refresh(&params.login_id, config.refresh_timeout)?;
 
-        self.handle_device_policy(&mut session, &params.device, &device_session)
-            .await?;
-        self.save_session(&session).await?;
-
-        // UUID 模式需要写反查键，JWT 不需要
-        if !self.token_gen.is_jwt() {
-            self.write_reverse_keys(
-                &generated.access.token,
-                &generated.refresh.token,
-                &params.login_id,
+        // 存储 refresh key
+        let refresh_value = format!(
+            "{}:{}",
+            params.login_id.encode(),
+            params.device.as_str()
+        );
+        self.storage
+            .set_string(
+                &refresh_key(&refresh_claims.rid),
+                &refresh_value,
+                config.refresh_timeout,
             )
             .await?;
-        }
+
+        // 存储 device info
+        self.store_device_info(
+            &params.login_id,
+            &params.device,
+            &refresh_claims.rid,
+            &params.login_ip,
+            &params.user_agent,
+            config.refresh_timeout,
+        )
+        .await?;
 
         Ok(TokenPair {
-            access_token: generated.access.token,
-            refresh_token: generated.refresh.token,
-            expires_in: self.config.access_timeout,
+            access_token,
+            refresh_token,
+            expires_in: config.access_timeout,
+        })
+    }
+
+    /// UUID 模式登录
+    async fn uuid_login(
+        &self,
+        params: LoginParams,
+        config: &ResolvedTypeConfig,
+    ) -> AuthResult<TokenPair> {
+        let access_uuid = Uuid::new_v4().to_string();
+        let refresh_uuid = Uuid::new_v4().to_string();
+
+        // 构造 UUID session data
+        let session_data = UuidSessionData {
+            login_id: params.login_id.encode(),
+            device: params.device.as_str().to_string(),
+            iat: chrono::Local::now().timestamp(),
+            user_name: params.profile.user_name().to_string(),
+            nick_name: params.profile.nick_name().to_string(),
+            roles: params.profile.roles().to_vec(),
+            permissions: params.profile.permissions().to_vec(),
+        };
+
+        let session_json = serde_json::to_string(&session_data)
+            .map_err(|e| AuthError::Internal(e.to_string()))?;
+
+        // 存储 access session
+        self.storage
+            .set_string(
+                &uuid_access_key(&access_uuid),
+                &session_json,
+                config.access_timeout,
+            )
+            .await?;
+
+        // 存储 refresh key
+        let refresh_value = format!(
+            "{}:{}",
+            params.login_id.encode(),
+            params.device.as_str()
+        );
+        self.storage
+            .set_string(
+                &refresh_key(&refresh_uuid),
+                &refresh_value,
+                config.refresh_timeout,
+            )
+            .await?;
+
+        // 存储 device info（rid 使用 access_uuid，用于 cleanup 时删除 access session）
+        self.store_device_info(
+            &params.login_id,
+            &params.device,
+            &access_uuid,
+            &params.login_ip,
+            &params.user_agent,
+            config.refresh_timeout,
+        )
+        .await?;
+
+        Ok(TokenPair {
+            access_token: access_uuid,
+            refresh_token: refresh_uuid,
+            expires_in: config.access_timeout,
         })
     }
 
     // ── 登出 ──
 
     pub async fn logout(&self, login_id: &LoginId, device: &DeviceType) -> AuthResult<()> {
-        let session_key = login_id.session_key();
-        let mut session = self
-            .storage
-            .get_session(&session_key)
-            .await?
-            .ok_or(AuthError::SessionNotFound)?;
+        let config = self.type_config(&login_id.user_type);
 
-        if let Some(idx) = session.devices.iter().position(|d| &d.device == device) {
-            let removed = session.devices.remove(idx);
-            self.revoke_device_tokens(&removed).await;
-        }
+        // 清理设备
+        self.cleanup_device(login_id, device).await;
 
-        if session.devices.is_empty() {
-            self.storage.delete(&session_key).await?;
-        } else {
-            self.storage
-                .set_session(&session_key, &session, self.config.refresh_timeout)
-                .await?;
-        }
+        // 设置 deny key（让该用户已签发的 access token 失效）
+        let deny_value = format!("refresh:{}", chrono::Local::now().timestamp());
+        self.storage
+            .set_string(
+                &deny_key(login_id),
+                &deny_value,
+                config.access_timeout,
+            )
+            .await?;
 
         Ok(())
     }
 
     pub async fn logout_all(&self, login_id: &LoginId) -> AuthResult<()> {
-        let session_key = login_id.session_key();
-        if let Some(session) = self.storage.get_session(&session_key).await? {
-            for ds in &session.devices {
-                self.revoke_device_tokens(ds).await;
+        let config = self.type_config(&login_id.user_type);
+
+        // 扫描删除所有设备
+        let keys = self
+            .storage
+            .keys_by_prefix(&device_prefix(login_id))
+            .await?;
+        for key in &keys {
+            if let Ok(Some(json)) = self.storage.get_string(key).await {
+                if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
+                    let _ = self.storage.delete(&refresh_key(&info.rid)).await;
+                    let _ = self.storage.delete(&uuid_access_key(&info.rid)).await;
+                }
             }
+            let _ = self.storage.delete(key).await;
         }
-        self.storage.delete(&session_key).await?;
+
+        // 设置 deny key（时间戳方案）
+        let deny_value = format!("refresh:{}", chrono::Local::now().timestamp());
+        self.storage
+            .set_string(
+                &deny_key(login_id),
+                &deny_value,
+                config.access_timeout,
+            )
+            .await?;
+
         Ok(())
     }
 
     // ── 刷新 ──
 
-    pub async fn refresh(&self, refresh_token: &str) -> AuthResult<TokenPair> {
-        // 解析 refresh token → 拿到 login_id + 定位设备
-        let (login_id, device_idx, mut session) = if self.token_gen.is_jwt() {
-            self.resolve_refresh_jwt(refresh_token).await?
+    /// 刷新 token（需要调用方提供最新 profile）
+    pub async fn refresh(
+        &self,
+        refresh_token: &str,
+        profile: &UserProfile,
+    ) -> AuthResult<TokenPair> {
+        if is_jwt_format(refresh_token) {
+            self.jwt_refresh(refresh_token, profile).await
         } else {
-            self.resolve_refresh_opaque(refresh_token).await?
-        };
-
-        let session_key = login_id.session_key();
-
-        // 撤销旧 access token
-        if self.token_gen.is_jwt() {
-            if let Some(old_jti) = &session.devices[device_idx].access_jti {
-                let remaining = self.jwt_remaining_seconds(&session.devices[device_idx].access_token);
-                if remaining > 0 {
-                    let _ = self
-                        .storage
-                        .set_string(&blacklist_key(old_jti), "1", remaining)
-                        .await;
-                }
-            }
-        } else {
-            let old_access = &session.devices[device_idx].access_token;
-            let _ = self.storage.delete(&access_key(old_access)).await;
+            self.uuid_refresh(refresh_token, profile).await
         }
+    }
 
-        // 撤销旧 refresh token（轮转：旧的立即失效）
-        if self.token_gen.is_jwt() {
-            if let Some(old_jti) = &session.devices[device_idx].refresh_jti {
-                let remaining = self.jwt_remaining_seconds(&session.devices[device_idx].refresh_token);
-                if remaining > 0 {
-                    let _ = self
-                        .storage
-                        .set_string(&blacklist_key(old_jti), "1", remaining)
-                        .await;
-                }
-            }
-        } else {
-            let _ = self.storage.delete(&refresh_key(refresh_token)).await;
-        }
+    /// JWT 模式刷新
+    async fn jwt_refresh(
+        &self,
+        refresh_token: &str,
+        profile: &UserProfile,
+    ) -> AuthResult<TokenPair> {
+        // 1. peek UserType
+        let ut = peek_jwt_user_type(refresh_token).ok_or(AuthError::InvalidRefreshToken)?;
+        let tg = self
+            .jwt_generators
+            .get(&ut)
+            .ok_or(AuthError::InvalidRefreshToken)?;
+        let config = self.type_config(&ut);
 
-        // TODO: 同 login()，refresh_token 应始终使用不透明格式，
-        //       当前跟随 token_style 导致 JWT 模式下 refresh_token 也是 JWT。
-        let generated = self.token_gen.generate_pair(
+        // 2. 解码 Refresh JWT
+        let refresh_claims = tg.jwt().decode_refresh(refresh_token)?;
+        let login_id =
+            LoginId::decode(&refresh_claims.sub).ok_or(AuthError::InvalidRefreshToken)?;
+
+        // 3. 检查 Redis 中 refresh key 是否存在
+        let rk = refresh_key(&refresh_claims.rid);
+        let refresh_value = self
+            .storage
+            .get_string(&rk)
+            .await?
+            .ok_or(AuthError::InvalidRefreshToken)?;
+
+        // 解析 login_id:device
+        let (_, device_str) = refresh_value
+            .rsplit_once(':')
+            .ok_or(AuthError::InvalidRefreshToken)?;
+        let device = DeviceType::from(device_str);
+
+        // 4. 检查 deny key
+        self.check_deny_for_refresh(&login_id).await?;
+
+        // 5. 删除旧的 refresh key（轮转）
+        let _ = self.storage.delete(&rk).await;
+
+        // 6. 编码权限位图（如果有映射表）
+        let pb = self.perm_map.read().as_ref().and_then(|map| {
+            crate::bitmap::encode(profile.permissions(), map)
+        });
+
+        // 7. 生成新的 Access JWT（包含最新 profile）
+        let (new_access_token, _) = tg.generate_access(
             &login_id,
-            self.config.access_timeout,
-            self.config.refresh_timeout,
+            &device,
+            profile,
+            pb.as_deref(),
+            config.access_timeout,
         )?;
-        let now = chrono::Local::now().timestamp();
 
-        session.devices[device_idx].access_token = generated.access.token.clone();
-        session.devices[device_idx].access_jti = generated.access.jti;
-        session.devices[device_idx].refresh_token = generated.refresh.token.clone();
-        session.devices[device_idx].refresh_jti = generated.refresh.jti;
-        session.devices[device_idx].last_active_time = now;
+        // 8. 生成新的 Refresh JWT
+        let (new_refresh_token, new_refresh_claims) =
+            tg.generate_refresh(&login_id, config.refresh_timeout)?;
 
+        // 9. 存储新的 refresh key
+        let new_refresh_value = format!("{}:{}", login_id.encode(), device.as_str());
         self.storage
-            .set_session(&session_key, &session, self.config.refresh_timeout)
-            .await?;
-
-        // UUID 模式需要写新的反查键
-        if !self.token_gen.is_jwt() {
-            self.write_reverse_keys(
-                &generated.access.token,
-                &generated.refresh.token,
-                &login_id,
+            .set_string(
+                &refresh_key(&new_refresh_claims.rid),
+                &new_refresh_value,
+                config.refresh_timeout,
             )
             .await?;
+
+        // 10. 更新 device info
+        let dk = device_key(&login_id, &device);
+        if let Ok(Some(json)) = self.storage.get_string(&dk).await {
+            if let Ok(mut info) = serde_json::from_str::<DeviceInfo>(&json) {
+                info.rid = new_refresh_claims.rid;
+                if let Ok(new_json) = serde_json::to_string(&info) {
+                    let _ = self
+                        .storage
+                        .set_string(&dk, &new_json, config.refresh_timeout)
+                        .await;
+                }
+            }
         }
 
         Ok(TokenPair {
-            access_token: generated.access.token,
-            refresh_token: generated.refresh.token,
-            expires_in: self.config.access_timeout,
+            access_token: new_access_token,
+            refresh_token: new_refresh_token,
+            expires_in: config.access_timeout,
         })
     }
 
-    /// JWT 模式：解析 refresh token
-    async fn resolve_refresh_jwt(
+    /// UUID 模式刷新
+    async fn uuid_refresh(
         &self,
         refresh_token: &str,
-    ) -> AuthResult<(LoginId, usize, UserSession)> {
-        let jwt = self.token_gen.jwt();
-        let (login_id, claims) = jwt.extract_login_id(refresh_token).map_err(|e| match e {
-            AuthError::TokenExpired | AuthError::InvalidToken => AuthError::InvalidRefreshToken,
-            other => other,
-        })?;
+        profile: &UserProfile,
+    ) -> AuthResult<TokenPair> {
+        // 1. Redis GET refresh key
+        let rk = refresh_key(refresh_token);
+        let refresh_value = self
+            .storage
+            .get_string(&rk)
+            .await?
+            .ok_or(AuthError::InvalidRefreshToken)?;
 
-        if claims.typ != TokenType::Refresh {
-            return Err(AuthError::InvalidRefreshToken);
+        // 解析 login_id:device
+        let (login_id_str, device_str) = refresh_value
+            .rsplit_once(':')
+            .ok_or(AuthError::InvalidRefreshToken)?;
+        let login_id = LoginId::decode(login_id_str).ok_or(AuthError::InvalidRefreshToken)?;
+        let device = DeviceType::from(device_str);
+        let config = self.type_config(&login_id.user_type);
+
+        // 2. deny check
+        self.check_deny_for_refresh(&login_id).await?;
+
+        // 3. 删除旧 refresh key
+        let _ = self.storage.delete(&rk).await;
+
+        // 4. 生成新的 UUID 对
+        let new_access_uuid = Uuid::new_v4().to_string();
+        let new_refresh_uuid = Uuid::new_v4().to_string();
+
+        // 5. 构造新的 session data
+        let session_data = UuidSessionData {
+            login_id: login_id.encode(),
+            device: device.as_str().to_string(),
+            iat: chrono::Local::now().timestamp(),
+            user_name: profile.user_name().to_string(),
+            nick_name: profile.nick_name().to_string(),
+            roles: profile.roles().to_vec(),
+            permissions: profile.permissions().to_vec(),
+        };
+        let session_json = serde_json::to_string(&session_data)
+            .map_err(|e| AuthError::Internal(e.to_string()))?;
+
+        // 6. 存储新的 access session
+        self.storage
+            .set_string(
+                &uuid_access_key(&new_access_uuid),
+                &session_json,
+                config.access_timeout,
+            )
+            .await?;
+
+        // 7. 存储新的 refresh key
+        let new_refresh_value = format!("{}:{}", login_id.encode(), device.as_str());
+        self.storage
+            .set_string(
+                &refresh_key(&new_refresh_uuid),
+                &new_refresh_value,
+                config.refresh_timeout,
+            )
+            .await?;
+
+        // 8. 删除旧的 access session + 更新 device info
+        let dk = device_key(&login_id, &device);
+        if let Ok(Some(json)) = self.storage.get_string(&dk).await {
+            if let Ok(mut info) = serde_json::from_str::<DeviceInfo>(&json) {
+                // 删除旧的 uuid access key
+                let _ = self.storage.delete(&uuid_access_key(&info.rid)).await;
+                // 更新 device info 指向新的 access uuid
+                info.rid = new_access_uuid.clone();
+                if let Ok(new_json) = serde_json::to_string(&info) {
+                    let _ = self
+                        .storage
+                        .set_string(&dk, &new_json, config.refresh_timeout)
+                        .await;
+                }
+            }
         }
 
-        // 黑名单检查
-        let blacklisted = self.storage.exists(&blacklist_key(&claims.jti)).await?;
-        if blacklisted {
-            return Err(AuthError::InvalidRefreshToken);
-        }
-
-        let session = self
-            .storage
-            .get_session(&login_id.session_key())
-            .await?
-            .ok_or(AuthError::SessionNotFound)?;
-
-        let idx = session
-            .devices
-            .iter()
-            .position(|d| d.refresh_jti.as_deref() == Some(claims.jti.as_str()))
-            .ok_or(AuthError::InvalidRefreshToken)?;
-
-        Ok((login_id, idx, session))
-    }
-
-    /// UUID 模式：解析 refresh token
-    async fn resolve_refresh_opaque(
-        &self,
-        refresh_token: &str,
-    ) -> AuthResult<(LoginId, usize, UserSession)> {
-        let value = self
-            .storage
-            .get_string(&refresh_key(refresh_token))
-            .await?
-            .ok_or(AuthError::InvalidRefreshToken)?;
-
-        let login_id = LoginId::decode(&value).ok_or(AuthError::InvalidRefreshToken)?;
-
-        let session = self
-            .storage
-            .get_session(&login_id.session_key())
-            .await?
-            .ok_or(AuthError::SessionNotFound)?;
-
-        let idx = session
-            .devices
-            .iter()
-            .position(|d| d.refresh_token == refresh_token)
-            .ok_or(AuthError::InvalidRefreshToken)?;
-
-        Ok((login_id, idx, session))
+        Ok(TokenPair {
+            access_token: new_access_uuid,
+            refresh_token: new_refresh_uuid,
+            expires_in: config.access_timeout,
+        })
     }
 
     // ── Token 验证 ──
 
-    pub async fn validate_token(&self, access_token: &str) -> AuthResult<LoginId> {
-        if self.token_gen.is_jwt() {
-            let jwt = self.token_gen.jwt();
-            let (login_id, claims) = jwt.extract_login_id(access_token)?;
-
-            if claims.typ != TokenType::Access {
-                return Err(AuthError::InvalidToken);
-            }
-
-            let blacklisted = self
-                .storage
-                .exists(&blacklist_key(&claims.jti))
-                .await?;
-            if blacklisted {
-                return Err(AuthError::InvalidToken);
-            }
-
-            Ok(login_id)
+    /// 验证 Access Token（JWT 或 UUID）+ deny check → 返回 ValidatedAccess
+    pub async fn validate_token(&self, access_token: &str) -> AuthResult<ValidatedAccess> {
+        if is_jwt_format(access_token) {
+            self.jwt_validate(access_token).await
         } else {
-            let val = self
-                .storage
-                .get_string(&access_key(access_token))
-                .await?
-                .ok_or(AuthError::InvalidToken)?;
-
-            LoginId::decode(&val).ok_or(AuthError::InvalidToken)
+            self.uuid_validate(access_token).await
         }
     }
 
-    /// 自动续期（中间件调用）
-    pub async fn renew_access_token(&self, access_token: &str, login_id: &LoginId) {
-        // JWT 模式 exp 固定，无法续期
-        if self.token_gen.is_jwt() {
-            return;
-        }
+    /// JWT 模式验证
+    async fn jwt_validate(&self, access_token: &str) -> AuthResult<ValidatedAccess> {
+        // 1. peek UserType
+        let ut = peek_jwt_user_type(access_token).ok_or(AuthError::InvalidToken)?;
+        let tg = self
+            .jwt_generators
+            .get(&ut)
+            .ok_or(AuthError::InvalidToken)?;
 
-        let _ = self
+        // 2. JWT 验证签名 + exp（本地，零 IO）
+        let claims = tg.jwt().decode_access(access_token)?;
+        let login_id = LoginId::decode(&claims.sub).ok_or(AuthError::InvalidToken)?;
+
+        // 3. deny check
+        self.check_deny(&login_id, claims.iat).await?;
+
+        // 4. 解码权限：bitmap 优先，降级为 permissions 数组
+        let permissions = if let Some(ref pb) = claims.pb {
+            self.perm_map
+                .read()
+                .as_ref()
+                .map(|map| crate::bitmap::decode(pb, map))
+                .unwrap_or_else(|| claims.permissions.clone())
+        } else {
+            claims.permissions.clone()
+        };
+
+        // 5. 从 JWT claims 构造 ValidatedAccess
+        Ok(ValidatedAccess {
+            login_id,
+            device: DeviceType::from(claims.dev.as_str()),
+            user_name: claims.user_name,
+            nick_name: claims.nick_name,
+            roles: claims.roles,
+            permissions,
+        })
+    }
+
+    /// UUID 模式验证
+    async fn uuid_validate(&self, access_token: &str) -> AuthResult<ValidatedAccess> {
+        // 1. Redis GET uuid access key
+        let session_json = self
             .storage
-            .set_string(
-                &access_key(access_token),
-                &login_id.encode(),
-                self.config.access_timeout,
-            )
-            .await;
-    }
-
-    pub async fn get_session(&self, login_id: &LoginId) -> AuthResult<Option<UserSession>> {
-        Ok(self.storage.get_session(&login_id.session_key()).await?)
-    }
-
-    // ── RBAC ──
-
-    async fn require_session(&self, login_id: &LoginId) -> AuthResult<UserSession> {
-        self.storage
-            .get_session(&login_id.session_key())
+            .get_string(&uuid_access_key(access_token))
             .await?
-            .ok_or(AuthError::SessionNotFound)
+            .ok_or(AuthError::InvalidToken)?;
+
+        // 2. 反序列化 session
+        let session: UuidSessionData = serde_json::from_str(&session_json)
+            .map_err(|e| AuthError::Internal(format!("UUID session 反序列化失败: {e}")))?;
+
+        let login_id = LoginId::decode(&session.login_id).ok_or(AuthError::InvalidToken)?;
+
+        // 3. deny check（比较 iat vs deny_ts）
+        self.check_deny(&login_id, session.iat).await?;
+
+        // 4. 构造 ValidatedAccess
+        Ok(ValidatedAccess {
+            login_id,
+            device: DeviceType::from(session.device.as_str()),
+            user_name: session.user_name,
+            nick_name: session.nick_name,
+            roles: session.roles,
+            permissions: session.permissions,
+        })
     }
 
-    pub async fn set_roles(&self, login_id: &LoginId, roles: Vec<String>) -> AuthResult<()> {
-        let mut session = self.require_session(login_id).await?;
-        session.profile.set_roles(roles);
-        self.save_session(&session).await
-    }
-
-    pub async fn set_permissions(&self, login_id: &LoginId, perms: Vec<String>) -> AuthResult<()> {
-        let mut session = self.require_session(login_id).await?;
-        session.profile.set_permissions(perms);
-        self.save_session(&session).await
-    }
-
-    pub async fn has_role(&self, login_id: &LoginId, role: &str) -> AuthResult<bool> {
-        let session = self.require_session(login_id).await?;
-        Ok(session.profile.roles().iter().any(|r| r == role))
-    }
-
-    pub async fn has_permission(&self, login_id: &LoginId, perm: &str) -> AuthResult<bool> {
-        let session = self.require_session(login_id).await?;
-        Ok(session
-            .profile
-            .permissions()
-            .iter()
-            .any(|p| permission_matches(p, perm)))
-    }
-
-    pub async fn check_role(&self, login_id: &LoginId, role: &str) -> AuthResult<()> {
-        if self.has_role(login_id, role).await? {
-            Ok(())
+    /// 解析 refresh token → 返回 LoginId（async，JWT 模式本地解码，UUID 模式查 Redis）
+    pub async fn parse_refresh_token(&self, token: &str) -> AuthResult<LoginId> {
+        if is_jwt_format(token) {
+            // JWT 模式：peek UserType → 取对应 generator → decode
+            let ut = peek_jwt_user_type(token).ok_or(AuthError::InvalidRefreshToken)?;
+            let tg = self
+                .jwt_generators
+                .get(&ut)
+                .ok_or(AuthError::InvalidRefreshToken)?;
+            let claims = tg.jwt().decode_refresh(token)?;
+            LoginId::decode(&claims.sub).ok_or(AuthError::InvalidRefreshToken)
         } else {
-            Err(AuthError::NoRole(role.to_string()))
+            // UUID 模式：Redis GET refresh key → 解析 login_id
+            let rk = refresh_key(token);
+            let refresh_value = self
+                .storage
+                .get_string(&rk)
+                .await?
+                .ok_or(AuthError::InvalidRefreshToken)?;
+            let (login_id_str, _) = refresh_value
+                .rsplit_once(':')
+                .ok_or(AuthError::InvalidRefreshToken)?;
+            LoginId::decode(login_id_str).ok_or(AuthError::InvalidRefreshToken)
         }
     }
 
-    pub async fn check_permission(&self, login_id: &LoginId, perm: &str) -> AuthResult<()> {
-        if self.has_permission(login_id, perm).await? {
-            Ok(())
-        } else {
-            Err(AuthError::NoPermission(perm.to_string()))
-        }
-    }
+    // ── 封禁/解封 ──
 
-    // ── 批量角色检查 ──
+    /// 封禁用户（deny=banned + 清理所有设备/refresh）
+    pub async fn ban_user(&self, login_id: &LoginId) -> AuthResult<()> {
+        let config = self.type_config(&login_id.user_type);
 
-    /// 是否拥有任意一个角色（OR 逻辑）
-    pub async fn has_any_role(&self, login_id: &LoginId, roles: &[&str]) -> AuthResult<bool> {
-        let session = self.require_session(login_id).await?;
-        let user_roles = session.profile.roles();
-        Ok(roles.iter().any(|r| user_roles.iter().any(|ur| ur == r)))
-    }
-
-    /// 是否拥有全部角色（AND 逻辑）
-    pub async fn has_all_roles(&self, login_id: &LoginId, roles: &[&str]) -> AuthResult<bool> {
-        let session = self.require_session(login_id).await?;
-        let user_roles = session.profile.roles();
-        Ok(roles.iter().all(|r| user_roles.iter().any(|ur| ur == r)))
-    }
-
-    /// 检查必须拥有任意一个角色，否则返回 NoRole 错误
-    pub async fn check_any_role(&self, login_id: &LoginId, roles: &[&str]) -> AuthResult<()> {
-        if self.has_any_role(login_id, roles).await? {
-            Ok(())
-        } else {
-            Err(AuthError::NoRole(
-                roles.iter().copied().collect::<Vec<_>>().join(" | "),
-            ))
-        }
-    }
-
-    /// 检查必须拥有全部角色，否则返回 NoRole 错误
-    pub async fn check_all_roles(&self, login_id: &LoginId, roles: &[&str]) -> AuthResult<()> {
-        let session = self.require_session(login_id).await?;
-        let user_roles = session.profile.roles();
-        for role in roles {
-            if !user_roles.iter().any(|ur| ur == role) {
-                return Err(AuthError::NoRole(role.to_string()));
+        // 清理所有设备
+        let keys = self
+            .storage
+            .keys_by_prefix(&device_prefix(login_id))
+            .await?;
+        for key in &keys {
+            if let Ok(Some(json)) = self.storage.get_string(key).await {
+                if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
+                    let _ = self.storage.delete(&refresh_key(&info.rid)).await;
+                    let _ = self.storage.delete(&uuid_access_key(&info.rid)).await;
+                }
             }
+            let _ = self.storage.delete(key).await;
         }
+
+        // 设置永久封禁（用 refresh_timeout 作为 TTL，足够长）
+        self.storage
+            .set_string(
+                &deny_key(login_id),
+                "banned",
+                config.refresh_timeout,
+            )
+            .await?;
+
         Ok(())
     }
 
-    // ── 批量权限检查 ──
-
-    /// 是否拥有任意一个权限（OR 逻辑，支持通配符）
-    pub async fn has_any_permission(
-        &self,
-        login_id: &LoginId,
-        perms: &[&str],
-    ) -> AuthResult<bool> {
-        let session = self.require_session(login_id).await?;
-        let user_perms = session.profile.permissions();
-        Ok(perms
-            .iter()
-            .any(|req| user_perms.iter().any(|owned| permission_matches(owned, req))))
+    /// 解封用户
+    pub async fn unban_user(&self, login_id: &LoginId) -> AuthResult<()> {
+        self.storage.delete(&deny_key(login_id)).await?;
+        Ok(())
     }
 
-    /// 是否拥有全部权限（AND 逻辑，支持通配符）
-    pub async fn has_all_permissions(
-        &self,
-        login_id: &LoginId,
-        perms: &[&str],
-    ) -> AuthResult<bool> {
-        let session = self.require_session(login_id).await?;
-        let user_perms = session.profile.permissions();
-        Ok(perms
-            .iter()
-            .all(|req| user_perms.iter().any(|owned| permission_matches(owned, req))))
+    /// 强制刷新（设 deny="refresh:{timestamp}" TTL=access_timeout）
+    pub async fn force_refresh(&self, login_id: &LoginId) -> AuthResult<()> {
+        let config = self.type_config(&login_id.user_type);
+        let deny_value = format!("refresh:{}", chrono::Local::now().timestamp());
+        self.storage
+            .set_string(
+                &deny_key(login_id),
+                &deny_value,
+                config.access_timeout,
+            )
+            .await?;
+        Ok(())
     }
 
-    /// 检查必须拥有任意一个权限，否则返回 NoPermission 错误
-    pub async fn check_any_permission(
-        &self,
-        login_id: &LoginId,
-        perms: &[&str],
-    ) -> AuthResult<()> {
-        if self.has_any_permission(login_id, perms).await? {
-            Ok(())
-        } else {
-            Err(AuthError::NoPermission(
-                perms.iter().copied().collect::<Vec<_>>().join(" | "),
-            ))
-        }
-    }
+    // ── 设备管理 ──
 
-    /// 检查必须拥有全部权限，否则返回 NoPermission 错误
-    pub async fn check_all_permissions(
-        &self,
-        login_id: &LoginId,
-        perms: &[&str],
-    ) -> AuthResult<()> {
-        let session = self.require_session(login_id).await?;
-        let user_perms = session.profile.permissions();
-        for req in perms {
-            if !user_perms.iter().any(|owned| permission_matches(owned, req)) {
-                return Err(AuthError::NoPermission(req.to_string()));
+    /// 获取用户的所有设备信息
+    pub async fn get_devices(&self, login_id: &LoginId) -> AuthResult<Vec<DeviceSession>> {
+        let keys = self
+            .storage
+            .keys_by_prefix(&device_prefix(login_id))
+            .await?;
+
+        let mut devices = Vec::new();
+        for key in &keys {
+            if let Some(device) = Self::parse_device_from_key(key, login_id) {
+                if let Ok(Some(json)) = self.storage.get_string(key).await {
+                    if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
+                        devices.push(DeviceSession {
+                            device,
+                            login_time: info.login_time,
+                            login_ip: info.login_ip,
+                            user_agent: info.user_agent,
+                        });
+                    }
+                }
             }
         }
-        Ok(())
+
+        Ok(devices)
     }
 
     pub async fn kick_out(
@@ -688,7 +903,7 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::permission_matches;
+    use super::*;
 
     #[test]
     fn exact_match() {
@@ -726,15 +941,43 @@ mod tests {
 
     #[test]
     fn segment_count_mismatch() {
-        // owned 段数少于 required 且末尾非 *
         assert!(!permission_matches("system:user", "system:user:list"));
-        // owned 段数多于 required
-        assert!(!permission_matches("system:user:list:detail", "system:user:list"));
+        assert!(!permission_matches(
+            "system:user:list:detail",
+            "system:user:list"
+        ));
     }
 
     #[test]
     fn single_segment() {
         assert!(permission_matches("admin", "admin"));
         assert!(!permission_matches("admin", "user"));
+    }
+
+    #[test]
+    fn is_jwt_format_detection() {
+        assert!(is_jwt_format("header.payload.signature"));
+        assert!(is_jwt_format("a.b.c"));
+        assert!(!is_jwt_format("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(!is_jwt_format("not-a-jwt"));
+        assert!(!is_jwt_format("two.parts"));
+        assert!(!is_jwt_format("four.parts.here.wow"));
+    }
+
+    #[test]
+    fn peek_jwt_user_type_correct() {
+        // 构造一个有效的 JWT payload
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let payload_json = r#"{"sub":"admin:42","typ":"access"}"#;
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+        let fake_jwt = format!("header.{payload_b64}.signature");
+
+        let ut = peek_jwt_user_type(&fake_jwt);
+        assert_eq!(ut, Some(UserType::Admin));
+
+        let payload_json2 = r#"{"sub":"user:1"}"#;
+        let payload_b64_2 = URL_SAFE_NO_PAD.encode(payload_json2.as_bytes());
+        let fake_jwt2 = format!("header.{payload_b64_2}.signature");
+        assert_eq!(peek_jwt_user_type(&fake_jwt2), Some(UserType::Customer));
     }
 }
