@@ -208,7 +208,7 @@ impl SessionManager {
                 devices_with_time.sort_by_key(|(_, info)| info.login_time);
 
                 // 需要移除的数量
-                let to_remove = devices_with_time.len() + 1 - self.config.max_devices;
+                let to_remove = (devices_with_time.len() + 1).saturating_sub(self.config.max_devices);
                 for (key, info) in devices_with_time.iter().take(to_remove) {
                     let _ = self.storage.delete(&refresh_key(&info.rid)).await;
                     let _ = self.storage.delete(key).await;
@@ -284,6 +284,8 @@ impl SessionManager {
 
         // 设置 deny key（让该用户已签发的 access token 失效）
         // 使用时间戳方案：refresh 后签发的新 token (iat >= deny_ts) 放行
+        // 设计说明：deny key 按 login_id 粒度设置，logout 单设备也会让其他设备的旧 token 触发 RefreshRequired。
+        // 其他设备前端会自动 refresh 拿到新 token，不会断线，换来 validate_token / force_refresh / ban 都只需操作一个 key。
         let deny_value = format!("refresh:{}", chrono::Local::now().timestamp());
         self.storage
             .set_string(
@@ -359,15 +361,12 @@ impl SessionManager {
             // deny="refresh:xxx" 或其他值时允许 refresh 操作（这正是刷新的目的）
         }
 
-        // 4. 删除旧的 refresh key（轮转）
-        let _ = self.storage.delete(&rk).await;
-
-        // 5. 编码权限位图（如果有映射表）
+        // 4. 编码权限位图（如果有映射表）
         let pb = self.perm_map.read().as_ref().and_then(|map| {
             crate::bitmap::encode(profile.permissions(), map)
         });
 
-        // 6. 生成新的 Access JWT（包含最新 profile）
+        // 5. 生成新的 Access JWT（包含最新 profile）
         let (new_access_token, _) = self.token_gen.generate_access(
             &login_id,
             &device,
@@ -376,12 +375,12 @@ impl SessionManager {
             self.config.access_timeout,
         )?;
 
-        // 7. 生成新的 Refresh JWT
+        // 6. 生成新的 Refresh JWT
         let (new_refresh_token, new_refresh_claims) = self
             .token_gen
             .generate_refresh(&login_id, self.config.refresh_timeout)?;
 
-        // 8. 存储新的 refresh key
+        // 7. 先写新 refresh key（先写后删：崩溃时旧 key 多活一会有 TTL 兜底，不影响用户）
         let new_refresh_value = format!("{}:{}", login_id.encode(), device.as_str());
         self.storage
             .set_string(
@@ -390,6 +389,9 @@ impl SessionManager {
                 self.config.refresh_timeout,
             )
             .await?;
+
+        // 8. 再删旧 refresh key（完成轮转）
+        let _ = self.storage.delete(&rk).await;
 
         // 9. 更新 device info
         let dk = device_key(&login_id, &device);
@@ -493,12 +495,12 @@ impl SessionManager {
             let _ = self.storage.delete(key).await;
         }
 
-        // 设置永久封禁（用 refresh_timeout 作为 TTL，足够长）
+        // 设置封禁（TTL 365 天兜底，实际解封由 unban_user 接口控制）
         self.storage
             .set_string(
                 &deny_key(login_id),
                 "banned",
-                self.config.refresh_timeout,
+                365 * 24 * 3600,
             )
             .await?;
 

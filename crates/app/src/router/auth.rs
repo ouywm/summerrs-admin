@@ -4,7 +4,7 @@ use common::extractor::{ClientIp, ValidatedJson};
 use common::response::Json;
 use common::user_agent::UserAgentInfo;
 use macros::log;
-use model::dto::auth::{BizLoginDto, CustomerLoginDto, LoginDto, RefreshTokenDto};
+use model::dto::auth::{LoginDto, RefreshTokenDto};
 use model::vo::auth::{DeviceSessionVo, LoginVo};
 use summer_auth::{DeviceType, LoginUser};
 use summer_web::axum::extract::Path;
@@ -22,32 +22,6 @@ pub async fn login(
 ) -> ApiResult<Json<LoginVo>> {
     let ua_info = UserAgentInfo::from_headers(&headers);
     let vo = svc.admin_login(dto, client_ip, ua_info).await?;
-    Ok(Json(vo))
-}
-
-#[log(module = "认证管理", action = "B端登录", biz_type = Auth, save_params = false)]
-#[post_api("/auth/biz/login")]
-pub async fn biz_login(
-    Component(svc): Component<AuthService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    ValidatedJson(dto): ValidatedJson<BizLoginDto>,
-) -> ApiResult<Json<LoginVo>> {
-    let ua_info = UserAgentInfo::from_headers(&headers);
-    let vo = svc.biz_login(dto, client_ip, ua_info).await?;
-    Ok(Json(vo))
-}
-
-#[log(module = "认证管理", action = "C端登录", biz_type = Auth, save_params = false)]
-#[post_api("/auth/customer/login")]
-pub async fn customer_login(
-    Component(svc): Component<AuthService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    ValidatedJson(dto): ValidatedJson<CustomerLoginDto>,
-) -> ApiResult<Json<LoginVo>> {
-    let ua_info = UserAgentInfo::from_headers(&headers);
-    let vo = svc.customer_login(dto, client_ip, ua_info).await?;
     Ok(Json(vo))
 }
 

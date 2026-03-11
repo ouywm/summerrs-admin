@@ -38,7 +38,6 @@ fn admin_login_params(user_id: i64) -> summer_auth::session::LoginParams {
         profile: UserProfile::Admin(AdminProfile {
             user_name: "test_user".to_string(),
             nick_name: "Test User".to_string(),
-            avatar: String::new(),
             roles: vec!["admin".to_string()],
             permissions: vec!["system:user:list".to_string(), "system:user:add".to_string()],
         }),
@@ -54,7 +53,6 @@ fn biz_login_params(user_id: i64) -> summer_auth::session::LoginParams {
         profile: UserProfile::Business(BusinessProfile {
             user_name: "biz_user".to_string(),
             nick_name: "Biz User".to_string(),
-            avatar: String::new(),
             roles: vec!["merchant".to_string()],
             permissions: vec!["order:list".to_string()],
         }),
@@ -69,7 +67,6 @@ fn customer_login_params(user_id: i64) -> summer_auth::session::LoginParams {
         user_agent: "customer-agent".to_string(),
         profile: UserProfile::Customer(CustomerProfile {
             nick_name: "Customer".to_string(),
-            avatar: String::new(),
         }),
     }
 }
@@ -78,7 +75,6 @@ fn admin_profile() -> UserProfile {
     UserProfile::Admin(AdminProfile {
         user_name: "test_user".to_string(),
         nick_name: "Test User".to_string(),
-        avatar: String::new(),
         roles: vec!["admin".to_string()],
         permissions: vec!["system:user:list".to_string(), "system:user:add".to_string()],
     })
@@ -314,7 +310,6 @@ async fn refresh_with_updated_profile() {
     let updated_profile = UserProfile::Admin(AdminProfile {
         user_name: "test_user".to_string(),
         nick_name: "Updated Name".to_string(),
-        avatar: "new-avatar.png".to_string(),
         roles: vec!["admin".to_string(), "editor".to_string()],
         permissions: vec![
             "system:user:list".to_string(),
@@ -863,7 +858,6 @@ async fn refresh_with_bitmap() {
     let updated_profile = UserProfile::Admin(AdminProfile {
         user_name: "test_user".to_string(),
         nick_name: "Test User".to_string(),
-        avatar: String::new(),
         roles: vec!["admin".to_string()],
         permissions: vec![
             "system:user:list".to_string(),

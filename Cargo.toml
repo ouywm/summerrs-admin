@@ -68,10 +68,3 @@ ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master
 #ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
 indexmap = "2.13.0"
 jsonwebtoken = "9"
-[patch.crates-io]
-summer = { path = "/Volumes/990pro/code/rust/spring-rs/summer" }
-summer-macros = { path = "/Volumes/990pro/code/rust/spring-rs/summer-macros" }
-summer-web = { path = "/Volumes/990pro/code/rust/spring-rs/summer-web" }
-summer-job = { path = "/Volumes/990pro/code/rust/spring-rs/summer-job" }
-summer-mail = { path = "/Volumes/990pro/code/rust/spring-rs/summer-mail" }
-summer-redis = { path = "/Volumes/990pro/code/rust/spring-rs/summer-redis" }

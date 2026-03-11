@@ -7,7 +7,6 @@ use crate::user_type::{DeviceType, LoginId};
 pub struct AdminProfile {
     pub user_name: String,
     pub nick_name: String,
-    pub avatar: String,
     pub roles: Vec<String>,
     pub permissions: Vec<String>,
 }
@@ -17,7 +16,6 @@ pub struct AdminProfile {
 pub struct BusinessProfile {
     pub user_name: String,
     pub nick_name: String,
-    pub avatar: String,
     pub roles: Vec<String>,
     pub permissions: Vec<String>,
 }
@@ -26,7 +24,6 @@ pub struct BusinessProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomerProfile {
     pub nick_name: String,
-    pub avatar: String,
 }
 
 /// 用户档案枚举（按用户类型区分字段）
@@ -45,15 +42,6 @@ impl UserProfile {
             UserProfile::Admin(p) => &p.nick_name,
             UserProfile::Business(p) => &p.nick_name,
             UserProfile::Customer(p) => &p.nick_name,
-        }
-    }
-
-    /// 获取头像（所有用户类型通用）
-    pub fn avatar(&self) -> &str {
-        match self {
-            UserProfile::Admin(p) => &p.avatar,
-            UserProfile::Business(p) => &p.avatar,
-            UserProfile::Customer(p) => &p.avatar,
         }
     }
 

@@ -171,7 +171,6 @@ mod tests {
         UserProfile::Admin(AdminProfile {
             user_name: "admin".to_string(),
             nick_name: "管理员".to_string(),
-            avatar: "".to_string(),
             roles: vec!["admin".to_string()],
             permissions: vec!["system:user:list".to_string()],
         })

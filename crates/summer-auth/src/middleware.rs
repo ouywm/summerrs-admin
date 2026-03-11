@@ -208,20 +208,17 @@ fn build_profile_from_validated(validated: &crate::session::model::ValidatedAcce
         UserType::Admin => UserProfile::Admin(AdminProfile {
             user_name: validated.user_name.clone(),
             nick_name: validated.nick_name.clone(),
-            avatar: String::new(),
             roles: validated.roles.clone(),
             permissions: validated.permissions.clone(),
         }),
         UserType::Business => UserProfile::Business(BusinessProfile {
             user_name: validated.user_name.clone(),
             nick_name: validated.nick_name.clone(),
-            avatar: String::new(),
             roles: validated.roles.clone(),
             permissions: validated.permissions.clone(),
         }),
         UserType::Customer => UserProfile::Customer(CustomerProfile {
             nick_name: validated.nick_name.clone(),
-            avatar: String::new(),
         }),
     }
 }

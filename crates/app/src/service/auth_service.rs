@@ -2,7 +2,7 @@ use anyhow::Context;
 use common::crypto::verify_password;
 use common::error::{ApiErrors, ApiResult};
 use common::user_agent::UserAgentInfo;
-use model::dto::auth::{BizLoginDto, CustomerLoginDto, LoginDto};
+use model::dto::auth::LoginDto;
 use model::entity::sys_login_log;
 use model::entity::sys_menu;
 use model::entity::sys_role;
@@ -126,7 +126,6 @@ impl AuthService {
                 profile: UserProfile::Admin(AdminProfile {
                     user_name: user.user_name.clone(),
                     nick_name: user.nick_name.clone(),
-                    avatar: user.avatar.clone(),
                     roles,
                     permissions,
                 }),
@@ -138,218 +137,6 @@ impl AuthService {
         self.login_log_service.record_login_async(
             user.id,
             user.user_name.clone(),
-            client_ip,
-            ua_info,
-            sys_login_log::LoginStatus::Success,
-            None,
-        );
-
-        Ok(LoginVo {
-            access_token: token_pair.access_token,
-            refresh_token: token_pair.refresh_token,
-            expires_in: token_pair.expires_in,
-        })
-    }
-
-    /// B 端登录
-    pub async fn biz_login(
-        &self,
-        dto: BizLoginDto,
-        client_ip: IpAddr,
-        ua_info: UserAgentInfo,
-    ) -> ApiResult<LoginVo> {
-        // 查询 B 端用户
-        let user = biz_user::Entity::find()
-            .filter(biz_user::Column::UserName.eq(&dto.user_name))
-            .one(&self.db)
-            .await
-            .context("查询B端用户失败")?;
-
-        if user.is_none() {
-            self.login_log_service.record_login_async(
-                0,
-                dto.user_name.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("用户不存在".to_string()),
-            );
-            return Err(ApiErrors::Unauthorized("用户名或密码错误".to_string()));
-        }
-
-        let user = user.unwrap();
-
-        // 验证状态
-        if user.status == biz_user::BizUserStatus::Cancelled {
-            self.login_log_service.record_login_async(
-                user.id,
-                user.user_name.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("账号已注销".to_string()),
-            );
-            return Err(ApiErrors::Forbidden("账号已注销".to_string()));
-        }
-        if user.status == biz_user::BizUserStatus::Disabled {
-            self.login_log_service.record_login_async(
-                user.id,
-                user.user_name.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("账号已被禁用".to_string()),
-            );
-            return Err(ApiErrors::Forbidden("账号已被禁用".to_string()));
-        }
-
-        // 验证密码
-        let valid = verify_password(&dto.password, &user.password)
-            .map_err(|_| ApiErrors::Unauthorized("用户名或密码错误".to_string()))?;
-        if !valid {
-            self.login_log_service.record_login_async(
-                user.id,
-                user.user_name.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("密码错误".to_string()),
-            );
-            return Err(ApiErrors::Unauthorized("用户名或密码错误".to_string()));
-        }
-
-        // 查询 B 端角色
-        let roles: Vec<String> = biz_user_role::Entity::find()
-            .filter(biz_user_role::Column::UserId.eq(user.id))
-            .find_also_related(biz_role::Entity)
-            .all(&self.db)
-            .await
-            .context("查询B端用户角色失败")?
-            .into_iter()
-            .filter_map(|(_, role)| role.map(|r| r.role_code))
-            .collect();
-
-        let login_id = LoginId::business(user.id);
-        let token_pair = self
-            .auth
-            .login(LoginParams {
-                login_id,
-                device: DeviceType::Web,
-                login_ip: client_ip.to_string(),
-                user_agent: ua_info.raw.clone(),
-                profile: UserProfile::Business(BusinessProfile {
-                    user_name: user.user_name.clone(),
-                    nick_name: user.nick_name.clone(),
-                    avatar: user.avatar.clone(),
-                    roles,
-                    permissions: vec![],
-                }),
-            })
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-
-        self.login_log_service.record_login_async(
-            user.id,
-            user.user_name.clone(),
-            client_ip,
-            ua_info,
-            sys_login_log::LoginStatus::Success,
-            None,
-        );
-
-        Ok(LoginVo {
-            access_token: token_pair.access_token,
-            refresh_token: token_pair.refresh_token,
-            expires_in: token_pair.expires_in,
-        })
-    }
-
-    /// C 端登录（手机号 + 密码）
-    pub async fn customer_login(
-        &self,
-        dto: CustomerLoginDto,
-        client_ip: IpAddr,
-        ua_info: UserAgentInfo,
-    ) -> ApiResult<LoginVo> {
-        // 根据手机号查询 C 端用户
-        let user = customer::Entity::find()
-            .filter(customer::Column::Phone.eq(&dto.phone))
-            .one(&self.db)
-            .await
-            .context("查询C端用户失败")?;
-
-        if user.is_none() {
-            self.login_log_service.record_login_async(
-                0,
-                dto.phone.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("用户不存在".to_string()),
-            );
-            return Err(ApiErrors::Unauthorized("手机号或密码错误".to_string()));
-        }
-
-        let user = user.unwrap();
-
-        // 验证状态
-        if user.status == customer::CustomerStatus::Cancelled {
-            self.login_log_service.record_login_async(
-                user.id,
-                dto.phone.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("账号已注销".to_string()),
-            );
-            return Err(ApiErrors::Forbidden("账号已注销".to_string()));
-        }
-        if user.status == customer::CustomerStatus::Disabled {
-            self.login_log_service.record_login_async(
-                user.id,
-                dto.phone.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("账号已被禁用".to_string()),
-            );
-            return Err(ApiErrors::Forbidden("账号已被禁用".to_string()));
-        }
-
-        // 验证密码
-        let valid = verify_password(&dto.password, &user.password)
-            .map_err(|_| ApiErrors::Unauthorized("手机号或密码错误".to_string()))?;
-        if !valid {
-            self.login_log_service.record_login_async(
-                user.id,
-                dto.phone.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("密码错误".to_string()),
-            );
-            return Err(ApiErrors::Unauthorized("手机号或密码错误".to_string()));
-        }
-
-        let login_id = LoginId::customer(user.id);
-        let token_pair = self
-            .auth
-            .login(LoginParams {
-                login_id,
-                device: DeviceType::Web,
-                login_ip: client_ip.to_string(),
-                user_agent: ua_info.raw.clone(),
-                profile: UserProfile::Customer(CustomerProfile {
-                    nick_name: user.nick_name.clone(),
-                    avatar: user.avatar.clone(),
-                }),
-            })
-            .await
-            .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
-
-        self.login_log_service.record_login_async(
-            user.id,
-            dto.phone.clone(),
             client_ip,
             ua_info,
             sys_login_log::LoginStatus::Success,
@@ -496,7 +283,6 @@ impl AuthService {
                 Ok(UserProfile::Admin(AdminProfile {
                     user_name: user.user_name,
                     nick_name: user.nick_name,
-                    avatar: user.avatar,
                     roles,
                     permissions,
                 }))
@@ -521,7 +307,6 @@ impl AuthService {
                 Ok(UserProfile::Business(BusinessProfile {
                     user_name: user.user_name,
                     nick_name: user.nick_name,
-                    avatar: user.avatar,
                     roles,
                     permissions: vec![],
                 }))
@@ -535,7 +320,6 @@ impl AuthService {
 
                 Ok(UserProfile::Customer(CustomerProfile {
                     nick_name: user.nick_name,
-                    avatar: user.avatar,
                 }))
             }
         }

@@ -22,6 +22,7 @@ pub async fn get_user_info(
 }
 
 #[get_api("/user/list")]
+#[has_perm("system:user:list")]
 #[log(module = "用户管理", action = "查询用户列表", biz_type = Query)]
 pub async fn list_users(
     Component(svc): Component<SysUserService>,
@@ -42,7 +43,6 @@ pub async fn get_user_detail(
     Ok(Json(vo))
 }
 
-#[has_perm("system:user:create")]
 #[log(module = "用户管理", action = "创建用户", biz_type = Create)]
 #[post_api("/user")]
 pub async fn create_user(

@@ -18,7 +18,6 @@ pub struct OnlineUserQuery {
 pub struct OnlineUserItem {
     pub login_id: String,
     pub user_type: UserType,
-    pub nick_name: String,
     pub device: String,
     pub login_time: i64,
     pub login_ip: String,
@@ -61,7 +60,6 @@ impl SessionManager {
                             items.push(OnlineUserItem {
                                 login_id: login_id.encode(),
                                 user_type: login_id.user_type,
-                                nick_name: String::new(),
                                 device: device_str,
                                 login_time: info.login_time,
                                 login_ip: info.login_ip,

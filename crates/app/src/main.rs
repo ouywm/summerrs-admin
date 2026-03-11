@@ -12,11 +12,11 @@ use crate::plugin::sea_orm::SeaOrmPlugin;
 use axum_client_ip::ClientIpSource;
 use summer::auto_config;
 use summer::App;
+use summer_auth::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin, UserType};
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
 use summer_redis::RedisPlugin;
-use summer_auth::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin, UserType};
 use summer_web::axum::body::Body;
 use summer_web::axum::extract::DefaultBodyLimit;
 use summer_web::axum::http;
@@ -40,7 +40,12 @@ async fn main() {
         .add_plugin(S3Plugin)
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
-        .auth_configure(PathAuthBuilder::new().include("/**").exclude_all(UserType::all_login_paths()).exclude("/auth/refresh"))
+        .auth_configure(
+            PathAuthBuilder::new()
+                .include("/**")
+                .exclude_all(UserType::all_login_paths())
+                .exclude("/auth/refresh"),
+        )
         .add_router_layer(|router| {
             router
                 .layer(DefaultBodyLimit::max(1024 * 1024 * 1024)) // 1GB
@@ -65,9 +70,7 @@ fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> http::Response<
 
     tracing::error!("Service panicked: {detail}");
 
-    summer_web::problem_details::ProblemDetails::new(
-        "internal-error", "Internal Server Error", 500,
-    )
-    .with_detail(detail)
-    .into_response()
+    summer_web::problem_details::ProblemDetails::new("internal-error", "Internal Server Error", 500)
+        .with_detail(detail)
+        .into_response()
 }

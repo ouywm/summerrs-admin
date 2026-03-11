@@ -71,12 +71,6 @@ pub enum AuthError {
     #[error("会话不存在")]
     SessionNotFound,
 
-    #[cfg_attr(feature = "web", status_code(409))]
-    #[cfg_attr(feature = "web", problem_type("max-devices-exceeded"))]
-    #[cfg_attr(feature = "web", title("Conflict"))]
-    #[error("超过最大设备数限制: {0}")]
-    MaxDevicesExceeded(usize),
-
     #[cfg_attr(feature = "web", status_code(500))]
     #[cfg_attr(feature = "web", problem_type("internal-error"))]
     #[cfg_attr(feature = "web", title("Internal Server Error"))]

@@ -51,19 +51,19 @@ ipv4_db_path = "./data/ip2region_v4.xdb"
 [auth]
 token_name = "Authorization"
 token_prefix = "Bearer "
-access_timeout = 5
-refresh_timeout = 10
+access_timeout = 7200              # 秒（开发调试用，生产建议 7200）
+refresh_timeout = 604800            # 秒（开发调试用，生产建议 604800）
 concurrent_login = true
 max_devices = 5
 is_read_cookie = false
 jwt_issuer = "summer-admin"
 jwt_audience = "summer-admin"
 # cookie_name = "token"
-#jwt_algorithm = "HS256"
-#jwt_secret = "SRKhqjfTyXMjnfMW0419DJfZFqxnsF97AQMk5soPlnk2dI/O0dUR3GIp/OUHXTptzR7DqlXJsQ99GUK6v28YcA=="
-jwt_algorithm = "RS256"
-jwt_private_key = "./data/rsa_private.pem"
-jwt_public_key = "./data/rsa_public.pem"
+jwt_algorithm = "HS256"
+jwt_secret = "SRKhqjfTyXMjnfMW0419DJfZFqxnsF97AQMk5soPlnk2dI/O0dUR3GIp/OUHXTptzR7DqlXJsQ99GUK6v28YcA=="
+#jwt_algorithm = "RS256"
+#jwt_private_key = "./data/rsa_private.pem"
+#jwt_public_key = "./data/rsa_public.pem"
 
 [log-batch]
 batch_size = 100
