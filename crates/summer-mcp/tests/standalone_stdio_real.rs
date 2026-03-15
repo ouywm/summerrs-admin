@@ -16,6 +16,9 @@ use tokio::process::Command;
 #[derive(Debug, Clone, Default)]
 struct DummyClient;
 
+const TEST_SHOWCASE_PROFILE_TABLE: &str = "__test__biz_showcase_profile";
+const TEST_SHOWCASE_PROFILE_ROUTE_BASE: &str = "showcase_profile";
+
 impl ClientHandler for DummyClient {
     fn get_info(&self) -> ClientInfo {
         ClientInfo::default()
@@ -50,6 +53,88 @@ fn json_args(value: Value) -> serde_json::Map<String, Value> {
         .as_object()
         .expect("tool arguments must be a JSON object")
         .clone()
+}
+
+fn create_showcase_profile_test_table_sql() -> String {
+    let table = TEST_SHOWCASE_PROFILE_TABLE;
+    format!(
+        r#"DO $do$
+BEGIN
+  EXECUTE 'DROP TABLE IF EXISTS public.{table} CASCADE';
+  EXECUTE $sql$
+    CREATE TABLE public.{table} (
+      id BIGSERIAL PRIMARY KEY,
+      showcase_code VARCHAR(64) NOT NULL UNIQUE,
+      title VARCHAR(120) NOT NULL,
+      avatar VARCHAR(255),
+      cover_image VARCHAR(255),
+      contact_name VARCHAR(64),
+      contact_gender SMALLINT NOT NULL DEFAULT 0,
+      contact_phone VARCHAR(32),
+      contact_email VARCHAR(128),
+      official_url VARCHAR(255),
+      status SMALLINT NOT NULL DEFAULT 1,
+      featured BOOLEAN NOT NULL DEFAULT FALSE,
+      priority INTEGER NOT NULL DEFAULT 0,
+      score NUMERIC(10,2),
+      publish_date DATE,
+      launch_at TIMESTAMP WITHOUT TIME ZONE,
+      service_time TIME WITHOUT TIME ZONE,
+      attachment_url VARCHAR(255),
+      description TEXT,
+      extra_notes TEXT,
+      metadata JSONB,
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+      CONSTRAINT {table}_status_check CHECK (status IN (1, 2, 3)),
+      CONSTRAINT {table}_contact_gender_check CHECK (contact_gender IN (0, 1, 2))
+    )
+  $sql$;
+  EXECUTE $$COMMENT ON TABLE public.{table} IS '展示档案'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.id IS '主键'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.showcase_code IS '展示编码'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.title IS '标题'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.avatar IS '头像'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.cover_image IS '封面图片'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.contact_name IS '联系人'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.contact_gender IS '联系人性别'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.contact_phone IS '联系电话'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.contact_email IS '联系邮箱'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.official_url IS '官网链接'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.status IS '状态'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.featured IS '推荐'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.priority IS '优先级'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.score IS '评分'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.publish_date IS '发布日期'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.launch_at IS '上线时间'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.service_time IS '服务时间'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.attachment_url IS '附件'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.description IS '描述'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.extra_notes IS '备注'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.metadata IS '元数据'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.created_at IS '创建时间'$$;
+  EXECUTE $$COMMENT ON COLUMN public.{table}.updated_at IS '更新时间'$$;
+END
+$do$;"#
+    )
+}
+
+fn drop_showcase_profile_test_table_sql() -> String {
+    format!(
+        "DROP TABLE IF EXISTS public.{TEST_SHOWCASE_PROFILE_TABLE} CASCADE"
+    )
+}
+
+fn test_entity_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../model/src/entity")
+}
+
+fn prepare_showcase_profile_test_entity() -> io::Result<PathBuf> {
+    let entity_dir = test_entity_dir();
+    let source = entity_dir.join("biz_showcase_profile.rs");
+    let target = entity_dir.join(format!("{TEST_SHOWCASE_PROFILE_TABLE}.rs"));
+    fs::copy(source, &target)?;
+    Ok(target)
 }
 
 fn copy_dir_filtered(source: &Path, target: &Path, ignored_names: &[&str]) -> io::Result<()> {
@@ -112,11 +197,9 @@ async fn assert_command_success(
 async fn prepare_art_design_pro_preview(
     source_root: &Path,
     preview_root: &Path,
-    generated_root: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = tokio::fs::remove_dir_all(preview_root).await;
     copy_dir_filtered(source_root, preview_root, &["node_modules", "dist", ".git"])?;
-    copy_dir_filtered(&generated_root.join("src"), &preview_root.join("src"), &[])?;
 
     #[cfg(unix)]
     std::os::unix::fs::symlink(
@@ -457,7 +540,7 @@ async fn standalone_binary_generates_real_frontend_bundle_to_temp_dir()
     );
     assert_eq!(
         generate_json["menu_config_draft"]["menus"][0]["component"],
-        serde_json::json!("system/user/index")
+        serde_json::json!("/system/user")
     );
     assert!(
         generate_json["dict_bundle_drafts"]
@@ -910,6 +993,7 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let transport = smoke_transport(smoke_database_url())?;
     let client = DummyClient::default().serve(transport).await?;
+    let test_entity_file = prepare_showcase_profile_test_entity()?;
 
     let admin_output_dir = std::env::temp_dir().join("summer-mcp-showcase-admin-real");
     let frontend_output_dir = std::env::temp_dir().join("summer-mcp-showcase-art-design-pro");
@@ -919,64 +1003,7 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
     client
         .call_tool(
             CallToolRequestParams::new("sql_exec").with_arguments(json_args(json!({
-                "sql": r#"DO $do$
-BEGIN
-  EXECUTE 'DROP TABLE IF EXISTS public.biz_showcase_profile CASCADE';
-  EXECUTE $sql$
-    CREATE TABLE public.biz_showcase_profile (
-      id BIGSERIAL PRIMARY KEY,
-      showcase_code VARCHAR(64) NOT NULL UNIQUE,
-      title VARCHAR(120) NOT NULL,
-      avatar VARCHAR(255),
-      cover_image VARCHAR(255),
-      contact_name VARCHAR(64),
-      contact_gender SMALLINT NOT NULL DEFAULT 0,
-      contact_phone VARCHAR(32),
-      contact_email VARCHAR(128),
-      official_url VARCHAR(255),
-      status SMALLINT NOT NULL DEFAULT 1,
-      featured BOOLEAN NOT NULL DEFAULT FALSE,
-      priority INTEGER NOT NULL DEFAULT 0,
-      score NUMERIC(10,2),
-      publish_date DATE,
-      launch_at TIMESTAMP WITHOUT TIME ZONE,
-      service_time TIME WITHOUT TIME ZONE,
-      attachment_url VARCHAR(255),
-      description TEXT,
-      extra_notes TEXT,
-      metadata JSONB,
-      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
-      CONSTRAINT biz_showcase_profile_status_check CHECK (status IN (1, 2, 3)),
-      CONSTRAINT biz_showcase_profile_contact_gender_check CHECK (contact_gender IN (0, 1, 2))
-    )
-  $sql$;
-  EXECUTE $$COMMENT ON TABLE public.biz_showcase_profile IS '展示档案'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.id IS '主键'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.showcase_code IS '展示编码'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.title IS '标题'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.avatar IS '头像'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.cover_image IS '封面图片'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.contact_name IS '联系人'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.contact_gender IS '联系人性别'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.contact_phone IS '联系电话'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.contact_email IS '联系邮箱'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.official_url IS '官网链接'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.status IS '状态'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.featured IS '推荐'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.priority IS '优先级'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.score IS '评分'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.publish_date IS '发布日期'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.launch_at IS '上线时间'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.service_time IS '服务时间'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.attachment_url IS '附件'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.description IS '描述'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.extra_notes IS '备注'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.metadata IS '元数据'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.created_at IS '创建时间'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.updated_at IS '更新时间'$$;
-END
-$do$;"#
+                "sql": create_showcase_profile_test_table_sql()
             }))),
         )
         .await?;
@@ -985,7 +1012,8 @@ $do$;"#
         .call_tool(
             CallToolRequestParams::new("generate_admin_module_from_table").with_arguments(
                 json_args(json!({
-                    "table": "biz_showcase_profile",
+                    "table": TEST_SHOWCASE_PROFILE_TABLE,
+                    "route_base": TEST_SHOWCASE_PROFILE_ROUTE_BASE,
                     "overwrite": true,
                     "output_dir": admin_output_dir.display().to_string()
                 })),
@@ -1001,7 +1029,8 @@ $do$;"#
         .call_tool(
             CallToolRequestParams::new("generate_frontend_bundle_from_table").with_arguments(
                 json_args(json!({
-                    "table": "biz_showcase_profile",
+                    "table": TEST_SHOWCASE_PROFILE_TABLE,
+                    "route_base": TEST_SHOWCASE_PROFILE_ROUTE_BASE,
                     "overwrite": true,
                     "output_dir": frontend_output_dir.display().to_string(),
                     "target_preset": "art_design_pro",
@@ -1071,7 +1100,7 @@ $do$;"#
     let generate_json = generate_result
         .structured_content
         .expect("expected structured content from generate_frontend_bundle_from_table");
-    assert_eq!(generate_json["table"], json!("biz_showcase_profile"));
+    assert_eq!(generate_json["table"], json!(TEST_SHOWCASE_PROFILE_TABLE));
     assert_eq!(generate_json["route_base"], json!("showcase_profile"));
     assert_eq!(
         generate_json["api_import_path"],
@@ -1208,10 +1237,11 @@ $do$;"#
     let _ = client
         .call_tool(
             CallToolRequestParams::new("sql_exec").with_arguments(json_args(json!({
-                "sql": "DROP TABLE IF EXISTS public.biz_showcase_profile CASCADE"
+                "sql": drop_showcase_profile_test_table_sql()
             }))),
         )
         .await;
+    let _ = tokio::fs::remove_file(&test_entity_file).await;
 
     client.cancel().await?;
     Ok(())
@@ -1223,73 +1253,18 @@ async fn standalone_binary_typechecks_showcase_bundle_against_real_art_design_pr
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let transport = smoke_transport(smoke_database_url())?;
     let client = DummyClient::default().serve(transport).await?;
+    let test_entity_file = prepare_showcase_profile_test_entity()?;
 
-    let frontend_output_dir = std::env::temp_dir().join("summer-mcp-showcase-art-design-pro");
     let preview_root = std::env::temp_dir().join("summer-mcp-showcase-art-design-pro-preview");
-    let _ = tokio::fs::remove_dir_all(&frontend_output_dir).await;
+    let _ = tokio::fs::remove_dir_all(&preview_root).await;
 
     let test_result = async {
+        prepare_art_design_pro_preview(&smoke_art_design_pro_dir(), &preview_root).await?;
+
         client
             .call_tool(
                 CallToolRequestParams::new("sql_exec").with_arguments(json_args(json!({
-                    "sql": r#"DO $do$
-BEGIN
-  EXECUTE 'DROP TABLE IF EXISTS public.biz_showcase_profile CASCADE';
-  EXECUTE $sql$
-    CREATE TABLE public.biz_showcase_profile (
-      id BIGSERIAL PRIMARY KEY,
-      showcase_code VARCHAR(64) NOT NULL UNIQUE,
-      title VARCHAR(120) NOT NULL,
-      avatar VARCHAR(255),
-      cover_image VARCHAR(255),
-      contact_name VARCHAR(64),
-      contact_gender SMALLINT NOT NULL DEFAULT 0,
-      contact_phone VARCHAR(32),
-      contact_email VARCHAR(128),
-      official_url VARCHAR(255),
-      status SMALLINT NOT NULL DEFAULT 1,
-      featured BOOLEAN NOT NULL DEFAULT FALSE,
-      priority INTEGER NOT NULL DEFAULT 0,
-      score NUMERIC(10,2),
-      publish_date DATE,
-      launch_at TIMESTAMP WITHOUT TIME ZONE,
-      service_time TIME WITHOUT TIME ZONE,
-      attachment_url VARCHAR(255),
-      description TEXT,
-      extra_notes TEXT,
-      metadata JSONB,
-      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
-      CONSTRAINT biz_showcase_profile_status_check CHECK (status IN (1, 2, 3)),
-      CONSTRAINT biz_showcase_profile_contact_gender_check CHECK (contact_gender IN (0, 1, 2))
-    )
-  $sql$;
-  EXECUTE $$COMMENT ON TABLE public.biz_showcase_profile IS '展示档案'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.id IS '主键'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.showcase_code IS '展示编码'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.title IS '标题'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.avatar IS '头像'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.cover_image IS '封面图片'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.contact_name IS '联系人'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.contact_gender IS '联系人性别'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.contact_phone IS '联系电话'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.contact_email IS '联系邮箱'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.official_url IS '官网链接'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.status IS '状态'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.featured IS '推荐'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.priority IS '优先级'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.score IS '评分'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.publish_date IS '发布日期'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.launch_at IS '上线时间'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.service_time IS '服务时间'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.attachment_url IS '附件'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.description IS '描述'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.extra_notes IS '备注'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.metadata IS '元数据'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.created_at IS '创建时间'$$;
-  EXECUTE $$COMMENT ON COLUMN public.biz_showcase_profile.updated_at IS '更新时间'$$;
-END
-$do$;"#
+                    "sql": create_showcase_profile_test_table_sql()
                 }))),
             )
             .await?;
@@ -1298,13 +1273,14 @@ $do$;"#
             .call_tool(
                 CallToolRequestParams::new("generate_frontend_bundle_from_table").with_arguments(
                     json_args(json!({
-                        "table": "biz_showcase_profile",
-                        "overwrite": true,
-                        "output_dir": frontend_output_dir.display().to_string(),
-                        "target_preset": "art_design_pro",
-                        "dict_bindings": {
-                            "status": "showcase_status",
-                            "contact_gender": "showcase_gender"
+                    "table": TEST_SHOWCASE_PROFILE_TABLE,
+                    "route_base": TEST_SHOWCASE_PROFILE_ROUTE_BASE,
+                    "overwrite": true,
+                    "output_dir": preview_root.display().to_string(),
+                    "target_preset": "art_design_pro",
+                    "dict_bindings": {
+                        "status": "showcase_status",
+                        "contact_gender": "showcase_gender"
                         },
                         "field_hints": {
                             "contact_gender": {
@@ -1365,13 +1341,6 @@ $do$;"#
             )
             .await?;
 
-        prepare_art_design_pro_preview(
-            &smoke_art_design_pro_dir(),
-            &preview_root,
-            &frontend_output_dir,
-        )
-        .await?;
-
         let mut typecheck = Command::new("pnpm");
         typecheck
             .arg("exec")
@@ -1382,6 +1351,15 @@ $do$;"#
             .current_dir(&preview_root);
         assert_command_success(typecheck, "generated showcase bundle vue-tsc").await?;
 
+        let mut lint = Command::new("pnpm");
+        lint.arg("exec")
+            .arg("eslint")
+            .arg("src/views/system/showcase-profile")
+            .arg("src/api/showcase-profile.ts")
+            .arg("src/types/api/showcase-profile.d.ts")
+            .current_dir(&preview_root);
+        assert_command_success(lint, "generated showcase bundle eslint").await?;
+
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;
@@ -1389,12 +1367,12 @@ $do$;"#
     let _ = client
         .call_tool(
             CallToolRequestParams::new("sql_exec").with_arguments(json_args(json!({
-                "sql": "DROP TABLE IF EXISTS public.biz_showcase_profile CASCADE"
+                "sql": drop_showcase_profile_test_table_sql()
             }))),
         )
         .await;
+    let _ = tokio::fs::remove_file(&test_entity_file).await;
     let _ = tokio::fs::remove_dir_all(&preview_root).await;
-    let _ = tokio::fs::remove_dir_all(&frontend_output_dir).await;
 
     client.cancel().await?;
     test_result

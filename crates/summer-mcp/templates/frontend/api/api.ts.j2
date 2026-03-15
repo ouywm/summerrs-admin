@@ -1,7 +1,9 @@
 import request from '@/utils/http'
 
 /** 获取{{ table.subject_label }}列表 */
-export function fetchGet{{ names.api_function_base }}List(params: Api.{{ names.ts_namespace }}.{{ names.resource_pascal }}SearchParams) {
+export function fetchGet{{ names.api_function_base }}List(
+  params: Api.{{ names.ts_namespace }}.{{ names.resource_pascal }}SearchParams
+) {
   return request.get<Api.{{ names.ts_namespace }}.{{ names.resource_pascal }}List>({
     url: '/api{{ paths.list }}',
     params
@@ -16,7 +18,9 @@ export function fetchGet{{ names.api_function_base }}Detail(id: {{ primary_key.t
 }
 
 /** 创建{{ table.subject_label }} */
-export function fetchCreate{{ names.api_function_base }}(params: Api.{{ names.ts_namespace }}.Create{{ names.resource_pascal }}Params) {
+export function fetchCreate{{ names.api_function_base }}(
+  params: Api.{{ names.ts_namespace }}.Create{{ names.resource_pascal }}Params
+) {
   return request.post<null>({
     url: '/api{{ paths.create }}',
     params

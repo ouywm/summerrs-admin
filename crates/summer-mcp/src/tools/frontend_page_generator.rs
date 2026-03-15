@@ -1186,7 +1186,7 @@ fn search_value_format(search_widget: SearchWidgetKind) -> Option<String> {
     match search_widget {
         SearchWidgetKind::Date | SearchWidgetKind::DateRange => Some("YYYY-MM-DD".to_string()),
         SearchWidgetKind::DateTime | SearchWidgetKind::DateTimeRange => {
-            Some("YYYY-MM-DD HH:mm:ss".to_string())
+            Some("YYYY-MM-DDTHH:mm:ss".to_string())
         }
         SearchWidgetKind::Time => Some("HH:mm:ss".to_string()),
         SearchWidgetKind::Input
@@ -1624,6 +1624,13 @@ mod tests {
 
     use super::*;
 
+    fn assert_no_triple_newlines(contents: &str) {
+        assert!(
+            !contents.contains("\n\n\n"),
+            "generated source contains multiple consecutive blank lines:\n{contents}"
+        );
+    }
+
     fn sample_user_schema() -> TableSchema {
         TableSchema {
             schema: "public".to_string(),
@@ -1875,6 +1882,7 @@ pub struct Model {
         assert!(index_file.contains("getDictLabel('user_status'"));
         assert!(index_file.contains("ElImage"));
         assert!(index_file.contains("mailto:"));
+        assert_no_triple_newlines(&index_file);
 
         let search_file = std::fs::read_to_string(&result.search_file).unwrap();
         assert!(search_file.contains("getDict('user_status')"));
@@ -1883,6 +1891,8 @@ pub struct Model {
         assert!(search_file.contains("key: 'createTimeRange'"));
         assert!(search_file.contains("Api.User.UserSearchParams['createTimeStart']"));
         assert!(search_file.contains("Api.User.UserSearchParams['createTimeEnd']"));
+        assert!(search_file.contains("valueFormat: 'YYYY-MM-DDTHH:mm:ss'"));
+        assert_no_triple_newlines(&search_file);
 
         let dialog_file = std::fs::read_to_string(&result.dialog_file).unwrap();
         assert!(dialog_file.contains("fetchCreateUser"));
@@ -1902,10 +1912,197 @@ pub struct Model {
         assert!(
             dialog_file.contains("const detail: UserListItemDetail = await fetchGetUserDetail(id)")
         );
+        assert_no_triple_newlines(&dialog_file);
 
         assert_eq!(result.required_dict_types, vec!["user_status".to_string()]);
         assert_eq!(result.api_import_path, "@/api/user");
         assert_eq!(result.api_namespace, "User");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn generator_avoids_blank_lines_between_generated_frontend_fields() {
+        let root = std::env::temp_dir().join(format!(
+            "summer-mcp-frontend-page-generator-format-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        std::fs::create_dir_all(root.join(MODEL_ENTITY_DIR)).unwrap();
+
+        std::fs::write(
+            root.join(MODEL_ENTITY_DIR).join("sys_user.rs"),
+            r#"
+/// 用户状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
+pub enum UserStatus {
+    /// 启用
+    #[sea_orm(num_value = 1)]
+    Enabled,
+    /// 禁用
+    #[sea_orm(num_value = 2)]
+    Disabled,
+}
+
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub user_name: String,
+    pub avatar: String,
+    pub status: UserStatus,
+    pub launch_at: DateTime,
+    pub create_time: DateTime,
+}
+"#,
+        )
+        .unwrap();
+
+        let generator = FrontendPageGenerator::with_workspace_root(root.clone());
+        let result = generator
+            .generate(GenerateFrontendPageRequest {
+                schema: TableSchema {
+                    schema: "public".to_string(),
+                    table: "sys_user".to_string(),
+                    comment: Some("系统用户".to_string()),
+                    primary_key: vec!["id".to_string()],
+                    columns: vec![
+                        TableColumnSchema {
+                            name: "id".to_string(),
+                            pg_type: "bigint".to_string(),
+                            nullable: false,
+                            primary_key: true,
+                            hidden_on_read: false,
+                            writable_on_create: false,
+                            writable_on_update: false,
+                            default_value: None,
+                            comment: Some("主键".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "user_name".to_string(),
+                            pg_type: "character varying".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("用户名".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "avatar".to_string(),
+                            pg_type: "character varying".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("头像".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "status".to_string(),
+                            pg_type: "smallint".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("状态".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "launch_at".to_string(),
+                            pg_type: "timestamp without time zone".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("上线时间".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "create_time".to_string(),
+                            pg_type: "timestamp without time zone".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: false,
+                            writable_on_update: false,
+                            default_value: None,
+                            comment: Some("创建时间".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                    ],
+                    indexes: vec![],
+                    foreign_keys: vec![],
+                    check_constraints: vec![],
+                },
+                overwrite: true,
+                route_base: None,
+                output_dir: Some("generated/views/system".to_string()),
+                target_preset: FrontendTargetPreset::SummerMcp,
+                api_import_path: None,
+                api_namespace: None,
+                api_list_item_type_name: None,
+                api_detail_type_name: None,
+                dict_bindings: BTreeMap::from([("status".to_string(), "user_status".to_string())]),
+                field_hints: BTreeMap::new(),
+                search_fields: Some(vec![
+                    "user_name".to_string(),
+                    "status".to_string(),
+                    "launch_at".to_string(),
+                    "create_time".to_string(),
+                ]),
+                table_fields: Some(vec![
+                    "user_name".to_string(),
+                    "avatar".to_string(),
+                    "status".to_string(),
+                    "launch_at".to_string(),
+                ]),
+                form_fields: Some(vec![
+                    "user_name".to_string(),
+                    "avatar".to_string(),
+                    "status".to_string(),
+                    "launch_at".to_string(),
+                ]),
+            })
+            .await
+            .unwrap();
+
+        let index_file = std::fs::read_to_string(&result.index_file).unwrap();
+        let search_file = std::fs::read_to_string(&result.search_file).unwrap();
+        let dialog_file = std::fs::read_to_string(&result.dialog_file).unwrap();
+
+        assert!(!index_file.contains("userName: undefined,\n\n    status: undefined"));
+        assert!(!search_file.contains(
+            "userName?: Api.User.UserSearchParams['userName']\n\n    status?: Api.User.UserSearchParams['status']"
+        ));
+        assert!(!dialog_file.contains("userName: '',\n\n    avatar: ''"));
+        assert!(search_file.contains("valueFormat: 'YYYY-MM-DDTHH:mm:ss'"));
+        assert!(dialog_file.contains("value-format=\"YYYY-MM-DDTHH:mm:ss\""));
+        assert_no_triple_newlines(&index_file);
+        assert_no_triple_newlines(&search_file);
+        assert_no_triple_newlines(&dialog_file);
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -15,7 +15,7 @@ declare namespace Api {
     }
 
     /** {{ table.subject_label }}详情 */
-    interface {{ names.resource_pascal }}DetailVo extends {{ names.resource_pascal }}Vo {}
+    type {{ names.resource_pascal }}DetailVo = {{ names.resource_pascal }}Vo
 
     /** {{ table.subject_label }}查询参数（对应后端 {{ names.query_dto }}） */
     interface {{ names.resource_pascal }}SearchParams extends Api.Common.CommonSearchParams {

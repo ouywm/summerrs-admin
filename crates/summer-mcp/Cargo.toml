@@ -45,6 +45,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 anyhow = { workspace = true, optional = true }
 
 [dev-dependencies]
+anyhow = { workspace = true }
 chrono = { workspace = true }
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 sea-orm = { workspace = true, features = ["mock"] }

@@ -16,6 +16,8 @@ impl TemplateRenderer {
     pub(crate) fn new(templates: &[EmbeddedTemplate]) -> Result<Self, McpError> {
         let mut env = Environment::new();
         env.set_undefined_behavior(UndefinedBehavior::Strict);
+        env.set_trim_blocks(true);
+        env.set_lstrip_blocks(true);
 
         for template in templates {
             env.add_template(template.name, template.source)

@@ -326,6 +326,17 @@ mod tests {
 
     use super::*;
 
+    fn assert_no_sparse_generated_fields(contents: &str) {
+        assert!(
+            !contents.contains("\n\n    ///"),
+            "generated source still contains blank lines between documented fields:\n{contents}"
+        );
+        assert!(
+            !contents.contains("\n\n    pub "),
+            "generated source still contains blank lines before fields:\n{contents}"
+        );
+    }
+
     #[tokio::test]
     async fn generator_writes_compile_ready_skeleton_files() {
         let root = std::env::temp_dir().join(format!(
@@ -376,10 +387,12 @@ mod tests {
         assert!(dto.contains("pub create_time_end: Option<chrono::NaiveDateTime>"));
         assert!(dto.contains("Column::CreateTime.gte(start)"));
         assert!(dto.contains("Column::CreateTime.lte(end)"));
+        assert_no_sparse_generated_fields(&dto);
 
         let vo = std::fs::read_to_string(&result.vo_file).unwrap();
         assert!(vo.contains("pub struct RoleVo"));
         assert!(vo.contains("pub create_time: chrono::NaiveDateTime"));
+        assert_no_sparse_generated_fields(&vo);
 
         let router_mod = std::fs::read_to_string(root.join(APP_ROUTER_DIR).join("mod.rs")).unwrap();
         assert!(router_mod.contains("pub mod sys_role;"));

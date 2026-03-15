@@ -1,10 +1,15 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use rmcp::ErrorData as McpError;
 use summer_domain::{
     dict::{DictBundleItemSpec, DictBundleSpec},
     menu::{MenuButtonSpec, MenuConfigSpec, MenuNodeSpec},
 };
+use tokio::process::Command;
 
 use crate::{
     table_tools::schema::TableSchema,
@@ -84,7 +89,7 @@ impl FrontendBundleGenerator {
         let crud_context = self.load_crud_context(&request).await?;
         let effective_dict_bindings = build_effective_dict_bindings(&crud_context, &request);
         let dict_bundle_drafts = build_dict_bundle_drafts(&crud_context, &effective_dict_bindings);
-        let menu_config_draft = build_menu_config_draft(&crud_context);
+        let menu_config_draft = build_menu_config_draft(&crud_context, request.target_preset);
 
         let layout = request
             .target_preset
@@ -127,6 +132,19 @@ impl FrontendBundleGenerator {
             })
             .await?;
 
+        format_generated_frontend_bundle(
+            request.target_preset,
+            &frontend_root_dir,
+            [
+                api_result.api_file.as_path(),
+                api_result.api_type_file.as_path(),
+                page_result.index_file.as_path(),
+                page_result.search_file.as_path(),
+                page_result.dialog_file.as_path(),
+            ],
+        )
+        .await?;
+
         Ok(GenerateFrontendBundleResult {
             table: api_result.table,
             route_base: api_result.route_base,
@@ -167,6 +185,87 @@ impl FrontendBundleGenerator {
             &entity_source,
         )
     }
+}
+
+async fn format_generated_frontend_bundle(
+    target_preset: FrontendTargetPreset,
+    frontend_root_dir: &Path,
+    generated_files: [&Path; 5],
+) -> Result<(), McpError> {
+    if target_preset != FrontendTargetPreset::ArtDesignPro {
+        return Ok(());
+    }
+
+    if !frontend_root_dir.join(".prettierrc").is_file() {
+        return Ok(());
+    }
+
+    let local_prettier = prettier_bin(frontend_root_dir);
+    let mut command = if local_prettier.is_file() {
+        Command::new(local_prettier)
+    } else {
+        let mut command = Command::new("pnpm");
+        command.arg("exec").arg("prettier");
+        command
+    };
+
+    command.arg("--write");
+    for path in generated_files {
+        command.arg(path);
+    }
+    command.current_dir(frontend_root_dir);
+
+    let output = match command.output().await {
+        Ok(output) => output,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            tracing::warn!(
+                "skipping generated frontend formatting in `{}` because prettier is unavailable: {error}",
+                frontend_root_dir.display()
+            );
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(io_error(
+                format!(
+                    "spawn prettier for generated frontend bundle in `{}`",
+                    frontend_root_dir.display()
+                ),
+                error,
+            ));
+        }
+    };
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(McpError::internal_error(
+        format!(
+            "failed to format generated frontend bundle in `{}` with prettier (status {}): stdout:\n{}\nstderr:\n{}",
+            frontend_root_dir.display(),
+            output
+                .status
+                .code()
+                .map_or_else(|| "terminated by signal".to_string(), |code| code.to_string()),
+            stdout.trim(),
+            stderr.trim()
+        ),
+        None,
+    ))
+}
+
+fn prettier_bin(frontend_root_dir: &Path) -> PathBuf {
+    let file_name = if cfg!(windows) {
+        "prettier.cmd"
+    } else {
+        "prettier"
+    };
+    frontend_root_dir
+        .join("node_modules")
+        .join(".bin")
+        .join(file_name)
 }
 
 fn build_effective_dict_bindings(
@@ -224,15 +323,22 @@ fn build_dict_bundle_drafts(
         .collect()
 }
 
-fn build_menu_config_draft(crud_context: &CrudGenerationContext) -> MenuConfigSpec {
+fn build_menu_config_draft(
+    crud_context: &CrudGenerationContext,
+    target_preset: FrontendTargetPreset,
+) -> MenuConfigSpec {
     let route_base = crud_context.table.route_base.clone();
     let file_stem = crud_context.table.file_stem.clone();
     let resource_pascal = crud_context.names.resource_pascal.clone();
+    let component = match target_preset {
+        FrontendTargetPreset::SummerMcp => format!("system/{file_stem}/index"),
+        FrontendTargetPreset::ArtDesignPro => format!("/system/{file_stem}"),
+    };
     MenuConfigSpec {
         menus: vec![MenuNodeSpec {
             name: resource_pascal,
             path: route_base.clone(),
-            component: Some(format!("system/{file_stem}/index")),
+            component: Some(component),
             redirect: None,
             icon: None,
             title: crud_context.table.subject_label.clone(),
@@ -252,19 +358,19 @@ fn build_menu_config_draft(crud_context: &CrudGenerationContext) -> MenuConfigSp
             buttons: vec![
                 MenuButtonSpec {
                     auth_name: "新增".to_string(),
-                    auth_mark: "add".to_string(),
+                    auth_mark: format!("{route_base}:add"),
                     sort: Some(1),
                     enabled: Some(true),
                 },
                 MenuButtonSpec {
                     auth_name: "编辑".to_string(),
-                    auth_mark: "edit".to_string(),
+                    auth_mark: format!("{route_base}:edit"),
                     sort: Some(2),
                     enabled: Some(true),
                 },
                 MenuButtonSpec {
                     auth_name: "删除".to_string(),
-                    auth_mark: "delete".to_string(),
+                    auth_mark: format!("{route_base}:delete"),
                     sort: Some(3),
                     enabled: Some(true),
                 },
@@ -463,6 +569,10 @@ pub struct Model {
             result.menu_config_draft.menus[0].component.as_deref(),
             Some("system/user/index")
         );
+        assert_eq!(
+            result.menu_config_draft.menus[0].buttons[0].auth_mark,
+            "user:add"
+        );
 
         let api_file = std::fs::read_to_string(&result.api_file).unwrap();
         assert!(api_file.contains("fetchGetUserList"));
@@ -591,6 +701,14 @@ pub struct Model {
         assert_eq!(
             result.page_dir,
             root.join("generated/art-design-pro/src/views/system/user")
+        );
+        assert_eq!(
+            result.menu_config_draft.menus[0].component.as_deref(),
+            Some("/system/user")
+        );
+        assert_eq!(
+            result.menu_config_draft.menus[0].buttons[0].auth_mark,
+            "user:add"
         );
 
         let _ = std::fs::remove_dir_all(&root);

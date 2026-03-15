@@ -199,6 +199,13 @@ mod tests {
 
     use super::*;
 
+    fn assert_no_triple_newlines(contents: &str) {
+        assert!(
+            !contents.contains("\n\n\n"),
+            "generated source contains multiple consecutive blank lines:\n{contents}"
+        );
+    }
+
     #[tokio::test]
     async fn generator_writes_frontend_api_files() {
         let root = std::env::temp_dir().join(format!(
@@ -236,6 +243,9 @@ mod tests {
         let api_file = std::fs::read_to_string(&result.api_file).unwrap();
         assert!(api_file.contains("fetchGetRoleList"));
         assert!(api_file.contains("url: '/api/role/list'"));
+        assert!(api_file.contains("export function fetchGetRoleList(\n  params: Api.Role.RoleSearchParams\n) {"));
+        assert!(api_file.contains("export function fetchCreateRole(\n  params: Api.Role.CreateRoleParams\n) {"));
+        assert_no_triple_newlines(&api_file);
 
         let api_type_file = std::fs::read_to_string(&result.api_type_file).unwrap();
         assert!(api_type_file.contains("namespace Role"));
@@ -244,6 +254,10 @@ mod tests {
         assert!(api_type_file.contains("createTime: string"));
         assert!(api_type_file.contains("createTimeStart?: string"));
         assert!(api_type_file.contains("createTimeEnd?: string"));
+        assert!(api_type_file.contains("type RoleDetailVo = RoleVo"));
+        assert!(!api_type_file.contains("interface RoleDetailVo extends RoleVo {}"));
+        assert!(!api_type_file.contains("/** 主键 */\n\n      id: number"));
+        assert_no_triple_newlines(&api_type_file);
 
         let _ = std::fs::remove_dir_all(&root);
     }

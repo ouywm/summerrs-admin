@@ -167,7 +167,7 @@
         clearable: true
       }
 {% endif %}
-    }{% if not loop.last %},{% endif %}
+    }{{ "," if not loop.last else "" }}
 {% endfor %}
   ])
 
