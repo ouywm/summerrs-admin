@@ -11,6 +11,17 @@ use crate::table_tools::schema::{TableColumnSchema, TableSchema};
 
 use super::support::default_route_base;
 
+const CLIENT_SUBMIT_BLOCKED_FIELD_NAMES: &[&str] = &[
+    "create_by",
+    "update_by",
+    "created_by",
+    "updated_by",
+    "create_time",
+    "update_time",
+    "created_at",
+    "updated_at",
+];
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CrudGenerationContext {
     pub(crate) table: TableGenerationContext,
@@ -225,7 +236,9 @@ fn build_context(
                 .columns
                 .iter()
                 .find(|column| column.name == field.name)
-                .is_some_and(|column| column.writable_on_create)
+                .is_some_and(|column| {
+                    column.writable_on_create && !is_client_submit_blocked_field(&column.name)
+                })
         })
         .cloned()
         .map(|mut field| {
@@ -247,7 +260,9 @@ fn build_context(
                 .columns
                 .iter()
                 .find(|column| column.name == field.name)
-                .is_some_and(|column| column.writable_on_update)
+                .is_some_and(|column| {
+                    column.writable_on_update && !is_client_submit_blocked_field(&column.name)
+                })
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -792,11 +807,7 @@ fn ts_type_for_input(
         FieldValueKind::Enum => infer_ts_enum_type(rust_type, enum_options),
         FieldValueKind::Other => "unknown".to_string(),
     };
-    if nullable {
-        format!("{base} | null")
-    } else {
-        base
-    }
+    apply_nullable_ts_suffix(base, nullable)
 }
 
 fn ts_type_for_read(
@@ -811,11 +822,19 @@ fn ts_type_for_read(
         }
         _ => ts_type_for_input(value_kind, rust_type, false, enum_options),
     };
-    if nullable {
-        format!("{base} | null")
-    } else {
+    apply_nullable_ts_suffix(base, nullable)
+}
+
+fn apply_nullable_ts_suffix(base: String, nullable: bool) -> String {
+    if !nullable || base == "unknown" {
         base
+    } else {
+        format!("{base} | null")
     }
+}
+
+fn is_client_submit_blocked_field(name: &str) -> bool {
+    CLIENT_SUBMIT_BLOCKED_FIELD_NAMES.contains(&name)
 }
 
 fn infer_ts_enum_type(rust_type: &str, enum_options: &[EnumOptionContext]) -> String {
@@ -966,7 +985,10 @@ fn snake_to_camel(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::test_support::{SAMPLE_ROLE_ENTITY_SOURCE, sample_role_schema};
+    use crate::{
+        table_tools::schema::TableColumnSchema,
+        tools::test_support::{SAMPLE_ROLE_ENTITY_SOURCE, sample_role_schema},
+    };
 
     #[test]
     fn build_context_exposes_frontend_friendly_metadata() {
@@ -1028,5 +1050,141 @@ pub struct Model {
         )
         .unwrap();
         assert_eq!(rewritten, "chrono::NaiveDateTime");
+    }
+
+    #[test]
+    fn build_context_blocks_audit_submit_fields_and_simplifies_nullable_unknown() {
+        let schema = TableSchema {
+            schema: "public".to_string(),
+            table: "biz_article".to_string(),
+            comment: Some("文章".to_string()),
+            primary_key: vec!["id".to_string()],
+            columns: vec![
+                TableColumnSchema {
+                    name: "id".to_string(),
+                    pg_type: "bigint".to_string(),
+                    nullable: false,
+                    primary_key: true,
+                    hidden_on_read: false,
+                    writable_on_create: false,
+                    writable_on_update: false,
+                    default_value: Some("nextval(...)".to_string()),
+                    comment: Some("主键".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "title".to_string(),
+                    pg_type: "character varying".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: None,
+                    comment: Some("标题".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "create_by".to_string(),
+                    pg_type: "bigint".to_string(),
+                    nullable: true,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: None,
+                    comment: Some("创建人".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "created_at".to_string(),
+                    pg_type: "timestamp without time zone".to_string(),
+                    nullable: true,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: None,
+                    comment: Some("创建时间".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "updated_at".to_string(),
+                    pg_type: "timestamp without time zone".to_string(),
+                    nullable: true,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: None,
+                    comment: Some("更新时间".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "metadata".to_string(),
+                    pg_type: "jsonb".to_string(),
+                    nullable: true,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: None,
+                    comment: Some("元数据".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            check_constraints: vec![],
+        };
+        let entity_source = r#"
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub title: String,
+    pub create_by: Option<i64>,
+    pub created_at: Option<DateTime>,
+    pub updated_at: Option<DateTime>,
+    pub metadata: Option<serde_json::Value>,
+}
+"#;
+
+        let context =
+            CrudGenerationContextBuilder::build_from_entity_source(schema, None, entity_source)
+                .unwrap();
+
+        let create_field_names = context
+            .create_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        let update_field_names = context
+            .update_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(create_field_names, vec!["title", "metadata"]);
+        assert_eq!(update_field_names, vec!["title", "metadata"]);
+
+        let metadata = context
+            .fields
+            .iter()
+            .find(|field| field.name == "metadata")
+            .unwrap();
+        assert_eq!(metadata.type_info.ts_input, "unknown");
+        assert_eq!(metadata.type_info.ts_read, "unknown");
     }
 }

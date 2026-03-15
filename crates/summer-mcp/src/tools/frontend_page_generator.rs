@@ -813,6 +813,12 @@ fn build_frontend_field_context(
         (false, true) => FormFieldVisibility::EditOnly,
         (false, false) => FormFieldVisibility::Always,
     };
+    let table_width = suggested_table_width(field, semantic_kind);
+    let table_min_width = if table_width.is_some() {
+        None
+    } else {
+        suggested_table_min_width(field, semantic_kind)
+    };
 
     FrontendPageFieldContext {
         name: field.name.clone(),
@@ -833,8 +839,8 @@ fn build_frontend_field_context(
         form_widget,
         form_visibility,
         table_display,
-        table_width: suggested_table_width(field, semantic_kind),
-        table_min_width: suggested_table_min_width(field, semantic_kind),
+        table_width,
+        table_min_width,
         table_sortable: is_sortable_field(field),
         table_overflow: should_enable_overflow(field, semantic_kind),
         form_required,
@@ -1882,6 +1888,7 @@ pub struct Model {
         assert!(index_file.contains("getDictLabel('user_status'"));
         assert!(index_file.contains("ElImage"));
         assert!(index_file.contains("mailto:"));
+        assert!(!index_file.contains("width: 96,\n          minWidth:"));
         assert_no_triple_newlines(&index_file);
 
         let search_file = std::fs::read_to_string(&result.search_file).unwrap();

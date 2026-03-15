@@ -192,6 +192,7 @@ impl FrontendApiGenerator {
 
 #[cfg(test)]
 mod tests {
+    use crate::table_tools::schema::TableColumnSchema;
     use crate::tools::{
         frontend_target::DEFAULT_SUMMER_FRONTEND_ROOT_DIR,
         test_support::{SAMPLE_ROLE_ENTITY_SOURCE, sample_role_schema},
@@ -297,6 +298,172 @@ mod tests {
             result.api_type_file,
             root.join("generated/art-design-pro/src/types/api/role.d.ts")
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn generator_omits_audit_submit_fields_and_simplifies_nullable_unknown_types() {
+        let root = std::env::temp_dir().join(format!(
+            "summer-mcp-frontend-api-generator-audit-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        for dir in [
+            root.join(DEFAULT_SUMMER_FRONTEND_ROOT_DIR).join("api"),
+            root.join(DEFAULT_SUMMER_FRONTEND_ROOT_DIR).join("api_type"),
+            root.join(MODEL_ENTITY_DIR),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            root.join(MODEL_ENTITY_DIR).join("biz_article.rs"),
+            r#"
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub title: String,
+    pub create_by: Option<i64>,
+    pub created_at: Option<DateTime>,
+    pub updated_at: Option<DateTime>,
+    pub metadata: Option<serde_json::Value>,
+}
+"#,
+        )
+        .unwrap();
+
+        let generator = FrontendApiGenerator::with_workspace_root(root.clone());
+        let result = generator
+            .generate(GenerateFrontendApiRequest {
+                schema: crate::table_tools::schema::TableSchema {
+                    schema: "public".to_string(),
+                    table: "biz_article".to_string(),
+                    comment: Some("文章".to_string()),
+                    primary_key: vec!["id".to_string()],
+                    columns: vec![
+                        TableColumnSchema {
+                            name: "id".to_string(),
+                            pg_type: "bigint".to_string(),
+                            nullable: false,
+                            primary_key: true,
+                            hidden_on_read: false,
+                            writable_on_create: false,
+                            writable_on_update: false,
+                            default_value: Some("nextval(...)".to_string()),
+                            comment: Some("主键".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "title".to_string(),
+                            pg_type: "character varying".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("标题".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "create_by".to_string(),
+                            pg_type: "bigint".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("创建人".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "created_at".to_string(),
+                            pg_type: "timestamp without time zone".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("创建时间".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "updated_at".to_string(),
+                            pg_type: "timestamp without time zone".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("更新时间".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "metadata".to_string(),
+                            pg_type: "jsonb".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("元数据".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                    ],
+                    indexes: vec![],
+                    foreign_keys: vec![],
+                    check_constraints: vec![],
+                },
+                overwrite: true,
+                route_base: None,
+                output_dir: None,
+                target_preset: FrontendTargetPreset::SummerMcp,
+            })
+            .await
+            .unwrap();
+
+        let api_type_file = std::fs::read_to_string(&result.api_type_file).unwrap();
+        let create_params = api_type_file
+            .split("interface CreateArticleParams")
+            .nth(1)
+            .unwrap()
+            .split("interface UpdateArticleParams")
+            .next()
+            .unwrap();
+        let update_params = api_type_file
+            .split("interface UpdateArticleParams")
+            .nth(1)
+            .unwrap()
+            .split('}')
+            .next()
+            .unwrap();
+
+        assert!(api_type_file.contains("metadata?: unknown"));
+        assert!(!api_type_file.contains("metadata?: unknown | null"));
+        assert!(!create_params.contains("createBy?:"));
+        assert!(!create_params.contains("createdAt?:"));
+        assert!(!create_params.contains("updatedAt?:"));
+        assert!(!update_params.contains("createBy?:"));
+        assert!(!update_params.contains("createdAt?:"));
+        assert!(!update_params.contains("updatedAt?:"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -322,6 +322,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::table_tools::schema::{TableColumnSchema, TableSchema};
     use crate::tools::test_support::{SAMPLE_ROLE_ENTITY_SOURCE, sample_role_schema};
 
     use super::*;
@@ -400,6 +401,157 @@ mod tests {
         let service_mod =
             std::fs::read_to_string(root.join(APP_SERVICE_DIR).join("mod.rs")).unwrap();
         assert!(service_mod.contains("pub mod sys_role_service;"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn generator_omits_audit_fields_from_create_and_update_dtos() {
+        let root = std::env::temp_dir().join(format!(
+            "summer-mcp-admin-module-generator-audit-fields-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        for dir in [
+            root.join(APP_ROUTER_DIR),
+            root.join(APP_SERVICE_DIR),
+            root.join(MODEL_DTO_DIR),
+            root.join(MODEL_VO_DIR),
+            root.join(MODEL_ENTITY_DIR),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            root.join(MODEL_ENTITY_DIR).join("biz_article.rs"),
+            r#"
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub title: String,
+    pub create_by: Option<i64>,
+    pub created_at: Option<DateTime>,
+    pub updated_at: Option<DateTime>,
+}
+"#,
+        )
+        .unwrap();
+
+        let generator = AdminModuleGenerator::with_workspace_root(root.clone());
+        let result = generator
+            .generate(GenerateAdminModuleRequest {
+                schema: TableSchema {
+                    schema: "public".to_string(),
+                    table: "biz_article".to_string(),
+                    comment: Some("文章".to_string()),
+                    primary_key: vec!["id".to_string()],
+                    columns: vec![
+                        TableColumnSchema {
+                            name: "id".to_string(),
+                            pg_type: "bigint".to_string(),
+                            nullable: false,
+                            primary_key: true,
+                            hidden_on_read: false,
+                            writable_on_create: false,
+                            writable_on_update: false,
+                            default_value: Some("nextval(...)".to_string()),
+                            comment: Some("主键".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "title".to_string(),
+                            pg_type: "character varying".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("标题".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "create_by".to_string(),
+                            pg_type: "bigint".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("创建人".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "created_at".to_string(),
+                            pg_type: "timestamp without time zone".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("创建时间".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "updated_at".to_string(),
+                            pg_type: "timestamp without time zone".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("更新时间".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                    ],
+                    indexes: vec![],
+                    foreign_keys: vec![],
+                    check_constraints: vec![],
+                },
+                overwrite: true,
+                route_base: None,
+                output_dir: None,
+            })
+            .await
+            .unwrap();
+
+        let dto = std::fs::read_to_string(&result.dto_file).unwrap();
+        let create_dto = dto
+            .split("pub struct CreateArticleDto")
+            .nth(1)
+            .unwrap()
+            .split("impl From<CreateArticleDto>")
+            .next()
+            .unwrap();
+        let update_dto = dto
+            .split("pub struct UpdateArticleDto")
+            .nth(1)
+            .unwrap()
+            .split("impl UpdateArticleDto")
+            .next()
+            .unwrap();
+
+        assert!(create_dto.contains("pub title: String"));
+        assert!(!create_dto.contains("create_by"));
+        assert!(!create_dto.contains("created_at"));
+        assert!(!create_dto.contains("updated_at"));
+        assert!(!update_dto.contains("create_by"));
+        assert!(!update_dto.contains("created_at"));
+        assert!(!update_dto.contains("updated_at"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
