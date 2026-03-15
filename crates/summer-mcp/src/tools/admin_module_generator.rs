@@ -1,9 +1,16 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use rmcp::ErrorData as McpError;
+use serde::Serialize;
 
 use crate::tools::{
-    generation_context::CrudGenerationContextBuilder,
+    generation_context::{
+        CrudGenerationContext, CrudGenerationContextBuilder, FieldGenerationContext,
+        FieldValueKind,
+    },
     support::{io_error, resolve_output_dir, sync_mod_file, workspace_root},
     template_renderer::{EmbeddedTemplate, TemplateRenderer},
 };
@@ -76,6 +83,21 @@ struct GeneratedPaths {
     vo_mod_file: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AdminModuleTemplateContext {
+    #[serde(flatten)]
+    crud: CrudGenerationContext,
+    imports: AdminModuleImportContext,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct AdminModuleImportContext {
+    router: Vec<String>,
+    service: Vec<String>,
+    dto: Vec<String>,
+    vo: Vec<String>,
+}
+
 impl AdminModuleGenerator {
     pub fn new() -> Result<Self, McpError> {
         Ok(Self {
@@ -119,18 +141,19 @@ impl AdminModuleGenerator {
 
         let entity_source = self.load_entity_source(&paths.entity_file).await?;
         let (context, router_source, service_source, dto_source, vo_source) = {
-            let context = CrudGenerationContextBuilder::build_from_entity_source(
+            let crud_context = CrudGenerationContextBuilder::build_from_entity_source(
                 request.schema,
                 request.route_base,
                 &entity_source,
             )?;
+            let render_context = build_admin_module_template_context(crud_context.clone());
             let renderer = TemplateRenderer::new(&ADMIN_MODULE_TEMPLATES)?;
-            let router_source = renderer.render(ROUTER_TEMPLATE_NAME, &context)?;
-            let service_source = renderer.render(SERVICE_TEMPLATE_NAME, &context)?;
-            let dto_source = renderer.render(DTO_TEMPLATE_NAME, &context)?;
-            let vo_source = renderer.render(VO_TEMPLATE_NAME, &context)?;
+            let router_source = renderer.render(ROUTER_TEMPLATE_NAME, &render_context)?;
+            let service_source = renderer.render(SERVICE_TEMPLATE_NAME, &render_context)?;
+            let dto_source = renderer.render(DTO_TEMPLATE_NAME, &render_context)?;
+            let vo_source = renderer.render(VO_TEMPLATE_NAME, &render_context)?;
             (
-                context,
+                crud_context,
                 router_source,
                 service_source,
                 dto_source,
@@ -263,6 +286,38 @@ impl AdminModuleGenerator {
                 )
             })
     }
+}
+
+fn build_admin_module_template_context(
+    crud: CrudGenerationContext,
+) -> AdminModuleTemplateContext {
+    AdminModuleTemplateContext {
+        imports: AdminModuleImportContext {
+            router: vec![],
+            service: vec![],
+            dto: collect_backend_type_imports(
+                crud.create_fields
+                    .iter()
+                    .chain(crud.update_fields.iter())
+                    .chain(crud.query_fields.iter()),
+            ),
+            vo: collect_backend_type_imports(crud.read_fields.iter()),
+        },
+        crud,
+    }
+}
+
+fn collect_backend_type_imports<'a, I>(fields: I) -> Vec<String>
+where
+    I: Iterator<Item = &'a FieldGenerationContext>,
+{
+    let mut imports = BTreeSet::new();
+    for field in fields {
+        if field.type_info.value_kind == FieldValueKind::Decimal {
+            imports.insert("sea_orm::prelude::Decimal".to_string());
+        }
+    }
+    imports.into_iter().collect()
 }
 
 #[cfg(test)]

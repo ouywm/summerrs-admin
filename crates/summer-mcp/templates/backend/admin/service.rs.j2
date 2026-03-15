@@ -7,9 +7,11 @@ use model::entity::{{ names.table_module }};
 use model::vo::{{ names.table_module }}::{{ names.vo }};
 use sea_orm::{ActiveModelTrait, EntityTrait, QueryFilter};
 use summer::plugin::Service;
-
-use crate::plugin::sea_orm::DbConn;
-use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
+use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
+{% for import in imports.service %}
+use {{ import }};
+{% endfor %}
 
 #[derive(Clone, Service)]
 pub struct {{ names.service_struct }} {

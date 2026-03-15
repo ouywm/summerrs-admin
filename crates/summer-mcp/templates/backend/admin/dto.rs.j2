@@ -4,6 +4,9 @@ use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, Condition, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
+{% for import in imports.dto %}
+use {{ import }};
+{% endfor %}
 
 use crate::entity::{{ names.table_module }};
 
@@ -11,6 +14,9 @@ use crate::entity::{{ names.table_module }};
 #[serde(rename_all = "camelCase")]
 pub struct {{ names.create_dto }} {
 {% for field in create_fields %}
+{% if field.type_info.value_kind == "decimal" %}
+    #[schemars(with = "{% if field.create_required %}String{% else %}Option<String>{% endif %}")]
+{% endif %}
 {% for line in field.comment_lines %}
     /// {{ line }}
 {% endfor %}
@@ -33,6 +39,9 @@ impl From<{{ names.create_dto }}> for {{ names.table_module }}::ActiveModel {
 #[serde(rename_all = "camelCase")]
 pub struct {{ names.update_dto }} {
 {% for field in update_fields %}
+{% if field.type_info.value_kind == "decimal" %}
+    #[schemars(with = "Option<String>")]
+{% endif %}
 {% for line in field.comment_lines %}
     /// {{ line }}
 {% endfor %}
@@ -54,6 +63,9 @@ impl {{ names.update_dto }} {
 #[serde(rename_all = "camelCase")]
 pub struct {{ names.query_dto }} {
 {% for field in query_fields %}
+{% if field.type_info.value_kind == "decimal" %}
+    #[schemars(with = "Option<String>")]
+{% endif %}
 {% for line in field.comment_lines %}
     /// {{ line }}
 {% endfor %}

@@ -5,6 +5,9 @@ use common::serde_utils::datetime_format;
 {% endif %}
 use schemars::JsonSchema;
 use serde::Serialize;
+{% for import in imports.vo %}
+use {{ import }};
+{% endfor %}
 
 use crate::entity::{{ names.table_module }};
 
@@ -12,6 +15,9 @@ use crate::entity::{{ names.table_module }};
 #[serde(rename_all = "camelCase")]
 pub struct {{ names.vo }} {
 {% for field in read_fields %}
+{% if field.type_info.value_kind == "decimal" %}
+    #[schemars(with = "{% if field.nullable_entity %}Option<String>{% else %}String{% endif %}")]
+{% endif %}
 {% for line in field.comment_lines %}
     /// {{ line }}
 {% endfor %}
