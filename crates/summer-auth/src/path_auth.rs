@@ -279,9 +279,7 @@ mod tests {
 
     #[test]
     fn builder_merge() {
-        let a = PathAuthBuilder::new()
-            .include("/**")
-            .exclude("/public");
+        let a = PathAuthBuilder::new().include("/**").exclude("/public");
         let b = PathAuthBuilder::new().exclude("/health");
         let merged = a.merge(b);
         let config = merged.build();
@@ -328,9 +326,7 @@ mod tests {
 
     #[test]
     fn allow_types_no_restriction() {
-        let config = PathAuthBuilder::new()
-            .include("/**")
-            .build();
+        let config = PathAuthBuilder::new().include("/**").build();
 
         // 无 type_rules 时所有路径无类型限制
         assert_eq!(config.allowed_user_types("/any/path"), None);
@@ -341,8 +337,7 @@ mod tests {
         let a = PathAuthBuilder::new()
             .include("/**")
             .allow_types("/admin/**", &[UserType::Admin]);
-        let b = PathAuthBuilder::new()
-            .allow_types("/biz/**", &[UserType::Business]);
+        let b = PathAuthBuilder::new().allow_types("/biz/**", &[UserType::Business]);
         let config = a.merge(b).build();
 
         assert_eq!(

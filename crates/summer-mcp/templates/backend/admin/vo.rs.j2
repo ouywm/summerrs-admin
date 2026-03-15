@@ -1,0 +1,33 @@
+//! Generated admin VO skeleton.
+
+{% if flags.uses_datetime_format %}
+use common::serde_utils::datetime_format;
+{% endif %}
+use schemars::JsonSchema;
+use serde::Serialize;
+
+use crate::entity::{{ names.table_module }};
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct {{ names.vo }} {
+{% for field in read_fields %}
+{% for line in field.comment_lines %}
+    /// {{ line }}
+{% endfor %}
+{% if field.type_info.datetime_like and not field.nullable_entity %}
+    #[serde(serialize_with = "datetime_format::serialize")]
+{% endif %}
+    pub {{ field.name }}: {{ field.type_info.rust_entity }},
+{% endfor %}
+}
+
+impl From<{{ names.table_module }}::Model> for {{ names.vo }} {
+    fn from(model: {{ names.table_module }}::Model) -> Self {
+        Self {
+{% for field in read_fields %}
+            {{ field.name }}: model.{{ field.name }},
+{% endfor %}
+        }
+    }
+}

@@ -2,15 +2,15 @@
 
 use common::error::ApiResult;
 use common::extractor::{Path, Query};
+use common::response::Json;
 use macros::log;
 use model::dto::sys_file::FileQueryDto;
 use model::vo::sys_file::FileVo;
-use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api};
 
-use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::sys_file_service::SysFileService;
+use summer_sea_orm::pagination::{Page, Pagination};
 
 /// 文件列表（分页）
 #[log(module = "文件管理", action = "查询文件列表", biz_type = Query)]

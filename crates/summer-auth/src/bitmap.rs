@@ -112,10 +112,7 @@ mod tests {
         assert!(encode(&perms, &map).is_none());
 
         // 部分在映射表中
-        let perms = vec![
-            "system:user:list".to_string(),
-            "unknown:perm".to_string(),
-        ];
+        let perms = vec!["system:user:list".to_string(), "unknown:perm".to_string()];
         let encoded = encode(&perms, &map).unwrap();
         let decoded = decode(&encoded, &map);
         assert_eq!(decoded, vec!["system:user:list"]);
@@ -124,9 +121,7 @@ mod tests {
     #[test]
     fn bitmap_size_is_compact() {
         // 100 个权限的映射表
-        let mapping: Vec<(String, u32)> = (0..100)
-            .map(|i| (format!("perm:{}", i), i))
-            .collect();
+        let mapping: Vec<(String, u32)> = (0..100).map(|i| (format!("perm:{}", i), i)).collect();
         let map = PermissionMap::new(mapping);
 
         // 全部 100 个权限
@@ -135,7 +130,11 @@ mod tests {
 
         // Base64 解码后的原始字节数应 <= 20 字节（100 bits = 13 bytes）
         let raw_bytes = STANDARD.decode(&encoded).unwrap();
-        assert!(raw_bytes.len() <= 20, "bitmap size: {} bytes", raw_bytes.len());
+        assert!(
+            raw_bytes.len() <= 20,
+            "bitmap size: {} bytes",
+            raw_bytes.len()
+        );
 
         // roundtrip 验证
         let decoded = decode(&encoded, &map);

@@ -43,15 +43,14 @@ impl Parse for MultiArgs {
                 return Err(syn::Error::new(
                     mode_ident.span(),
                     "期望 `and` 或 `or`，如 #[has_perms(and(\"a\", \"b\"))]",
-                ))
+                ));
             }
         };
 
         let content;
         syn::parenthesized!(content in input);
 
-        let punctuated: Punctuated<LitStr, Token![,]> =
-            Punctuated::parse_terminated(&content)?;
+        let punctuated: Punctuated<LitStr, Token![,]> = Punctuated::parse_terminated(&content)?;
         let values: Vec<String> = punctuated.iter().map(|lit| lit.value()).collect();
 
         if values.is_empty() {

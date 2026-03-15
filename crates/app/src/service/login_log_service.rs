@@ -1,8 +1,6 @@
 use crate::plugin::background_task::BackgroundTaskQueue;
 use crate::plugin::ip2region::Ip2RegionSearcher;
 use crate::plugin::log_batch_collector::LoginLogCollector;
-use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
-use crate::plugin::sea_orm::DbConn;
 use anyhow::Context;
 use common::error::ApiResult;
 use common::user_agent::UserAgentInfo;
@@ -10,9 +8,11 @@ use model::dto::login_log::{CreateLoginLogDto, LoginLogQueryDto};
 use model::entity::sys_login_log;
 use model::vo::login_log::LoginLogVo;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use std::net::IpAddr;
 use summer::plugin::Service;
 use summer_auth::LoginId;
-use std::net::IpAddr;
+use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 
 #[derive(Clone, Service)]
 pub struct LoginLogService {

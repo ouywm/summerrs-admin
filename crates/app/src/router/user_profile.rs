@@ -1,18 +1,18 @@
 use common::error::ApiResult;
 use common::extractor::{Query, ValidatedJson};
+use common::response::Json;
 use macros::log;
 use model::dto::login_log::LoginLogQueryDto;
 use model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
 use model::vo::login_log::LoginLogVo;
 use model::vo::user_profile::UserProfileVo;
-use common::response::Json;
 use summer_auth::AdminUser;
 use summer_web::extractor::Component;
 use summer_web::{get_api, put_api};
 
-use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::login_log_service::LoginLogService;
 use crate::service::sys_user_service::SysUserService;
+use summer_sea_orm::pagination::{Page, Pagination};
 
 /// 修改个人密码
 #[log(module = "个人中心", action = "修改密码", biz_type = Update, save_params = false)]

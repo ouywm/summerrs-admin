@@ -1,0 +1,72 @@
+//! Generated admin service skeleton.
+
+use anyhow::Context;
+use common::error::{ApiErrors, ApiResult};
+use model::dto::{{ names.table_module }}::{ {{ names.create_dto }}, {{ names.query_dto }}, {{ names.update_dto }} };
+use model::entity::{{ names.table_module }};
+use model::vo::{{ names.table_module }}::{{ names.vo }};
+use sea_orm::{ActiveModelTrait, EntityTrait, QueryFilter};
+use summer::plugin::Service;
+
+use crate::plugin::sea_orm::DbConn;
+use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
+
+#[derive(Clone, Service)]
+pub struct {{ names.service_struct }} {
+    #[inject(component)]
+    db: DbConn,
+}
+
+impl {{ names.service_struct }} {
+    pub async fn list(&self, query: {{ names.query_dto }}, pagination: Pagination) -> ApiResult<Page<{{ names.vo }}>> {
+        let page = {{ names.table_module }}::Entity::find()
+            .filter(query)
+            .page(&self.db, &pagination)
+            .await
+            .context("查询{{ table.label }}列表失败")?;
+
+        Ok(page.map({{ names.vo }}::from))
+    }
+
+    pub async fn get_by_id(&self, id: {{ primary_key.type_info.rust_input }}) -> ApiResult<{{ names.vo }}> {
+        let model = {{ names.table_module }}::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("查询{{ table.label }}详情失败")?
+            .ok_or_else(|| ApiErrors::NotFound("{{ table.label }}不存在".to_string()))?;
+
+        Ok({{ names.vo }}::from(model))
+    }
+
+    pub async fn create(&self, dto: {{ names.create_dto }}) -> ApiResult<()> {
+        let active: {{ names.table_module }}::ActiveModel = dto.into();
+        active.insert(&self.db).await.context("创建{{ table.label }}失败")?;
+        Ok(())
+    }
+
+    pub async fn update(&self, id: {{ primary_key.type_info.rust_input }}, dto: {{ names.update_dto }}) -> ApiResult<()> {
+        let model = {{ names.table_module }}::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("查询{{ table.label }}详情失败")?
+            .ok_or_else(|| ApiErrors::NotFound("{{ table.label }}不存在".to_string()))?;
+
+        let mut active: {{ names.table_module }}::ActiveModel = model.into();
+        dto.apply_to(&mut active);
+        active.update(&self.db).await.context("更新{{ table.label }}失败")?;
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: {{ primary_key.type_info.rust_input }}) -> ApiResult<()> {
+        let result = {{ names.table_module }}::Entity::delete_by_id(id)
+            .exec(&self.db)
+            .await
+            .context("删除{{ table.label }}失败")?;
+
+        if result.rows_affected == 0 {
+            return Err(ApiErrors::NotFound("{{ table.label }}不存在".to_string()));
+        }
+
+        Ok(())
+    }
+}

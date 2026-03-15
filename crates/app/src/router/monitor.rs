@@ -1,9 +1,9 @@
 use common::error::ApiResult;
 use common::extractor::{Path, Query};
+use common::response::Json;
 use macros::log;
 use model::dto::monitor::{CacheDeleteQuery, CacheKeysQuery};
 use model::vo::monitor::{CacheInfoVo, CacheKeyDetailVo, CacheKeysVo, ServerInfoVo};
-use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api};
 
@@ -11,8 +11,8 @@ use crate::service::monitor_service::{CacheMonitorService, ServerMonitorService}
 
 // ─── 服务监控 ────────────────────────────────────────────────────────────────
 
-#[get_api("/monitor/server")]
 #[log(module = "服务监控", action = "查询服务器信息", biz_type = Query)]
+#[get_api("/monitor/server")]
 pub async fn server_info(
     Component(svc): Component<ServerMonitorService>,
 ) -> ApiResult<Json<ServerInfoVo>> {

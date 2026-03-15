@@ -121,13 +121,16 @@ impl JwtHandler {
             user_name: profile.user_name().to_string(),
             nick_name: profile.nick_name().to_string(),
             roles: profile.roles().to_vec(),
-            permissions: if pb.is_some() { vec![] } else { profile.permissions().to_vec() },
+            permissions: if pb.is_some() {
+                vec![]
+            } else {
+                profile.permissions().to_vec()
+            },
             pb: pb.map(|s| s.to_string()),
         };
 
-        let token =
-            jsonwebtoken::encode(&Header::new(self.algorithm), &claims, &self.encoding_key)
-                .map_err(|e| AuthError::Internal(format!("JWT encode error: {e}")))?;
+        let token = jsonwebtoken::encode(&Header::new(self.algorithm), &claims, &self.encoding_key)
+            .map_err(|e| AuthError::Internal(format!("JWT encode error: {e}")))?;
 
         Ok((token, claims))
     }
@@ -147,9 +150,8 @@ impl JwtHandler {
             rid: Uuid::new_v4().to_string(),
         };
 
-        let token =
-            jsonwebtoken::encode(&Header::new(self.algorithm), &claims, &self.encoding_key)
-                .map_err(|e| AuthError::Internal(format!("JWT encode error: {e}")))?;
+        let token = jsonwebtoken::encode(&Header::new(self.algorithm), &claims, &self.encoding_key)
+            .map_err(|e| AuthError::Internal(format!("JWT encode error: {e}")))?;
 
         Ok((token, claims))
     }
@@ -183,15 +185,15 @@ impl JwtHandler {
         validation.validate_exp = true;
         validation.leeway = 0;
 
-        let token_data =
-            jsonwebtoken::decode::<RefreshClaims>(token, &self.decoding_key, &validation).map_err(
-                |e| match e.kind() {
-                    jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
-                        AuthError::RefreshTokenExpired
-                    }
-                    _ => AuthError::InvalidRefreshToken,
-                },
-            )?;
+        let token_data = jsonwebtoken::decode::<RefreshClaims>(
+            token,
+            &self.decoding_key,
+            &validation,
+        )
+        .map_err(|e| match e.kind() {
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::RefreshTokenExpired,
+            _ => AuthError::InvalidRefreshToken,
+        })?;
 
         if token_data.claims.typ != TokenType::Refresh {
             return Err(AuthError::InvalidRefreshToken);
@@ -214,7 +216,10 @@ mod tests {
             user_name: "admin".to_string(),
             nick_name: "管理员".to_string(),
             roles: vec!["admin".to_string()],
-            permissions: vec!["system:user:list".to_string(), "system:user:add".to_string()],
+            permissions: vec![
+                "system:user:list".to_string(),
+                "system:user:add".to_string(),
+            ],
         })
     }
 

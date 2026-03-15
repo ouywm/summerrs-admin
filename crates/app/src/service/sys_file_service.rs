@@ -9,8 +9,8 @@ use summer::plugin::Service;
 
 use crate::plugin::background_task::BackgroundTaskQueue;
 use crate::plugin::s3::S3Config;
-use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
-use crate::plugin::sea_orm::DbConn;
+use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 
 #[derive(Clone, Service)]
 pub struct SysFileService {

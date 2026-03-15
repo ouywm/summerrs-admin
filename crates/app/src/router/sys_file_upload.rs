@@ -3,6 +3,7 @@
 use common::error::{ApiErrors, ApiResult};
 use common::extractor::{Multipart, Path, Query, ValidatedJson};
 use common::file_util::read_multipart_files;
+use common::response::Json;
 use macros::log;
 use model::dto::sys_file::{
     MultipartAbortDto, MultipartCompleteDto, MultipartInitDto, MultipartListPartsDto,
@@ -14,9 +15,8 @@ use model::vo::sys_file::{
 };
 use summer_auth::AdminUser;
 use summer_web::axum::body::Body;
-use summer_web::axum::http::{header, StatusCode};
+use summer_web::axum::http::{StatusCode, header};
 use summer_web::axum::response::IntoResponse;
-use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::{get_api, post_api};
 
@@ -68,7 +68,9 @@ pub async fn batch_upload(
         .map(|f| (f.file_name, f.content_type, f.data))
         .collect();
 
-    let vo = svc.batch_upload(files, &login_id, &profile.nick_name).await?;
+    let vo = svc
+        .batch_upload(files, &login_id, &profile.nick_name)
+        .await?;
 
     Ok(Json(vo))
 }
@@ -83,7 +85,9 @@ pub async fn presign_upload(
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<PresignUploadDto>,
 ) -> ApiResult<Json<PresignedUploadVo>> {
-    let vo = svc.generate_presigned_upload(dto, &login_id, &profile.nick_name).await?;
+    let vo = svc
+        .generate_presigned_upload(dto, &login_id, &profile.nick_name)
+        .await?;
     Ok(Json(vo))
 }
 
@@ -95,7 +99,9 @@ pub async fn presign_upload_callback(
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<PresignUploadCallbackDto>,
 ) -> ApiResult<Json<FileUploadVo>> {
-    let vo = svc.confirm_presigned_upload(dto, &login_id, &profile.nick_name).await?;
+    let vo = svc
+        .confirm_presigned_upload(dto, &login_id, &profile.nick_name)
+        .await?;
     Ok(Json(vo))
 }
 
@@ -111,9 +117,9 @@ pub async fn presign_download(
 }
 
 /// 服务端代理下载（返回二进制流）
+#[log(module = "文件管理", action = "服务端代理下载", biz_type = Query, save_response = false)]
 #[get_api("/file/{id}/download")]
 pub async fn download_file(
-    AdminUser { .. }: AdminUser,
     Component(svc): Component<SysFileUploadService>,
     Path(id): Path<i64>,
 ) -> Result<summer_web::axum::response::Response, ApiErrors> {
@@ -158,7 +164,9 @@ pub async fn multipart_init(
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<MultipartInitDto>,
 ) -> ApiResult<Json<MultipartInitVo>> {
-    let vo = svc.init_multipart_upload(dto, &login_id, &profile.nick_name).await?;
+    let vo = svc
+        .init_multipart_upload(dto, &login_id, &profile.nick_name)
+        .await?;
     Ok(Json(vo))
 }
 
@@ -181,7 +189,9 @@ pub async fn multipart_complete(
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<MultipartCompleteDto>,
 ) -> ApiResult<Json<FileUploadVo>> {
-    let vo = svc.complete_multipart_upload(dto, &login_id, &profile.nick_name).await?;
+    let vo = svc
+        .complete_multipart_upload(dto, &login_id, &profile.nick_name)
+        .await?;
     Ok(Json(vo))
 }
 

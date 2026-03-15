@@ -185,18 +185,9 @@ mod tests {
 
     #[test]
     fn login_id_decode_all_types() {
-        assert_eq!(
-            LoginId::decode("admin:1").unwrap(),
-            LoginId::admin(1)
-        );
-        assert_eq!(
-            LoginId::decode("biz:2").unwrap(),
-            LoginId::business(2)
-        );
-        assert_eq!(
-            LoginId::decode("user:3").unwrap(),
-            LoginId::customer(3)
-        );
+        assert_eq!(LoginId::decode("admin:1").unwrap(), LoginId::admin(1));
+        assert_eq!(LoginId::decode("biz:2").unwrap(), LoginId::business(2));
+        assert_eq!(LoginId::decode("user:3").unwrap(), LoginId::customer(3));
     }
 
     #[test]

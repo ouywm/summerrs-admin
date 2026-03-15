@@ -1,5 +1,6 @@
 use common::error::ApiResult;
 use common::extractor::{Path, Query, ValidatedJson};
+use common::response::Json;
 use macros::log;
 use model::dto::sys_dict::{
     CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto, UpdateDictDataDto,
@@ -7,13 +8,12 @@ use model::dto::sys_dict::{
 };
 use model::vo::sys_dict::{DictDataSimpleVo, DictDataVo, DictTypeVo};
 use std::collections::HashMap;
-use common::response::Json;
 use summer_auth::AdminUser;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
-use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::sys_dict_service::SysDictService;
+use summer_sea_orm::pagination::{Page, Pagination};
 
 // ============================================================
 // 字典类型路由

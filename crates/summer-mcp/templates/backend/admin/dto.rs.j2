@@ -1,0 +1,92 @@
+//! Generated admin DTO skeleton.
+
+use schemars::JsonSchema;
+use sea_orm::{ColumnTrait, Condition, Set};
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+use crate::entity::{{ names.table_module }};
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct {{ names.create_dto }} {
+{% for field in create_fields %}
+{% for line in field.comment_lines %}
+    /// {{ line }}
+{% endfor %}
+    pub {{ field.name }}: {% if field.create_required %}{{ field.type_info.rust_input }}{% else %}Option<{{ field.type_info.rust_input }}>{% endif %},
+{% endfor %}
+}
+
+impl From<{{ names.create_dto }}> for {{ names.table_module }}::ActiveModel {
+    fn from(dto: {{ names.create_dto }}) -> Self {
+        Self {
+{% for field in create_fields %}
+            {{ field.name }}: {% if field.create_required %}Set(dto.{{ field.name }}){% elif field.nullable_entity %}dto.{{ field.name }}.map(|value| Set(Some(value))).unwrap_or_default(){% else %}dto.{{ field.name }}.map(Set).unwrap_or_default(){% endif %},
+{% endfor %}
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct {{ names.update_dto }} {
+{% for field in update_fields %}
+{% for line in field.comment_lines %}
+    /// {{ line }}
+{% endfor %}
+    pub {{ field.name }}: Option<{{ field.type_info.rust_input }}>,
+{% endfor %}
+}
+
+impl {{ names.update_dto }} {
+    pub fn apply_to(self, active: &mut {{ names.table_module }}::ActiveModel) {
+{% for field in update_fields %}
+        if let Some(value) = self.{{ field.name }} {
+            active.{{ field.name }} = {% if field.nullable_entity %}Set(Some(value)){% else %}Set(value){% endif %};
+        }
+{% endfor %}
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct {{ names.query_dto }} {
+{% for field in query_fields %}
+{% for line in field.comment_lines %}
+    /// {{ line }}
+{% endfor %}
+    pub {{ field.name }}: Option<{{ field.type_info.rust_input }}>,
+{% if field.type_info.value_kind == "date" or field.type_info.value_kind == "date_time" %}
+{% for line in field.comment_lines %}
+    /// {{ line }}开始
+{% endfor %}
+    pub {{ field.name }}_start: Option<{{ field.type_info.rust_input }}>,
+{% for line in field.comment_lines %}
+    /// {{ line }}结束
+{% endfor %}
+    pub {{ field.name }}_end: Option<{{ field.type_info.rust_input }}>,
+{% endif %}
+{% endfor %}
+}
+
+impl From<{{ names.query_dto }}> for Condition {
+    fn from(query: {{ names.query_dto }}) -> Self {
+        let mut cond = Condition::all();
+{% for field in query_fields %}
+        if let Some(value) = query.{{ field.name }} {
+            cond = cond.add({{ names.table_module }}::Column::{{ field.pascal_name }}.{{ field.query_filter_method }}(value));
+        }
+{% if field.type_info.value_kind == "date" or field.type_info.value_kind == "date_time" %}
+        if let Some(start) = query.{{ field.name }}_start {
+            cond = cond.add({{ names.table_module }}::Column::{{ field.pascal_name }}.gte(start));
+        }
+        if let Some(end) = query.{{ field.name }}_end {
+            cond = cond.add({{ names.table_module }}::Column::{{ field.pascal_name }}.lte(end));
+        }
+{% endif %}
+{% endfor %}
+        cond
+    }
+}

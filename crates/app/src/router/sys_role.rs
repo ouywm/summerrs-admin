@@ -1,14 +1,14 @@
 use common::error::ApiResult;
 use common::extractor::{Path, Query, ValidatedJson};
+use common::response::Json;
 use macros::log;
 use model::dto::sys_role::{CreateRoleDto, RolePermissionDto, RoleQueryDto, UpdateRoleDto};
 use model::vo::sys_role::{RolePermissionVo, RoleVo};
-use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
-use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::sys_role_service::SysRoleService;
+use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "角色管理", action = "查询角色列表", biz_type = Query)]
 #[get_api("/role/list")]

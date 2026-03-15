@@ -2,15 +2,17 @@ use summer_web::axum::body::Body;
 use summer_web::axum::extract::Request;
 use summer_web::axum::http;
 use summer_web::axum::response::IntoResponse;
-use summer_web::problem_details::ProblemDetails;
 use summer_web::axum::response::Response;
+use summer_web::problem_details::ProblemDetails;
 use tower_layer::Layer;
 
 use crate::config::AuthConfig;
 use crate::error::AuthError;
 use crate::path_auth::PathAuthConfig;
-use crate::session::model::{AdminProfile, BusinessProfile, CustomerProfile, UserProfile, UserSession};
 use crate::session::SessionManager;
+use crate::session::model::{
+    AdminProfile, BusinessProfile, CustomerProfile, UserProfile, UserSession,
+};
 use crate::user_type::UserType;
 
 /// AuthLayer — Axum Layer
@@ -91,9 +93,7 @@ where
                     Ok(validated) => {
                         // 检查用户类型限制
                         if let Some(path_config) = &path_config {
-                            if let Some(allowed_types) =
-                                path_config.allowed_user_types(&path)
-                            {
+                            if let Some(allowed_types) = path_config.allowed_user_types(&path) {
                                 if !allowed_types.contains(&validated.login_id.user_type) {
                                     return Ok(forbidden_response());
                                 }
@@ -184,10 +184,7 @@ fn extract_token_from_cookie(req: &Request, config: &AuthConfig) -> Option<Strin
     let cookie_header = req.headers().get(http::header::COOKIE)?;
     let cookie_str = cookie_header.to_str().ok()?;
 
-    let cookie_name = config
-        .cookie_name
-        .as_deref()
-        .unwrap_or(&config.token_name);
+    let cookie_name = config.cookie_name.as_deref().unwrap_or(&config.token_name);
 
     // 解析 Cookie: name1=value1; name2=value2
     for pair in cookie_str.split(';') {

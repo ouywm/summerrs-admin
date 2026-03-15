@@ -36,7 +36,7 @@ use summer::async_trait;
 use summer::config::ConfigRegistry;
 use summer::plugin::{ComponentRegistry, MutableComponentRegistry, Plugin};
 
-use crate::plugin::sea_orm::DbConn;
+use summer_sea_orm::DbConn;
 
 /// 通用日志批量收集器
 #[derive(Clone)]
@@ -201,6 +201,6 @@ impl Plugin for LogBatchCollectorPlugin {
     }
 
     fn dependencies(&self) -> Vec<&str> {
-        vec!["sea-orm"]
+        vec!["summer_sea_orm::SeaOrmPlugin"]
     }
 }

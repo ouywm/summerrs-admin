@@ -1,14 +1,14 @@
 use common::error::ApiResult;
 use common::extractor::{Path, Query};
+use common::response::Json;
 use macros::log;
 use model::dto::operation_log::OperationLogQueryDto;
 use model::vo::operation_log::{OperationLogDetailVo, OperationLogVo};
-use common::response::Json;
 use summer_web::extractor::Component;
 use summer_web::get_api;
 
-use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::operation_log_service::OperationLogService;
+use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "操作日志", action = "查询操作日志", biz_type = Query)]
 #[get_api("/operation-log/list")]

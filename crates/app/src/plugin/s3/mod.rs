@@ -119,9 +119,9 @@ mod tests {
     use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
     use aws_smithy_types::byte_stream::ByteStream;
     use bytes::Bytes;
+    use std::time::Duration;
     use summer::App;
     use summer::plugin::ComponentRegistry;
-    use std::time::Duration;
 
     /// S3 测试配置（从开发配置文件读取）
     const S3_TEST_CONFIG: &str = include_str!("../../../../../config/app-dev.toml");
@@ -229,7 +229,10 @@ mod tests {
             .send()
             .await
             .expect("create_multipart_upload 失败");
-        let upload_id = create_resp.upload_id().expect("未获取到 upload_id").to_string();
+        let upload_id = create_resp
+            .upload_id()
+            .expect("未获取到 upload_id")
+            .to_string();
 
         // 2. 上传分片
         let mut completed_parts = Vec::new();
@@ -277,7 +280,11 @@ mod tests {
             .expect("分片上传后 head_object 失败");
         let expected = (chunk_size * total_parts as usize) as i64;
         assert_eq!(head.content_length().unwrap(), expected);
-        println!("分片上传成功: {} 片 × 5MB = {}MB", total_parts, expected / 1024 / 1024);
+        println!(
+            "分片上传成功: {} 片 × 5MB = {}MB",
+            total_parts,
+            expected / 1024 / 1024
+        );
 
         // 清理
         s3.delete_object()
@@ -444,7 +451,9 @@ mod tests {
         assert_eq!(head.content_length().unwrap(), data.len() as i64);
         println!(
             "main.rs 已上传到 {}/{}/__test__/main.rs，大小 {} 字节，请在 RustFS 面板查看",
-            config.endpoint, bucket, data.len()
+            config.endpoint,
+            bucket,
+            data.len()
         );
     }
 }

@@ -1,0 +1,65 @@
+//! Generated admin router skeleton.
+
+use common::error::ApiResult;
+use common::extractor::{Path, Query, ValidatedJson};
+use common::response::Json;
+use macros::log;
+use model::dto::{{ names.table_module }}::{ {{ names.create_dto }}, {{ names.query_dto }}, {{ names.update_dto }} };
+use model::vo::{{ names.table_module }}::{{ names.vo }};
+use summer_web::extractor::Component;
+use summer_web::{delete_api, get_api, post_api, put_api};
+
+use crate::plugin::sea_orm::pagination::{Page, Pagination};
+use crate::service::{{ names.service_module }}::{{ names.service_struct }};
+
+#[log(module = "{{ table.label }}", action = "查询列表", biz_type = Query)]
+#[get_api("{{ paths.list }}")]
+pub async fn list(
+    Component(svc): Component<{{ names.service_struct }}>,
+    Query(query): Query<{{ names.query_dto }}>,
+    pagination: Pagination,
+) -> ApiResult<Json<Page<{{ names.vo }}>>> {
+    let page = svc.list(query, pagination).await?;
+    Ok(Json(page))
+}
+
+#[log(module = "{{ table.label }}", action = "查询详情", biz_type = Query)]
+#[get_api("{{ paths.detail }}")]
+pub async fn detail(
+    Component(svc): Component<{{ names.service_struct }}>,
+    Path(id): Path<{{ primary_key.type_info.rust_input }}>,
+) -> ApiResult<Json<{{ names.vo }}>> {
+    let item = svc.get_by_id(id).await?;
+    Ok(Json(item))
+}
+
+#[log(module = "{{ table.label }}", action = "创建", biz_type = Create)]
+#[post_api("{{ paths.create }}")]
+pub async fn create(
+    Component(svc): Component<{{ names.service_struct }}>,
+    ValidatedJson(dto): ValidatedJson<{{ names.create_dto }}>,
+) -> ApiResult<()> {
+    svc.create(dto).await?;
+    Ok(())
+}
+
+#[log(module = "{{ table.label }}", action = "更新", biz_type = Update)]
+#[put_api("{{ paths.update }}")]
+pub async fn update(
+    Component(svc): Component<{{ names.service_struct }}>,
+    Path(id): Path<{{ primary_key.type_info.rust_input }}>,
+    ValidatedJson(dto): ValidatedJson<{{ names.update_dto }}>,
+) -> ApiResult<()> {
+    svc.update(id, dto).await?;
+    Ok(())
+}
+
+#[log(module = "{{ table.label }}", action = "删除", biz_type = Delete)]
+#[delete_api("{{ paths.delete }}")]
+pub async fn delete(
+    Component(svc): Component<{{ names.service_struct }}>,
+    Path(id): Path<{{ primary_key.type_info.rust_input }}>,
+) -> ApiResult<()> {
+    svc.delete(id).await?;
+    Ok(())
+}

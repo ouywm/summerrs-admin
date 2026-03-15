@@ -1,15 +1,15 @@
 use common::error::ApiResult;
 use common::extractor::{Path, Query, ValidatedJson};
-use macros::{has_perm, log};
+use common::response::Json;
+use macros::log;
 use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
-use common::response::Json;
 use summer_auth::AdminUser;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
-use crate::plugin::sea_orm::pagination::{Page, Pagination};
 use crate::service::sys_user_service::SysUserService;
+use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "用户管理", action = "获取用户信息", biz_type = Query)]
 #[get_api("/user/info")]
@@ -21,9 +21,8 @@ pub async fn get_user_info(
     Ok(Json(vo))
 }
 
-#[get_api("/user/list")]
-#[has_perm("system:user:list")]
 #[log(module = "用户管理", action = "查询用户列表", biz_type = Query)]
+#[get_api("/user/list")]
 pub async fn list_users(
     Component(svc): Component<SysUserService>,
     Query(query): Query<UserQueryDto>,

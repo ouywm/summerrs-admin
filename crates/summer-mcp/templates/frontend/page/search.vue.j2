@@ -1,0 +1,182 @@
+<template>
+  <ArtSearchBar
+    ref="searchBarRef"
+    v-model="formData"
+    :items="formItems"
+    :rules="rules"
+    @reset="handleReset"
+    @search="handleSearch"
+  />
+</template>
+
+<script setup lang="ts">
+{% if flags.uses_search_dict %}
+  import { useDict } from '@/utils/dict'
+{% endif %}
+
+  interface Props {
+    modelValue: SearchFormModel
+  }
+
+  interface Emits {
+    (e: 'update:modelValue', value: SearchFormModel): void
+    (e: 'search', params: SearchFormModel): void
+    (e: 'reset'): void
+  }
+
+  const props = defineProps<Props>()
+  const emit = defineEmits<Emits>()
+
+{% if flags.uses_search_dict %}
+  const { getDict } = useDict()
+{% endif %}
+
+  type SearchFormModel = {
+{% for field in search_fields %}
+{% if field.search_exclude_param %}
+    {{ field.search_model_key }}?: [
+      Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_param_start }}'],
+      Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_param_end }}']
+    ] | undefined
+{% else %}
+    {{ field.search_model_key }}?: Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_model_key }}']
+{% endif %}
+{% endfor %}
+  }
+
+  const searchBarRef = ref()
+
+  const formData = computed({
+    get: () => props.modelValue,
+    set: (value) => emit('update:modelValue', value)
+  })
+
+  const rules = {}
+
+  const formItems = computed(() => [
+{% for field in search_fields %}
+    {
+      label: '{{ field.label }}',
+      key: '{{ field.search_model_key }}',
+{% if field.search_widget == "input" %}
+      type: 'input',
+{% if field.search_placeholder %}
+      placeholder: '{{ field.search_placeholder }}',
+{% endif %}
+      clearable: true
+{% elif field.search_widget == "number" %}
+      type: 'number',
+      props: {
+        style: { width: '100%' },
+        placeholder: '{{ field.search_placeholder }}'
+      }
+{% elif field.search_widget == "select" %}
+      type: 'select',
+      props: {
+        placeholder: '{{ field.search_placeholder }}',
+        clearable: true,
+{% if field.dict_type %}
+        options: getDict('{{ field.dict_type }}').map((item) => ({
+          label: item.label,
+{% if field.type_info.value_kind == "integer" or field.type_info.value_kind == "float" %}
+          value: Number(item.value)
+{% elif field.type_info.value_kind == "boolean" %}
+          value: item.value === 'true'
+{% else %}
+          value: item.value
+{% endif %}
+        }))
+{% elif field.local_options_literal %}
+        options: {{ field.local_options_literal }}
+{% else %}
+        options: [
+          { label: '{{ field.bool_true_label }}', value: true },
+          { label: '{{ field.bool_false_label }}', value: false }
+        ]
+{% endif %}
+      }
+{% elif field.search_widget == "radio_group" %}
+      type: 'radiogroup',
+      props: {
+{% if field.dict_type %}
+        options: getDict('{{ field.dict_type }}').map((item) => ({
+          label: item.label,
+{% if field.type_info.value_kind == "integer" or field.type_info.value_kind == "float" %}
+          value: Number(item.value)
+{% elif field.type_info.value_kind == "boolean" %}
+          value: item.value === 'true'
+{% else %}
+          value: item.value
+{% endif %}
+        }))
+{% elif field.local_options_literal %}
+        options: {{ field.local_options_literal }}
+{% else %}
+        options: [
+          { label: '{{ field.bool_true_label }}', value: true },
+          { label: '{{ field.bool_false_label }}', value: false }
+        ]
+{% endif %}
+      }
+{% elif field.search_widget == "date" %}
+      type: 'date',
+      props: {
+        style: { width: '100%' },
+        placeholder: '{{ field.search_placeholder }}',
+        type: 'date',
+        valueFormat: '{{ field.search_value_format }}',
+        clearable: true
+      }
+{% elif field.search_widget == "date_range" %}
+      type: 'daterange',
+      props: {
+        style: { width: '100%' },
+        type: 'daterange',
+        rangeSeparator: '至',
+        startPlaceholder: '开始日期',
+        endPlaceholder: '结束日期',
+        valueFormat: '{{ field.search_value_format }}',
+        clearable: true
+      }
+{% elif field.search_widget == "date_time" %}
+      type: 'datetime',
+      props: {
+        style: { width: '100%' },
+        placeholder: '{{ field.search_placeholder }}',
+        type: 'datetime',
+        valueFormat: '{{ field.search_value_format }}',
+        clearable: true
+      }
+{% elif field.search_widget == "date_time_range" %}
+      type: 'datetimerange',
+      props: {
+        style: { width: '100%' },
+        type: 'datetimerange',
+        rangeSeparator: '至',
+        startPlaceholder: '开始时间',
+        endPlaceholder: '结束时间',
+        valueFormat: '{{ field.search_value_format }}',
+        clearable: true
+      }
+{% else %}
+      type: 'timepicker',
+      props: {
+        style: { width: '100%' },
+        placeholder: '{{ field.search_placeholder }}',
+        valueFormat: '{{ field.search_value_format }}',
+        clearable: true
+      }
+{% endif %}
+    }{% if not loop.last %},{% endif %}
+{% endfor %}
+  ])
+
+  const handleReset = () => {
+    emit('reset')
+  }
+
+  const handleSearch = async () => {
+    await searchBarRef.value?.validate?.()
+    emit('search', formData.value)
+  }
+</script>

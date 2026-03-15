@@ -35,7 +35,12 @@ async fn cleanup_stale_multipart_uploads(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
     cutoff: &DateTime,
-) -> Result<u32, aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::list_multipart_uploads::ListMultipartUploadsError>> {
+) -> Result<
+    u32,
+    aws_sdk_s3::error::SdkError<
+        aws_sdk_s3::operation::list_multipart_uploads::ListMultipartUploadsError,
+    >,
+> {
     let mut aborted = 0u32;
     let mut key_marker: Option<String> = None;
     let mut upload_id_marker: Option<String> = None;
@@ -52,10 +57,7 @@ async fn cleanup_stale_multipart_uploads(
         let resp = req.send().await?;
 
         for upload in resp.uploads() {
-            let is_stale = upload
-                .initiated()
-                .map(|t| t < cutoff)
-                .unwrap_or(false);
+            let is_stale = upload.initiated().map(|t| t < cutoff).unwrap_or(false);
 
             if is_stale {
                 let key = upload.key().unwrap_or_default();

@@ -3,8 +3,10 @@
 > 本文档梳理了前端所有页面所需的后端接口，按**优先级**排列。
 > 后端开发请优先实现 P0 级接口，确保核心流程跑通后，再按优先级逐步实现其他接口。
 >
-> **前置文档：** 请先阅读 `docs/backend-api-guide.md`（响应格式、Token 机制、分页规范等基础约定）
-> 和 `docs/frontend-adaptation-guide.md`（错误响应 ProblemDetails 格式说明）。
+> **前置文档：** 请先阅读 `doc/backend-api-guide.md`（响应格式、Token 机制、分页规范等基础约定）
+> 和 `doc/frontend-adaptation-guide.md`（错误响应 ProblemDetails 格式说明）。
+
+> **范围说明（2026-03-13）：** 本期不开发：部门/岗位、文章/分类、留言墙/评论。
 
 ---
 
@@ -17,9 +19,8 @@
 | **P1** | 用户管理 | 3 | 用户列表、新增、编辑、删除 |
 | **P1** | 角色管理 | 5 | 角色 CRUD + 权限分配 |
 | **P1** | 菜单管理 | 3 | 菜单 CRUD（后端权限模式） |
-| **P2** | 文章 | 5 | 文章 CRUD + 分类列表 |
-| **P2** | 文件上传 | 1 | 通用文件上传 |
-| **P3** | 留言 | 2 | 留言列表 + 评论 |
+| **P2** | 系统参数配置 | 6 | 参数 CRUD + 按 key 获取 + 刷新缓存（可选） |
+| **P3** | 定时任务 | 5 | 任务列表/启停/手动触发 + 运行记录 |
 
 ---
 
@@ -34,7 +35,7 @@
 | 路径 | `POST /api/auth/login` |
 | 需要 Token | 否 |
 | 前端源码 | `src/api/auth.ts` → `fetchLogin()` |
-| 状态 | **已定义，待后端实现** |
+| 状态 | **已实现** |
 
 **请求参数：**
 
@@ -69,7 +70,7 @@
 | 路径 | `GET /api/user/info` |
 | 需要 Token | **是** |
 | 前端源码 | `src/api/auth.ts` → `fetchGetUserInfo()` |
-| 状态 | **已定义，待后端实现** |
+| 状态 | **已实现** |
 
 **响应数据：**
 
@@ -142,7 +143,7 @@ interface RegisterParams {
 | 路径 | `GET /api/v3/system/menus` |
 | 需要 Token | **是** |
 | 前端源码 | `src/api/system-manage.ts` → `fetchGetMenuList()` |
-| 状态 | **已定义，待后端实现** |
+| 状态 | **已实现** |
 
 > 详细说明见 `backend-api-guide.md` 5.3 节。仅当 `VITE_ACCESS_MODE = backend` 时前端才调用。
 
@@ -159,7 +160,7 @@ interface RegisterParams {
 | 路径 | `GET /api/user/list` |
 | 需要 Token | **是** |
 | 前端源码 | `src/api/system-manage.ts` → `fetchGetUserList()` |
-| 状态 | **已定义，待后端实现** |
+| 状态 | **已实现** |
 
 > 详细说明见 `backend-api-guide.md` 5.4 节。
 
@@ -276,7 +277,7 @@ interface CreateUserParams {
 | 路径 | `GET /api/role/list` |
 | 需要 Token | **是** |
 | 前端源码 | `src/api/system-manage.ts` → `fetchGetRoleList()` |
-| 状态 | **已定义，待后端实现** |
+| 状态 | **已实现** |
 
 > 详细说明见 `backend-api-guide.md` 5.5 节。
 
@@ -305,7 +306,7 @@ interface CreateRoleParams {
 {
   "roleName": "编辑者",
   "roleCode": "R_EDITOR",
-  "description": "拥有文章编辑权限",
+  "description": "拥有系统管理权限",
   "enabled": true
 }
 ```
@@ -530,91 +531,44 @@ interface CreateMenuParams {
 
 ---
 
-## P2 — 文章模块
+## P2 — 系统参数配置
 
-> 文章模块当前使用外部 JSON 文件和 Mock 数据。需要后端实现完整的文章 CRUD。
+> 用于“系统参数配置”功能：集中管理 key/value 配置（开关、阈值、业务常量等）。
+> 建议后端做两层：DB 持久化 + 缓存（可选），并提供刷新接口。
 
-### 18. 获取文章列表 (NEW)
+### 18. 参数列表（分页）(NEW)
 
 | 项目 | 说明 |
 |------|------|
-| 路径 | `GET /api/article/list` |
+| 路径 | `GET /api/system/config/list` |
 | 需要 Token | **是** |
-| 前端源码 | `src/views/article/list/index.vue` 第 135 行（当前为 TODO） |
+| 前端源码 | —（新页面，待补充） |
+| 状态 | **规划中** |
 
 **请求参数（Query String）：**
 
 ```typescript
-interface ArticleListParams {
+interface ConfigQueryParams {
   current?: number       // 页码（默认 1）
-  size?: number          // 每页条数（默认 40）
-  searchVal?: string     // 标题搜索关键词
-  year?: string          // 年份筛选（如 "2024"，空字符串表示全部）
+  size?: number          // 每页条数（默认 20）
+  configName?: string    // 参数名称（模糊）
+  configKey?: string     // 参数 key（模糊）
+  enabled?: boolean      // 是否启用
 }
-```
-
-```
-GET /api/article/list?current=1&size=40&searchVal=Vue&year=2024
 ```
 
 **响应数据：**
 
 ```typescript
-interface ArticleListItem {
-  id: number              // 文章 ID
-  title: string           // 文章标题
-  home_img: string        // 封面图 URL
-  type_name: string       // 分类名称
-  blog_class: string      // 分类 ID
-  create_time: string     // 创建时间（YYYY-MM-DD HH:mm:ss）
-  count: number           // 阅读量
-}
-```
-
-```json
-{
-  "code": 200,
-  "msg": "获取成功",
-  "data": {
-    "records": [
-      {
-        "id": 1,
-        "title": "Vue 3 组合式 API 实践",
-        "home_img": "https://example.com/cover.jpg",
-        "type_name": "前端",
-        "blog_class": "1",
-        "create_time": "2024-06-15 10:30:00",
-        "count": 128
-      }
-    ],
-    "current": 1,
-    "size": 40,
-    "total": 25
-  }
-}
-```
-
----
-
-### 19. 获取文章详情 (NEW)
-
-| 项目 | 说明 |
-|------|------|
-| 路径 | `GET /api/article/{id}` |
-| 需要 Token | **是** |
-| 前端源码 | `src/views/article/detail/index.vue` + `src/views/article/publish/index.vue`（编辑模式） |
-
-**响应数据：**
-
-```typescript
-interface ArticleDetail {
+interface ConfigItem {
   id: number
-  title: string           // 文章标题
-  blog_class: string      // 分类 ID
-  html_content: string    // 文章 HTML 内容（富文本）
-  cover?: string          // 封面图 URL
-  visible?: boolean       // 是否可见
-  create_time: string     // 创建时间
+  configName: string
+  configKey: string
+  configValue: string
+  remark?: string
+  enabled: boolean
+  isSystem: boolean
+  createTime: string
 }
 ```
 
@@ -623,205 +577,244 @@ interface ArticleDetail {
   "code": 200,
   "msg": "获取成功",
   "data": {
-    "id": 1,
-    "title": "Vue 3 组合式 API 实践",
-    "blog_class": "1",
-    "html_content": "<h2>前言</h2><p>...</p>",
-    "cover": "https://example.com/cover.jpg",
-    "visible": true,
-    "create_time": "2024-06-15 10:30:00"
+    "records": [],
+    "current": 1,
+    "size": 20,
+    "total": 0
   }
 }
 ```
 
 ---
 
-### 20. 发布文章 (NEW)
+### 19. 新增参数 (NEW)
 
 | 项目 | 说明 |
 |------|------|
-| 路径 | `POST /api/article` |
+| 路径 | `POST /api/system/config` |
 | 需要 Token | **是** |
-| 前端源码 | `src/views/article/publish/index.vue` 第 234 行（当前为 TODO） |
+| 前端源码 | —（新页面，待补充） |
+| 状态 | **规划中** |
 
 **请求参数：**
 
 ```json
 {
-  "title": "Vue 3 组合式 API 实践",
-  "type": 1,
-  "content": "<h2>前言</h2><p>...</p>",
-  "cover": "https://example.com/cover.jpg",
-  "visible": true
+  "configName": "登录失败锁定阈值",
+  "configKey": "auth.login.fail.lockThreshold",
+  "configValue": "10",
+  "remark": "连续失败次数达到阈值触发锁定",
+  "enabled": true
 }
 ```
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|:----:|------|
-| `title` | string | 是 | 文章标题（最多 100 字符） |
-| `type` | number | 是 | 文章分类 ID |
-| `content` | string | 是 | 文章 HTML 内容（富文本编辑器输出） |
-| `cover` | string | 是 | 封面图 URL（通过上传接口获得） |
-| `visible` | boolean | 否 | 是否可见（默认 true） |
 
 **响应数据：**
 
 ```json
 {
   "code": 200,
-  "msg": "文章发布成功",
+  "msg": "新增成功",
   "data": null
-}
-```
-
----
-
-### 21. 编辑文章 (NEW)
-
-| 项目 | 说明 |
-|------|------|
-| 路径 | `PUT /api/article/{id}` |
-| 需要 Token | **是** |
-| 前端源码 | `src/views/article/publish/index.vue` 第 264 行（当前为 TODO） |
-
-**请求参数：** 同发布文章，`id` 通过 URL 路径传递。
-
----
-
-### 22. 获取文章分类列表 (NEW)
-
-| 项目 | 说明 |
-|------|------|
-| 路径 | `GET /api/article/types` |
-| 需要 Token | **是** |
-| 前端源码 | `src/views/article/publish/index.vue` 第 156 行（当前使用外部 JSON） |
-
-**响应数据：**
-
-```typescript
-interface ArticleType {
-  id: number       // 分类 ID
-  name: string     // 分类名称
-}
-```
-
-```json
-{
-  "code": 200,
-  "msg": "获取成功",
-  "data": [
-    { "id": 1, "name": "前端" },
-    { "id": 2, "name": "后端" },
-    { "id": 3, "name": "设计" }
-  ]
-}
-```
-
-> 注意：此接口返回的不是分页数据，而是全量列表（用于下拉选择）。
-
----
-
-### 23. 通用文件上传 (NEW)
-
-| 项目 | 说明 |
-|------|------|
-| 路径 | `POST /api/common/upload` |
-| Content-Type | `multipart/form-data`（浏览器自动设置） |
-| 需要 Token | **是** |
-| 前端源码 | `src/views/article/publish/index.vue` 第 116 行 |
-
-**请求参数：**
-
-- `file`: 上传的文件（FormData 字段名）
-
-**响应数据：**
-
-```json
-{
-  "code": 200,
-  "msg": "上传成功",
-  "data": {
-    "url": "https://example.com/uploads/2024/06/cover.jpg"
-  }
 }
 ```
 
 **后端注意事项：**
-- 前端限制：仅允许图片文件，大小不超过 2MB
-- 返回的 `url` 需要是可直接访问的完整 URL
-- 建议支持 jpg、png、gif、webp 格式
+- `configKey` 全局唯一，重复时返回 `409 Conflict` ProblemDetails
+- `isSystem=true` 的参数建议禁止删除（是否允许修改 key/name 需业务约束）
 
 ---
 
-## P3 — 留言模块
-
-> 留言墙页面当前完全使用 Mock 数据，优先级较低。
-
-### 24. 获取留言列表 (NEW)
+### 20. 编辑参数 (NEW)
 
 | 项目 | 说明 |
 |------|------|
-| 路径 | `GET /api/comment/list` |
+| 路径 | `PUT /api/system/config/{id}` |
 | 需要 Token | **是** |
-| 前端源码 | `src/views/article/comment/index.vue`（当前使用 `@/mock/temp/commentList`） |
+| 前端源码 | —（新页面，待补充） |
+| 状态 | **规划中** |
+
+**请求参数：** 同新增参数，`id` 通过 URL 路径传递。
+
+---
+
+### 21. 删除参数 (NEW)
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `DELETE /api/system/config/{id}` |
+| 需要 Token | **是** |
+| 前端源码 | —（新页面，待补充） |
+| 状态 | **规划中** |
+
+**后端注意事项：**
+- `isSystem=true` 禁止删除
+- 删除前可选：检查是否被关键业务依赖（做成 warning/二次确认）
+
+---
+
+### 22. 按 key 获取参数值（供业务读取）(NEW)
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `GET /api/system/config/by-key/{configKey}` |
+| 需要 Token | **是**（建议：仅管理员/内部服务可读） |
+| 状态 | **规划中** |
 
 **响应数据：**
-
-```typescript
-interface CommentItem {
-  id: number
-  date: string           // 留言日期
-  content: string        // 留言内容
-  collection: number     // 收藏数
-  comment: number        // 评论数
-  userName: string       // 留言人昵称
-}
-```
 
 ```json
 {
   "code": 200,
   "msg": "获取成功",
-  "data": [
-    {
-      "id": 1,
-      "date": "2024-09-03",
-      "content": "加油！学好Node 自己写个小Demo",
-      "collection": 5,
-      "comment": 8,
-      "userName": "匿名"
-    }
-  ]
+  "data": {
+    "configKey": "auth.login.fail.lockThreshold",
+    "configValue": "10"
+  }
 }
 ```
 
 ---
 
-### 25. 发表留言 (NEW)
+### 23. 刷新参数缓存（可选）(NEW)
 
 | 项目 | 说明 |
 |------|------|
-| 路径 | `POST /api/comment` |
+| 路径 | `POST /api/system/config/refresh` |
 | 需要 Token | **是** |
-| 前端源码 | `src/components/business/comment-widget/index.vue` |
+| 状态 | **规划中** |
+
+> 用于 DB 更新后让应用立即加载最新参数（如实现了内存/Redis 缓存）。
+
+---
+
+## P3 — 定时任务管理 / 运行记录
+
+> 本项目当前定时任务以代码内 `#[cron]` 定义为主（如 S3 分片清理）。
+> 因此建议分两阶段：
+> - **阶段 A（推荐先做）**：管理“已注册任务”（列表/启停/手动触发/运行记录）
+> - **阶段 B（可选）**：支持“可配置任务”（UI 新增/修改/删除），需要额外决策 handler 机制与安全边界
+
+### 24. 任务列表（分页）(NEW)
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `GET /api/job/list` |
+| 需要 Token | **是** |
+| 前端源码 | —（新页面，待补充） |
+| 状态 | **规划中** |
+
+**请求参数（Query String）：**
+
+```typescript
+interface JobQueryParams {
+  current?: number
+  size?: number
+  jobName?: string
+  enabled?: boolean
+}
+```
+
+**响应数据（示例字段）：**
+
+```typescript
+interface JobItem {
+  id: number
+  jobName: string
+  cron: string
+  enabled: boolean
+  lastRunTime?: string
+  nextRunTime?: string
+}
+```
+
+---
+
+### 25. 启用/停用任务 (NEW)
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `PUT /api/job/{id}/enabled` |
+| 需要 Token | **是** |
+| 前端源码 | —（新页面，待补充） |
+| 状态 | **规划中** |
 
 **请求参数：**
 
 ```json
 {
-  "content": "很棒的项目！"
+  "enabled": false
 }
 ```
+
+---
+
+### 26. 手动触发一次 (NEW)
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `POST /api/job/{id}/run` |
+| 需要 Token | **是** |
+| 前端源码 | —（新页面，待补充） |
+| 状态 | **规划中** |
 
 **响应数据：**
 
 ```json
 {
   "code": 200,
-  "msg": "留言成功",
+  "msg": "已触发执行",
   "data": null
 }
 ```
+
+---
+
+### 27. 任务运行记录列表（分页）(NEW)
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `GET /api/job/log/list` |
+| 需要 Token | **是** |
+| 前端源码 | —（新页面，待补充） |
+| 状态 | **规划中** |
+
+**请求参数（Query String）：**
+
+```typescript
+interface JobLogQueryParams {
+  current?: number
+  size?: number
+  jobId?: number
+  status?: 'success' | 'failed'
+  startTime?: string
+  endTime?: string
+}
+```
+
+---
+
+### 28. 任务运行记录详情 (NEW)
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `GET /api/job/log/{id}` |
+| 需要 Token | **是** |
+| 状态 | **规划中** |
+
+---
+
+## 基础能力（已完成）
+
+### 通用文件上传（已实现）
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `POST /api/file/upload` |
+| Content-Type | `multipart/form-data`（浏览器自动设置） |
+| 需要 Token | **是** |
+| 状态 | **已实现** |
+
+> 如需前端直传，可使用 presigned 系列接口（`/api/file/presign/upload` 等）。
 
 ---
 
@@ -833,7 +826,6 @@ interface CommentItem {
 |------|---------|------|
 | `POST /api/auth/forget-password` | `src/views/auth/forget-password/index.vue` | 忘记密码，当前页面仅有用户名输入框，无验证码或邮箱验证流程。**建议确认重置密码的验证方式后再实现。** |
 | `POST /api/auth/refresh` | — | Token 刷新接口。前端已预留 `refreshToken` 字段但未实现自动刷新逻辑。见 `backend-api-guide.md` 7.3 节。 |
-| `DELETE /api/article/{id}` | — | 删除文章。前端文章列表页面暂无删除按钮，但后续可能需要。 |
 
 ---
 
@@ -843,14 +835,14 @@ interface CommentItem {
 
 | 表名 | 说明 | 关键字段 |
 |------|------|---------|
-| `user` | 用户表 | id, userName, password, phone, gender, email, avatar, status, createTime |
-| `role` | 角色表 | roleId, roleName, roleCode, description, enabled, createTime |
-| `user_role` | 用户-角色关联表 | userId, roleId |
-| `menu` | 菜单表 | id, parentId, name, path, component, icon, sort, type(menu/button), enabled, ... |
-| `role_menu` | 角色-菜单关联表 | roleId, menuName |
-| `article` | 文章表 | id, title, typeId, content, cover, visible, viewCount, createTime |
-| `article_type` | 文章分类表 | id, name |
-| `comment` | 留言表 | id, userId, content, collectionCount, commentCount, createTime |
+| `sys_user` | 用户表 | id, userName, password, phone, gender, email, avatar, status, createTime |
+| `sys_role` | 角色表 | id, roleName, roleCode, description, enabled, createTime |
+| `sys_user_role` | 用户-角色关联表 | id, userId, roleId |
+| `sys_menu` | 菜单表 | id, parentId, name, path, component, icon, sort, menuType(menu/button), enabled, ... |
+| `sys_role_menu` | 角色-菜单关联表 | id, roleId, menuId |
+| `sys_config` | 系统参数配置表 | id, configName, configKey, configValue, enabled, isSystem, remark, createTime, updateTime |
+| `sys_job` | 定时任务表 | id, jobName, cron, handler, params, enabled, remark, createTime, updateTime |
+| `sys_job_log` | 任务运行记录表 | id, jobId, startTime, endTime, status, durationMs, error, createTime |
 
 ---
 
@@ -869,11 +861,11 @@ interface CommentItem {
 第 3 步：实现 P1 系统管理接口
          用户 CRUD → 角色 CRUD → 角色权限分配 → 菜单 CRUD
          ↓
-第 4 步：实现 P2 文章模块
-         文件上传 → 文章分类 → 文章 CRUD
+第 4 步：实现 P2 系统参数配置
+         参数列表 → 新增/编辑/删除 → 按 key 获取/刷新缓存
          ↓
-第 5 步：实现 P3 留言模块
-         留言列表 → 发表留言
+第 5 步：实现 P3 定时任务管理 / 运行记录
+         任务列表/启停/手动触发 → 运行记录列表/详情
 ```
 
 ---
@@ -882,34 +874,37 @@ interface CommentItem {
 
 | # | 方法 | 路径 | 说明 | 优先级 | 状态 |
 |:-:|------|------|------|:------:|:----:|
-| 1 | POST | `/api/auth/login` | 用户登录 | P0 | 已定义 |
-| 2 | GET | `/api/user/info` | 获取用户信息 | P0 | 已定义 |
-| 3 | POST | `/api/auth/register` | 用户注册 | P0 | **新增** |
-| 4 | GET | `/api/v3/system/menus` | 获取菜单列表 | P0 | 已定义 |
-| 5 | GET | `/api/user/list` | 用户列表（分页） | P1 | 已定义 |
-| 6 | POST | `/api/user` | 新增用户 | P1 | **新增** |
-| 7 | PUT | `/api/user/{id}` | 编辑用户 | P1 | **新增** |
-| 8 | DELETE | `/api/user/{id}` | 删除用户 | P1 | **新增** |
-| 9 | GET | `/api/role/list` | 角色列表（分页） | P1 | 已定义 |
-| 10 | POST | `/api/role` | 新增角色 | P1 | **新增** |
-| 11 | PUT | `/api/role/{roleId}` | 编辑角色 | P1 | **新增** |
-| 12 | DELETE | `/api/role/{roleId}` | 删除角色 | P1 | **新增** |
-| 13 | GET | `/api/role/{roleId}/permissions` | 获取角色权限 | P1 | **新增** |
-| 14 | PUT | `/api/role/{roleId}/permissions` | 保存角色权限 | P1 | **新增** |
-| 15 | POST | `/api/system/menu` | 新增菜单 | P1 | **新增** |
-| 16 | PUT | `/api/system/menu/{id}` | 编辑菜单 | P1 | **新增** |
-| 17 | DELETE | `/api/system/menu/{id}` | 删除菜单 | P1 | **新增** |
-| 18 | GET | `/api/article/list` | 文章列表（分页） | P2 | **新增** |
-| 19 | GET | `/api/article/{id}` | 文章详情 | P2 | **新增** |
-| 20 | POST | `/api/article` | 发布文章 | P2 | **新增** |
-| 21 | PUT | `/api/article/{id}` | 编辑文章 | P2 | **新增** |
-| 22 | GET | `/api/article/types` | 文章分类列表 | P2 | **新增** |
-| 23 | POST | `/api/common/upload` | 文件上传 | P2 | **新增** |
-| 24 | GET | `/api/comment/list` | 留言列表 | P3 | **新增** |
-| 25 | POST | `/api/comment` | 发表留言 | P3 | **新增** |
+| 1 | POST | `/api/auth/login` | 用户登录 | P0 | 已实现 |
+| 2 | GET | `/api/user/info` | 获取用户信息 | P0 | 已实现 |
+| 3 | POST | `/api/auth/register` | 用户注册 | P0 | 待实现 |
+| 4 | GET | `/api/v3/system/menus` | 获取菜单列表 | P0 | 已实现 |
+| 5 | GET | `/api/user/list` | 用户列表（分页） | P1 | 已实现 |
+| 6 | POST | `/api/user` | 新增用户 | P1 | 已实现 |
+| 7 | PUT | `/api/user/{id}` | 编辑用户 | P1 | 已实现 |
+| 8 | DELETE | `/api/user/{id}` | 删除用户 | P1 | 已实现 |
+| 9 | GET | `/api/role/list` | 角色列表（分页） | P1 | 已实现 |
+| 10 | POST | `/api/role` | 新增角色 | P1 | 已实现 |
+| 11 | PUT | `/api/role/{roleId}` | 编辑角色 | P1 | 已实现 |
+| 12 | DELETE | `/api/role/{roleId}` | 删除角色 | P1 | 已实现 |
+| 13 | GET | `/api/role/{roleId}/permissions` | 获取角色权限 | P1 | 已实现 |
+| 14 | PUT | `/api/role/{roleId}/permissions` | 保存角色权限 | P1 | 已实现 |
+| 15 | POST | `/api/system/menu` | 新增菜单 | P1 | 已实现 |
+| 16 | PUT | `/api/system/menu/{id}` | 编辑菜单 | P1 | 已实现 |
+| 17 | DELETE | `/api/system/menu/{id}` | 删除菜单 | P1 | 已实现 |
+| 18 | GET | `/api/system/config/list` | 系统参数列表（分页） | P2 | 规划中 |
+| 19 | POST | `/api/system/config` | 新增系统参数 | P2 | 规划中 |
+| 20 | PUT | `/api/system/config/{id}` | 编辑系统参数 | P2 | 规划中 |
+| 21 | DELETE | `/api/system/config/{id}` | 删除系统参数 | P2 | 规划中 |
+| 22 | GET | `/api/system/config/by-key/{configKey}` | 按 key 获取参数值 | P2 | 规划中 |
+| 23 | POST | `/api/system/config/refresh` | 刷新参数缓存（可选） | P2 | 规划中 |
+| 24 | GET | `/api/job/list` | 定时任务列表（分页） | P3 | 规划中 |
+| 25 | PUT | `/api/job/{id}/enabled` | 启用/停用定时任务 | P3 | 规划中 |
+| 26 | POST | `/api/job/{id}/run` | 手动触发一次 | P3 | 规划中 |
+| 27 | GET | `/api/job/log/list` | 任务运行记录列表 | P3 | 规划中 |
+| 28 | GET | `/api/job/log/{id}` | 任务运行记录详情 | P3 | 规划中 |
 
 ---
 
-*文档版本：v1.0*
-*更新日期：2026-02-26*
+*文档版本：v1.1*
+*更新日期：2026-03-13*
 *适用前端版本：art-design-pro v3.0.1*

@@ -4,7 +4,9 @@ members = [
     "crates/model",
     "crates/common",
     "crates/macros",
+    "crates/summer-domain",
     "crates/summer-auth",
+    "crates/summer-mcp",
 ]
 resolver = "2"
 
@@ -26,12 +28,14 @@ flume = "0.12"
 futures = "0.3.32"
 garde = "0.22.1"
 kanal = "0.1"
-ipnetwork = "0.21.1"
+ipnetwork = "0.20.0"
 macros = { path = "crates/macros" }
 mime = "0.3.17"
 mime_guess = "2"
 md-5 = "0.10"
 model = { path = "crates/model" }
+summer-mcp = { path = "crates/summer-mcp" }
+summer-domain = { path = "crates/summer-domain" }
 parking_lot = "0.12.5"
 password-hash = "0.5"
 rand = "0.10.0"
@@ -51,11 +55,13 @@ summer = "0.5.0"
 summer-job = "0.5.0"
 summer-mail = "0.5.0"
 summer-auth = { path = "crates/summer-auth" }
+summer-sea-orm = { path = "/Volumes/990pro/code/rust/spring-rs/summer-sea-orm", default-features = false }
 summer-macros = "0.5.0"
 summer-redis = "0.5.0"
 summer-web = "0.5.0"
 thiserror = "2.0.18"
 tokio = "1.49.0"
+tokio-util = "0.7"
 tower = "0.5.3"
 tower-http = "0.6.8"
 tracing = "0.1.41"
@@ -68,3 +74,11 @@ ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master
 #ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
 indexmap = "2.13.0"
 jsonwebtoken = "9"
+rmcp = { path = "/Volumes/990pro/code/rust/rust-mcp/crates/rmcp" }
+[patch.crates-io]
+summer = { path = "/Volumes/990pro/code/rust/spring-rs/summer" }
+summer-macros = { path = "/Volumes/990pro/code/rust/spring-rs/summer-macros" }
+summer-web = { path = "/Volumes/990pro/code/rust/spring-rs/summer-web" }
+summer-job = { path = "/Volumes/990pro/code/rust/spring-rs/summer-job" }
+summer-mail = { path = "/Volumes/990pro/code/rust/spring-rs/summer-mail" }
+summer-redis = { path = "/Volumes/990pro/code/rust/spring-rs/summer-redis" }

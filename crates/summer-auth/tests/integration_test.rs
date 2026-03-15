@@ -4,7 +4,7 @@ use summer_auth::config::AuthConfig;
 use summer_auth::error::AuthError;
 use summer_auth::online::OnlineUserQuery;
 use summer_auth::qrcode::QrCodeState;
-use summer_auth::session::{permission_matches, SessionManager};
+use summer_auth::session::{SessionManager, permission_matches};
 use summer_auth::storage::memory::MemoryStorage;
 use summer_auth::user_type::{DeviceType, LoginId, UserType};
 use summer_auth::{AdminProfile, BusinessProfile, CustomerProfile, UserProfile};
@@ -39,7 +39,10 @@ fn admin_login_params(user_id: i64) -> summer_auth::session::LoginParams {
             user_name: "test_user".to_string(),
             nick_name: "Test User".to_string(),
             roles: vec!["admin".to_string()],
-            permissions: vec!["system:user:list".to_string(), "system:user:add".to_string()],
+            permissions: vec![
+                "system:user:list".to_string(),
+                "system:user:add".to_string(),
+            ],
         }),
     }
 }
@@ -76,7 +79,10 @@ fn admin_profile() -> UserProfile {
         user_name: "test_user".to_string(),
         nick_name: "Test User".to_string(),
         roles: vec!["admin".to_string()],
-        permissions: vec!["system:user:list".to_string(), "system:user:add".to_string()],
+        permissions: vec![
+            "system:user:list".to_string(),
+            "system:user:add".to_string(),
+        ],
     })
 }
 
@@ -202,15 +208,17 @@ async fn max_devices_evicts_oldest() {
     assert_eq!(device_list.len(), 3);
 
     // 旧 refresh token（Web）不能使用
-    assert!(mgr
-        .refresh(&tokens[0].refresh_token, &admin_profile())
-        .await
-        .is_err());
+    assert!(
+        mgr.refresh(&tokens[0].refresh_token, &admin_profile())
+            .await
+            .is_err()
+    );
     // 新 refresh token（后 3 个）可以使用
-    assert!(mgr
-        .refresh(&tokens[3].refresh_token, &admin_profile())
-        .await
-        .is_ok());
+    assert!(
+        mgr.refresh(&tokens[3].refresh_token, &admin_profile())
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -228,15 +236,17 @@ async fn same_device_replaces_old_session() {
     assert_eq!(devices.len(), 1);
 
     // 旧 refresh token 不能使用（rid 已被删除）
-    assert!(mgr
-        .refresh(&pair1.refresh_token, &admin_profile())
-        .await
-        .is_err());
+    assert!(
+        mgr.refresh(&pair1.refresh_token, &admin_profile())
+            .await
+            .is_err()
+    );
     // 新 refresh token 可以使用
-    assert!(mgr
-        .refresh(&pair2.refresh_token, &admin_profile())
-        .await
-        .is_ok());
+    assert!(
+        mgr.refresh(&pair2.refresh_token, &admin_profile())
+            .await
+            .is_ok()
+    );
 }
 
 // ── 不允许并发登录 ──
@@ -256,10 +266,11 @@ async fn no_concurrent_login_clears_all_devices() {
     let _pair2 = mgr.login(p2).await.unwrap();
 
     // Web 的 refresh token 应该失效
-    assert!(mgr
-        .refresh(&pair1.refresh_token, &admin_profile())
-        .await
-        .is_err());
+    assert!(
+        mgr.refresh(&pair1.refresh_token, &admin_profile())
+            .await
+            .is_err()
+    );
 
     // 只有 Android 设备在线
     let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
@@ -285,20 +296,18 @@ async fn refresh_token_works() {
     // 新 access token 有效
     assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
     // 旧 refresh token 不能再次使用（rid 已删除）
-    assert!(mgr
-        .refresh(&pair.refresh_token, &admin_profile())
-        .await
-        .is_err());
+    assert!(
+        mgr.refresh(&pair.refresh_token, &admin_profile())
+            .await
+            .is_err()
+    );
     // 新 refresh token 可以继续刷新
     let third_pair = mgr
         .refresh(&new_pair.refresh_token, &admin_profile())
         .await
         .unwrap();
     assert_ne!(third_pair.refresh_token, new_pair.refresh_token);
-    assert!(mgr
-        .validate_token(&third_pair.access_token)
-        .await
-        .is_ok());
+    assert!(mgr.validate_token(&third_pair.access_token).await.is_ok());
 }
 
 #[tokio::test]
@@ -324,15 +333,14 @@ async fn refresh_with_updated_profile() {
         .unwrap();
 
     // 新 token 包含更新后的信息
-    let validated = mgr
-        .validate_token(&new_pair.access_token)
-        .await
-        .unwrap();
+    let validated = mgr.validate_token(&new_pair.access_token).await.unwrap();
     assert_eq!(validated.nick_name, "Updated Name");
     assert_eq!(validated.roles, vec!["admin", "editor"]);
-    assert!(validated
-        .permissions
-        .contains(&"system:user:delete".to_string()));
+    assert!(
+        validated
+            .permissions
+            .contains(&"system:user:delete".to_string())
+    );
 }
 
 #[tokio::test]
@@ -415,10 +423,7 @@ async fn force_refresh_requires_token_refresh() {
         .refresh(&pair.refresh_token, &admin_profile())
         .await
         .unwrap();
-    assert!(mgr
-        .validate_token(&new_pair.access_token)
-        .await
-        .is_ok());
+    assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
 }
 
 #[tokio::test]
@@ -560,10 +565,7 @@ async fn qr_code_full_flow() {
     match state {
         QrCodeState::Confirmed { token_pair } => {
             assert!(!token_pair.access_token.is_empty());
-            assert!(mgr
-                .validate_token(&token_pair.access_token)
-                .await
-                .is_ok());
+            assert!(mgr.validate_token(&token_pair.access_token).await.is_ok());
         }
         _ => panic!("expected Confirmed state"),
     }
@@ -615,10 +617,7 @@ use summer_auth::bitmap::PermissionMap;
 async fn memory_storage_purge_expired() {
     let storage = MemoryStorage::new();
 
-    storage
-        .set_string("test:expire", "value", 1)
-        .await
-        .unwrap();
+    storage.set_string("test:expire", "value", 1).await.unwrap();
     assert!(storage.get_string("test:expire").await.unwrap().is_some());
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -648,10 +647,7 @@ async fn memory_storage_keys_by_prefix() {
         .unwrap();
     assert_eq!(keys.len(), 2);
 
-    let keys = storage
-        .keys_by_prefix("auth:device:biz:")
-        .await
-        .unwrap();
+    let keys = storage.keys_by_prefix("auth:device:biz:").await.unwrap();
     assert_eq!(keys.len(), 1);
 }
 
@@ -694,22 +690,21 @@ async fn different_user_types_isolated() {
 
     assert!(mgr.validate_token(&admin_pair.access_token).await.is_ok());
     assert!(mgr.validate_token(&biz_pair.access_token).await.is_ok());
-    assert!(mgr
-        .validate_token(&customer_pair.access_token)
-        .await
-        .is_ok());
+    assert!(
+        mgr.validate_token(&customer_pair.access_token)
+            .await
+            .is_ok()
+    );
 
     // 登出 admin 不影响 biz 和 customer
     mgr.logout_all(&LoginId::admin(1)).await.unwrap();
-    assert!(mgr
-        .validate_token(&admin_pair.access_token)
-        .await
-        .is_err());
+    assert!(mgr.validate_token(&admin_pair.access_token).await.is_err());
     assert!(mgr.validate_token(&biz_pair.access_token).await.is_ok());
-    assert!(mgr
-        .validate_token(&customer_pair.access_token)
-        .await
-        .is_ok());
+    assert!(
+        mgr.validate_token(&customer_pair.access_token)
+            .await
+            .is_ok()
+    );
 }
 
 // ── 在线用户：混合类型 ──
@@ -771,10 +766,7 @@ fn permission_wildcard_middle() {
 
 #[test]
 fn permission_exact_match() {
-    assert!(permission_matches(
-        "system:user:list",
-        "system:user:list"
-    ));
+    assert!(permission_matches("system:user:list", "system:user:list"));
     assert!(!permission_matches("system:user:list", "system:user:add"));
 }
 
@@ -813,7 +805,10 @@ async fn login_with_bitmap() {
     // 权限应该正确解码
     let mut perms = validated.permissions.clone();
     perms.sort();
-    let mut expected = vec!["system:user:list".to_string(), "system:user:add".to_string()];
+    let mut expected = vec![
+        "system:user:list".to_string(),
+        "system:user:add".to_string(),
+    ];
     expected.sort();
     assert_eq!(perms, expected);
 }
@@ -827,8 +822,16 @@ async fn validate_decodes_bitmap() {
     let validated = mgr.validate_token(&pair.access_token).await.unwrap();
 
     // 验证 permissions 被正确解码回字符串
-    assert!(validated.permissions.contains(&"system:user:list".to_string()));
-    assert!(validated.permissions.contains(&"system:user:add".to_string()));
+    assert!(
+        validated
+            .permissions
+            .contains(&"system:user:list".to_string())
+    );
+    assert!(
+        validated
+            .permissions
+            .contains(&"system:user:add".to_string())
+    );
     assert_eq!(validated.permissions.len(), 2);
 }
 
@@ -866,13 +869,19 @@ async fn refresh_with_bitmap() {
         ],
     });
 
-    let new_pair = mgr.refresh(&pair.refresh_token, &updated_profile).await.unwrap();
+    let new_pair = mgr
+        .refresh(&pair.refresh_token, &updated_profile)
+        .await
+        .unwrap();
     let validated = mgr.validate_token(&new_pair.access_token).await.unwrap();
 
     // 刷新后权限应包含新增的 role:list
     let mut perms = validated.permissions;
     perms.sort();
-    assert_eq!(perms, vec!["system:role:list", "system:user:add", "system:user:list"]);
+    assert_eq!(
+        perms,
+        vec!["system:role:list", "system:user:add", "system:user:list"]
+    );
 }
 
 // ── Deny Key 多设备竞态修复验证 ──
@@ -913,10 +922,7 @@ async fn deny_key_multi_device_race_condition_fixed() {
         .unwrap();
 
     // 关键断言：设备 A 刷新后，新 token 应该通过验证
-    assert!(mgr
-        .validate_token(&new_pair1.access_token)
-        .await
-        .is_ok());
+    assert!(mgr.validate_token(&new_pair1.access_token).await.is_ok());
 
     // 关键断言：设备 B 的旧 token 仍然被拒（deny key 未被删除）
     assert!(matches!(
@@ -931,8 +937,5 @@ async fn deny_key_multi_device_race_condition_fixed() {
         .unwrap();
 
     // 设备 B 的新 token 也应该通过验证
-    assert!(mgr
-        .validate_token(&new_pair2.access_token)
-        .await
-        .is_ok());
+    assert!(mgr.validate_token(&new_pair2.access_token).await.is_ok());
 }

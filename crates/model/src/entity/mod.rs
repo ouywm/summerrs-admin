@@ -1,4 +1,5 @@
 pub mod biz_role;
+pub mod biz_showcase_profile;
 pub mod biz_user;
 pub mod biz_user_role;
 pub mod customer;

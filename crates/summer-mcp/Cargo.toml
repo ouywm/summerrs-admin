@@ -1,0 +1,50 @@
+[package]
+name = "summer-mcp"
+version = "0.0.1"
+edition = "2024"
+
+[features]
+standalone = [
+    "dep:clap",
+    "dep:tracing-subscriber",
+    "dep:anyhow",
+]
+
+[[bin]]
+name = "summerrs-mcp"
+path = "src/bin/main.rs"
+required-features = ["standalone"]
+
+[dependencies]
+rmcp = { workspace = true, features = [
+    "server",
+    "macros",
+    "transport-io",
+    "transport-streamable-http-server",
+    "schemars",
+] }
+sea-orm = { workspace = true, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+common = { workspace = true }
+model = { workspace = true }
+summer = { workspace = true }
+summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
+summer-domain = { workspace = true }
+summer-web = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+minijinja = "2"
+syn = { version = "2", features = ["full", "parsing"] }
+
+# standalone 模式专用
+clap = { version = "4", features = ["derive", "env"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+anyhow = { workspace = true, optional = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+sea-orm = { workspace = true, features = ["mock"] }

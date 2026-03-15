@@ -41,9 +41,9 @@ impl MemoryStorage {
     /// 手动清理所有过期条目
     pub fn purge_expired(&self) {
         let now = chrono::Local::now().timestamp();
-        self.data.write().retain(|_, entry| {
-            entry.expires_at.is_none_or(|ts| now <= ts)
-        });
+        self.data
+            .write()
+            .retain(|_, entry| entry.expires_at.is_none_or(|ts| now <= ts));
     }
 
     /// 每 N 次写操作后自动清理

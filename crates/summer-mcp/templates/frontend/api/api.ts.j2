@@ -1,0 +1,42 @@
+import request from '@/utils/http'
+
+/** 获取{{ table.subject_label }}列表 */
+export function fetchGet{{ names.api_function_base }}List(params: Api.{{ names.ts_namespace }}.{{ names.resource_pascal }}SearchParams) {
+  return request.get<Api.{{ names.ts_namespace }}.{{ names.resource_pascal }}List>({
+    url: '/api{{ paths.list }}',
+    params
+  })
+}
+
+/** 获取{{ table.subject_label }}详情 */
+export function fetchGet{{ names.api_function_base }}Detail(id: {{ primary_key.type_info.ts_input }}) {
+  return request.get<Api.{{ names.ts_namespace }}.{{ names.resource_pascal }}DetailVo>({
+    url: `/api{{ paths.base }}/${id}`
+  })
+}
+
+/** 创建{{ table.subject_label }} */
+export function fetchCreate{{ names.api_function_base }}(params: Api.{{ names.ts_namespace }}.Create{{ names.resource_pascal }}Params) {
+  return request.post<null>({
+    url: '/api{{ paths.create }}',
+    params
+  })
+}
+
+/** 更新{{ table.subject_label }} */
+export function fetchUpdate{{ names.api_function_base }}(
+  id: {{ primary_key.type_info.ts_input }},
+  params: Api.{{ names.ts_namespace }}.Update{{ names.resource_pascal }}Params
+) {
+  return request.put<null>({
+    url: `/api{{ paths.base }}/${id}`,
+    params
+  })
+}
+
+/** 删除{{ table.subject_label }} */
+export function fetchDelete{{ names.api_function_base }}(id: {{ primary_key.type_info.ts_input }}) {
+  return request.del<null>({
+    url: `/api{{ paths.base }}/${id}`
+  })
+}

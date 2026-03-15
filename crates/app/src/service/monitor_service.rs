@@ -217,10 +217,7 @@ impl CacheMonitorService {
     }
 
     /// 采样获取键类型分布
-    async fn get_key_type_distribution(
-        &self,
-        conn: &mut summer_redis::Redis,
-    ) -> Vec<KeyTypeCount> {
+    async fn get_key_type_distribution(&self, conn: &mut summer_redis::Redis) -> Vec<KeyTypeCount> {
         let mut counts: HashMap<String, u64> = HashMap::new();
         let mut cursor: u64 = 0;
         let mut sampled = 0u64;

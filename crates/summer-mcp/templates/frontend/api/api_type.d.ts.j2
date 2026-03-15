@@ -1,0 +1,60 @@
+declare namespace Api {
+  /** {{ table.subject_label }}类型 */
+  namespace {{ names.ts_namespace }} {
+    /** {{ table.subject_label }}列表 */
+    type {{ names.resource_pascal }}List = Api.Common.PaginatedResponse<{{ names.resource_pascal }}Vo>
+
+    /** {{ table.subject_label }}列表项（对应后端 {{ names.vo }}） */
+    interface {{ names.resource_pascal }}Vo {
+{% for field in read_fields %}
+{% for line in field.comment_lines %}
+      /** {{ line }} */
+{% endfor %}
+      {{ field.camel_name }}: {{ field.type_info.ts_read }}
+{% endfor %}
+    }
+
+    /** {{ table.subject_label }}详情 */
+    interface {{ names.resource_pascal }}DetailVo extends {{ names.resource_pascal }}Vo {}
+
+    /** {{ table.subject_label }}查询参数（对应后端 {{ names.query_dto }}） */
+    interface {{ names.resource_pascal }}SearchParams extends Api.Common.CommonSearchParams {
+{% for field in query_fields %}
+{% for line in field.comment_lines %}
+      /** {{ line }} */
+{% endfor %}
+      {{ field.camel_name }}?: {{ field.type_info.ts_input }}
+{% if field.type_info.value_kind == "date" or field.type_info.value_kind == "date_time" %}
+{% for line in field.comment_lines %}
+      /** {{ line }}开始 */
+{% endfor %}
+      {{ field.camel_name }}Start?: {{ field.type_info.ts_input }}
+{% for line in field.comment_lines %}
+      /** {{ line }}结束 */
+{% endfor %}
+      {{ field.camel_name }}End?: {{ field.type_info.ts_input }}
+{% endif %}
+{% endfor %}
+    }
+
+    /** 创建{{ table.subject_label }}参数（对应后端 {{ names.create_dto }}） */
+    interface Create{{ names.resource_pascal }}Params {
+{% for field in create_fields %}
+{% for line in field.comment_lines %}
+      /** {{ line }} */
+{% endfor %}
+      {{ field.camel_name }}{% if not field.create_required %}?{% endif %}: {{ field.type_info.ts_input }}
+{% endfor %}
+    }
+
+    /** 更新{{ table.subject_label }}参数（对应后端 {{ names.update_dto }}） */
+    interface Update{{ names.resource_pascal }}Params {
+{% for field in update_fields %}
+{% for line in field.comment_lines %}
+      /** {{ line }} */
+{% endfor %}
+      {{ field.camel_name }}?: {{ field.type_info.ts_input }}
+{% endfor %}
+    }
+  }
+}

@@ -1,0 +1,268 @@
+<template>
+  <div class="art-full-height">
+    <{{ page.search_component_name }}
+      v-show="showSearchBar"
+      v-model="searchForm"
+      @search="handleSearch"
+      @reset="resetSearchParams"
+    />
+
+    <ElCard
+      class="art-table-card"
+      shadow="never"
+      :style="{ 'margin-top': showSearchBar ? '12px' : '0' }"
+    >
+      <ArtTableHeader
+        v-model:columns="columnChecks"
+        v-model:showSearchBar="showSearchBar"
+        :loading="loading"
+        @refresh="refreshData"
+      >
+        <template #left>
+          <ElSpace wrap>
+            <ElButton @click="showDialog('add')" v-ripple>新增{{ table.subject_label }}</ElButton>
+          </ElSpace>
+        </template>
+      </ArtTableHeader>
+
+      <ArtTable
+        :loading="loading"
+        :data="data"
+        :columns="columns"
+        :pagination="pagination"
+        @pagination:size-change="handleSizeChange"
+        @pagination:current-change="handleCurrentChange"
+      />
+    </ElCard>
+
+    <{{ page.dialog_component_name }}
+      v-model="dialogVisible"
+      :dialog-type="dialogType"
+      :{{ page.item_prop_attr_name }}="{{ page.current_item_ref_name }}"
+      @success="refreshData"
+    />
+  </div>
+</template>
+
+<script setup lang="ts">
+  import { ButtonMoreItem } from '@/components/core/forms/art-button-more/index.vue'
+  import ArtButtonMore from '@/components/core/forms/art-button-more/index.vue'
+  import { useTable } from '@/hooks/core/useTable'
+  import {
+    {{ api.fetch_list_fn }},
+    {{ api.fetch_delete_fn }}
+  } from '{{ api.import_path }}'
+  import {{ page.search_component_name }} from './modules/{{ page.search_file_name }}'
+  import {{ page.dialog_component_name }} from './modules/{{ page.dialog_file_name }}'
+  import { ElMessageBox{% if flags.uses_table_tag %}, ElTag{% endif %}{% if flags.uses_table_image %}, ElImage{% endif %} } from 'element-plus'
+{% if flags.uses_table_dict %}
+  import { useDict, dictClassToTagType } from '@/utils/dict'
+{% endif %}
+{% if flags.uses_avatar_placeholder %}
+  import defaultAvatar from '@imgs/user/avatar.webp'
+{% endif %}
+
+  defineOptions({ name: '{{ page.component_name }}' })
+
+  type {{ page.list_item_alias }} = Api.{{ api.namespace }}.{{ api.list_item_type_name }}
+  type SearchFormModel = {
+{% for field in search_fields %}
+{% if field.search_exclude_param %}
+    {{ field.search_model_key }}?: [
+      Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_param_start }}'],
+      Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_param_end }}']
+    ] | undefined
+{% else %}
+    {{ field.search_model_key }}?: Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_model_key }}']
+{% endif %}
+{% endfor %}
+  }
+
+{% if flags.uses_table_dict %}
+  const { getDictLabel, getDictClass } = useDict()
+{% endif %}
+
+  const searchForm = ref<SearchFormModel>({
+{% for field in search_fields %}
+    {{ field.search_model_key }}: undefined,
+{% endfor %}
+  })
+
+  const showSearchBar = ref(false)
+  const dialogVisible = ref(false)
+  const dialogType = ref<'add' | 'edit'>('add')
+  const {{ page.current_item_ref_name }} = ref<{{ page.list_item_alias }} | undefined>(undefined)
+
+  const {
+    columns,
+    columnChecks,
+    data,
+    loading,
+    pagination,
+    getData,
+    searchParams,
+    resetSearchParams,
+    handleSizeChange,
+    handleCurrentChange,
+    refreshData
+  } = useTable({
+    core: {
+      apiFn: {{ api.fetch_list_fn }},
+      apiParams: {
+        page: 1,
+        size: 20
+      }{% if flags.uses_range_search %},
+      excludeParams: [
+{% for field in search_fields if field.search_exclude_param %}
+        '{{ field.search_model_key }}'{% if not loop.last %},{% endif %}
+{% endfor %}
+      ]
+{% endif %},
+      columnsFactory: () => [
+{% for field in table_fields %}
+        {
+          prop: '{{ field.camel_name }}',
+          label: '{{ field.label }}',
+{% if field.table_width %}
+          width: {{ field.table_width }},
+{% endif %}
+{% if field.table_min_width %}
+          minWidth: {{ field.table_min_width }},
+{% endif %}
+{% if field.table_sortable %}
+          sortable: true,
+{% endif %}
+{% if field.table_overflow %}
+          showOverflowTooltip: true,
+{% endif %}
+{% if field.table_display == "boolean_tag" %}
+          formatter: (row) =>
+            h(
+              ElTag,
+              { type: row.{{ field.camel_name }} ? 'success' : 'warning' },
+              () => (row.{{ field.camel_name }} ? '{{ field.bool_true_label }}' : '{{ field.bool_false_label }}')
+            )
+{% elif field.table_display == "image" %}
+          formatter: (row) => {
+            const src = row.{{ field.camel_name }}{% if field.semantic_kind == "avatar" %} || defaultAvatar{% endif %}
+            if (!src) return '-'
+            return h(ElImage, {
+              class: 'size-10 rounded-md',
+              src,
+              fit: 'cover',
+              previewSrcList: row.{{ field.camel_name }} ? [row.{{ field.camel_name }}] : undefined,
+              previewTeleported: true
+            })
+          }
+{% elif field.table_display == "link" %}
+          formatter: (row) => {
+            if (!row.{{ field.camel_name }}) return '-'
+            return h(
+              'a',
+              {
+                href: {% if field.semantic_kind == "email" %}`mailto:${row.{{ field.camel_name }}}`{% else %}row.{{ field.camel_name }}{% endif %},
+                target: '_blank',
+                rel: 'noreferrer',
+                class: 'text-primary'
+              },
+              row.{{ field.camel_name }}
+            )
+          }
+{% elif field.table_display == "dict_tag" %}
+          formatter: (row) => {
+            const label = getDictLabel('{{ field.dict_type }}', row.{{ field.camel_name }})
+            const listClass = getDictClass('{{ field.dict_type }}', row.{{ field.camel_name }})
+            const type = dictClassToTagType(listClass)
+            return h(ElTag, { type }, () => label)
+          }
+{% elif field.table_display == "local_tag" %}
+          formatter: (row) => {
+            const option = {{ field.local_options_literal }}.find((item) => item.value === row.{{ field.camel_name }})
+            if (!option) return row.{{ field.camel_name }} ?? '-'
+            return h(ElTag, { type: 'info' }, () => option.label)
+          }
+{% endif %}
+        },
+{% endfor %}
+        {
+          prop: 'operation',
+          label: '操作',
+          width: 80,
+          fixed: 'right',
+          formatter: (row) =>
+            h('div', [
+              h(ArtButtonMore, {
+                list: [
+                  {
+                    key: 'edit',
+                    label: '编辑{{ table.subject_label }}',
+                    icon: 'ri:edit-2-line'
+                  },
+                  {
+                    key: 'delete',
+                    label: '删除{{ table.subject_label }}',
+                    icon: 'ri:delete-bin-4-line',
+                    color: '#f56c6c'
+                  }
+                ],
+                onClick: (item: ButtonMoreItem) => handleMoreClick(item, row)
+              })
+            ])
+        }
+      ]
+    }
+  })
+
+  const showDialog = (type: 'add' | 'edit', row?: {{ page.list_item_alias }}) => {
+    dialogType.value = type
+    {{ page.current_item_ref_name }}.value = row
+    dialogVisible.value = true
+  }
+
+  const handleSearch = (params: SearchFormModel) => {
+    const nextParams = { ...params }
+{% for field in search_fields if field.search_exclude_param %}
+    const {{ field.search_model_key }} = nextParams.{{ field.search_model_key }}
+    delete nextParams.{{ field.search_model_key }}
+    const [{{ field.search_param_start }}, {{ field.search_param_end }}] = Array.isArray({{ field.search_model_key }})
+      ? {{ field.search_model_key }}
+      : [undefined, undefined]
+{% endfor %}
+    Object.assign(searchParams, nextParams{% for field in search_fields if field.search_exclude_param %}, {
+      {{ field.search_param_start }}: {{ field.search_param_start }},
+      {{ field.search_param_end }}: {{ field.search_param_end }}
+    }{% endfor %})
+    getData()
+  }
+
+  const handleMoreClick = (item: ButtonMoreItem, row: {{ page.list_item_alias }}) => {
+    switch (item.key) {
+      case 'edit':
+        showDialog('edit', row)
+        break
+      case 'delete':
+        handleDelete(row)
+        break
+    }
+  }
+
+  const handleDelete = (row: {{ page.list_item_alias }}) => {
+    ElMessageBox.confirm(
+      `确定删除{{ table.subject_label }}"${row.{{ page.delete_display_field }}}"吗？`,
+      '删除确认',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+      .then(async () => {
+        await {{ api.fetch_delete_fn }}(row.{{ primary_key.camel_name }})
+        ElMessage.success('删除成功')
+        refreshData()
+      })
+      .catch(() => {
+        ElMessage.info('已取消删除')
+      })
+  }
+</script>

@@ -17,6 +17,8 @@ common = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 macros = { workspace = true }
+summer-mcp = { workspace = true }
+summer-domain = { workspace = true }
 md-5 = { workspace = true }
 mime = { workspace = true }
 model = { workspace = true }
@@ -27,6 +29,7 @@ sea-orm = { workspace = true, features = ["with-chrono", "sqlx-postgres", "runti
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 summer = { workspace = true }
+summer-sea-orm = { workspace = true, features = ["postgres", "rustls", "with-web", "with-web-openapi"] }
 sysinfo = { workspace = true }
 summer-job = { workspace = true }
 summer-mail = { workspace = true }

@@ -1,6 +1,6 @@
 use crate::error::{AuthError, AuthResult};
-use crate::session::manager::LoginParams;
 use crate::session::SessionManager;
+use crate::session::manager::LoginParams;
 use crate::token::{TokenGenerator, TokenPair};
 use crate::user_type::LoginId;
 

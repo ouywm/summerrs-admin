@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::AuthResult;
-use crate::session::model::DeviceInfo;
 use crate::session::SessionManager;
+use crate::session::model::DeviceInfo;
 use crate::user_type::{LoginId, UserType};
 
 /// 在线用户查询参数
@@ -78,8 +78,11 @@ impl SessionManager {
         // 分页
         let page = query.page.max(1);
         let start = (page - 1) * query.page_size;
-        let paged: Vec<OnlineUserItem> =
-            items.into_iter().skip(start).take(query.page_size).collect();
+        let paged: Vec<OnlineUserItem> = items
+            .into_iter()
+            .skip(start)
+            .take(query.page_size)
+            .collect();
 
         Ok(OnlineUserPage {
             total,

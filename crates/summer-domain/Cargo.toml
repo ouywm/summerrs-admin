@@ -1,0 +1,15 @@
+[package]
+name = "summer-domain"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+common = { workspace = true }
+model = { workspace = true }
+schemars = { workspace = true }
+sea-orm = { workspace = true, features = ["with-chrono", "sqlx-postgres", "runtime-tokio-rustls"] }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+chrono = { workspace = true }

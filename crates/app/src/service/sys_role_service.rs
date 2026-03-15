@@ -9,8 +9,8 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryF
 use summer::plugin::Service;
 use summer_auth::{LoginId, SessionManager};
 
-use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
-use crate::plugin::sea_orm::DbConn;
+use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 
 #[derive(Clone, Service)]
 pub struct SysRoleService {

@@ -7,15 +7,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// C 端用户状态（1: 启用, 2: 禁用, 3: 注销）
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    EnumIter,
-    DeriveActiveEnum,
-    Serialize_repr,
-    Deserialize_repr,
+    Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize_repr, Deserialize_repr,
 )]
 #[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
 #[repr(i16)]

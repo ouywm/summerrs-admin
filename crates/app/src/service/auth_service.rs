@@ -11,15 +11,15 @@ use model::entity::sys_user_role;
 use model::entity::{biz_role, biz_user, biz_user_role, customer};
 use model::vo::auth::{DeviceSessionVo, LoginVo};
 use sea_orm::{ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
+use std::net::IpAddr;
 use summer::plugin::Service;
 use summer_auth::{
     AdminProfile, BusinessProfile, CustomerProfile, DeviceType, LoginId, LoginParams,
     SessionManager, UserProfile, UserType,
 };
-use std::net::IpAddr;
 
-use crate::plugin::sea_orm::DbConn;
 use crate::service::login_log_service::LoginLogService;
+use summer_sea_orm::DbConn;
 
 #[derive(Clone, Service)]
 pub struct AuthService {

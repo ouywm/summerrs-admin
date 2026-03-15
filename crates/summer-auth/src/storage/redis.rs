@@ -1,6 +1,6 @@
+use summer_redis::Redis;
 use summer_redis::redis;
 use summer_redis::redis::AsyncCommands;
-use summer_redis::Redis;
 
 use crate::storage::AuthStorage;
 

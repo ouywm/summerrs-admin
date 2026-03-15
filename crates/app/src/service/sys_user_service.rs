@@ -18,8 +18,8 @@ use sea_orm::{
 use summer::plugin::Service;
 use summer_auth::{LoginId, SessionManager};
 
-use crate::plugin::sea_orm::pagination::{Page, Pagination, PaginationExt};
-use crate::plugin::sea_orm::DbConn;
+use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 
 #[derive(Clone, Service)]
 pub struct SysUserService {
@@ -342,7 +342,11 @@ impl SysUserService {
     }
 
     /// 修改个人密码
-    pub async fn change_password(&self, login_id: &LoginId, dto: ChangePasswordDto) -> ApiResult<()> {
+    pub async fn change_password(
+        &self,
+        login_id: &LoginId,
+        dto: ChangePasswordDto,
+    ) -> ApiResult<()> {
         let user_id = login_id.user_id;
 
         // 查询用户

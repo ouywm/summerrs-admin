@@ -137,8 +137,7 @@ impl SessionManager {
             login_ip: login_ip.to_string(),
             user_agent: user_agent.to_string(),
         };
-        let json =
-            serde_json::to_string(&info).map_err(|e| AuthError::Internal(e.to_string()))?;
+        let json = serde_json::to_string(&info).map_err(|e| AuthError::Internal(e.to_string()))?;
 
         self.storage
             .set_string(
@@ -208,7 +207,8 @@ impl SessionManager {
                 devices_with_time.sort_by_key(|(_, info)| info.login_time);
 
                 // 需要移除的数量
-                let to_remove = (devices_with_time.len() + 1).saturating_sub(self.config.max_devices);
+                let to_remove =
+                    (devices_with_time.len() + 1).saturating_sub(self.config.max_devices);
                 for (key, info) in devices_with_time.iter().take(to_remove) {
                     let _ = self.storage.delete(&refresh_key(&info.rid)).await;
                     let _ = self.storage.delete(key).await;
@@ -227,9 +227,11 @@ impl SessionManager {
             .await?;
 
         // 编码权限位图（如果有映射表）
-        let pb = self.perm_map.read().as_ref().and_then(|map| {
-            crate::bitmap::encode(params.profile.permissions(), map)
-        });
+        let pb = self
+            .perm_map
+            .read()
+            .as_ref()
+            .and_then(|map| crate::bitmap::encode(params.profile.permissions(), map));
 
         // 生成 Access JWT
         let (access_token, _access_claims) = self.token_gen.generate_access(
@@ -246,11 +248,7 @@ impl SessionManager {
             .generate_refresh(&params.login_id, self.config.refresh_timeout)?;
 
         // 存储 refresh key: auth:refresh:{rid} → "login_id:device"
-        let refresh_value = format!(
-            "{}:{}",
-            params.login_id.encode(),
-            params.device.as_str()
-        );
+        let refresh_value = format!("{}:{}", params.login_id.encode(), params.device.as_str());
         self.storage
             .set_string(
                 &refresh_key(&refresh_claims.rid),
@@ -288,11 +286,7 @@ impl SessionManager {
         // 其他设备前端会自动 refresh 拿到新 token，不会断线，换来 validate_token / force_refresh / ban 都只需操作一个 key。
         let deny_value = format!("refresh:{}", chrono::Local::now().timestamp());
         self.storage
-            .set_string(
-                &deny_key(login_id),
-                &deny_value,
-                self.config.access_timeout,
-            )
+            .set_string(&deny_key(login_id), &deny_value, self.config.access_timeout)
             .await?;
 
         Ok(())
@@ -316,11 +310,7 @@ impl SessionManager {
         // 设置 deny key（时间戳方案）
         let deny_value = format!("refresh:{}", chrono::Local::now().timestamp());
         self.storage
-            .set_string(
-                &deny_key(login_id),
-                &deny_value,
-                self.config.access_timeout,
-            )
+            .set_string(&deny_key(login_id), &deny_value, self.config.access_timeout)
             .await?;
 
         Ok(())
@@ -362,9 +352,11 @@ impl SessionManager {
         }
 
         // 4. 编码权限位图（如果有映射表）
-        let pb = self.perm_map.read().as_ref().and_then(|map| {
-            crate::bitmap::encode(profile.permissions(), map)
-        });
+        let pb = self
+            .perm_map
+            .read()
+            .as_ref()
+            .and_then(|map| crate::bitmap::encode(profile.permissions(), map));
 
         // 5. 生成新的 Access JWT（包含最新 profile）
         let (new_access_token, _) = self.token_gen.generate_access(
@@ -437,12 +429,20 @@ impl SessionManager {
                         }
                         // token 在 deny 之后签发，权限已是最新，放行
                     } else {
-                        tracing::warn!("畸形 deny 值: {}, login_id: {}", deny_value, login_id.encode());
+                        tracing::warn!(
+                            "畸形 deny 值: {}, login_id: {}",
+                            deny_value,
+                            login_id.encode()
+                        );
                         return Err(AuthError::InvalidToken);
                     }
                 }
                 _ => {
-                    tracing::warn!("未知 deny 值: {}, login_id: {}", deny_value, login_id.encode());
+                    tracing::warn!(
+                        "未知 deny 值: {}, login_id: {}",
+                        deny_value,
+                        login_id.encode()
+                    );
                     return Err(AuthError::InvalidToken);
                 }
             }
@@ -497,11 +497,7 @@ impl SessionManager {
 
         // 设置封禁（TTL 365 天兜底，实际解封由 unban_user 接口控制）
         self.storage
-            .set_string(
-                &deny_key(login_id),
-                "banned",
-                365 * 24 * 3600,
-            )
+            .set_string(&deny_key(login_id), "banned", 365 * 24 * 3600)
             .await?;
 
         Ok(())
@@ -520,11 +516,7 @@ impl SessionManager {
     pub async fn force_refresh(&self, login_id: &LoginId) -> AuthResult<()> {
         let deny_value = format!("refresh:{}", chrono::Local::now().timestamp());
         self.storage
-            .set_string(
-                &deny_key(login_id),
-                &deny_value,
-                self.config.access_timeout,
-            )
+            .set_string(&deny_key(login_id), &deny_value, self.config.access_timeout)
             .await?;
         Ok(())
     }
@@ -610,7 +602,10 @@ mod tests {
     #[test]
     fn segment_count_mismatch() {
         assert!(!permission_matches("system:user", "system:user:list"));
-        assert!(!permission_matches("system:user:list:detail", "system:user:list"));
+        assert!(!permission_matches(
+            "system:user:list:detail",
+            "system:user:list"
+        ));
     }
 
     #[test]

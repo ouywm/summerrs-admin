@@ -22,7 +22,7 @@ use summer::plugin::Service;
 use summer_auth::LoginId;
 
 use crate::plugin::s3::config::S3Config;
-use crate::plugin::sea_orm::DbConn;
+use summer_sea_orm::DbConn;
 
 /// list_parts 返回的分片信息（内部使用）
 struct UploadedPart {
@@ -333,7 +333,13 @@ impl SysFileUploadService {
                 let operator = operator.to_string();
                 async move {
                     let result = self
-                        .upload_file(&original_name, content_type.as_deref(), data, &login_id, &operator)
+                        .upload_file(
+                            &original_name,
+                            content_type.as_deref(),
+                            data,
+                            &login_id,
+                            &operator,
+                        )
                         .await;
                     (original_name, result)
                 }

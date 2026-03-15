@@ -129,8 +129,7 @@ fn load_asymmetric_keys(config: &AuthConfig) -> (EncodingKey, DecodingKey) {
 
     match config.jwt_algorithm {
         JwtAlgorithm::RS256 | JwtAlgorithm::RS384 | JwtAlgorithm::RS512 => {
-            let ek =
-                EncodingKey::from_rsa_pem(&private_pem).expect("Invalid RSA private key PEM");
+            let ek = EncodingKey::from_rsa_pem(&private_pem).expect("Invalid RSA private key PEM");
             let dk = DecodingKey::from_rsa_pem(&public_pem).expect("Invalid RSA public key PEM");
             (ek, dk)
         }
@@ -142,8 +141,7 @@ fn load_asymmetric_keys(config: &AuthConfig) -> (EncodingKey, DecodingKey) {
         JwtAlgorithm::EdDSA => {
             let ek =
                 EncodingKey::from_ed_pem(&private_pem).expect("Invalid Ed25519 private key PEM");
-            let dk =
-                DecodingKey::from_ed_pem(&public_pem).expect("Invalid Ed25519 public key PEM");
+            let dk = DecodingKey::from_ed_pem(&public_pem).expect("Invalid Ed25519 public key PEM");
             (ek, dk)
         }
         _ => unreachable!("symmetric algorithms handled by caller"),

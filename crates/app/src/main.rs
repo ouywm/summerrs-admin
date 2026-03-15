@@ -8,21 +8,22 @@ use crate::plugin::ip2region::Ip2RegionPlugin;
 use crate::plugin::log_batch_collector::LogBatchCollectorPlugin;
 use crate::plugin::perm_bitmap::PermBitmapPlugin;
 use crate::plugin::s3::S3Plugin;
-use crate::plugin::sea_orm::SeaOrmPlugin;
 use axum_client_ip::ClientIpSource;
-use summer::auto_config;
 use summer::App;
+use summer::auto_config;
 use summer_auth::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin, UserType};
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
+use summer_mcp::McpPlugin;
 use summer_redis::RedisPlugin;
-use summer_web::axum::body::Body;
-use summer_web::axum::extract::DefaultBodyLimit;
-use summer_web::axum::http;
+use summer_sea_orm::SeaOrmPlugin;
 use summer_web::LayerConfigurator;
 use summer_web::WebConfigurator;
 use summer_web::WebPlugin;
+use summer_web::axum::body::Body;
+use summer_web::axum::extract::DefaultBodyLimit;
+use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
 
 #[auto_config(WebConfigurator, JobConfigurator)]
@@ -40,6 +41,7 @@ async fn main() {
         .add_plugin(S3Plugin)
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
+        .add_plugin(McpPlugin)
         .auth_configure(
             PathAuthBuilder::new()
                 .include("/**")
