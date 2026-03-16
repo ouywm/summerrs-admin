@@ -38,6 +38,8 @@ schemars = { workspace = true }
 tracing = { workspace = true }
 minijinja = "2"
 syn = { version = "2", features = ["full", "parsing"] }
+regex = { workspace = true }
+quote = "1"
 
 # standalone 模式专用
 clap = { version = "4", features = ["derive", "env"], optional = true }

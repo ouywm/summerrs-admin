@@ -6,7 +6,10 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::tools::support::error_chain_message;
+use crate::{
+    error_model::{internal_error, invalid_params_error},
+    tools::support::error_chain_message,
+};
 
 const PUBLIC_SCHEMA: &str = "public";
 const EXCLUDED_TABLES: &[&str] = &["seaql_migrations"];
@@ -224,9 +227,12 @@ async fn load_columns_and_primary_key(
 ) -> Result<(Option<String>, Vec<TableColumnSchema>, Vec<String>), McpError> {
     let column_rows = load_column_rows(db, table).await?;
     if column_rows.is_empty() {
-        return Err(McpError::invalid_params(
-            format!("unknown table `{table}`"),
-            None,
+        return Err(invalid_params_error(
+            "table_not_found",
+            "Table not found",
+            Some("Read schema://tables first to confirm the live table name."),
+            Some(format!("unknown table `{table}`")),
+            Some(serde_json::json!({ "table": table })),
         ));
     }
 
@@ -506,9 +512,12 @@ async fn load_check_constraints(
 
 fn json_array_to_strings(value: JsonValue, field: &str) -> Result<Vec<String>, McpError> {
     let Some(items) = value.as_array() else {
-        return Err(McpError::internal_error(
-            format!("expected `{field}` to be a JSON array"),
-            None,
+        return Err(internal_error(
+            "serialization_failed",
+            "Serialization failed",
+            Some("Check that the PostgreSQL metadata query returns a JSON array."),
+            Some(format!("expected `{field}` to be a JSON array")),
+            Some(serde_json::json!({ "field": field })),
         ));
     };
 
@@ -516,9 +525,12 @@ fn json_array_to_strings(value: JsonValue, field: &str) -> Result<Vec<String>, M
         .iter()
         .map(|item| {
             item.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                McpError::internal_error(
-                    format!("expected `{field}` to contain only strings"),
-                    None,
+                internal_error(
+                    "serialization_failed",
+                    "Serialization failed",
+                    Some("Check that the PostgreSQL metadata query returns string array items."),
+                    Some(format!("expected `{field}` to contain only strings")),
+                    Some(serde_json::json!({ "field": field })),
                 )
             })
         })
@@ -547,8 +559,13 @@ pub fn resolve_readable_columns<'a>(
 ) -> Result<Vec<&'a TableColumnSchema>, McpError> {
     let columns = if let Some(requested) = requested {
         if requested.is_empty() {
-            return Err(McpError::invalid_params(
-                "requested columns cannot be empty",
+            return Err(invalid_params_error(
+                "invalid_columns",
+                "Invalid columns",
+                Some(
+                    "Pass at least one requested column, or omit the columns field to read all readable columns.",
+                ),
+                Some("requested columns cannot be empty".to_string()),
                 None,
             ));
         }
@@ -556,21 +573,37 @@ pub fn resolve_readable_columns<'a>(
         let mut resolved = Vec::with_capacity(requested.len());
         for column_name in requested {
             let Some(column) = schema.column(column_name) else {
-                return Err(McpError::invalid_params(
-                    format!(
+                return Err(invalid_params_error(
+                    "column_not_found",
+                    "Column not found",
+                    Some(
+                        "Read schema://table/{table} first to confirm readable and writable columns.",
+                    ),
+                    Some(format!(
                         "unknown column `{column_name}` for table `{}`",
                         schema.table
-                    ),
-                    None,
+                    )),
+                    Some(serde_json::json!({
+                        "table": schema.table,
+                        "column": column_name,
+                    })),
                 ));
             };
             if column.hidden_on_read {
-                return Err(McpError::invalid_params(
-                    format!(
+                return Err(invalid_params_error(
+                    "hidden_column_access",
+                    "Hidden column cannot be accessed",
+                    Some(
+                        "Use the schema metadata to avoid hidden columns such as passwords or blocked audit fields.",
+                    ),
+                    Some(format!(
                         "column `{column_name}` on table `{}` is hidden from reads",
                         schema.table
-                    ),
-                    None,
+                    )),
+                    Some(serde_json::json!({
+                        "table": schema.table,
+                        "column": column_name,
+                    })),
                 ));
             }
             resolved.push(column);
@@ -581,9 +614,12 @@ pub fn resolve_readable_columns<'a>(
     };
 
     if columns.is_empty() {
-        return Err(McpError::invalid_params(
-            format!("table `{}` has no readable columns", schema.table),
-            None,
+        return Err(invalid_params_error(
+            "no_readable_columns",
+            "No readable columns available",
+            Some("Review hidden column rules or read the full table schema first."),
+            Some(format!("table `{}` has no readable columns", schema.table)),
+            Some(serde_json::json!({ "table": schema.table })),
         ));
     }
 
@@ -593,23 +629,38 @@ pub fn resolve_readable_columns<'a>(
 pub fn ensure_valid_identifier(identifier: &str, kind: &str) -> Result<(), McpError> {
     let mut chars = identifier.chars();
     let Some(first) = chars.next() else {
-        return Err(McpError::invalid_params(
-            format!("{kind} identifier cannot be empty"),
-            None,
+        return Err(invalid_params_error(
+            "invalid_identifier",
+            "Invalid identifier",
+            Some(
+                "Use ASCII letters, digits, and underscores only, and start with a letter or underscore.",
+            ),
+            Some(format!("{kind} identifier cannot be empty")),
+            Some(serde_json::json!({ "kind": kind })),
         ));
     };
 
     if !(first == '_' || first.is_ascii_alphabetic()) {
-        return Err(McpError::invalid_params(
-            format!("{kind} identifier `{identifier}` is invalid"),
-            None,
+        return Err(invalid_params_error(
+            "invalid_identifier",
+            "Invalid identifier",
+            Some(
+                "Use ASCII letters, digits, and underscores only, and start with a letter or underscore.",
+            ),
+            Some(format!("{kind} identifier `{identifier}` is invalid")),
+            Some(serde_json::json!({ "kind": kind, "identifier": identifier })),
         ));
     }
 
     if !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric()) {
-        return Err(McpError::invalid_params(
-            format!("{kind} identifier `{identifier}` is invalid"),
-            None,
+        return Err(invalid_params_error(
+            "invalid_identifier",
+            "Invalid identifier",
+            Some(
+                "Use ASCII letters, digits, and underscores only, and start with a letter or underscore.",
+            ),
+            Some(format!("{kind} identifier `{identifier}` is invalid")),
+            Some(serde_json::json!({ "kind": kind, "identifier": identifier })),
         ));
     }
 
@@ -635,17 +686,30 @@ fn json_value_to_bound_string(value: &JsonValue) -> Result<Option<String>, McpEr
         JsonValue::Bool(value) => Some(value.to_string()),
         JsonValue::Number(value) => Some(value.to_string()),
         JsonValue::String(value) => Some(value.clone()),
-        JsonValue::Array(_) | JsonValue::Object(_) => Some(
-            serde_json::to_string(value)
-                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
-        ),
+        JsonValue::Array(_) | JsonValue::Object(_) => {
+            Some(serde_json::to_string(value).map_err(|error| {
+                internal_error(
+                    "serialization_failed",
+                    "Serialization failed",
+                    Some("Check that the bound JSON value can be encoded to a string."),
+                    Some(error.to_string()),
+                    None,
+                )
+            })?)
+        }
     })
 }
 
 pub(crate) fn db_error(action: impl Into<String>, error: sea_orm::DbErr) -> McpError {
     let action = action.into();
-    McpError::internal_error(
-        format!("failed to {action}: {}", error_chain_message(&error)),
-        None,
+    internal_error(
+        "database_operation_failed",
+        "Database operation failed",
+        Some("Check the target schema, live table structure, and database connectivity."),
+        Some(format!(
+            "failed to {action}: {}",
+            error_chain_message(&error)
+        )),
+        Some(serde_json::json!({ "action": action })),
     )
 }

@@ -12,6 +12,10 @@ use crate::tools::{
     },
     support::{io_error, resolve_output_dir, sync_mod_file, workspace_root},
     template_renderer::{EmbeddedTemplate, TemplateRenderer},
+    validation::{
+        GenerationValidationSummary, validate_mod_registration, validate_rust_sources,
+        validate_workspace_cargo_check_for_generated_output,
+    },
 };
 
 const APP_ROUTER_DIR: &str = "crates/app/src/router";
@@ -67,6 +71,7 @@ pub struct GenerateAdminModuleResult {
     pub dto_file: PathBuf,
     pub vo_file: PathBuf,
     pub updated_mod_files: Vec<PathBuf>,
+    pub validation: GenerationValidationSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -141,8 +146,8 @@ impl AdminModuleGenerator {
         let entity_source = self.load_entity_source(&paths.entity_file).await?;
         let (context, router_source, service_source, dto_source, vo_source) = {
             let crud_context = CrudGenerationContextBuilder::build_from_entity_source(
-                request.schema,
-                request.route_base,
+                request.schema.clone(),
+                request.route_base.clone(),
                 &entity_source,
             )?;
             let render_context = build_admin_module_template_context(crud_context.clone());
@@ -198,6 +203,10 @@ impl AdminModuleGenerator {
         sync_mod_file(&paths.dto_mod_file, &table).await?;
         sync_mod_file(&paths.vo_mod_file, &table).await?;
 
+        let validation = self
+            .validate_generated_output(&request, &paths, &table)
+            .await;
+
         Ok(GenerateAdminModuleResult {
             table,
             route_base: context.table.route_base.clone(),
@@ -211,6 +220,7 @@ impl AdminModuleGenerator {
                 paths.dto_mod_file,
                 paths.vo_mod_file,
             ],
+            validation,
         })
     }
 
@@ -285,6 +295,47 @@ impl AdminModuleGenerator {
                 )
             })
     }
+
+    async fn validate_generated_output(
+        &self,
+        request: &GenerateAdminModuleRequest,
+        paths: &GeneratedPaths,
+        table: &str,
+    ) -> GenerationValidationSummary {
+        let mut checks = vec![
+            validate_rust_sources(
+                "rust_syntax",
+                &[
+                    paths.router_file.clone(),
+                    paths.service_file.clone(),
+                    paths.dto_file.clone(),
+                    paths.vo_file.clone(),
+                ],
+            )
+            .await,
+            validate_mod_registration("router_module_registration", &paths.router_mod_file, table)
+                .await,
+            validate_mod_registration(
+                "service_module_registration",
+                &paths.service_mod_file,
+                &format!("{table}_service"),
+            )
+            .await,
+            validate_mod_registration("dto_module_registration", &paths.dto_mod_file, table).await,
+            validate_mod_registration("vo_module_registration", &paths.vo_mod_file, table).await,
+        ];
+
+        checks.push(
+            validate_workspace_cargo_check_for_generated_output(
+                &self.workspace_root,
+                request.output_dir.as_deref(),
+                &["model", "app"],
+            )
+            .await,
+        );
+
+        GenerationValidationSummary::from_checks(checks)
+    }
 }
 
 fn build_admin_module_template_context(crud: CrudGenerationContext) -> AdminModuleTemplateContext {
@@ -321,6 +372,7 @@ where
 mod tests {
     use crate::table_tools::schema::{TableColumnSchema, TableSchema};
     use crate::tools::test_support::{SAMPLE_ROLE_ENTITY_SOURCE, sample_role_schema};
+    use crate::tools::validation::ValidationStatus;
 
     use super::*;
 
@@ -593,6 +645,15 @@ pub struct Model {
 
         let service_mod = std::fs::read_to_string(output_dir.join("service/mod.rs")).unwrap();
         assert!(service_mod.contains("pub mod sys_role_service;"));
+        assert_eq!(result.validation.status, ValidationStatus::Passed);
+        assert!(
+            result
+                .validation
+                .checks
+                .iter()
+                .any(|check| check.name == "rust_workspace_check"
+                    && check.status == ValidationStatus::Skipped)
+        );
 
         assert!(!root.join(APP_ROUTER_DIR).join("sys_role.rs").exists());
         assert!(

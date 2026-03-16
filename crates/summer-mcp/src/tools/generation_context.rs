@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use rmcp::ErrorData as McpError;
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use syn::{
     AngleBracketedGenericArguments, Expr, ExprLit, ExprUnary, Fields, GenericArgument, Item,
     ItemEnum, Lit, Meta, PathArguments, PathSegment, Type, TypePath, UnOp, parse_file,
@@ -9,7 +10,13 @@ use syn::{
 
 use crate::table_tools::schema::{TableColumnSchema, TableSchema};
 
-use super::support::default_route_base;
+use super::{
+    enum_semantics::{
+        EnumDraftSpec, EnumSemanticSource, build_enum_draft, render_ts_option_union,
+        resolve_field_enum,
+    },
+    support::default_route_base,
+};
 
 const CLIENT_SUBMIT_BLOCKED_FIELD_NAMES: &[&str] = &[
     "create_by",
@@ -28,6 +35,7 @@ pub(crate) struct CrudGenerationContext {
     pub(crate) names: CrudNamingContext,
     pub(crate) paths: CrudPathContext,
     pub(crate) flags: CrudGenerationFlags,
+    pub(crate) enum_drafts: Vec<EnumDraftSpec>,
     pub(crate) primary_key: FieldGenerationContext,
     pub(crate) fields: Vec<FieldGenerationContext>,
     pub(crate) create_fields: Vec<FieldGenerationContext>,
@@ -98,11 +106,12 @@ pub(crate) struct FieldTypeContext {
     pub(crate) value_kind: FieldValueKind,
     pub(crate) string_like: bool,
     pub(crate) datetime_like: bool,
+    pub(crate) enum_source: Option<EnumSemanticSource>,
     pub(crate) enum_entity_path: Option<String>,
     pub(crate) enum_options: Vec<EnumOptionContext>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FieldValueKind {
     String,
@@ -126,9 +135,9 @@ pub(crate) struct EnumOptionContext {
     pub(crate) value_kind: EnumOptionValueKind,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum EnumOptionValueKind {
+pub enum EnumOptionValueKind {
     String,
     Number,
 }
@@ -212,8 +221,26 @@ fn build_context(
     let fields = schema
         .columns
         .iter()
-        .map(|column| build_generated_field(&schema.table, column, entity_source))
+        .map(|column| build_generated_field(&table, &names, &schema.table, column, entity_source))
         .collect::<Result<Vec<_>, McpError>>()?;
+
+    let enum_drafts = fields
+        .iter()
+        .filter_map(|field| {
+            let column = schema.column(&field.name)?;
+            build_enum_draft(
+                &table,
+                &names,
+                &field.name,
+                &field.label,
+                column,
+                field.type_info.value_kind,
+                field.type_info.enum_source,
+                field.type_info.enum_entity_path.as_deref(),
+                &field.type_info.enum_options,
+            )
+        })
+        .collect();
 
     let primary_key_name = primary_key_columns[0].name.as_str();
     let primary_key = fields
@@ -270,6 +297,7 @@ fn build_context(
             base: base_path,
         },
         flags,
+        enum_drafts,
         primary_key,
         fields,
         create_fields,
@@ -280,6 +308,8 @@ fn build_context(
 }
 
 fn build_generated_field(
+    _table: &TableGenerationContext,
+    _names: &CrudNamingContext,
     table_module: &str,
     column: &TableColumnSchema,
     entity_source: &ParsedEntitySource,
@@ -301,7 +331,12 @@ fn build_generated_field(
     let rust_input = resolve_input_type(raw_type, table_module)?;
     let comment_lines = split_comment_lines(column.comment.as_deref());
     let value_kind = infer_value_kind(raw_type, &rust_input);
-    let enum_options = resolve_enum_options(raw_type, value_kind, entity_source);
+    let entity_enum_options = resolve_entity_enum_options(raw_type, value_kind, entity_source);
+    let enum_resolution = resolve_field_enum(column, value_kind, entity_enum_options);
+    let enum_source = enum_resolution.as_ref().map(|resolution| resolution.source);
+    let enum_options = enum_resolution
+        .map(|resolution| resolution.options)
+        .unwrap_or_default();
     let enum_entity_path = (value_kind == FieldValueKind::Enum)
         .then(|| rust_input.clone())
         .filter(|path| path.starts_with("crate::entity::"));
@@ -331,6 +366,7 @@ fn build_generated_field(
             ts_read,
             ts_input,
             value_kind,
+            enum_source,
             enum_entity_path,
             enum_options,
         },
@@ -469,7 +505,7 @@ fn parse_string_literal(expr: &Expr) -> Option<String> {
     }
 }
 
-fn resolve_enum_options(
+fn resolve_entity_enum_options(
     raw_type: &Type,
     value_kind: FieldValueKind,
     entity_source: &ParsedEntitySource,
@@ -755,15 +791,20 @@ fn ts_type_for_input(
     nullable: bool,
     enum_options: &[EnumOptionContext],
 ) -> String {
+    let literal_union = render_ts_option_union(enum_options);
     let base = match value_kind {
         FieldValueKind::String
         | FieldValueKind::Date
         | FieldValueKind::Time
         | FieldValueKind::DateTime
         | FieldValueKind::Uuid
-        | FieldValueKind::Decimal => "string".to_string(),
+        | FieldValueKind::Decimal => literal_union
+            .clone()
+            .unwrap_or_else(|| "string".to_string()),
         FieldValueKind::Boolean => "boolean".to_string(),
-        FieldValueKind::Integer | FieldValueKind::Float => "number".to_string(),
+        FieldValueKind::Integer | FieldValueKind::Float => literal_union
+            .clone()
+            .unwrap_or_else(|| "number".to_string()),
         FieldValueKind::Json => "unknown".to_string(),
         FieldValueKind::Enum => infer_ts_enum_type(rust_type, enum_options),
         FieldValueKind::Other => "unknown".to_string(),
@@ -818,10 +859,12 @@ fn filter_fields_by_column(
 
 fn infer_ts_enum_type(rust_type: &str, enum_options: &[EnumOptionContext]) -> String {
     let _ = rust_type;
-    match enum_options.first().map(|option| option.value_kind) {
-        Some(EnumOptionValueKind::String) => "string".to_string(),
-        _ => "number".to_string(),
-    }
+    render_ts_option_union(enum_options).unwrap_or_else(|| {
+        match enum_options.first().map(|option| option.value_kind) {
+            Some(EnumOptionValueKind::String) => "string".to_string(),
+            _ => "number".to_string(),
+        }
+    })
 }
 
 fn root_type_ident(ty: &Type) -> Option<String> {
@@ -1165,5 +1208,70 @@ pub struct Model {
             .unwrap();
         assert_eq!(metadata.type_info.ts_input, "unknown");
         assert_eq!(metadata.type_info.ts_read, "unknown");
+    }
+
+    #[test]
+    fn build_context_infers_comment_backed_enum_metadata_for_frontend() {
+        let schema = TableSchema {
+            schema: "public".to_string(),
+            table: "sys_user".to_string(),
+            comment: Some("系统用户".to_string()),
+            primary_key: vec!["id".to_string()],
+            columns: vec![
+                TableColumnSchema {
+                    name: "id".to_string(),
+                    pg_type: "bigint".to_string(),
+                    nullable: false,
+                    primary_key: true,
+                    hidden_on_read: false,
+                    writable_on_create: false,
+                    writable_on_update: false,
+                    default_value: Some("nextval(...)".to_string()),
+                    comment: Some("用户ID".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "status".to_string(),
+                    pg_type: "smallint".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: Some("1".to_string()),
+                    comment: Some("状态：1-启用 2-禁用 3-注销".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            check_constraints: vec![],
+        };
+        let entity_source = r#"
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub status: i16,
+}
+"#;
+
+        let context =
+            CrudGenerationContextBuilder::build_from_entity_source(schema, None, entity_source)
+                .unwrap();
+
+        let status = context
+            .fields
+            .iter()
+            .find(|field| field.name == "status")
+            .unwrap();
+        assert_eq!(status.type_info.ts_input, "1 | 2 | 3");
+        assert_eq!(status.type_info.enum_options.len(), 3);
+        assert_eq!(context.enum_drafts.len(), 1);
+        assert_eq!(context.enum_drafts[0].dict_type, "user_status");
+        assert_eq!(context.enum_drafts[0].rust_enum_name, "UserStatus");
     }
 }

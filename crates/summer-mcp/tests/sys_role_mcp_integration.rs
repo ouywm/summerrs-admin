@@ -370,7 +370,8 @@ async fn runtime_table_tools_are_exposed_over_mcp()
     let client = DummyClient.serve(client_transport).await?;
 
     let tools = client.list_all_tools().await?;
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 18);
+    assert!(tools.iter().any(|tool| tool.name == "server_capabilities"));
     assert!(
         tools
             .iter()
@@ -395,6 +396,11 @@ async fn runtime_table_tools_are_exposed_over_mcp()
         tools
             .iter()
             .any(|tool| tool.name == "generate_entity_from_table")
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.name == "upgrade_entity_enums_from_table")
     );
     assert!(tools.iter().any(|tool| tool.name == "menu_tool"));
     assert!(tools.iter().any(|tool| tool.name == "dict_tool"));

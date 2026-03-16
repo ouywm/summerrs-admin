@@ -7,7 +7,13 @@ use std::{
 use rmcp::ErrorData as McpError;
 use tokio::process::Command;
 
-use crate::tools::support::{io_error, sync_mod_file, workspace_root};
+use crate::tools::{
+    support::{io_error, sync_mod_file, workspace_root},
+    validation::{
+        GenerationValidationSummary, validate_mod_registration, validate_rust_sources,
+        validate_workspace_cargo_check_for_generated_output,
+    },
+};
 
 const DEFAULT_DATABASE_SCHEMA: &str = "public";
 const DEFAULT_ENTITY_DIR: &str = "crates/model/src/entity";
@@ -40,6 +46,7 @@ pub struct GenerateEntityResult {
     pub overwritten: bool,
     pub database_schema: String,
     pub cli_bin: String,
+    pub validation: GenerationValidationSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +146,14 @@ impl EntityGenerator {
         })
     }
 
+    #[cfg(test)]
+    fn with_workspace_root(workspace_root: PathBuf) -> Self {
+        Self {
+            workspace_root,
+            default_database_url: None,
+        }
+    }
+
     pub async fn generate(
         &self,
         request: GenerateEntityRequest,
@@ -229,6 +244,9 @@ impl EntityGenerator {
             })?;
 
         sync_mod_file(&mod_file, &request.table).await?;
+        let validation = self
+            .validate_generated_output(&request, &entity_file, &mod_file)
+            .await;
         drop(cleanup_guard);
 
         Ok(GenerateEntityResult {
@@ -238,6 +256,7 @@ impl EntityGenerator {
             overwritten: existed,
             database_schema,
             cli_bin,
+            validation,
         })
     }
 
@@ -282,6 +301,26 @@ impl EntityGenerator {
             "summer-mcp-entity-gen-{table}-{timestamp}-{}",
             std::process::id()
         )))
+    }
+
+    async fn validate_generated_output(
+        &self,
+        request: &GenerateEntityRequest,
+        entity_file: &Path,
+        mod_file: &Path,
+    ) -> GenerationValidationSummary {
+        let checks = vec![
+            validate_rust_sources("rust_syntax", &[entity_file.to_path_buf()]).await,
+            validate_mod_registration("entity_module_registration", mod_file, &request.table).await,
+            validate_workspace_cargo_check_for_generated_output(
+                &self.workspace_root,
+                request.output_dir.as_deref(),
+                &["model"],
+            )
+            .await,
+        ];
+
+        GenerationValidationSummary::from_checks(checks)
     }
 }
 
@@ -361,6 +400,8 @@ impl Drop for TempDirGuard {
 
 #[cfg(test)]
 mod tests {
+    use crate::tools::validation::ValidationStatus;
+
     use super::*;
 
     #[test]
@@ -421,5 +462,52 @@ pub struct Model;
                 "off",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn entity_validation_skips_workspace_check_for_explicit_output_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "summer-mcp-entity-validation-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let entity_dir = root.join("generated/entity");
+        std::fs::create_dir_all(&entity_dir).unwrap();
+        let entity_file = entity_dir.join("sys_role.rs");
+        let mod_file = entity_dir.join("mod.rs");
+        std::fs::write(
+            &entity_file,
+            "use sea_orm::entity::prelude::*;\n\n#[sea_orm::model]\npub struct Model {\n    pub id: i64,\n}\n",
+        )
+        .unwrap();
+        std::fs::write(&mod_file, "pub mod sys_role;\n").unwrap();
+
+        let generator = EntityGenerator::with_workspace_root(root.clone());
+        let validation = generator
+            .validate_generated_output(
+                &GenerateEntityRequest {
+                    table: "sys_role".to_string(),
+                    overwrite: true,
+                    output_dir: Some(entity_dir.display().to_string()),
+                    database_url: None,
+                    database_schema: None,
+                    cli_bin: None,
+                },
+                &entity_file,
+                &mod_file,
+            )
+            .await;
+
+        assert_eq!(validation.status, ValidationStatus::Passed);
+        assert!(
+            validation
+                .checks
+                .iter()
+                .any(|check| check.name == "rust_workspace_check"
+                    && check.status == ValidationStatus::Skipped)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

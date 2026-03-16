@@ -7,6 +7,8 @@ use std::{
 use rmcp::ErrorData as McpError;
 use serde::Serialize;
 
+use crate::error_model::internal_error;
+
 pub(crate) async fn sync_mod_file(mod_file: &Path, module: &str) -> Result<(), McpError> {
     let existing = match tokio::fs::read_to_string(mod_file).await {
         Ok(contents) => contents,
@@ -63,7 +65,17 @@ pub(crate) fn workspace_root() -> Result<PathBuf, McpError> {
 }
 
 pub(crate) fn io_error(action: impl Into<String>, error: std::io::Error) -> McpError {
-    McpError::internal_error(format!("failed to {}: {error}", action.into()), None)
+    let action = action.into();
+    internal_error(
+        "filesystem_operation_failed",
+        "Filesystem operation failed",
+        Some("Check output_dir, workspace location, and filesystem permissions."),
+        Some(format!("failed to {action}: {error}")),
+        Some(serde_json::json!({
+            "action": action,
+            "kind": error.kind().to_string(),
+        })),
+    )
 }
 
 pub(crate) fn error_chain_message(error: &dyn StdError) -> String {
@@ -138,7 +150,13 @@ pub(crate) async fn write_pretty_json_file<T: Serialize>(
     }
 
     let contents = serde_json::to_string_pretty(value).map_err(|error| {
-        McpError::internal_error(format!("failed to serialize {label}: {error}"), None)
+        internal_error(
+            "serialization_failed",
+            "Serialization failed",
+            Some("Check that the generated value can be encoded as JSON."),
+            Some(format!("failed to serialize {label}: {error}")),
+            Some(serde_json::json!({ "label": label })),
+        )
     })?;
 
     tokio::fs::write(path, contents)

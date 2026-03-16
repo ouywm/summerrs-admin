@@ -1,4 +1,6 @@
 pub mod config;
+mod error_model;
+mod output_contract;
 pub mod plugin;
 mod prompts;
 pub mod runtime;

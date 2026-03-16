@@ -129,9 +129,83 @@ fn test_entity_dir() -> PathBuf {
 
 fn prepare_showcase_profile_test_entity() -> io::Result<PathBuf> {
     let entity_dir = test_entity_dir();
-    let source = entity_dir.join("biz_showcase_profile.rs");
     let target = entity_dir.join(format!("{TEST_SHOWCASE_PROFILE_TABLE}.rs"));
-    fs::copy(source, &target)?;
+    fs::write(
+        &target,
+        format!(
+            r#"//! MCP smoke test entity for `{table}`
+
+use sea_orm::entity::prelude::*;
+use serde::{{Deserialize, Serialize}};
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
+pub enum ContactGender {{
+    /// 未知
+    #[sea_orm(num_value = 0)]
+    Unknown,
+    /// 男
+    #[sea_orm(num_value = 1)]
+    Male,
+    /// 女
+    #[sea_orm(num_value = 2)]
+    Female,
+}}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
+pub enum ShowcaseStatus {{
+    /// 草稿
+    #[sea_orm(num_value = 1)]
+    Draft,
+    /// 已发布
+    #[sea_orm(num_value = 2)]
+    Published,
+    /// 已归档
+    #[sea_orm(num_value = 3)]
+    Archived,
+}}
+
+#[sea_orm::model]
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+#[sea_orm(table_name = "{table}")]
+pub struct Model {{
+    #[sea_orm(primary_key)]
+    pub id: i64,
+    #[sea_orm(unique)]
+    pub showcase_code: String,
+    pub title: String,
+    pub avatar: Option<String>,
+    pub cover_image: Option<String>,
+    pub contact_name: Option<String>,
+    pub contact_gender: ContactGender,
+    pub contact_phone: Option<String>,
+    pub contact_email: Option<String>,
+    pub official_url: Option<String>,
+    pub status: ShowcaseStatus,
+    pub featured: bool,
+    pub priority: i32,
+    #[sea_orm(column_type = "Decimal(Some((10, 2)))", nullable)]
+    pub score: Option<Decimal>,
+    pub publish_date: Option<Date>,
+    pub launch_at: Option<DateTime>,
+    pub service_time: Option<Time>,
+    pub attachment_url: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub description: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub extra_notes: Option<String>,
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    pub metadata: Option<Json>,
+    pub created_at: DateTime,
+    pub updated_at: DateTime,
+}}
+
+impl ActiveModelBehavior for ActiveModel {{}}
+"#,
+            table = TEST_SHOWCASE_PROFILE_TABLE
+        ),
+    )?;
     Ok(target)
 }
 
@@ -729,6 +803,7 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
     let dict_apply_json = dict_apply_result
         .structured_content
         .expect("expected structured content from dict_tool apply_bundle");
+    assert_eq!(dict_apply_json["mode"], json!("apply"));
     assert_eq!(dict_apply_json["result"]["kind"], json!("bundle_sync"));
     assert_eq!(
         dict_apply_json["result"]["sync"]["dictType"],
@@ -765,6 +840,7 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
     let dict_plan_json = dict_plan_result
         .structured_content
         .expect("expected structured content from dict_tool plan_bundle");
+    assert_eq!(dict_plan_json["mode"], json!("plan"));
     assert_eq!(
         dict_plan_json["result"]["sync"]["plan"]["summary"]["createCount"],
         json!(0)
@@ -808,7 +884,12 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
     let dict_export_json = dict_export_result
         .structured_content
         .expect("expected structured content from dict_tool export_bundle");
+    assert_eq!(dict_export_json["mode"], json!("export"));
     assert_eq!(dict_export_json["result"]["kind"], json!("bundle_export"));
+    assert_eq!(
+        dict_export_json["result"]["export"]["artifacts"]["mode"],
+        json!("export")
+    );
     let dict_spec_file = dict_export_json["result"]["export"]["spec_file"]
         .as_str()
         .expect("expected dict export specFile");
@@ -831,6 +912,7 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
     let dict_get_json = dict_get_result
         .structured_content
         .expect("expected structured content from dict_tool get_by_type");
+    assert_eq!(dict_get_json["mode"], json!("read"));
     let dict_items = dict_get_json["result"]["items"]
         .as_array()
         .expect("expected dict items array");
@@ -856,6 +938,7 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
     let menu_apply_json = menu_apply_result
         .structured_content
         .expect("expected structured content from menu_tool apply_config");
+    assert_eq!(menu_apply_json["mode"], json!("apply"));
     assert_eq!(menu_apply_json["result"]["kind"], json!("config_sync"));
 
     let menu_plan_result = client
@@ -899,6 +982,7 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
     let menu_plan_json = menu_plan_result
         .structured_content
         .expect("expected structured content from menu_tool plan_config");
+    assert_eq!(menu_plan_json["mode"], json!("plan"));
     assert_eq!(
         menu_plan_json["result"]["sync"]["plan"]["summary"]["createCount"],
         json!(0)
@@ -950,7 +1034,12 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
     let menu_export_json = menu_export_result
         .structured_content
         .expect("expected structured content from menu_tool export_config");
+    assert_eq!(menu_export_json["mode"], json!("export"));
     assert_eq!(menu_export_json["result"]["kind"], json!("config_export"));
+    assert_eq!(
+        menu_export_json["result"]["export"]["artifacts"]["mode"],
+        json!("export")
+    );
     let menu_spec_file = menu_export_json["result"]["export"]["spec_file"]
         .as_str()
         .expect("expected menu export specFile");
@@ -972,6 +1061,7 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
     let menu_list_json = menu_list_result
         .structured_content
         .expect("expected structured content from menu_tool list_tree");
+    assert_eq!(menu_list_json["mode"], json!("read"));
     let menu_items = menu_list_json["result"]["items"]
         .as_array()
         .expect("expected menu items array");
@@ -1022,6 +1112,7 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
         .structured_content
         .expect("expected structured content from generate_admin_module_from_table");
     assert_eq!(admin_json["route_base"], json!("showcase_profile"));
+    assert_eq!(admin_json["artifacts"]["mode"], json!("explicit_output"));
 
     let generate_result = client
         .call_tool(
@@ -1109,6 +1200,7 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
         generate_json["required_dict_types"],
         json!(["showcase_gender", "showcase_status"])
     );
+    assert_eq!(generate_json["artifacts"]["mode"], json!("explicit_output"));
 
     let api_file = frontend_output_dir.join("src/api/showcase-profile.ts");
     let api_type_file = frontend_output_dir.join("src/types/api/showcase-profile.d.ts");
@@ -1216,6 +1308,7 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
         let dict_plan_json = dict_plan_result
             .structured_content
             .expect("expected structured content from dict_tool plan_bundle");
+        assert_eq!(dict_plan_json["mode"], json!("plan"));
         assert_eq!(dict_plan_json["result"]["kind"], json!("bundle_sync"));
     }
 
@@ -1230,6 +1323,7 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
     let menu_plan_json = menu_plan_result
         .structured_content
         .expect("expected structured content from menu_tool plan_config");
+    assert_eq!(menu_plan_json["mode"], json!("plan"));
     assert_eq!(menu_plan_json["result"]["kind"], json!("config_sync"));
 
     let _ = client
@@ -1243,6 +1337,205 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
 
     client.cancel().await?;
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires SUMMER_MCP_DATABASE_URL and a local PostgreSQL instance"]
+async fn standalone_binary_rolls_out_generated_menu_and_dict_drafts()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let transport = smoke_transport(smoke_database_url())?;
+    let client = DummyClient::default().serve(transport).await?;
+    let test_entity_file = prepare_showcase_profile_test_entity()?;
+
+    let frontend_output_dir = std::env::temp_dir().join("summer-mcp-showcase-rollout-preview");
+    let _ = tokio::fs::remove_dir_all(&frontend_output_dir).await;
+
+    let route_base = "mcp_showcase_profile_rollout";
+    let status_dict_type = "__test__showcase_profile_rollout_status";
+    let gender_dict_type = "__test__showcase_profile_rollout_gender";
+
+    let test_result = async {
+        client
+            .call_tool(
+                CallToolRequestParams::new("sql_exec").with_arguments(json_args(json!({
+                    "sql": create_showcase_profile_test_table_sql()
+                }))),
+            )
+            .await?;
+
+        let generate_result = client
+            .call_tool(
+                CallToolRequestParams::new("generate_frontend_bundle_from_table").with_arguments(
+                    json_args(json!({
+                        "table": TEST_SHOWCASE_PROFILE_TABLE,
+                        "route_base": route_base,
+                        "overwrite": true,
+                        "output_dir": frontend_output_dir.display().to_string(),
+                        "target_preset": "art_design_pro",
+                        "dict_bindings": {
+                            "status": status_dict_type,
+                            "contact_gender": gender_dict_type
+                        }
+                    })),
+                ),
+            )
+            .await?;
+        let generate_json = generate_result
+            .structured_content
+            .expect("expected structured content from generate_frontend_bundle_from_table");
+        assert_eq!(generate_json["artifacts"]["mode"], json!("explicit_output"));
+
+        let dict_drafts = generate_json["dict_bundle_drafts"]
+            .as_array()
+            .cloned()
+            .expect("expected dict_bundle_drafts array");
+        assert_eq!(dict_drafts.len(), 2);
+
+        for draft in &dict_drafts {
+            let dict_type = draft["dictType"]
+                .as_str()
+                .expect("expected generated dictType");
+            let apply_result = client
+                .call_tool(
+                    CallToolRequestParams::new("dict_tool").with_arguments(json_args(json!({
+                        "action": "apply_bundle",
+                        "operator": "codex_rollout",
+                        "bundle": draft
+                    }))),
+                )
+                .await?;
+            let apply_json = apply_result
+                .structured_content
+                .expect("expected structured content from dict_tool apply_bundle");
+            assert_eq!(apply_json["mode"], json!("apply"));
+            assert_eq!(apply_json["result"]["sync"]["dictType"], json!(dict_type));
+
+            let plan_result = client
+                .call_tool(
+                    CallToolRequestParams::new("dict_tool").with_arguments(json_args(json!({
+                        "action": "plan_bundle",
+                        "bundle": draft
+                    }))),
+                )
+                .await?;
+            let plan_json = plan_result
+                .structured_content
+                .expect("expected structured content from dict_tool plan_bundle");
+            assert_eq!(plan_json["mode"], json!("plan"));
+            assert_eq!(
+                plan_json["result"]["sync"]["plan"]["summary"]["createCount"],
+                json!(0)
+            );
+
+            let get_result = client
+                .call_tool(
+                    CallToolRequestParams::new("dict_tool").with_arguments(json_args(json!({
+                        "action": "get_by_type",
+                        "dict_type": dict_type
+                    }))),
+                )
+                .await?;
+            let get_json = get_result
+                .structured_content
+                .expect("expected structured content from dict_tool get_by_type");
+            assert_eq!(get_json["mode"], json!("read"));
+            assert!(
+                get_json["result"]["items"]
+                    .as_array()
+                    .is_some_and(|items| !items.is_empty())
+            );
+        }
+
+        let menu_draft = generate_json["menu_config_draft"].clone();
+        let apply_menu_result = client
+            .call_tool(
+                CallToolRequestParams::new("menu_tool").with_arguments(json_args(json!({
+                    "action": "apply_config",
+                    "config": menu_draft
+                }))),
+            )
+            .await?;
+        let apply_menu_json = apply_menu_result
+            .structured_content
+            .expect("expected structured content from menu_tool apply_config");
+        assert_eq!(apply_menu_json["mode"], json!("apply"));
+
+        let plan_menu_result = client
+            .call_tool(
+                CallToolRequestParams::new("menu_tool").with_arguments(json_args(json!({
+                    "action": "plan_config",
+                    "config": generate_json["menu_config_draft"].clone()
+                }))),
+            )
+            .await?;
+        let plan_menu_json = plan_menu_result
+            .structured_content
+            .expect("expected structured content from menu_tool plan_config");
+        assert_eq!(plan_menu_json["mode"], json!("plan"));
+        assert_eq!(
+            plan_menu_json["result"]["sync"]["plan"]["summary"]["createCount"],
+            json!(0)
+        );
+
+        let menu_list_result = client
+            .call_tool(
+                CallToolRequestParams::new("menu_tool").with_arguments(json_args(json!({
+                    "action": "list_tree"
+                }))),
+            )
+            .await?;
+        let menu_list_json = menu_list_result
+            .structured_content
+            .expect("expected structured content from menu_tool list_tree");
+        assert_eq!(menu_list_json["mode"], json!("read"));
+        let menu_items = menu_list_json["result"]["items"]
+            .as_array()
+            .expect("expected menu items array");
+        assert!(contains_menu_path(menu_items, route_base));
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+
+    let cleanup_sql = format!(
+        r#"
+DO $cleanup$
+BEGIN
+  DELETE FROM sys_dict_data
+  WHERE dict_type IN ('{status_dict_type}', '{gender_dict_type}');
+
+  DELETE FROM sys_dict_type
+  WHERE dict_type IN ('{status_dict_type}', '{gender_dict_type}');
+
+  WITH target AS (
+      SELECT id FROM sys_menu WHERE path = '{route_base}'
+  )
+  DELETE FROM sys_menu
+  WHERE id IN (SELECT id FROM target)
+     OR parent_id IN (SELECT id FROM target);
+END
+$cleanup$
+"#
+    );
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("sql_exec").with_arguments(json_args(json!({
+                "sql": cleanup_sql
+            }))),
+        )
+        .await;
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("sql_exec").with_arguments(json_args(json!({
+                "sql": drop_showcase_profile_test_table_sql()
+            }))),
+        )
+        .await;
+    let _ = tokio::fs::remove_file(&test_entity_file).await;
+    let _ = tokio::fs::remove_dir_all(&frontend_output_dir).await;
+
+    client.cancel().await?;
+    test_result
 }
 
 #[tokio::test]

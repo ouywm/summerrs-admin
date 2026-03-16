@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use common::error::ApiErrors;
 use model::{
@@ -14,8 +17,8 @@ use rmcp::{
     ErrorData as McpError, Json, handler::server::wrapper::Parameters, schemars, tool, tool_router,
 };
 use sea_orm::{
-    AccessMode, ConnectionTrait, DbBackend, FromQueryResult, JsonValue, SelectModel, SelectorRaw,
-    Statement, TransactionError, TransactionTrait,
+    AccessMode, ConnectionTrait, DatabaseConnection, DbBackend, FromQueryResult, JsonValue,
+    SelectModel, SelectorRaw, Statement, TransactionError, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use summer_domain::{
@@ -24,6 +27,12 @@ use summer_domain::{
 };
 
 use crate::{
+    error_model::{internal_error, invalid_params_error, normalize_tool_error},
+    output_contract::{
+        ArtifactBundleSummary, ArtifactMode, ToolExecutionMode, build_artifact_bundle,
+        generator_artifact_mode,
+    },
+    prompts,
     server::AdminMcpServer,
     table_tools::{
         query_builder::{
@@ -40,7 +49,9 @@ use crate::{
     },
     tools::{
         admin_module_generator::{AdminModuleGenerator, GenerateAdminModuleRequest},
+        entity_enum_upgrader::{EntityEnumUpgradePlan, EntityEnumUpgrader},
         entity_generator::{EntityGenerator, GenerateEntityRequest},
+        enum_semantics::EnumDraftSpec,
         frontend_api_generator::{FrontendApiGenerator, GenerateFrontendApiRequest},
         frontend_bundle_generator::{FrontendBundleGenerator, GenerateFrontendBundleRequest},
         frontend_page_generator::{
@@ -52,6 +63,7 @@ use crate::{
             error_chain_message, resolve_output_dir, sanitize_file_stem, workspace_root,
             write_pretty_json_file,
         },
+        validation::{GenerationValidationSummary, validate_frontend_target_output},
     },
 };
 
@@ -62,6 +74,19 @@ const MAX_SQL_QUERY_LIMIT: u64 = 1_000;
 const READONLY_SQL_SUBQUERY_ALIAS: &str = "__summer_mcp_readonly";
 
 type JsonMap = BTreeMap<String, JsonValue>;
+
+fn normalize_tool_result<T>(
+    tool: &'static str,
+    result: Result<T, McpError>,
+) -> Result<T, McpError> {
+    result.map_err(|error| normalize_tool_error(tool, error))
+}
+
+macro_rules! tool_result {
+    ($tool:literal, $body:block) => {{
+        normalize_tool_result($tool, (async $body).await)
+    }};
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct ListTablesResult {
@@ -125,6 +150,8 @@ pub struct GenerateEntityFromTableResult {
     pub overwritten: bool,
     pub database_schema: String,
     pub cli_bin: String,
+    pub artifacts: ArtifactBundleSummary,
+    pub validation: GenerationValidationSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -136,6 +163,8 @@ pub struct GenerateAdminModuleFromTableResult {
     pub dto_file: String,
     pub vo_file: String,
     pub updated_mod_files: Vec<String>,
+    pub artifacts: ArtifactBundleSummary,
+    pub validation: GenerationValidationSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -145,6 +174,8 @@ pub struct GenerateFrontendApiFromTableResult {
     pub namespace: String,
     pub api_file: String,
     pub api_type_file: String,
+    pub artifacts: ArtifactBundleSummary,
+    pub validation: GenerationValidationSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -158,6 +189,8 @@ pub struct GenerateFrontendPageFromTableResult {
     pub search_file: String,
     pub dialog_file: String,
     pub required_dict_types: Vec<String>,
+    pub artifacts: ArtifactBundleSummary,
+    pub validation: GenerationValidationSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -174,8 +207,24 @@ pub struct GenerateFrontendBundleFromTableResult {
     pub search_file: String,
     pub dialog_file: String,
     pub required_dict_types: Vec<String>,
+    pub enum_drafts: Vec<EnumDraftSpec>,
     pub dict_bundle_drafts: Vec<DictBundleSpec>,
     pub menu_config_draft: MenuConfigSpec,
+    pub artifacts: ArtifactBundleSummary,
+    pub validation: GenerationValidationSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct UpgradeEntityEnumsFromTableResult {
+    pub mode: ToolExecutionMode,
+    pub table: String,
+    pub route_base: String,
+    pub entity_file: String,
+    pub changed: bool,
+    pub plan: EntityEnumUpgradePlan,
+    pub rendered_source: String,
+    pub artifacts: ArtifactBundleSummary,
+    pub validation: Option<GenerationValidationSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -183,6 +232,90 @@ pub struct ExportArtifactsResult {
     pub output_dir: String,
     pub spec_file: String,
     pub plan_file: String,
+    pub artifacts: ArtifactBundleSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerHealthStatus {
+    Ok,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ServerCapabilitiesResult {
+    pub health: ServerHealthSummary,
+    pub server: ServerIdentitySummary,
+    pub runtime: ServerRuntimeSummary,
+    pub capabilities: ServerCapabilityCatalog,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ServerHealthSummary {
+    pub status: ServerHealthStatus,
+    pub database: DatabaseHealthSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct DatabaseHealthSummary {
+    pub backend: String,
+    pub connected: bool,
+    pub public_table_count: Option<usize>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ServerIdentitySummary {
+    pub name: String,
+    pub version: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ServerRuntimeSummary {
+    pub transport: String,
+    pub http_mode: String,
+    pub binding: String,
+    pub port: u16,
+    pub path: String,
+    pub stateful_mode: bool,
+    pub json_response: bool,
+    pub session_channel_capacity: usize,
+    pub session_keep_alive_seconds: Option<u64>,
+    pub default_database_url_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ServerCapabilityCatalog {
+    pub tools: Vec<String>,
+    pub prompts: Vec<String>,
+    pub resources: Vec<ResourceCapabilitySummary>,
+    pub resource_templates: Vec<ResourceTemplateCapabilitySummary>,
+    pub generators: GeneratorCapabilitySummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ResourceCapabilitySummary {
+    pub uri: String,
+    pub name: String,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ResourceTemplateCapabilitySummary {
+    pub uri_template: String,
+    pub name: String,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct GeneratorCapabilitySummary {
+    pub backend_generators: Vec<String>,
+    pub frontend_generators: Vec<String>,
+    pub frontend_target_presets: Vec<String>,
+    pub supports_temp_output_dir: bool,
+    pub returns_menu_dict_drafts: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -208,6 +341,7 @@ pub enum MenuToolResult {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct MenuToolResponse {
+    pub mode: ToolExecutionMode,
     pub result: MenuToolResult,
 }
 
@@ -246,6 +380,7 @@ pub enum DictToolResult {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct DictToolResponse {
+    pub mode: ToolExecutionMode,
     pub result: DictToolResult,
 }
 
@@ -265,8 +400,10 @@ struct TableQueryArgs {
     columns: Option<Vec<String>>,
     /// 过滤条件列表。支持结构化对象：
     /// [{"column":"id","op":"eq","value":1}]
+    /// 也支持结构化分组：
+    /// [{"or":[{"column":"status","op":"eq","value":1},{"column":"status","op":"eq","value":2}]}]
     /// 也支持简写字符串：
-    /// ["id = 1", "role_name ilike admin", "status in [1,2,3]"]
+    /// ["id = 1", "role_name ilike admin", "status in [1,2,3]", "create_time between [\"2026-01-01\",\"2026-01-31\"]"]
     filters: Option<Vec<TableFilterInput>>,
     /// 排序条件，支持 [{"column":"id","direction":"desc"}] 或 ["id desc"]
     order_by: Option<Vec<TableSortInput>>,
@@ -467,6 +604,45 @@ struct GenerateFrontendPageFromTableArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
+enum UpgradeEntityEnumsFromTableArgs {
+    /// 预览实体枚举升级计划，不写文件
+    PlanUpgrade {
+        /// 目标表名
+        table: String,
+        /// 路由基础路径，默认自动从表名推导，例如 sys_user -> user
+        route_base: Option<String>,
+        /// 实体目录根路径；默认 crates/model/src/entity
+        output_dir: Option<String>,
+        /// 仅升级指定字段；未传时自动处理全部待升级枚举字段
+        fields: Option<Vec<String>>,
+        /// 可选：覆盖字段的 Rust 枚举名，例如 { "contact_gender": "ContactGender" }
+        #[serde(default)]
+        enum_name_overrides: BTreeMap<String, String>,
+        /// 可选：覆盖枚举值到 Rust 变体名的映射，例如 { "status": { "1": "Enabled" } }
+        #[serde(default)]
+        variant_name_overrides: BTreeMap<String, BTreeMap<String, String>>,
+    },
+    /// 应用实体枚举升级计划并写回实体文件
+    ApplyUpgrade {
+        /// 目标表名
+        table: String,
+        /// 路由基础路径，默认自动从表名推导，例如 sys_user -> user
+        route_base: Option<String>,
+        /// 实体目录根路径；默认 crates/model/src/entity
+        output_dir: Option<String>,
+        /// 仅升级指定字段；未传时自动处理全部待升级枚举字段
+        fields: Option<Vec<String>>,
+        /// 可选：覆盖字段的 Rust 枚举名，例如 { "contact_gender": "ContactGender" }
+        #[serde(default)]
+        enum_name_overrides: BTreeMap<String, String>,
+        /// 可选：覆盖枚举值到 Rust 变体名的映射，例如 { "status": { "1": "Enabled" } }
+        #[serde(default)]
+        variant_name_overrides: BTreeMap<String, BTreeMap<String, String>>,
+    },
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case")]
 enum MenuToolArgs {
     /// 获取管理端菜单树
     ListTree,
@@ -564,15 +740,166 @@ impl ListWindow {
     }
 }
 
+fn build_entity_generator_artifacts(
+    output_dir: Option<&str>,
+    entity_file: &Path,
+    mod_file: &Path,
+) -> ArtifactBundleSummary {
+    let output_root = entity_file.parent().unwrap_or_else(|| Path::new("."));
+    build_artifact_bundle(
+        generator_artifact_mode(output_dir),
+        output_root,
+        [("entity_file", entity_file), ("mod_file", mod_file)],
+    )
+}
+
+fn build_admin_generator_artifacts(
+    workspace_root: &Path,
+    output_dir: Option<&str>,
+    router_file: &Path,
+    service_file: &Path,
+    dto_file: &Path,
+    vo_file: &Path,
+    mod_files: &[PathBuf],
+) -> ArtifactBundleSummary {
+    let output_root = if let Some(output_dir) = output_dir {
+        resolve_output_dir(workspace_root, Some(output_dir), "")
+    } else {
+        workspace_root.to_path_buf()
+    };
+    let mut files = vec![
+        ("router_file", router_file),
+        ("service_file", service_file),
+        ("dto_file", dto_file),
+        ("vo_file", vo_file),
+    ];
+    for mod_file in mod_files {
+        files.push(("mod_file", mod_file.as_path()));
+    }
+    build_artifact_bundle(generator_artifact_mode(output_dir), &output_root, files)
+}
+
+fn build_frontend_api_artifacts(
+    output_dir: Option<&str>,
+    frontend_root_dir: &Path,
+    api_file: &Path,
+    api_type_file: &Path,
+) -> ArtifactBundleSummary {
+    build_artifact_bundle(
+        generator_artifact_mode(output_dir),
+        frontend_root_dir,
+        [("api_file", api_file), ("api_type_file", api_type_file)],
+    )
+}
+
+fn build_frontend_page_artifacts(
+    output_dir: Option<&str>,
+    page_dir: &Path,
+    index_file: &Path,
+    search_file: &Path,
+    dialog_file: &Path,
+) -> ArtifactBundleSummary {
+    build_artifact_bundle(
+        generator_artifact_mode(output_dir),
+        page_dir,
+        [
+            ("index_file", index_file),
+            ("search_file", search_file),
+            ("dialog_file", dialog_file),
+        ],
+    )
+}
+
+fn build_frontend_bundle_artifacts(
+    output_dir: Option<&str>,
+    frontend_root_dir: &Path,
+    api_file: &Path,
+    api_type_file: &Path,
+    index_file: &Path,
+    search_file: &Path,
+    dialog_file: &Path,
+) -> ArtifactBundleSummary {
+    build_artifact_bundle(
+        generator_artifact_mode(output_dir),
+        frontend_root_dir,
+        [
+            ("api_file", api_file),
+            ("api_type_file", api_type_file),
+            ("index_file", index_file),
+            ("search_file", search_file),
+            ("dialog_file", dialog_file),
+        ],
+    )
+}
+
+fn build_export_artifacts(
+    output_root: &Path,
+    spec_file: &Path,
+    plan_file: &Path,
+) -> ArtifactBundleSummary {
+    build_artifact_bundle(
+        ArtifactMode::Export,
+        output_root,
+        [("spec_file", spec_file), ("plan_file", plan_file)],
+    )
+}
+
 #[tool_router(router = tool_router, vis = "pub(crate)")]
 impl AdminMcpServer {
+    #[tool(
+        description = "Inspect MCP health, version, runtime config summary, published tools/resources/prompts, and generator capability presets"
+    )]
+    async fn server_capabilities(&self) -> Result<Json<ServerCapabilitiesResult>, McpError> {
+        let config = self.config();
+        let database = inspect_database_health(self.db()).await;
+        let health = ServerHealthSummary {
+            status: if database.connected {
+                ServerHealthStatus::Ok
+            } else {
+                ServerHealthStatus::Degraded
+            },
+            database,
+        };
+
+        Ok(Json(ServerCapabilitiesResult {
+            health,
+            server: ServerIdentitySummary {
+                name: config.server_name.clone(),
+                version: config.server_version.clone(),
+                title: config.title.clone(),
+                description: config.description.clone(),
+            },
+            runtime: ServerRuntimeSummary {
+                transport: config.transport.to_string(),
+                http_mode: config.http_mode.to_string(),
+                binding: config.binding.to_string(),
+                port: config.port,
+                path: config.path.clone(),
+                stateful_mode: config.stateful_mode,
+                json_response: config.json_response,
+                session_channel_capacity: config.session_channel_capacity,
+                session_keep_alive_seconds: config.session_keep_alive,
+                default_database_url_available: config.default_database_url.is_some(),
+            },
+            capabilities: ServerCapabilityCatalog {
+                tools: tool_catalog(),
+                prompts: prompt_catalog(),
+                resources: resource_catalog(),
+                resource_templates: resource_template_catalog(),
+                generators: generator_capability_catalog(),
+            },
+        }))
+    }
+
     #[tool(description = "List runtime-discovered database tables exposed by this MCP server")]
     async fn schema_list_tables(&self) -> Result<Json<ListTablesResult>, McpError> {
-        let tables = list_tables(self.db()).await?;
-        Ok(Json(ListTablesResult {
-            schema: "public".to_string(),
-            tables,
-        }))
+        tool_result!("schema_list_tables", {
+            let tables = list_tables(self.db()).await?;
+            Ok(Json(ListTablesResult {
+                schema: "public".to_string(),
+                tables,
+            }))
+        })
     }
 
     #[tool(
@@ -582,8 +909,10 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<DescribeTableArgs>,
     ) -> Result<Json<TableSchema>, McpError> {
-        let schema = describe_table(self.db(), &args.table).await?;
-        Ok(Json(schema))
+        tool_result!("schema_describe_table", {
+            let schema = describe_table(self.db(), &args.table).await?;
+            Ok(Json(schema))
+        })
     }
 
     #[tool(
@@ -593,28 +922,158 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<GenerateEntityFromTableArgs>,
     ) -> Result<Json<GenerateEntityFromTableResult>, McpError> {
-        ensure_valid_identifier(&args.table, "table")?;
+        tool_result!("generate_entity_from_table", {
+            ensure_valid_identifier(&args.table, "table")?;
+            let table = args.table.clone();
+            let overwrite = args.overwrite.unwrap_or(false);
+            let output_dir = args.output_dir.clone();
+            let database_url = args.database_url.clone();
+            let database_schema = args.database_schema.clone();
+            let cli_bin = args.cli_bin.clone();
 
-        let generator = EntityGenerator::new(self.default_database_url().map(ToOwned::to_owned))?;
-        let result = generator
-            .generate(GenerateEntityRequest {
-                table: args.table,
-                overwrite: args.overwrite.unwrap_or(false),
-                output_dir: args.output_dir,
-                database_url: args.database_url,
-                database_schema: args.database_schema,
-                cli_bin: args.cli_bin,
-            })
-            .await?;
+            let generator =
+                EntityGenerator::new(self.default_database_url().map(ToOwned::to_owned))?;
+            let result = generator
+                .generate(GenerateEntityRequest {
+                    table,
+                    overwrite,
+                    output_dir: output_dir.clone(),
+                    database_url,
+                    database_schema,
+                    cli_bin,
+                })
+                .await?;
+            let artifacts = build_entity_generator_artifacts(
+                output_dir.as_deref(),
+                &result.entity_file,
+                &result.mod_file,
+            );
 
-        Ok(Json(GenerateEntityFromTableResult {
-            table: result.table,
-            entity_file: result.entity_file.display().to_string(),
-            mod_file: result.mod_file.display().to_string(),
-            overwritten: result.overwritten,
-            database_schema: result.database_schema,
-            cli_bin: result.cli_bin,
-        }))
+            Ok(Json(GenerateEntityFromTableResult {
+                table: result.table,
+                entity_file: result.entity_file.display().to_string(),
+                mod_file: result.mod_file.display().to_string(),
+                overwritten: result.overwritten,
+                database_schema: result.database_schema,
+                cli_bin: result.cli_bin,
+                artifacts,
+                validation: result.validation,
+            }))
+        })
+    }
+
+    #[tool(
+        description = "Plan or apply SeaORM entity enum upgrades by turning semantic enum drafts into DeriveActiveEnum definitions and typed Model fields"
+    )]
+    async fn upgrade_entity_enums_from_table(
+        &self,
+        Parameters(args): Parameters<UpgradeEntityEnumsFromTableArgs>,
+    ) -> Result<Json<UpgradeEntityEnumsFromTableResult>, McpError> {
+        tool_result!("upgrade_entity_enums_from_table", {
+            let (
+                mode,
+                table,
+                route_base,
+                output_dir,
+                fields,
+                enum_name_overrides,
+                variant_name_overrides,
+            ) = match args {
+                UpgradeEntityEnumsFromTableArgs::PlanUpgrade {
+                    table,
+                    route_base,
+                    output_dir,
+                    fields,
+                    enum_name_overrides,
+                    variant_name_overrides,
+                } => (
+                    ToolExecutionMode::Plan,
+                    table,
+                    route_base,
+                    output_dir,
+                    fields,
+                    enum_name_overrides,
+                    variant_name_overrides,
+                ),
+                UpgradeEntityEnumsFromTableArgs::ApplyUpgrade {
+                    table,
+                    route_base,
+                    output_dir,
+                    fields,
+                    enum_name_overrides,
+                    variant_name_overrides,
+                } => (
+                    ToolExecutionMode::Apply,
+                    table,
+                    route_base,
+                    output_dir,
+                    fields,
+                    enum_name_overrides,
+                    variant_name_overrides,
+                ),
+            };
+
+            ensure_valid_identifier(&table, "table")?;
+            if let Some(route_base) = &route_base {
+                ensure_valid_identifier(route_base, "route_base")?;
+            }
+            if let Some(fields) = &fields {
+                for field in fields {
+                    ensure_valid_identifier(field, "fields")?;
+                }
+            }
+            for field in enum_name_overrides.keys() {
+                ensure_valid_identifier(field, "enum_name_overrides field")?;
+            }
+            for field in variant_name_overrides.keys() {
+                ensure_valid_identifier(field, "variant_name_overrides field")?;
+            }
+
+            let schema = describe_table_for_crud(self.db(), &table).await?;
+            let upgrader = EntityEnumUpgrader::new()?;
+            let request = crate::tools::entity_enum_upgrader::EntityEnumUpgradeRequest {
+                schema,
+                route_base,
+                output_dir: output_dir.clone(),
+                fields,
+                enum_name_overrides,
+                variant_name_overrides,
+            };
+
+            let response = match mode {
+                ToolExecutionMode::Plan => {
+                    let preview = upgrader.plan(request).await?;
+                    UpgradeEntityEnumsFromTableResult {
+                        mode,
+                        table: preview.table,
+                        route_base: preview.route_base,
+                        entity_file: preview.entity_file.display().to_string(),
+                        changed: preview.changed,
+                        plan: preview.plan,
+                        rendered_source: preview.rendered_source,
+                        artifacts: preview.artifacts,
+                        validation: None,
+                    }
+                }
+                ToolExecutionMode::Apply => {
+                    let result = upgrader.apply(request).await?;
+                    UpgradeEntityEnumsFromTableResult {
+                        mode,
+                        table: result.preview.table,
+                        route_base: result.preview.route_base,
+                        entity_file: result.preview.entity_file.display().to_string(),
+                        changed: result.preview.changed,
+                        plan: result.preview.plan,
+                        rendered_source: result.preview.rendered_source,
+                        artifacts: result.preview.artifacts,
+                        validation: Some(result.validation),
+                    }
+                }
+                _ => unreachable!("entity enum upgrader only supports plan/apply"),
+            };
+
+            Ok(Json(response))
+        })
     }
 
     #[tool(
@@ -624,35 +1083,52 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<GenerateAdminModuleFromTableArgs>,
     ) -> Result<Json<GenerateAdminModuleFromTableResult>, McpError> {
-        ensure_valid_identifier(&args.table, "table")?;
-        if let Some(route_base) = &args.route_base {
-            ensure_valid_identifier(route_base, "route_base")?;
-        }
+        tool_result!("generate_admin_module_from_table", {
+            ensure_valid_identifier(&args.table, "table")?;
+            if let Some(route_base) = &args.route_base {
+                ensure_valid_identifier(route_base, "route_base")?;
+            }
 
-        let schema = describe_table(self.db(), &args.table).await?;
-        let generator = AdminModuleGenerator::new()?;
-        let result = generator
-            .generate(GenerateAdminModuleRequest {
-                schema,
-                overwrite: args.overwrite.unwrap_or(false),
-                route_base: args.route_base,
-                output_dir: args.output_dir,
-            })
-            .await?;
+            let route_base = args.route_base.clone();
+            let output_dir = args.output_dir.clone();
+            let overwrite = args.overwrite.unwrap_or(false);
+            let workspace_root = workspace_root()?;
+            let schema = describe_table(self.db(), &args.table).await?;
+            let generator = AdminModuleGenerator::new()?;
+            let result = generator
+                .generate(GenerateAdminModuleRequest {
+                    schema,
+                    overwrite,
+                    route_base,
+                    output_dir: output_dir.clone(),
+                })
+                .await?;
+            let artifacts = build_admin_generator_artifacts(
+                &workspace_root,
+                output_dir.as_deref(),
+                &result.router_file,
+                &result.service_file,
+                &result.dto_file,
+                &result.vo_file,
+                &result.updated_mod_files,
+            );
 
-        Ok(Json(GenerateAdminModuleFromTableResult {
-            table: result.table,
-            route_base: result.route_base,
-            router_file: result.router_file.display().to_string(),
-            service_file: result.service_file.display().to_string(),
-            dto_file: result.dto_file.display().to_string(),
-            vo_file: result.vo_file.display().to_string(),
-            updated_mod_files: result
-                .updated_mod_files
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-        }))
+            Ok(Json(GenerateAdminModuleFromTableResult {
+                table: result.table,
+                route_base: result.route_base,
+                router_file: result.router_file.display().to_string(),
+                service_file: result.service_file.display().to_string(),
+                dto_file: result.dto_file.display().to_string(),
+                vo_file: result.vo_file.display().to_string(),
+                updated_mod_files: result
+                    .updated_mod_files
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+                artifacts,
+                validation: result.validation,
+            }))
+        })
     }
 
     #[tool(
@@ -662,30 +1138,54 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<GenerateFrontendApiFromTableArgs>,
     ) -> Result<Json<GenerateFrontendApiFromTableResult>, McpError> {
-        ensure_valid_identifier(&args.table, "table")?;
-        if let Some(route_base) = &args.route_base {
-            ensure_valid_identifier(route_base, "route_base")?;
-        }
+        tool_result!("generate_frontend_api_from_table", {
+            ensure_valid_identifier(&args.table, "table")?;
+            if let Some(route_base) = &args.route_base {
+                ensure_valid_identifier(route_base, "route_base")?;
+            }
 
-        let schema = describe_table(self.db(), &args.table).await?;
-        let generator = FrontendApiGenerator::new()?;
-        let result = generator
-            .generate(GenerateFrontendApiRequest {
-                schema,
-                overwrite: args.overwrite.unwrap_or(false),
-                route_base: args.route_base,
-                output_dir: args.output_dir,
-                target_preset: args.target_preset.unwrap_or_default(),
-            })
-            .await?;
+            let target_preset = args.target_preset.unwrap_or_default();
+            let route_base = args.route_base.clone();
+            let output_dir = args.output_dir.clone();
+            let overwrite = args.overwrite.unwrap_or(false);
+            let workspace_root = workspace_root()?;
+            let frontend_root_dir = target_preset
+                .resolve_bundle_layout(&workspace_root, output_dir.as_deref())?
+                .frontend_root_dir;
+            let schema = describe_table(self.db(), &args.table).await?;
+            let generator = FrontendApiGenerator::new()?;
+            let result = generator
+                .generate(GenerateFrontendApiRequest {
+                    schema,
+                    overwrite,
+                    route_base,
+                    output_dir,
+                    target_preset,
+                })
+                .await?;
+            let artifacts = build_frontend_api_artifacts(
+                args.output_dir.as_deref(),
+                &frontend_root_dir,
+                &result.api_file,
+                &result.api_type_file,
+            );
+            let validation = validate_frontend_target_output(
+                target_preset,
+                &frontend_root_dir,
+                &[result.api_file.clone(), result.api_type_file.clone()],
+            )
+            .await;
 
-        Ok(Json(GenerateFrontendApiFromTableResult {
-            table: result.table,
-            route_base: result.route_base,
-            namespace: result.namespace,
-            api_file: result.api_file.display().to_string(),
-            api_type_file: result.api_type_file.display().to_string(),
-        }))
+            Ok(Json(GenerateFrontendApiFromTableResult {
+                table: result.table,
+                route_base: result.route_base,
+                namespace: result.namespace,
+                api_file: result.api_file.display().to_string(),
+                api_type_file: result.api_type_file.display().to_string(),
+                artifacts,
+                validation,
+            }))
+        })
     }
 
     #[tool(
@@ -695,45 +1195,60 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<GenerateFrontendBundleFromTableArgs>,
     ) -> Result<Json<GenerateFrontendBundleFromTableResult>, McpError> {
-        ensure_valid_identifier(&args.table, "table")?;
-        if let Some(route_base) = &args.route_base {
-            ensure_valid_identifier(route_base, "route_base")?;
-        }
+        tool_result!("generate_frontend_bundle_from_table", {
+            ensure_valid_identifier(&args.table, "table")?;
+            if let Some(route_base) = &args.route_base {
+                ensure_valid_identifier(route_base, "route_base")?;
+            }
 
-        let schema = describe_table(self.db(), &args.table).await?;
-        let generator = FrontendBundleGenerator::new()?;
-        let result = generator
-            .generate(GenerateFrontendBundleRequest {
-                schema,
-                overwrite: args.overwrite.unwrap_or(false),
-                route_base: args.route_base,
-                output_dir: args.output_dir,
-                target_preset: args.target_preset.unwrap_or_default(),
-                dict_bindings: args.dict_bindings,
-                field_hints: args.field_hints,
-                field_ui_meta: args.field_ui_meta,
-                search_fields: args.search_fields,
-                table_fields: args.table_fields,
-                form_fields: args.form_fields,
-            })
-            .await?;
+            let schema = describe_table(self.db(), &args.table).await?;
+            let generator = FrontendBundleGenerator::new()?;
+            let output_dir = args.output_dir.clone();
+            let result = generator
+                .generate(GenerateFrontendBundleRequest {
+                    schema,
+                    overwrite: args.overwrite.unwrap_or(false),
+                    route_base: args.route_base,
+                    output_dir: output_dir.clone(),
+                    target_preset: args.target_preset.unwrap_or_default(),
+                    dict_bindings: args.dict_bindings,
+                    field_hints: args.field_hints,
+                    field_ui_meta: args.field_ui_meta,
+                    search_fields: args.search_fields,
+                    table_fields: args.table_fields,
+                    form_fields: args.form_fields,
+                })
+                .await?;
+            let artifacts = build_frontend_bundle_artifacts(
+                output_dir.as_deref(),
+                &result.frontend_root_dir,
+                &result.api_file,
+                &result.api_type_file,
+                &result.index_file,
+                &result.search_file,
+                &result.dialog_file,
+            );
 
-        Ok(Json(GenerateFrontendBundleFromTableResult {
-            table: result.table,
-            route_base: result.route_base,
-            api_namespace: result.api_namespace,
-            api_import_path: result.api_import_path,
-            frontend_root_dir: result.frontend_root_dir.display().to_string(),
-            api_file: result.api_file.display().to_string(),
-            api_type_file: result.api_type_file.display().to_string(),
-            page_dir: result.page_dir.display().to_string(),
-            index_file: result.index_file.display().to_string(),
-            search_file: result.search_file.display().to_string(),
-            dialog_file: result.dialog_file.display().to_string(),
-            required_dict_types: result.required_dict_types,
-            dict_bundle_drafts: result.dict_bundle_drafts,
-            menu_config_draft: result.menu_config_draft,
-        }))
+            Ok(Json(GenerateFrontendBundleFromTableResult {
+                table: result.table,
+                route_base: result.route_base,
+                api_namespace: result.api_namespace,
+                api_import_path: result.api_import_path,
+                frontend_root_dir: result.frontend_root_dir.display().to_string(),
+                api_file: result.api_file.display().to_string(),
+                api_type_file: result.api_type_file.display().to_string(),
+                page_dir: result.page_dir.display().to_string(),
+                index_file: result.index_file.display().to_string(),
+                search_file: result.search_file.display().to_string(),
+                dialog_file: result.dialog_file.display().to_string(),
+                required_dict_types: result.required_dict_types,
+                enum_drafts: result.enum_drafts,
+                dict_bundle_drafts: result.dict_bundle_drafts,
+                menu_config_draft: result.menu_config_draft,
+                artifacts,
+                validation: result.validation,
+            }))
+        })
     }
 
     #[tool(
@@ -743,44 +1258,73 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<GenerateFrontendPageFromTableArgs>,
     ) -> Result<Json<GenerateFrontendPageFromTableResult>, McpError> {
-        ensure_valid_identifier(&args.table, "table")?;
-        if let Some(route_base) = &args.route_base {
-            ensure_valid_identifier(route_base, "route_base")?;
-        }
+        tool_result!("generate_frontend_page_from_table", {
+            ensure_valid_identifier(&args.table, "table")?;
+            if let Some(route_base) = &args.route_base {
+                ensure_valid_identifier(route_base, "route_base")?;
+            }
 
-        let schema = describe_table(self.db(), &args.table).await?;
-        let generator = FrontendPageGenerator::new()?;
-        let result = generator
-            .generate(GenerateFrontendPageRequest {
-                schema,
-                overwrite: args.overwrite.unwrap_or(false),
-                route_base: args.route_base,
-                output_dir: args.output_dir,
-                target_preset: args.target_preset.unwrap_or_default(),
-                api_import_path: args.api_import_path,
-                api_namespace: args.api_namespace,
-                api_list_item_type_name: args.api_list_item_type_name,
-                api_detail_type_name: args.api_detail_type_name,
-                dict_bindings: args.dict_bindings,
-                field_hints: args.field_hints,
-                field_ui_meta: args.field_ui_meta,
-                search_fields: args.search_fields,
-                table_fields: args.table_fields,
-                form_fields: args.form_fields,
-            })
-            .await?;
+            let target_preset = args.target_preset.unwrap_or_default();
+            let route_base = args.route_base.clone();
+            let output_dir = args.output_dir.clone();
+            let overwrite = args.overwrite.unwrap_or(false);
+            let workspace_root = workspace_root()?;
+            let frontend_root_dir = target_preset
+                .resolve_bundle_layout(&workspace_root, output_dir.as_deref())?
+                .frontend_root_dir;
+            let schema = describe_table(self.db(), &args.table).await?;
+            let generator = FrontendPageGenerator::new()?;
+            let result = generator
+                .generate(GenerateFrontendPageRequest {
+                    schema,
+                    overwrite,
+                    route_base,
+                    output_dir,
+                    target_preset,
+                    api_import_path: args.api_import_path,
+                    api_namespace: args.api_namespace,
+                    api_list_item_type_name: args.api_list_item_type_name,
+                    api_detail_type_name: args.api_detail_type_name,
+                    dict_bindings: args.dict_bindings,
+                    field_hints: args.field_hints,
+                    field_ui_meta: args.field_ui_meta,
+                    search_fields: args.search_fields,
+                    table_fields: args.table_fields,
+                    form_fields: args.form_fields,
+                })
+                .await?;
+            let artifacts = build_frontend_page_artifacts(
+                args.output_dir.as_deref(),
+                &result.page_dir,
+                &result.index_file,
+                &result.search_file,
+                &result.dialog_file,
+            );
+            let validation = validate_frontend_target_output(
+                target_preset,
+                &frontend_root_dir,
+                &[
+                    result.index_file.clone(),
+                    result.search_file.clone(),
+                    result.dialog_file.clone(),
+                ],
+            )
+            .await;
 
-        Ok(Json(GenerateFrontendPageFromTableResult {
-            table: result.table,
-            route_base: result.route_base,
-            api_import_path: result.api_import_path,
-            api_namespace: result.api_namespace,
-            page_dir: result.page_dir.display().to_string(),
-            index_file: result.index_file.display().to_string(),
-            search_file: result.search_file.display().to_string(),
-            dialog_file: result.dialog_file.display().to_string(),
-            required_dict_types: result.required_dict_types,
-        }))
+            Ok(Json(GenerateFrontendPageFromTableResult {
+                table: result.table,
+                route_base: result.route_base,
+                api_import_path: result.api_import_path,
+                api_namespace: result.api_namespace,
+                page_dir: result.page_dir.display().to_string(),
+                index_file: result.index_file.display().to_string(),
+                search_file: result.search_file.display().to_string(),
+                dialog_file: result.dialog_file.display().to_string(),
+                required_dict_types: result.required_dict_types,
+                artifacts,
+                validation,
+            }))
+        })
     }
 
     #[tool(
@@ -790,60 +1334,92 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<MenuToolArgs>,
     ) -> Result<Json<MenuToolResponse>, McpError> {
-        let domain = self.menu_domain();
-        let result = match args {
-            MenuToolArgs::ListTree => MenuToolResult::Tree {
-                items: domain.list_menus().await.map_err(api_error_to_mcp)?,
-            },
-            MenuToolArgs::GetUserTree { user_id } => MenuToolResult::Tree {
-                items: domain
-                    .get_menu_tree_for_user_id(user_id)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            MenuToolArgs::PlanConfig { config } => MenuToolResult::ConfigSync {
-                sync: domain
-                    .plan_menu_config(&config)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            MenuToolArgs::ExportConfig { config, output_dir } => {
-                let sync = domain
-                    .plan_menu_config(&config)
-                    .await
-                    .map_err(api_error_to_mcp)?;
-                let export = export_menu_config_artifacts(&config, &sync, &output_dir).await?;
-                MenuToolResult::ConfigExport { export, sync }
-            }
-            MenuToolArgs::ApplyConfig { config } => MenuToolResult::ConfigSync {
-                sync: domain
-                    .apply_menu_config(config)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            MenuToolArgs::CreateMenu { data } => MenuToolResult::Menu {
-                item: domain.create_menu(data).await.map_err(api_error_to_mcp)?,
-            },
-            MenuToolArgs::CreateButton { data } => MenuToolResult::Menu {
-                item: domain.create_button(data).await.map_err(api_error_to_mcp)?,
-            },
-            MenuToolArgs::UpdateMenu { id, data } => MenuToolResult::Menu {
-                item: domain
-                    .update_menu(id, data)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            MenuToolArgs::UpdateButton { id, data } => MenuToolResult::Menu {
-                item: domain
-                    .update_button(id, data)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            MenuToolArgs::DeleteNode { id } => MenuToolResult::Deleted {
-                id: domain.delete_menu(id).await.map_err(api_error_to_mcp)?,
-            },
-        };
-        Ok(Json(MenuToolResponse { result }))
+        tool_result!("menu_tool", {
+            let domain = self.menu_domain();
+            let (mode, result) = match args {
+                MenuToolArgs::ListTree => (
+                    ToolExecutionMode::Read,
+                    MenuToolResult::Tree {
+                        items: domain.list_menus().await.map_err(api_error_to_mcp)?,
+                    },
+                ),
+                MenuToolArgs::GetUserTree { user_id } => (
+                    ToolExecutionMode::Read,
+                    MenuToolResult::Tree {
+                        items: domain
+                            .get_menu_tree_for_user_id(user_id)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                MenuToolArgs::PlanConfig { config } => (
+                    ToolExecutionMode::Plan,
+                    MenuToolResult::ConfigSync {
+                        sync: domain
+                            .plan_menu_config(&config)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                MenuToolArgs::ExportConfig { config, output_dir } => {
+                    let sync = domain
+                        .plan_menu_config(&config)
+                        .await
+                        .map_err(api_error_to_mcp)?;
+                    let export = export_menu_config_artifacts(&config, &sync, &output_dir).await?;
+                    (
+                        ToolExecutionMode::Export,
+                        MenuToolResult::ConfigExport { export, sync },
+                    )
+                }
+                MenuToolArgs::ApplyConfig { config } => (
+                    ToolExecutionMode::Apply,
+                    MenuToolResult::ConfigSync {
+                        sync: domain
+                            .apply_menu_config(config)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                MenuToolArgs::CreateMenu { data } => (
+                    ToolExecutionMode::Apply,
+                    MenuToolResult::Menu {
+                        item: domain.create_menu(data).await.map_err(api_error_to_mcp)?,
+                    },
+                ),
+                MenuToolArgs::CreateButton { data } => (
+                    ToolExecutionMode::Apply,
+                    MenuToolResult::Menu {
+                        item: domain.create_button(data).await.map_err(api_error_to_mcp)?,
+                    },
+                ),
+                MenuToolArgs::UpdateMenu { id, data } => (
+                    ToolExecutionMode::Apply,
+                    MenuToolResult::Menu {
+                        item: domain
+                            .update_menu(id, data)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                MenuToolArgs::UpdateButton { id, data } => (
+                    ToolExecutionMode::Apply,
+                    MenuToolResult::Menu {
+                        item: domain
+                            .update_button(id, data)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                MenuToolArgs::DeleteNode { id } => (
+                    ToolExecutionMode::Apply,
+                    MenuToolResult::Deleted {
+                        id: domain.delete_menu(id).await.map_err(api_error_to_mcp)?,
+                    },
+                ),
+            };
+            Ok(Json(MenuToolResponse { mode, result }))
+        })
     }
 
     #[tool(
@@ -853,102 +1429,143 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<DictToolArgs>,
     ) -> Result<Json<DictToolResponse>, McpError> {
-        let domain = self.dict_domain();
-        let result = match args {
-            DictToolArgs::ListTypes { query } => DictToolResult::TypeList {
-                items: domain
-                    .list_dict_types(query.unwrap_or_else(empty_dict_type_query))
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            DictToolArgs::ListData { query } => DictToolResult::DataList {
-                items: domain
-                    .list_dict_data(query.unwrap_or_else(empty_dict_data_query))
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            DictToolArgs::GetByType { dict_type } => DictToolResult::SimpleDataList {
-                items: domain
-                    .get_dict_data_by_type(&dict_type)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            DictToolArgs::GetAllEnabled => DictToolResult::AllData {
-                data: domain.get_all_dict_data().await.map_err(api_error_to_mcp)?,
-            },
-            DictToolArgs::PlanBundle { bundle } => DictToolResult::BundleSync {
-                sync: domain
-                    .plan_dict_bundle(&bundle)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            DictToolArgs::ExportBundle { bundle, output_dir } => {
-                let sync = domain
-                    .plan_dict_bundle(&bundle)
-                    .await
-                    .map_err(api_error_to_mcp)?;
-                let export = export_dict_bundle_artifacts(&bundle, &sync, &output_dir).await?;
-                DictToolResult::BundleExport { export, sync }
-            }
-            DictToolArgs::ApplyBundle { operator, bundle } => {
-                let operator = operator_name(operator);
-                DictToolResult::BundleSync {
-                    sync: domain
-                        .apply_dict_bundle(bundle, &operator)
+        tool_result!("dict_tool", {
+            let domain = self.dict_domain();
+            let (mode, result) = match args {
+                DictToolArgs::ListTypes { query } => (
+                    ToolExecutionMode::Read,
+                    DictToolResult::TypeList {
+                        items: domain
+                            .list_dict_types(query.unwrap_or_else(empty_dict_type_query))
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                DictToolArgs::ListData { query } => (
+                    ToolExecutionMode::Read,
+                    DictToolResult::DataList {
+                        items: domain
+                            .list_dict_data(query.unwrap_or_else(empty_dict_data_query))
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                DictToolArgs::GetByType { dict_type } => (
+                    ToolExecutionMode::Read,
+                    DictToolResult::SimpleDataList {
+                        items: domain
+                            .get_dict_data_by_type(&dict_type)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                DictToolArgs::GetAllEnabled => (
+                    ToolExecutionMode::Read,
+                    DictToolResult::AllData {
+                        data: domain.get_all_dict_data().await.map_err(api_error_to_mcp)?,
+                    },
+                ),
+                DictToolArgs::PlanBundle { bundle } => (
+                    ToolExecutionMode::Plan,
+                    DictToolResult::BundleSync {
+                        sync: domain
+                            .plan_dict_bundle(&bundle)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                DictToolArgs::ExportBundle { bundle, output_dir } => {
+                    let sync = domain
+                        .plan_dict_bundle(&bundle)
                         .await
-                        .map_err(api_error_to_mcp)?,
+                        .map_err(api_error_to_mcp)?;
+                    let export = export_dict_bundle_artifacts(&bundle, &sync, &output_dir).await?;
+                    (
+                        ToolExecutionMode::Export,
+                        DictToolResult::BundleExport { export, sync },
+                    )
                 }
-            }
-            DictToolArgs::CreateType { operator, data } => {
-                let operator = operator_name(operator);
-                DictToolResult::Type {
-                    item: domain
-                        .create_dict_type(data, &operator)
-                        .await
-                        .map_err(api_error_to_mcp)?,
+                DictToolArgs::ApplyBundle { operator, bundle } => {
+                    let operator = operator_name(operator);
+                    (
+                        ToolExecutionMode::Apply,
+                        DictToolResult::BundleSync {
+                            sync: domain
+                                .apply_dict_bundle(bundle, &operator)
+                                .await
+                                .map_err(api_error_to_mcp)?,
+                        },
+                    )
                 }
-            }
-            DictToolArgs::UpdateType { id, operator, data } => {
-                let operator = operator_name(operator);
-                DictToolResult::Type {
-                    item: domain
-                        .update_dict_type(id, data, &operator)
-                        .await
-                        .map_err(api_error_to_mcp)?,
+                DictToolArgs::CreateType { operator, data } => {
+                    let operator = operator_name(operator);
+                    (
+                        ToolExecutionMode::Apply,
+                        DictToolResult::Type {
+                            item: domain
+                                .create_dict_type(data, &operator)
+                                .await
+                                .map_err(api_error_to_mcp)?,
+                        },
+                    )
                 }
-            }
-            DictToolArgs::DeleteType { id } => DictToolResult::Deleted {
-                id: domain
-                    .delete_dict_type(id)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-            DictToolArgs::CreateData { operator, data } => {
-                let operator = operator_name(operator);
-                DictToolResult::Data {
-                    item: domain
-                        .create_dict_data(data, &operator)
-                        .await
-                        .map_err(api_error_to_mcp)?,
+                DictToolArgs::UpdateType { id, operator, data } => {
+                    let operator = operator_name(operator);
+                    (
+                        ToolExecutionMode::Apply,
+                        DictToolResult::Type {
+                            item: domain
+                                .update_dict_type(id, data, &operator)
+                                .await
+                                .map_err(api_error_to_mcp)?,
+                        },
+                    )
                 }
-            }
-            DictToolArgs::UpdateData { id, operator, data } => {
-                let operator = operator_name(operator);
-                DictToolResult::Data {
-                    item: domain
-                        .update_dict_data(id, data, &operator)
-                        .await
-                        .map_err(api_error_to_mcp)?,
+                DictToolArgs::DeleteType { id } => (
+                    ToolExecutionMode::Apply,
+                    DictToolResult::Deleted {
+                        id: domain
+                            .delete_dict_type(id)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+                DictToolArgs::CreateData { operator, data } => {
+                    let operator = operator_name(operator);
+                    (
+                        ToolExecutionMode::Apply,
+                        DictToolResult::Data {
+                            item: domain
+                                .create_dict_data(data, &operator)
+                                .await
+                                .map_err(api_error_to_mcp)?,
+                        },
+                    )
                 }
-            }
-            DictToolArgs::DeleteData { id } => DictToolResult::Deleted {
-                id: domain
-                    .delete_dict_data(id)
-                    .await
-                    .map_err(api_error_to_mcp)?,
-            },
-        };
-        Ok(Json(DictToolResponse { result }))
+                DictToolArgs::UpdateData { id, operator, data } => {
+                    let operator = operator_name(operator);
+                    (
+                        ToolExecutionMode::Apply,
+                        DictToolResult::Data {
+                            item: domain
+                                .update_dict_data(id, data, &operator)
+                                .await
+                                .map_err(api_error_to_mcp)?,
+                        },
+                    )
+                }
+                DictToolArgs::DeleteData { id } => (
+                    ToolExecutionMode::Apply,
+                    DictToolResult::Deleted {
+                        id: domain
+                            .delete_dict_data(id)
+                            .await
+                            .map_err(api_error_to_mcp)?,
+                    },
+                ),
+            };
+            Ok(Json(DictToolResponse { mode, result }))
+        })
     }
 
     #[tool(
@@ -959,52 +1576,56 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<SqlQueryReadonlyArgs>,
     ) -> Result<Json<SqlQueryReadonlyResult>, McpError> {
-        let sql = normalize_readonly_sql(&args.sql)?;
-        let limit = args
-            .limit
-            .unwrap_or(DEFAULT_SQL_QUERY_LIMIT)
-            .clamp(1, MAX_SQL_QUERY_LIMIT);
-        let params = convert_sql_params(&args.params)?;
-        let wrapped_sql = format!(
-            "SELECT * FROM ({sql}) AS {} LIMIT {limit}",
-            quote_identifier(READONLY_SQL_SUBQUERY_ALIAS)
-        );
+        tool_result!("sql_query_readonly", {
+            let sql = normalize_readonly_sql(&args.sql)?;
+            let limit = args
+                .limit
+                .unwrap_or(DEFAULT_SQL_QUERY_LIMIT)
+                .clamp(1, MAX_SQL_QUERY_LIMIT);
+            let params = convert_sql_params(&args.params)?;
+            let wrapped_sql = format!(
+                "SELECT * FROM ({sql}) AS {} LIMIT {limit}",
+                quote_identifier(READONLY_SQL_SUBQUERY_ALIAS)
+            );
 
-        let rows = self
-            .db()
-            .transaction_with_config(
-                move |txn| {
-                    let statement = Statement::from_sql_and_values(
-                        DbBackend::Postgres,
-                        wrapped_sql.clone(),
-                        params.clone(),
-                    );
-                    Box::pin(async move {
-                        SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(
-                            statement,
-                        )
-                        .all(txn)
-                        .await
-                        .map_err(|error| sql_tool_db_error("execute read-only SQL query", error))
-                    })
-                },
-                None,
-                Some(AccessMode::ReadOnly),
-            )
-            .await
-            .map_err(|error| match error {
-                TransactionError::Connection(error) => {
-                    sql_tool_db_error("start read-only SQL transaction", error)
-                }
-                TransactionError::Transaction(error) => error,
-            })?;
+            let rows = self
+                .db()
+                .transaction_with_config(
+                    move |txn| {
+                        let statement = Statement::from_sql_and_values(
+                            DbBackend::Postgres,
+                            wrapped_sql.clone(),
+                            params.clone(),
+                        );
+                        Box::pin(async move {
+                            SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(
+                                statement,
+                            )
+                            .all(txn)
+                            .await
+                            .map_err(|error| {
+                                sql_tool_db_error("execute read-only SQL query", error)
+                            })
+                        })
+                    },
+                    None,
+                    Some(AccessMode::ReadOnly),
+                )
+                .await
+                .map_err(|error| match error {
+                    TransactionError::Connection(error) => {
+                        sql_tool_db_error("start read-only SQL transaction", error)
+                    }
+                    TransactionError::Transaction(error) => error,
+                })?;
 
-        let result = SqlQueryReadonlyResult {
-            row_count: rows.len() as u64,
-            rows,
-            limit,
-        };
-        Ok(Json(result))
+            let result = SqlQueryReadonlyResult {
+                row_count: rows.len() as u64,
+                rows,
+                limit,
+            };
+            Ok(Json(result))
+        })
     }
 
     #[tool(
@@ -1015,33 +1636,35 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<SqlExecArgs>,
     ) -> Result<Json<SqlExecResult>, McpError> {
-        let sql = normalize_exec_sql(&args.sql)?;
-        let params = convert_sql_params(&args.params)?;
+        tool_result!("sql_exec", {
+            let sql = normalize_exec_sql(&args.sql)?;
+            let params = convert_sql_params(&args.params)?;
 
-        tracing::warn!(target: "summer_mcp::sql_exec", sql = %sql, "executing raw SQL via MCP sql_exec");
+            tracing::warn!(target: "summer_mcp::sql_exec", sql = %sql, "executing raw SQL via MCP sql_exec");
 
-        let rows_affected = self
-            .db()
-            .transaction(move |txn| {
-                let statement =
-                    Statement::from_sql_and_values(DbBackend::Postgres, sql.clone(), params);
-                Box::pin(async move {
-                    let result = txn
-                        .execute_raw(statement)
-                        .await
-                        .map_err(|error| sql_tool_db_error("execute SQL statement", error))?;
-                    Ok(result.rows_affected())
+            let rows_affected = self
+                .db()
+                .transaction(move |txn| {
+                    let statement =
+                        Statement::from_sql_and_values(DbBackend::Postgres, sql.clone(), params);
+                    Box::pin(async move {
+                        let result = txn
+                            .execute_raw(statement)
+                            .await
+                            .map_err(|error| sql_tool_db_error("execute SQL statement", error))?;
+                        Ok(result.rows_affected())
+                    })
                 })
-            })
-            .await
-            .map_err(|error| match error {
-                TransactionError::Connection(error) => {
-                    sql_tool_db_error("start sql_exec transaction", error)
-                }
-                TransactionError::Transaction(error) => error,
-            })?;
+                .await
+                .map_err(|error| match error {
+                    TransactionError::Connection(error) => {
+                        sql_tool_db_error("start sql_exec transaction", error)
+                    }
+                    TransactionError::Transaction(error) => error,
+                })?;
 
-        Ok(Json(SqlExecResult { rows_affected }))
+            Ok(Json(SqlExecResult { rows_affected }))
+        })
     }
 
     #[tool(description = "Fetch one row from a table by primary key")]
@@ -1049,30 +1672,35 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableGetArgs>,
     ) -> Result<Json<TableLookupResult>, McpError> {
-        let schema = describe_table_for_crud(self.db(), &args.table).await?;
-        let select_list = readable_select_list(&schema, None)?;
-        let mut params = Vec::new();
-        let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
-        let statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!(
-                "SELECT {select_list} FROM {} WHERE {where_clause} LIMIT 1",
-                schema.qualified_name()
-            ),
-            params,
-        );
+        tool_result!("table_get", {
+            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let select_list = readable_select_list(&schema, None)?;
+            let mut params = Vec::new();
+            let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
+            let statement = Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "SELECT {select_list} FROM {} WHERE {where_clause} LIMIT 1",
+                    schema.qualified_name()
+                ),
+                params,
+            );
 
-        let item = SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(statement)
-            .one(self.db())
-            .await
-            .map_err(|error| db_error(format!("query row from `{}`", schema.table), error))?;
+            let item =
+                SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(statement)
+                    .one(self.db())
+                    .await
+                    .map_err(|error| {
+                        db_error(format!("query row from `{}`", schema.table), error)
+                    })?;
 
-        Ok(Json(TableLookupResult {
-            schema: schema.schema,
-            table: schema.table,
-            found: item.is_some(),
-            item,
-        }))
+            Ok(Json(TableLookupResult {
+                schema: schema.schema,
+                table: schema.table,
+                found: item.is_some(),
+                item,
+            }))
+        })
     }
 
     #[tool(
@@ -1082,61 +1710,66 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableQueryArgs>,
     ) -> Result<Json<TableListResult>, McpError> {
-        let schema = describe_table_for_crud(self.db(), &args.table).await?;
-        let select_list = readable_select_list(&schema, args.columns.as_deref())?;
-        let window = ListWindow::from_args(args.limit, args.offset);
+        tool_result!("table_query", {
+            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let select_list = readable_select_list(&schema, args.columns.as_deref())?;
+            let window = ListWindow::from_args(args.limit, args.offset);
 
-        let (where_clause, count_params) = build_filters_clause(&schema, args.filters.as_deref())?;
-        let total_statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!(
-                "SELECT COUNT(*)::bigint AS total FROM {}{}",
-                schema.qualified_name(),
-                where_clause
-                    .as_ref()
-                    .map(|clause| format!(" WHERE {clause}"))
-                    .unwrap_or_default()
-            ),
-            count_params.clone(),
-        );
-        let total =
-            SelectorRaw::<SelectModel<CountRow>>::from_statement::<CountRow>(total_statement)
-                .one(self.db())
-                .await
-                .map_err(|error| db_error(format!("count rows in `{}`", schema.table), error))?
-                .map(|row: CountRow| row.total.max(0) as u64)
-                .unwrap_or(0);
+            let (where_clause, count_params) =
+                build_filters_clause(&schema, args.filters.as_deref())?;
+            let total_statement = Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "SELECT COUNT(*)::bigint AS total FROM {}{}",
+                    schema.qualified_name(),
+                    where_clause
+                        .as_ref()
+                        .map(|clause| format!(" WHERE {clause}"))
+                        .unwrap_or_default()
+                ),
+                count_params.clone(),
+            );
+            let total =
+                SelectorRaw::<SelectModel<CountRow>>::from_statement::<CountRow>(total_statement)
+                    .one(self.db())
+                    .await
+                    .map_err(|error| db_error(format!("count rows in `{}`", schema.table), error))?
+                    .map(|row: CountRow| row.total.max(0) as u64)
+                    .unwrap_or(0);
 
-        let order_clause = build_order_clause(&schema, args.order_by.as_deref())?;
-        let items_statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!(
-                "SELECT {select_list} FROM {}{}{} LIMIT {} OFFSET {}",
-                schema.qualified_name(),
-                where_clause
-                    .as_ref()
-                    .map(|clause| format!(" WHERE {clause}"))
-                    .unwrap_or_default(),
-                order_clause,
-                window.limit,
-                window.offset
-            ),
-            count_params,
-        );
-        let items =
-            SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(items_statement)
-                .all(self.db())
-                .await
-                .map_err(|error| db_error(format!("query rows from `{}`", schema.table), error))?;
+            let order_clause = build_order_clause(&schema, args.order_by.as_deref())?;
+            let items_statement = Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "SELECT {select_list} FROM {}{}{} LIMIT {} OFFSET {}",
+                    schema.qualified_name(),
+                    where_clause
+                        .as_ref()
+                        .map(|clause| format!(" WHERE {clause}"))
+                        .unwrap_or_default(),
+                    order_clause,
+                    window.limit,
+                    window.offset
+                ),
+                count_params,
+            );
+            let items =
+                SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(items_statement)
+                    .all(self.db())
+                    .await
+                    .map_err(|error| {
+                        db_error(format!("query rows from `{}`", schema.table), error)
+                    })?;
 
-        Ok(Json(TableListResult {
-            schema: schema.schema,
-            table: schema.table,
-            items,
-            total,
-            limit: window.limit,
-            offset: window.offset,
-        }))
+            Ok(Json(TableListResult {
+                schema: schema.schema,
+                table: schema.table,
+                items,
+                total,
+                limit: window.limit,
+                offset: window.offset,
+            }))
+        })
     }
 
     #[tool(description = "Insert one row into a table and return the created row")]
@@ -1144,30 +1777,35 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableInsertArgs>,
     ) -> Result<Json<TableMutationResult>, McpError> {
-        let schema = describe_table_for_crud(self.db(), &args.table).await?;
-        let (columns, values, params) = build_insert_assignments(&schema, &args.values)?;
-        let returning = readable_select_list(&schema, None)?;
-        let statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!(
-                "INSERT INTO {} ({columns}) VALUES ({values}) RETURNING {returning}",
-                schema.qualified_name()
-            ),
-            params,
-        );
+        tool_result!("table_insert", {
+            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let (columns, values, params) = build_insert_assignments(&schema, &args.values)?;
+            let returning = readable_select_list(&schema, None)?;
+            let statement = Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "INSERT INTO {} ({columns}) VALUES ({values}) RETURNING {returning}",
+                    schema.qualified_name()
+                ),
+                params,
+            );
 
-        let item = SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(statement)
-            .one(self.db())
-            .await
-            .map_err(|error| db_error(format!("insert row into `{}`", schema.table), error))?;
+            let item =
+                SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(statement)
+                    .one(self.db())
+                    .await
+                    .map_err(|error| {
+                        db_error(format!("insert row into `{}`", schema.table), error)
+                    })?;
 
-        Ok(Json(TableMutationResult {
-            schema: schema.schema,
-            table: schema.table,
-            found: item.is_some(),
-            changed: item.is_some(),
-            item,
-        }))
+            Ok(Json(TableMutationResult {
+                schema: schema.schema,
+                table: schema.table,
+                found: item.is_some(),
+                changed: item.is_some(),
+                item,
+            }))
+        })
     }
 
     #[tool(description = "Update one row in a table by primary key and return the latest row")]
@@ -1175,57 +1813,60 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableUpdateArgs>,
     ) -> Result<Json<TableMutationResult>, McpError> {
-        let schema = describe_table_for_crud(self.db(), &args.table).await?;
-        let (set_clause, mut params) = build_update_assignments(&schema, &args.values)?;
-        let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
-        let returning = readable_select_list(&schema, None)?;
-        let statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!(
-                "UPDATE {} SET {set_clause} WHERE {where_clause} RETURNING {returning}",
-                schema.qualified_name()
-            ),
-            params,
-        );
-
-        let item = SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(statement)
-            .one(self.db())
-            .await
-            .map_err(|error| db_error(format!("update row in `{}`", schema.table), error))?;
-
-        let (found, changed) = if item.is_some() {
-            (true, true)
-        } else {
-            // UPDATE RETURNING returned nothing — check whether the row exists at all
-            // so we can distinguish "not found" from "found but not changed".
-            let mut key_params = Vec::new();
-            let key_where = build_key_clause(&schema, &args.key, &mut key_params)?;
-            let exists_sql = format!(
-                "SELECT 1 AS v FROM {} WHERE {key_where} LIMIT 1",
-                schema.qualified_name()
+        tool_result!("table_update", {
+            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let (set_clause, mut params) = build_update_assignments(&schema, &args.values)?;
+            let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
+            let returning = readable_select_list(&schema, None)?;
+            let statement = Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "UPDATE {} SET {set_clause} WHERE {where_clause} RETURNING {returning}",
+                    schema.qualified_name()
+                ),
+                params,
             );
-            let exists = SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(
-                Statement::from_sql_and_values(DbBackend::Postgres, exists_sql, key_params),
-            )
-            .one(self.db())
-            .await
-            .map_err(|error| {
-                db_error(
-                    format!("check existence of row in `{}`", schema.table),
-                    error,
-                )
-            })?
-            .is_some();
-            (exists, false)
-        };
 
-        Ok(Json(TableMutationResult {
-            schema: schema.schema,
-            table: schema.table,
-            found,
-            changed,
-            item,
-        }))
+            let item =
+                SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(statement)
+                    .one(self.db())
+                    .await
+                    .map_err(|error| {
+                        db_error(format!("update row in `{}`", schema.table), error)
+                    })?;
+
+            let (found, changed) = if item.is_some() {
+                (true, true)
+            } else {
+                let mut key_params = Vec::new();
+                let key_where = build_key_clause(&schema, &args.key, &mut key_params)?;
+                let exists_sql = format!(
+                    "SELECT 1 AS v FROM {} WHERE {key_where} LIMIT 1",
+                    schema.qualified_name()
+                );
+                let exists = SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(
+                    Statement::from_sql_and_values(DbBackend::Postgres, exists_sql, key_params),
+                )
+                .one(self.db())
+                .await
+                .map_err(|error| {
+                    db_error(
+                        format!("check existence of row in `{}`", schema.table),
+                        error,
+                    )
+                })?
+                .is_some();
+                (exists, false)
+            };
+
+            Ok(Json(TableMutationResult {
+                schema: schema.schema,
+                table: schema.table,
+                found,
+                changed,
+                item,
+            }))
+        })
     }
 
     #[tool(description = "Delete one row from a table by primary key")]
@@ -1233,56 +1874,59 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableDeleteArgs>,
     ) -> Result<Json<TableDeleteResult>, McpError> {
-        let schema = describe_table_for_crud(self.db(), &args.table).await?;
-        let mut params = Vec::new();
-        let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
-        let statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!(
-                "DELETE FROM {} WHERE {where_clause} RETURNING 1 AS deleted",
-                schema.qualified_name()
-            ),
-            params,
-        );
-
-        let deleted = SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(statement)
-            .one(self.db())
-            .await
-            .map_err(|error| db_error(format!("delete row from `{}`", schema.table), error))?
-            .is_some();
-
-        let found = if deleted {
-            true
-        } else {
-            // DELETE RETURNING returned nothing — check whether the row exists at all
-            // so we can distinguish "not found" from "found but blocked by trigger".
-            let mut key_params = Vec::new();
-            let key_where = build_key_clause(&schema, &args.key, &mut key_params)?;
-            let exists_sql = format!(
-                "SELECT 1 AS v FROM {} WHERE {key_where} LIMIT 1",
-                schema.qualified_name()
+        tool_result!("table_delete", {
+            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let mut params = Vec::new();
+            let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
+            let statement = Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "DELETE FROM {} WHERE {where_clause} RETURNING 1 AS deleted",
+                    schema.qualified_name()
+                ),
+                params,
             );
-            SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(
-                Statement::from_sql_and_values(DbBackend::Postgres, exists_sql, key_params),
-            )
-            .one(self.db())
-            .await
-            .map_err(|error| {
-                db_error(
-                    format!("check existence of row in `{}`", schema.table),
-                    error,
-                )
-            })?
-            .is_some()
-        };
 
-        Ok(Json(TableDeleteResult {
-            schema: schema.schema,
-            table: schema.table,
-            found,
-            deleted,
-            rows_affected: u64::from(deleted),
-        }))
+            let deleted =
+                SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(statement)
+                    .one(self.db())
+                    .await
+                    .map_err(|error| {
+                        db_error(format!("delete row from `{}`", schema.table), error)
+                    })?
+                    .is_some();
+
+            let found = if deleted {
+                true
+            } else {
+                let mut key_params = Vec::new();
+                let key_where = build_key_clause(&schema, &args.key, &mut key_params)?;
+                let exists_sql = format!(
+                    "SELECT 1 AS v FROM {} WHERE {key_where} LIMIT 1",
+                    schema.qualified_name()
+                );
+                SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(
+                    Statement::from_sql_and_values(DbBackend::Postgres, exists_sql, key_params),
+                )
+                .one(self.db())
+                .await
+                .map_err(|error| {
+                    db_error(
+                        format!("check existence of row in `{}`", schema.table),
+                        error,
+                    )
+                })?
+                .is_some()
+            };
+
+            Ok(Json(TableDeleteResult {
+                schema: schema.schema,
+                table: schema.table,
+                found,
+                deleted,
+                rows_affected: u64::from(deleted),
+            }))
+        })
     }
 }
 
@@ -1304,6 +1948,7 @@ async fn export_menu_config_artifacts(
         output_dir: output_root.display().to_string(),
         spec_file: spec_file.display().to_string(),
         plan_file: plan_file.display().to_string(),
+        artifacts: build_export_artifacts(&output_root, &spec_file, &plan_file),
     })
 }
 
@@ -1325,12 +1970,21 @@ async fn export_dict_bundle_artifacts(
         output_dir: output_root.display().to_string(),
         spec_file: spec_file.display().to_string(),
         plan_file: plan_file.display().to_string(),
+        artifacts: build_export_artifacts(&output_root, &spec_file, &plan_file),
     })
 }
 
 fn resolve_export_output_dir(output_dir: &str) -> Result<PathBuf, McpError> {
     if output_dir.trim().is_empty() {
-        return Err(McpError::invalid_params("output_dir cannot be empty", None));
+        return Err(invalid_params_error(
+            "invalid_output_dir",
+            "Invalid output directory",
+            Some(
+                "Pass a non-empty output_dir. Use an absolute temp path when you want a safe preview.",
+            ),
+            Some("output_dir cannot be empty".to_string()),
+            None,
+        ));
     }
     let workspace_root = workspace_root()?;
     Ok(resolve_output_dir(&workspace_root, Some(output_dir), ""))
@@ -1350,18 +2004,74 @@ fn menu_export_file_stem(config: &MenuConfigSpec) -> String {
 
 fn api_error_to_mcp(error: ApiErrors) -> McpError {
     match error {
-        ApiErrors::Internal(error) => {
-            McpError::internal_error(error_chain_message(error.as_ref()), None)
+        ApiErrors::Internal(error) => internal_error(
+            "business_operation_failed",
+            "Business operation failed",
+            None,
+            Some(error_chain_message(error.as_ref())),
+            None,
+        ),
+        ApiErrors::ServiceUnavailable(message) => internal_error(
+            "service_unavailable",
+            "Service unavailable",
+            Some("Check dependent services and retry once the admin application is healthy."),
+            Some(message),
+            None,
+        ),
+        ApiErrors::BadRequest(message) => {
+            invalid_params_error("bad_request", "Bad request", None, Some(message), None)
         }
-        ApiErrors::ServiceUnavailable(message) => McpError::internal_error(message, None),
-        ApiErrors::BadRequest(message)
-        | ApiErrors::Unauthorized(message)
-        | ApiErrors::Forbidden(message)
-        | ApiErrors::NotFound(message)
-        | ApiErrors::Conflict(message)
-        | ApiErrors::IncompleteUpload(message)
-        | ApiErrors::ValidationFailed(message)
-        | ApiErrors::TooManyRequests(message) => McpError::invalid_params(message, None),
+        ApiErrors::Unauthorized(message) => invalid_params_error(
+            "unauthorized",
+            "Unauthorized",
+            Some("Check the caller context or authentication setup before retrying."),
+            Some(message),
+            None,
+        ),
+        ApiErrors::Forbidden(message) => invalid_params_error(
+            "forbidden",
+            "Forbidden",
+            Some("Check permissions or route guards before retrying."),
+            Some(message),
+            None,
+        ),
+        ApiErrors::NotFound(message) => invalid_params_error(
+            "entity_not_found",
+            "Entity not found",
+            Some("Query the current business data first before updating or deleting it."),
+            Some(message),
+            None,
+        ),
+        ApiErrors::Conflict(message) => invalid_params_error(
+            "conflict",
+            "Conflict",
+            Some(
+                "Inspect current business data first; the write may violate a uniqueness or state rule.",
+            ),
+            Some(message),
+            None,
+        ),
+        ApiErrors::IncompleteUpload(message) => invalid_params_error(
+            "incomplete_upload",
+            "Incomplete upload",
+            None,
+            Some(message),
+            None,
+        ),
+        ApiErrors::ValidationFailed(message) => invalid_params_error(
+            "validation_failed",
+            "Validation failed",
+            Some("Check required fields, enum values, and field formats before retrying."),
+            Some(message),
+            None,
+        ),
+        ApiErrors::TooManyRequests(message) => invalid_params_error(
+            "rate_limited",
+            "Too many requests",
+            Some("Reduce request frequency and retry later."),
+            Some(message),
+            None,
+        ),
     }
 }
 
@@ -1387,16 +2097,118 @@ fn empty_dict_data_query() -> DictDataQueryDto {
     }
 }
 
+async fn inspect_database_health(db: &DatabaseConnection) -> DatabaseHealthSummary {
+    match list_tables(db).await {
+        Ok(tables) => DatabaseHealthSummary {
+            backend: database_backend_name(db),
+            connected: true,
+            public_table_count: Some(tables.len()),
+            error: None,
+        },
+        Err(error) => DatabaseHealthSummary {
+            backend: database_backend_name(db),
+            connected: false,
+            public_table_count: None,
+            error: Some(error.message.to_string()),
+        },
+    }
+}
+
+fn database_backend_name(db: &DatabaseConnection) -> String {
+    match db.get_database_backend() {
+        DbBackend::MySql => "mysql",
+        DbBackend::Postgres => "postgres",
+        DbBackend::Sqlite => "sqlite",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+fn tool_catalog() -> Vec<String> {
+    let mut names = AdminMcpServer::tool_router()
+        .list_all()
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
+}
+
+fn prompt_catalog() -> Vec<String> {
+    let mut names = prompts::build_prompt_router()
+        .list_all()
+        .into_iter()
+        .map(|prompt| prompt.name)
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
+}
+
+fn resource_catalog() -> Vec<ResourceCapabilitySummary> {
+    vec![ResourceCapabilitySummary {
+        uri: "schema://tables".to_string(),
+        name: "tables".to_string(),
+        title: Some("Database Tables".to_string()),
+    }]
+}
+
+fn resource_template_catalog() -> Vec<ResourceTemplateCapabilitySummary> {
+    vec![ResourceTemplateCapabilitySummary {
+        uri_template: "schema://table/{table}".to_string(),
+        name: "table_schema".to_string(),
+        title: Some("Table Schema".to_string()),
+    }]
+}
+
+fn generator_capability_catalog() -> GeneratorCapabilitySummary {
+    GeneratorCapabilitySummary {
+        backend_generators: vec![
+            "generate_entity_from_table".to_string(),
+            "upgrade_entity_enums_from_table".to_string(),
+            "generate_admin_module_from_table".to_string(),
+        ],
+        frontend_generators: vec![
+            "generate_frontend_api_from_table".to_string(),
+            "generate_frontend_page_from_table".to_string(),
+            "generate_frontend_bundle_from_table".to_string(),
+        ],
+        frontend_target_presets: vec![
+            FrontendTargetPreset::SummerMcp.as_str().to_string(),
+            FrontendTargetPreset::ArtDesignPro.as_str().to_string(),
+        ],
+        supports_temp_output_dir: true,
+        returns_menu_dict_drafts: true,
+    }
+}
+
 fn sql_tool_db_error(action: impl Into<String>, error: sea_orm::DbErr) -> McpError {
     let action = action.into();
     let detail = error_chain_message(&error);
-    let mut message = format!("failed to {action}: {detail}");
     if looks_like_sql_param_type_mismatch(&detail) {
-        message.push_str(
-            " Hint: JSON string parameters are bound as text. Pass numbers/bools as JSON native values like `13`/`true`, or use typed params such as {\"kind\":\"bigint\",\"value\":\"13\"}.",
+        return internal_error(
+            "sql_param_type_mismatch",
+            "SQL parameter type mismatch",
+            Some(
+                "Pass numbers and booleans as native JSON values, or use typed params such as {\"kind\":\"bigint\",\"value\":\"13\"}.",
+            ),
+            Some(detail),
+            Some(serde_json::json!({ "action": action })),
         );
     }
-    McpError::internal_error(message, None)
+    let machine_code = if action.contains("read-only SQL query") {
+        "sql_query_failed"
+    } else if action.contains("SQL statement") {
+        "sql_exec_failed"
+    } else {
+        "database_transaction_failed"
+    };
+    internal_error(
+        machine_code,
+        "SQL operation failed",
+        Some("Check the SQL text, placeholder order, and database connectivity."),
+        Some(detail),
+        Some(serde_json::json!({ "action": action })),
+    )
 }
 
 fn looks_like_sql_param_type_mismatch(detail: &str) -> bool {
@@ -1410,7 +2222,10 @@ fn looks_like_sql_param_type_mismatch(detail: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{McpConfig, McpHttpMode, McpTransport};
+    use sea_orm::{DbBackend, MockDatabase, Value};
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
     fn router_exposes_small_generic_surface() {
@@ -1433,6 +2248,7 @@ mod tests {
                 "menu_tool",
                 "schema_describe_table",
                 "schema_list_tables",
+                "server_capabilities",
                 "sql_exec",
                 "sql_query_readonly",
                 "table_delete",
@@ -1440,6 +2256,7 @@ mod tests {
                 "table_insert",
                 "table_query",
                 "table_update",
+                "upgrade_entity_enums_from_table",
             ]
         );
     }
@@ -1450,15 +2267,20 @@ mod tests {
             "table": "sys_role",
             "filters": [
                 {"column":"id","op":"eq","value": 1},
+                {"or": [
+                    {"column":"status","op":"eq","value": 1},
+                    {"column":"status","op":"eq","value": 2}
+                ]},
                 "role_name ilike admin"
             ]
         }))
         .unwrap();
 
         let filters = args.filters.unwrap();
-        assert_eq!(filters.len(), 2);
+        assert_eq!(filters.len(), 3);
         assert!(matches!(filters[0], TableFilterInput::Structured(_)));
-        assert!(matches!(filters[1], TableFilterInput::Shorthand(_)));
+        assert!(matches!(filters[1], TableFilterInput::Group(_)));
+        assert!(matches!(filters[2], TableFilterInput::Shorthand(_)));
     }
 
     #[test]
@@ -1472,5 +2294,57 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.params.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn server_capabilities_reports_runtime_and_database_health() {
+        let db = MockDatabase::new(DbBackend::Postgres)
+            .append_query_results([vec![row([("table_name", "sys_user".into())])]])
+            .into_connection();
+
+        let mut config = McpConfig {
+            enabled: true,
+            transport: McpTransport::Http,
+            http_mode: McpHttpMode::Embedded,
+            path: "/mcp".to_string(),
+            port: 9090,
+            ..McpConfig::default()
+        };
+        config.default_database_url = Some("postgres://demo".to_string());
+
+        let server = AdminMcpServer::new(&config, db);
+        let Json(result) = server.server_capabilities().await.unwrap();
+
+        assert_eq!(result.health.status, ServerHealthStatus::Ok);
+        assert!(result.health.database.connected);
+        assert_eq!(result.health.database.public_table_count, Some(1));
+        assert_eq!(result.runtime.transport, "http");
+        assert_eq!(result.runtime.http_mode, "embedded");
+        assert!(result.runtime.default_database_url_available);
+        assert!(
+            result
+                .capabilities
+                .tools
+                .contains(&"server_capabilities".to_string())
+        );
+        assert_eq!(
+            result.capabilities.prompts,
+            vec![
+                "discover_table_workflow".to_string(),
+                "generate_crud_bundle_workflow".to_string(),
+                "rollout_menu_dict_workflow".to_string(),
+            ]
+        );
+        assert_eq!(
+            result.capabilities.generators.frontend_target_presets,
+            vec!["summer_mcp".to_string(), "art_design_pro".to_string()]
+        );
+    }
+
+    fn row<const N: usize>(entries: [(&str, Value); N]) -> BTreeMap<String, Value> {
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
     }
 }

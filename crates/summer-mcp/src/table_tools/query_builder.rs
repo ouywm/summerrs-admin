@@ -22,6 +22,8 @@ pub(crate) enum FilterOp {
     Like,
     ILike,
     In,
+    NotIn,
+    Between,
     IsNull,
     IsNotNull,
 }
@@ -35,8 +37,17 @@ pub(crate) struct TableFilter {
     pub op: FilterOp,
     /// 单值条件参数
     pub value: Option<JsonValue>,
-    /// 多值条件参数，仅用于 in
+    /// 多值条件参数，用于 in / not_in / between
     pub values: Option<Vec<JsonValue>>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TableFilterGroup {
+    /// 分组内全部条件都要满足
+    pub and: Option<Vec<TableFilterInput>>,
+    /// 分组内任一条件满足即可
+    pub or: Option<Vec<TableFilterInput>>,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -44,7 +55,9 @@ pub(crate) struct TableFilter {
 pub(crate) enum TableFilterInput {
     /// 结构化过滤参数，如 {"column":"id","op":"eq","value":1}
     Structured(TableFilter),
-    /// 简写过滤参数，如 "id = 1"、"name ilike admin"、"status in [1,2]"
+    /// 结构化分组参数，如 {"or":[{"column":"status","op":"eq","value":1},{"column":"status","op":"eq","value":2}]}
+    Group(TableFilterGroup),
+    /// 简写过滤参数，如 "id = 1"、"name ilike admin"、"status in [1,2]"、"create_time between [\"2026-01-01\",\"2026-01-31\"]"
     Shorthand(String),
 }
 
@@ -226,28 +239,11 @@ pub(crate) fn build_filters_clause(
     let mut clauses = Vec::with_capacity(filters.len());
     let mut params = Vec::new();
     for filter_input in filters {
-        let filter = parse_filter_input(filter_input)?;
-        ensure_valid_identifier(&filter.column, "column")?;
-        let Some(column) = schema.column(&filter.column) else {
-            return Err(McpError::invalid_params(
-                format!(
-                    "unknown filter column `{}` for table `{}`",
-                    filter.column, schema.table
-                ),
-                None,
-            ));
-        };
-        if column.hidden_on_read {
-            return Err(McpError::invalid_params(
-                format!(
-                    "column `{}` on table `{}` is hidden and cannot be filtered",
-                    filter.column, schema.table
-                ),
-                None,
-            ));
-        }
-
-        clauses.push(build_filter_clause(column, &filter, &mut params)?);
+        clauses.push(build_filter_input_clause(
+            schema,
+            filter_input,
+            &mut params,
+        )?);
     }
 
     if clauses.is_empty() {
@@ -257,11 +253,94 @@ pub(crate) fn build_filters_clause(
     }
 }
 
-fn parse_filter_input(filter: &TableFilterInput) -> Result<TableFilter, McpError> {
-    match filter {
-        TableFilterInput::Structured(filter) => Ok(filter.clone()),
-        TableFilterInput::Shorthand(filter) => parse_filter_shorthand(filter),
+fn build_filter_input_clause(
+    schema: &TableSchema,
+    filter_input: &TableFilterInput,
+    params: &mut Vec<Value>,
+) -> Result<String, McpError> {
+    match filter_input {
+        TableFilterInput::Structured(filter) => build_single_filter_clause(schema, filter, params),
+        TableFilterInput::Group(group) => build_filter_group_clause(schema, group, params),
+        TableFilterInput::Shorthand(filter) => {
+            let filter = parse_filter_shorthand(filter)?;
+            build_single_filter_clause(schema, &filter, params)
+        }
     }
+}
+
+fn build_filter_group_clause(
+    schema: &TableSchema,
+    group: &TableFilterGroup,
+    params: &mut Vec<Value>,
+) -> Result<String, McpError> {
+    match (group.and.as_ref(), group.or.as_ref()) {
+        (Some(_), Some(_)) => Err(McpError::invalid_params(
+            "filter group cannot contain both `and` and `or`",
+            None,
+        )),
+        (None, None) => Err(McpError::invalid_params(
+            "filter group requires either `and` or `or`",
+            None,
+        )),
+        (Some(items), None) => build_filter_group_items(schema, items, "AND", params),
+        (None, Some(items)) => build_filter_group_items(schema, items, "OR", params),
+    }
+}
+
+fn build_filter_group_items(
+    schema: &TableSchema,
+    items: &[TableFilterInput],
+    joiner: &str,
+    params: &mut Vec<Value>,
+) -> Result<String, McpError> {
+    if items.is_empty() {
+        return Err(McpError::invalid_params(
+            format!(
+                "filter group `{}` requires at least one item",
+                joiner.to_ascii_lowercase()
+            ),
+            None,
+        ));
+    }
+
+    let mut clauses = Vec::with_capacity(items.len());
+    for item in items {
+        clauses.push(build_filter_input_clause(schema, item, params)?);
+    }
+
+    if clauses.len() == 1 {
+        Ok(clauses.into_iter().next().unwrap())
+    } else {
+        Ok(format!("({})", clauses.join(&format!(" {joiner} "))))
+    }
+}
+
+fn build_single_filter_clause(
+    schema: &TableSchema,
+    filter: &TableFilter,
+    params: &mut Vec<Value>,
+) -> Result<String, McpError> {
+    ensure_valid_identifier(&filter.column, "column")?;
+    let Some(column) = schema.column(&filter.column) else {
+        return Err(McpError::invalid_params(
+            format!(
+                "unknown filter column `{}` for table `{}`",
+                filter.column, schema.table
+            ),
+            None,
+        ));
+    };
+    if column.hidden_on_read {
+        return Err(McpError::invalid_params(
+            format!(
+                "column `{}` on table `{}` is hidden and cannot be filtered",
+                filter.column, schema.table
+            ),
+            None,
+        ));
+    }
+
+    build_filter_clause(column, filter, params)
 }
 
 fn parse_filter_shorthand(input: &str) -> Result<TableFilter, McpError> {
@@ -325,6 +404,16 @@ fn parse_filter_shorthand(input: &str) -> Result<TableFilter, McpError> {
         ),
         "in" => (
             FilterOp::In,
+            None,
+            Some(parse_filter_values_literal(remainder)?),
+        ),
+        "not_in" => (
+            FilterOp::NotIn,
+            None,
+            Some(parse_filter_values_literal(remainder)?),
+        ),
+        "between" => (
+            FilterOp::Between,
             None,
             Some(parse_filter_values_literal(remainder)?),
         ),
@@ -425,40 +514,62 @@ fn build_filter_clause(
         FilterOp::Like => pattern_clause(&quoted, "LIKE", filter, params),
         FilterOp::ILike => pattern_clause(&quoted, "ILIKE", filter, params),
         FilterOp::In => {
-            let values = filter.values.as_ref().ok_or_else(|| {
-                McpError::invalid_params(
-                    format!("filter `{}` requires `values`", column.name),
-                    None,
-                )
-            })?;
-            if values.is_empty() {
+            let expressions = build_multi_value_expressions(column, filter, params)?;
+            Ok(format!("{quoted} IN ({})", expressions.join(", ")))
+        }
+        FilterOp::NotIn => {
+            let expressions = build_multi_value_expressions(column, filter, params)?;
+            Ok(format!("{quoted} NOT IN ({})", expressions.join(", ")))
+        }
+        FilterOp::Between => {
+            let values = require_filter_values(filter, &column.name)?;
+            if values.len() != 2 {
                 return Err(McpError::invalid_params(
                     format!(
-                        "filter `{}` requires at least one `values` item",
+                        "filter `{}` with `between` requires exactly two values",
                         column.name
                     ),
                     None,
                 ));
             }
-
-            let mut expressions = Vec::with_capacity(values.len());
-            for value in values {
-                if value.is_null() {
-                    return Err(McpError::invalid_params(
-                        format!(
-                            "filter `{}` does not support null inside `values`",
-                            column.name
-                        ),
-                        None,
-                    ));
-                }
-                expressions.push(bind_cast_value(params.len() + 1, column, value, params)?);
+            if values.iter().any(JsonValue::is_null) {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "filter `{}` with `between` does not support null values",
+                        column.name
+                    ),
+                    None,
+                ));
             }
-            Ok(format!("{quoted} IN ({})", expressions.join(", ")))
+            let start = bind_cast_value(params.len() + 1, column, &values[0], params)?;
+            let end = bind_cast_value(params.len() + 1, column, &values[1], params)?;
+            Ok(format!("{quoted} BETWEEN {start} AND {end}"))
         }
         FilterOp::IsNull => Ok(format!("{quoted} IS NULL")),
         FilterOp::IsNotNull => Ok(format!("{quoted} IS NOT NULL")),
     }
+}
+
+fn build_multi_value_expressions(
+    column: &TableColumnSchema,
+    filter: &TableFilter,
+    params: &mut Vec<Value>,
+) -> Result<Vec<String>, McpError> {
+    let values = require_filter_values(filter, &column.name)?;
+    let mut expressions = Vec::with_capacity(values.len());
+    for value in values {
+        if value.is_null() {
+            return Err(McpError::invalid_params(
+                format!(
+                    "filter `{}` does not support null inside `values`",
+                    column.name
+                ),
+                None,
+            ));
+        }
+        expressions.push(bind_cast_value(params.len() + 1, column, value, params)?);
+    }
+    Ok(expressions)
 }
 
 fn compare_clause(
@@ -505,6 +616,22 @@ fn require_single_filter_value(filter: &TableFilter) -> Result<&JsonValue, McpEr
         .value
         .as_ref()
         .ok_or_else(|| McpError::invalid_params("filter requires `value`", None))
+}
+
+fn require_filter_values<'a>(
+    filter: &'a TableFilter,
+    column_name: &str,
+) -> Result<&'a [JsonValue], McpError> {
+    let values = filter.values.as_ref().ok_or_else(|| {
+        McpError::invalid_params(format!("filter `{column_name}` requires `values`"), None)
+    })?;
+    if values.is_empty() {
+        return Err(McpError::invalid_params(
+            format!("filter `{column_name}` requires at least one `values` item"),
+            None,
+        ));
+    }
+    Ok(values)
 }
 
 pub(crate) fn build_order_clause(
@@ -632,5 +759,94 @@ mod tests {
         let in_values = parse_filter_shorthand("status in [1,2,3]").unwrap();
         assert!(matches!(in_values.op, FilterOp::In));
         assert_eq!(in_values.values, Some(vec![json!(1), json!(2), json!(3)]));
+
+        let between =
+            parse_filter_shorthand("create_time between [\"2026-01-01\", \"2026-01-31\"]").unwrap();
+        assert_eq!(between.column, "create_time");
+        assert!(matches!(between.op, FilterOp::Between));
+        assert_eq!(
+            between.values,
+            Some(vec![json!("2026-01-01"), json!("2026-01-31")])
+        );
+    }
+
+    #[test]
+    fn build_filters_clause_supports_groups_and_between() {
+        let schema = TableSchema {
+            schema: "public".to_string(),
+            table: "sys_role".to_string(),
+            comment: None,
+            primary_key: vec!["id".to_string()],
+            columns: vec![
+                test_column("id", "bigint", true, false),
+                test_column("status", "smallint", false, false),
+                test_column("create_time", "timestamp", false, false),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            check_constraints: vec![],
+        };
+
+        let filters = vec![
+            TableFilterInput::Group(TableFilterGroup {
+                and: None,
+                or: Some(vec![
+                    TableFilterInput::Structured(TableFilter {
+                        column: "status".to_string(),
+                        op: FilterOp::Eq,
+                        value: Some(json!(1)),
+                        values: None,
+                    }),
+                    TableFilterInput::Structured(TableFilter {
+                        column: "status".to_string(),
+                        op: FilterOp::Eq,
+                        value: Some(json!(2)),
+                        values: None,
+                    }),
+                ]),
+            }),
+            TableFilterInput::Structured(TableFilter {
+                column: "create_time".to_string(),
+                op: FilterOp::Between,
+                value: None,
+                values: Some(vec![json!("2026-01-01"), json!("2026-01-31")]),
+            }),
+        ];
+
+        let (clause, params) = build_filters_clause(&schema, Some(&filters)).unwrap();
+        let clause = clause.unwrap();
+        assert!(
+            clause.contains(
+                "(\"status\" = CAST($1 AS smallint) OR \"status\" = CAST($2 AS smallint))"
+            )
+        );
+        assert!(
+            clause.contains(
+                "\"create_time\" BETWEEN CAST($3 AS timestamp) AND CAST($4 AS timestamp)"
+            )
+        );
+        assert_eq!(params.len(), 4);
+    }
+
+    fn test_column(
+        name: &str,
+        pg_type: &str,
+        primary_key: bool,
+        hidden_on_read: bool,
+    ) -> TableColumnSchema {
+        TableColumnSchema {
+            name: name.to_string(),
+            pg_type: pg_type.to_string(),
+            nullable: false,
+            primary_key,
+            hidden_on_read,
+            writable_on_create: true,
+            writable_on_update: true,
+            default_value: None,
+            comment: None,
+            is_identity: false,
+            is_generated: false,
+            enum_values: None,
+        }
     }
 }

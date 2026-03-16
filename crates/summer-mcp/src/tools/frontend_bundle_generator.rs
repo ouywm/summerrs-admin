@@ -14,16 +14,16 @@ use tokio::process::Command;
 use crate::{
     table_tools::schema::TableSchema,
     tools::{
+        enum_semantics::{EnumDraftSpec, enum_option_value, infer_dict_type_code},
         frontend_api_generator::{FrontendApiGenerator, GenerateFrontendApiRequest},
         frontend_page_generator::{
             FrontendFieldUiHint, FrontendFieldUiMeta, FrontendPageGenerator,
             GenerateFrontendPageRequest,
         },
         frontend_target::FrontendTargetPreset,
-        generation_context::{
-            CrudGenerationContext, CrudGenerationContextBuilder, EnumOptionContext,
-        },
+        generation_context::{CrudGenerationContext, CrudGenerationContextBuilder},
         support::{io_error, workspace_root},
+        validation::{GenerationValidationSummary, validate_frontend_target_output},
     },
 };
 
@@ -68,8 +68,10 @@ pub struct GenerateFrontendBundleResult {
     pub search_file: PathBuf,
     pub dialog_file: PathBuf,
     pub required_dict_types: Vec<String>,
+    pub enum_drafts: Vec<EnumDraftSpec>,
     pub dict_bundle_drafts: Vec<DictBundleSpec>,
     pub menu_config_draft: MenuConfigSpec,
+    pub validation: GenerationValidationSummary,
 }
 
 impl FrontendBundleGenerator {
@@ -148,6 +150,19 @@ impl FrontendBundleGenerator {
         )
         .await?;
 
+        let validation = validate_frontend_target_output(
+            request.target_preset,
+            &frontend_root_dir,
+            &[
+                api_result.api_file.clone(),
+                api_result.api_type_file.clone(),
+                page_result.index_file.clone(),
+                page_result.search_file.clone(),
+                page_result.dialog_file.clone(),
+            ],
+        )
+        .await;
+
         Ok(GenerateFrontendBundleResult {
             table: api_result.table,
             route_base: api_result.route_base,
@@ -161,8 +176,10 @@ impl FrontendBundleGenerator {
             search_file: page_result.search_file,
             dialog_file: page_result.dialog_file,
             required_dict_types: page_result.required_dict_types,
+            enum_drafts: crud_context.enum_drafts,
             dict_bundle_drafts,
             menu_config_draft,
+            validation,
         })
     }
 
@@ -392,20 +409,12 @@ fn build_menu_config_draft(
     }
 }
 
-fn infer_dict_type_code(route_base: &str, field_name: &str) -> String {
-    format!("{route_base}_{field_name}")
-}
-
-fn enum_option_value(option: &EnumOptionContext) -> String {
-    serde_json::from_str::<String>(&option.value_literal)
-        .unwrap_or_else(|_| option.value_literal.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use crate::table_tools::schema::{
         TableCheckConstraintSchema, TableColumnSchema, TableIndexSchema,
     };
+    use crate::tools::validation::ValidationStatus;
 
     use super::*;
 
@@ -573,6 +582,8 @@ pub struct Model {
         assert_eq!(result.frontend_root_dir, root.join("generated/frontend"));
         assert_eq!(result.api_import_path, "@/api/user");
         assert_eq!(result.api_namespace, "User");
+        assert_eq!(result.enum_drafts.len(), 1);
+        assert_eq!(result.enum_drafts[0].rust_enum_name, "UserStatus");
         assert_eq!(result.dict_bundle_drafts.len(), 1);
         assert_eq!(result.dict_bundle_drafts[0].dict_type, "user_status");
         assert_eq!(result.dict_bundle_drafts[0].items.len(), 2);
@@ -593,6 +604,7 @@ pub struct Model {
         let api_type_file = std::fs::read_to_string(&result.api_type_file).unwrap();
         assert!(api_type_file.contains("namespace User"));
         assert!(api_type_file.contains("interface UserVo"));
+        assert!(api_type_file.contains("status: 1 | 2"));
 
         let index_file = std::fs::read_to_string(&result.index_file).unwrap();
         assert!(index_file.contains("from '@/api/user'"));
@@ -603,6 +615,15 @@ pub struct Model {
             result
                 .page_dir
                 .starts_with(root.join("generated/frontend/views/system"))
+        );
+        assert_eq!(result.validation.status, ValidationStatus::Skipped);
+        assert!(
+            result
+                .validation
+                .checks
+                .iter()
+                .any(|check| check.name == "frontend_typecheck"
+                    && check.status == ValidationStatus::Skipped)
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -724,6 +745,114 @@ pub struct Model {
             result.menu_config_draft.menus[0].buttons[0].auth_mark,
             "user:add"
         );
+        assert!(result.enum_drafts.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn generator_builds_enum_and_dict_drafts_from_comment_semantics() {
+        let root = std::env::temp_dir().join(format!(
+            "summer-mcp-frontend-bundle-generator-comment-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        std::fs::create_dir_all(root.join("crates/model/src/entity")).unwrap();
+        std::fs::write(
+            root.join("crates/model/src/entity/sys_user.rs"),
+            r#"
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub user_name: String,
+    pub status: i16,
+}
+"#,
+        )
+        .unwrap();
+
+        let generator = FrontendBundleGenerator::with_workspace_root(root.clone());
+        let result = generator
+            .generate(GenerateFrontendBundleRequest {
+                schema: TableSchema {
+                    schema: "public".to_string(),
+                    table: "sys_user".to_string(),
+                    comment: Some("系统用户".to_string()),
+                    primary_key: vec!["id".to_string()],
+                    columns: vec![
+                        TableColumnSchema {
+                            name: "id".to_string(),
+                            pg_type: "bigint".to_string(),
+                            nullable: false,
+                            primary_key: true,
+                            hidden_on_read: false,
+                            writable_on_create: false,
+                            writable_on_update: false,
+                            default_value: None,
+                            comment: Some("用户ID".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "user_name".to_string(),
+                            pg_type: "character varying".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("用户名".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "status".to_string(),
+                            pg_type: "smallint".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: Some("1".to_string()),
+                            comment: Some("状态：1-启用 2-禁用 3-注销".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                    ],
+                    indexes: vec![],
+                    foreign_keys: vec![],
+                    check_constraints: vec![],
+                },
+                overwrite: true,
+                route_base: None,
+                output_dir: Some("generated/frontend".to_string()),
+                target_preset: FrontendTargetPreset::SummerMcp,
+                dict_bindings: BTreeMap::new(),
+                field_hints: BTreeMap::new(),
+                field_ui_meta: BTreeMap::new(),
+                search_fields: None,
+                table_fields: None,
+                form_fields: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.enum_drafts.len(), 1);
+        assert_eq!(result.enum_drafts[0].dict_type, "user_status");
+        assert_eq!(result.enum_drafts[0].rust_enum_name, "UserStatus");
+        assert_eq!(result.dict_bundle_drafts.len(), 1);
+        assert_eq!(result.dict_bundle_drafts[0].items.len(), 3);
+
+        let api_type_file = std::fs::read_to_string(&result.api_type_file).unwrap();
+        assert!(api_type_file.contains("status: 1 | 2 | 3"));
+
+        let index_file = std::fs::read_to_string(&result.index_file).unwrap();
+        assert!(index_file.contains("getDictLabel('user_status'"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
