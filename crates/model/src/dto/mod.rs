@@ -1,5 +1,4 @@
 pub mod auth;
-pub mod biz_showcase_profile;
 pub mod login_log;
 pub mod monitor;
 pub mod operation_log;
