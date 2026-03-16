@@ -36,8 +36,8 @@
         <ElInput
           v-model="form.{{ field.camel_name }}"
           {{ ui.vue_bind([
-            "type: 'textarea'",
-            "rows: 3",
+            "type: 'textarea'"
+          ] + (["rows: 3"] if not field.form_props_has_rows else []) + [
             "placeholder: '" ~ field.form_placeholder ~ "'"
           ], field.form_props_literal, '            ', '          ') }}
         />
@@ -333,10 +333,12 @@
 {% endfor %}
   })
 
+{% if flags.uses_form_datetime_normalizer %}
   const normalizeDateTimeValue = (value?: string | null) => {
     if (!value) return undefined
     return value.includes('T') ? value : value.replace(' ', 'T')
   }
+{% endif %}
 {% if flags.uses_form_upload %}
   const resetUploadState = () => {
 {% for field in form_fields if field.form_widget == "image_upload" or field.form_widget == "file_upload" %}

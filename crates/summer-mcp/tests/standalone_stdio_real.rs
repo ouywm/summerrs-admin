@@ -654,7 +654,9 @@ async fn standalone_binary_generates_real_frontend_bundle_to_temp_dir()
     assert!(index_contents.contains("ElImage"));
     assert!(index_contents.contains("mailto:"));
     assert!(index_contents.contains("getDictLabel('user_status'"));
-    assert!(index_contents.contains("import type { UserListItem, SearchFormModel } from './types'"));
+    assert!(
+        index_contents.contains("import type { UserListItem, SearchFormModel } from './types'")
+    );
 
     assert!(types_contents.contains("export type UserListItem = Api.User.UserVo"));
     assert!(types_contents.contains("export type SearchFormModel = Omit<"));
@@ -676,9 +678,11 @@ async fn standalone_binary_generates_real_frontend_bundle_to_temp_dir()
     assert!(form_panel_contents.contains("password"));
     assert!(form_panel_contents.contains("ArtFileUpload"));
     assert!(form_panel_contents.contains("handleAvatarUploadSuccess"));
-    assert!(form_panel_contents.contains(
-        "import type { UserListItem, UserListItemDetail, FormModel } from '../types'"
-    ));
+    assert!(
+        form_panel_contents.contains(
+            "import type { UserListItem, UserListItemDetail, FormModel } from '../types'"
+        )
+    );
     assert!(form_panel_contents.contains("getDict('user_gender')"));
     assert!(form_panel_contents.contains("defaultAvatar"));
 
@@ -1240,13 +1244,16 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
     assert!(index_contents.contains("ElImage"));
     assert!(index_contents.contains("mailto:"));
     assert!(index_contents.contains("row.officialUrl"));
-    assert!(index_contents.contains(
-        "import type { ShowcaseProfileListItem, SearchFormModel } from './types'"
-    ));
+    assert!(
+        index_contents
+            .contains("import type { ShowcaseProfileListItem, SearchFormModel } from './types'")
+    );
 
-    assert!(types_contents.contains(
-        "export type ShowcaseProfileListItem = Api.ShowcaseProfile.ShowcaseProfileVo"
-    ));
+    assert!(
+        types_contents.contains(
+            "export type ShowcaseProfileListItem = Api.ShowcaseProfile.ShowcaseProfileVo"
+        )
+    );
     assert!(types_contents.contains("export type SearchFormModel = Omit<"));
     assert!(types_contents.contains("export type FormModel = FormBase & {"));
 

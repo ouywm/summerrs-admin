@@ -230,6 +230,7 @@ struct FrontendPageFlags {
     uses_table_dict: bool,
     uses_search_dict: bool,
     uses_form_dict: bool,
+    uses_form_datetime_normalizer: bool,
     uses_table_tag: bool,
     uses_table_image: bool,
     uses_form_upload: bool,
@@ -245,6 +246,7 @@ struct SelectedFieldSummary {
     uses_table_dict: bool,
     uses_search_dict: bool,
     uses_form_dict: bool,
+    uses_form_datetime_normalizer: bool,
     uses_table_tag: bool,
     uses_table_image: bool,
     uses_form_upload: bool,
@@ -290,11 +292,8 @@ struct FieldSemanticSignals {
 }
 
 impl FieldSemanticSignals {
-    fn from_field(field: &FieldGenerationContext, column: &TableColumnSchema) -> Self {
-        let mut hints = vec![field.name.as_str(), field.label.as_str()];
-        if let Some(comment) = column.comment.as_deref() {
-            hints.push(comment);
-        }
+    fn from_field(field: &FieldGenerationContext) -> Self {
+        let hints = [field.name.as_str(), field.label.as_str()];
 
         Self {
             hint_text: hints.join(" ").to_ascii_lowercase(),
@@ -355,6 +354,7 @@ struct FrontendPageFieldContext {
     search_props_literal: Option<String>,
     form_placeholder: String,
     form_props_literal: Option<String>,
+    form_props_has_rows: bool,
     form_upload_accept: Option<String>,
     form_upload_button_text: Option<String>,
     form_upload_props_literal: Option<String>,
@@ -728,6 +728,7 @@ impl SelectedFieldSummary {
             uses_table_dict: self.uses_table_dict,
             uses_search_dict: self.uses_search_dict,
             uses_form_dict: self.uses_form_dict,
+            uses_form_datetime_normalizer: self.uses_form_datetime_normalizer,
             uses_table_tag: self.uses_table_tag,
             uses_table_image: self.uses_table_image,
             uses_form_upload: self.uses_form_upload,
@@ -770,6 +771,8 @@ impl SelectedFieldSummary {
         for field in fields {
             self.collect_dict_type(field);
             self.uses_form_dict |= field.dict_type.is_some();
+            self.uses_form_datetime_normalizer |=
+                matches!(field.type_info.value_kind, FieldValueKind::DateTime);
             self.uses_form_upload |= matches!(
                 field.form_widget,
                 FormWidgetKind::ImageUpload | FormWidgetKind::FileUpload
@@ -851,7 +854,10 @@ impl FrontendPageGenerator {
             .await
             .map_err(|error| {
                 io_error(
-                    format!("write frontend page types file `{}`", paths.types_file.display()),
+                    format!(
+                        "write frontend page types file `{}`",
+                        paths.types_file.display()
+                    ),
                     error,
                 )
             })?;
@@ -1297,7 +1303,7 @@ fn build_frontend_field_context(
     update_enabled: bool,
     ui_meta: ResolvedFrontendFieldUiMeta,
 ) -> FrontendPageFieldContext {
-    let semantic_signals = FieldSemanticSignals::from_field(field, column);
+    let semantic_signals = FieldSemanticSignals::from_field(field);
     let option_context = resolve_field_option_context(field, column, &ui_meta);
     let ui_components = resolve_field_ui_components(
         field,
@@ -1321,7 +1327,7 @@ fn build_frontend_field_context(
     } else {
         suggested_table_min_width(field, ui_components.semantic_kind, &semantic_signals)
     };
-    let resolved_label = normalize_ui_label(&field.label);
+    let resolved_label = field.label.clone();
     let search_placeholder = ui_meta.search_placeholder.unwrap_or_else(|| {
         field_placeholder("请选择", "请输入", field, ui_components.search_widget)
     });
@@ -1334,6 +1340,11 @@ fn build_frontend_field_context(
         )
     });
     let search_props_literal = ui_meta.search_props.as_ref().map(render_js_literal);
+    let form_props_has_rows = ui_meta
+        .form_props
+        .as_ref()
+        .and_then(JsonValue::as_object)
+        .is_some_and(|props| props.contains_key("rows"));
     let form_props_literal = ui_meta.form_props.as_ref().map(render_js_literal);
     let form_upload_props_literal = form_props_literal.clone();
     let form_upload_config = ui_components.semantic_kind.upload_config();
@@ -1378,6 +1389,7 @@ fn build_frontend_field_context(
         search_props_literal,
         form_placeholder,
         form_props_literal,
+        form_props_has_rows,
         form_upload_accept: form_upload_config.and_then(|config| config.accept.map(str::to_string)),
         form_upload_button_text: form_upload_config.map(|config| config.button_text.to_string()),
         form_upload_props_literal,
@@ -2108,9 +2120,9 @@ fn field_placeholder(
     if widget.hides_placeholder() {
         String::new()
     } else if widget.uses_select_placeholder() {
-        format!("{select_prefix}{}", normalize_ui_label(&field.label))
+        format!("{select_prefix}{}", field.label)
     } else {
-        format!("{input_prefix}{}", normalize_ui_label(&field.label))
+        format!("{input_prefix}{}", field.label)
     }
 }
 
@@ -2190,36 +2202,6 @@ fn should_skip_default_search_field(field: &FieldGenerationContext) -> bool {
 
 fn should_skip_default_table_field(field: &FieldGenerationContext) -> bool {
     contains_any(field.name.as_str(), SKIP_DEFAULT_TABLE_FIELD_KEYWORDS)
-}
-
-fn normalize_ui_label(label: &str) -> String {
-    let trimmed = label.trim();
-    for separator in ['（', '('] {
-        if let Some((prefix, _)) = trimmed.split_once(separator) {
-            let prefix = prefix.trim();
-            if !prefix.is_empty() {
-                return prefix.to_string();
-            }
-        }
-    }
-    for separator in ['：', ':'] {
-        if let Some((prefix, suffix)) = trimmed.split_once(separator) {
-            let suffix = suffix.trim();
-            if suffix.chars().any(|ch| ch.is_ascii_digit())
-                || suffix.contains('-')
-                || suffix.contains('男')
-                || suffix.contains('女')
-                || suffix.contains('启')
-                || suffix.contains('停')
-            {
-                let prefix = prefix.trim();
-                if !prefix.is_empty() {
-                    return prefix.to_string();
-                }
-            }
-        }
-    }
-    trimmed.to_string()
 }
 
 fn boolean_true_label(field: &FieldGenerationContext) -> String {
@@ -2700,6 +2682,7 @@ pub struct Model {
 
         assert!(search_file.contains("...{'maxlength':20}"));
         assert!(form_panel_file.contains("...{'rows':6}"));
+        assert!(!form_panel_file.contains("const normalizeDateTimeValue ="));
         assert!(form_panel_file.contains(":span=\"24\""));
         assert!(form_panel_file.contains("...{'buttonText':'重新上传头像'}"));
         assert!(index_file.contains("prop: 'avatar'"));
@@ -3117,7 +3100,9 @@ pub struct Model {
         assert!(index_file.contains("UserFormPanel"));
         assert!(index_file.contains("fetchGetUserList"));
         assert!(index_file.contains("from '@/api/user'"));
-        assert!(index_file.contains("import type { UserListItem, SearchFormModel } from './types'"));
+        assert!(
+            index_file.contains("import type { UserListItem, SearchFormModel } from './types'")
+        );
         assert!(index_file.contains("getDictLabel('user_status'"));
         assert!(index_file.contains("ElImage"));
         assert!(index_file.contains("mailto:"));
@@ -3158,7 +3143,10 @@ pub struct Model {
         ));
         assert!(!form_panel_file.contains("type UserListItem = Api.User.UserVo"));
         assert!(!form_panel_file.contains("type UserListItemDetail = Api.User.UserDetailVo"));
-        assert!(!form_panel_file.contains("type FormBase = Api.User.CreateUserParams & Api.User.UpdateUserParams"));
+        assert!(
+            !form_panel_file
+                .contains("type FormBase = Api.User.CreateUserParams & Api.User.UpdateUserParams")
+        );
         assert!(!form_panel_file.contains("type FormModel = FormBase & {"));
         assert!(form_panel_file.contains("type: 'textarea'"));
         assert!(form_panel_file.contains("<ElDialog"));
@@ -3171,10 +3159,7 @@ pub struct Model {
         );
         assert!(form_panel_file.contains("value: Number(item.value)"));
         assert!(form_panel_file.contains(r#"label: "男", value: 1"#));
-        assert!(
-            form_panel_file
-                .contains("(): PanelWatchState => [")
-        );
+        assert!(form_panel_file.contains("(): PanelWatchState => ["));
         assert!(form_panel_file.contains("props.userData?.id ?? null"));
         assert!(form_panel_file.contains(
             "type PanelWatchState = [boolean, Props['panelMode'], UserListItem['id'] | null]"

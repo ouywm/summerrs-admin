@@ -217,6 +217,8 @@
 
 - `generate_frontend_bundle_from_table`
 
+这个 tool 只负责生成前端代码和返回草案，不会自动把菜单和字典写进数据库。
+
 示例：
 
 ```json
@@ -240,6 +242,40 @@
 }
 ```
 
+如果希望返回值里的 `menu_config_draft` 直接挂到现有父菜单下，可以显式传 `menu_parent`。
+
+这在系统菜单不是顶级平铺，而是必须挂到 `/system` 等已有节点下时尤其有用。
+
+推荐先调用一次 `menu_tool.list_tree`，找到目标父节点后，把对应节点结构裁成最小可用草案再传给生成器。
+
+示例：
+
+```json
+{
+  "table": "sys_config",
+  "route_base": "config",
+  "target_preset": "art_design_pro",
+  "output_dir": "/Volumes/990pro/code/vue/art-design-pro",
+  "overwrite": true,
+  "menu_parent": {
+    "name": "System",
+    "path": "/system",
+    "title": "系统管理",
+    "component": null,
+    "children": []
+  }
+}
+```
+
+不传 `menu_parent` 时：
+
+- `menu_config_draft` 返回顶级菜单
+
+传了 `menu_parent` 时：
+
+- `menu_config_draft` 会把新菜单直接包进该父节点
+- 后续更适合直接交给 `menu_tool.plan_config`
+
 这个 tool 会一次生成：
 
 - API 文件
@@ -253,6 +289,14 @@
 - `menu_config_draft`
 
 这三个返回值很关键，它们是后续菜单/字典落库的桥。
+
+如果 `target_preset=art_design_pro`，生成结果默认应直接落到真实前端项目：
+
+- `src/api/<route-base>.ts`
+- `src/types/api/<route-base>.d.ts`
+- `src/views/system/<route-base>/`
+
+不要先生成到后端仓库里的临时目录，再手工复制到真实前端项目。
 
 ---
 
@@ -458,6 +502,12 @@
 14. 用 `dict_tool.get_by_type` 验证字典
 15. 最后再联调前端页面和后端接口
 
+如果菜单必须挂到已有节点下，建议把第 5 步和第 6 步之间补成：
+
+5.1 `menu_tool.list_tree`
+5.2 从现有菜单树提取父节点草案
+5.3 将父节点草案作为 `menu_parent` 传给 `generate_frontend_bundle_from_table`
+
 ---
 
 ## 十一、Prompt 的定位
@@ -528,6 +578,31 @@ Art Design Pro 现有路由加载方式下可能找不到组件。
 当前约定应使用：
 
 - `/system/showcase-profile`
+
+### 5. 忘了给现有菜单树传 `menu_parent`
+
+如果系统菜单不是顶级平铺，而生成器又没收到父级信息：
+
+- 返回的 `menu_config_draft` 会是顶级菜单
+- 后续还得手工再包一层 `/system`
+
+这类额外手工拼装不应该留到最后。
+
+更稳妥的做法是：
+
+- 先 `menu_tool.list_tree`
+- 再把目标父节点作为 `menu_parent` 传给生成器
+
+### 6. 把 Art Design Pro 代码先生成到后端仓库里
+
+这会导致两个问题：
+
+- 你看到“代码生成了”，但真实前端项目实际上没有新增文件
+- 后面还得人工搬运，容易漏文件或引入路径偏差
+
+如果目标就是 Art Design Pro，`output_dir` 应直接指向真实项目根目录，例如：
+
+- `/Volumes/990pro/code/vue/art-design-pro`
 
 ### 5. 临时 JSON 文件不是 MCP 的必需流程
 

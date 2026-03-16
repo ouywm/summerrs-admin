@@ -1,7 +1,9 @@
 pub mod auth;
+pub mod biz_showcase_profile;
 pub mod login_log;
 pub mod monitor;
 pub mod operation_log;
+pub mod sys_config;
 pub mod sys_dict;
 pub mod sys_file;
 pub mod sys_menu;

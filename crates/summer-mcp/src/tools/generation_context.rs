@@ -356,7 +356,8 @@ fn build_generated_field(
         pascal_name: snake_to_pascal(&column.name),
         label: comment_lines
             .first()
-            .cloned()
+            .map(|line| normalize_field_label(line))
+            .filter(|label| !label.is_empty())
             .unwrap_or_else(|| column.name.clone()),
         comment_lines,
         nullable_entity,
@@ -750,6 +751,61 @@ fn split_comment_lines(comment: Option<&str>) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+pub(crate) fn normalize_field_label(label: &str) -> String {
+    let trimmed = label.trim();
+    for separator in ['（', '('] {
+        if let Some((prefix, _)) = trimmed.split_once(separator) {
+            let prefix = prefix.trim();
+            if !prefix.is_empty() {
+                return prefix.to_string();
+            }
+        }
+    }
+    for separator in ['：', ':'] {
+        if let Some((prefix, suffix)) = trimmed.split_once(separator) {
+            let suffix = suffix.trim();
+            if suffix.chars().any(|ch| ch.is_ascii_digit())
+                || suffix.contains('-')
+                || suffix.contains('=')
+                || suffix.contains('男')
+                || suffix.contains('女')
+                || suffix.contains('启')
+                || suffix.contains('停')
+            {
+                let prefix = prefix.trim();
+                if !prefix.is_empty() {
+                    return prefix.to_string();
+                }
+            }
+        }
+    }
+    for separator in ['，', ','] {
+        if let Some((prefix, suffix)) = trimmed.split_once(separator) {
+            let suffix = suffix.trim();
+            if suffix.starts_with('当')
+                || suffix.starts_with("用于")
+                || suffix.starts_with("用来")
+                || suffix.contains("对应")
+                || suffix.contains("解析")
+                || suffix.contains("维护")
+                || suffix.contains("重置")
+                || suffix.contains("回退")
+                || suffix.contains("靠前")
+                || suffix.contains("后续")
+                || suffix.contains("如 ")
+                || suffix.contains("如basic")
+                || suffix.contains("value_type")
+            {
+                let prefix = prefix.trim();
+                if !prefix.is_empty() {
+                    return prefix.to_string();
+                }
+            }
+        }
+    }
+    trimmed.to_string()
 }
 
 fn infer_value_kind(raw_type: &Type, rust_input: &str) -> FieldValueKind {
@@ -1281,5 +1337,23 @@ pub struct Model {
         assert_eq!(context.enum_drafts.len(), 1);
         assert_eq!(context.enum_drafts[0].dict_type, "user_status");
         assert_eq!(context.enum_drafts[0].rust_enum_name, "UserStatus");
+    }
+
+    #[test]
+    fn normalize_field_label_strips_enum_and_explanatory_suffixes() {
+        assert_eq!(
+            normalize_field_label("值类型：1=文本 2=数字 3=布尔"),
+            "值类型"
+        );
+        assert_eq!(
+            normalize_field_label(
+                "候选项字典类型编码，当 value_type=5 时使用，对应 sys_dict_type.dict_type"
+            ),
+            "候选项字典类型编码"
+        );
+        assert_eq!(
+            normalize_field_label("角色ID（关联 sys_role.id）"),
+            "角色ID"
+        );
     }
 }

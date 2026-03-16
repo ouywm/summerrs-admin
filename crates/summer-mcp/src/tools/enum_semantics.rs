@@ -166,7 +166,7 @@ fn parse_comment_enum_options(
         })
         .collect::<Vec<_>>();
 
-    if matches.is_empty() {
+    if matches.len() < 2 {
         return None;
     }
 

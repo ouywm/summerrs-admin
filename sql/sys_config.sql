@@ -31,7 +31,7 @@ COMMENT ON COLUMN sys_config.config_name IS '配置名称';
 COMMENT ON COLUMN sys_config.config_key IS '配置键（唯一标识，如 sys.site.name）';
 COMMENT ON COLUMN sys_config.config_value IS '当前配置值，统一按字符串存储，按 value_type 解析';
 COMMENT ON COLUMN sys_config.default_value IS '默认配置值，用于重置或回退';
-COMMENT ON COLUMN sys_config.value_type IS '值类型：1-文本 2-数字 3-布尔 4-文本域 5-下拉单选 6-JSON 7-密码 8-图片';
+COMMENT ON COLUMN sys_config.value_type IS '值类型：1=文本 2=数字 3=布尔 4=文本域 5=下拉单选 6=JSON 7=密码 8=图片';
 COMMENT ON COLUMN sys_config.config_group IS '配置分组编码（如 basic/upload/security，后续可结合字典维护）';
 COMMENT ON COLUMN sys_config.option_dict_type IS '候选项字典类型编码，当 value_type=5 时使用，对应 sys_dict_type.dict_type';
 COMMENT ON COLUMN sys_config.config_sort IS '同分组内排序，值越小越靠前';
