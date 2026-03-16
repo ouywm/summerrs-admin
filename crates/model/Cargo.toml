@@ -8,7 +8,7 @@ chrono = { workspace = true, features = ["serde"] }
 common = { workspace = true }
 ipnetwork = { workspace = true, features = ["serde"] }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
-sea-orm = { workspace = true, features = ["with-chrono","with-time","with-json","postgres-vector","postgres-array","debug-print","with-ipnetwork"] }
+sea-orm = { workspace = true, features = ["with-chrono", "with-time", "with-json", "postgres-vector", "postgres-array", "debug-print", "with-ipnetwork", "with-bigdecimal"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_repr.workspace = true

@@ -20,7 +20,7 @@
       >
         <template #left>
           <ElSpace wrap>
-            <ElButton @click="showDialog('add')" v-ripple>新增{{ table.subject_label }}</ElButton>
+            <ElButton @click="showFormPanel('add')" v-ripple>新增{{ table.subject_label }}</ElButton>
           </ElSpace>
         </template>
       </ArtTableHeader>
@@ -35,9 +35,9 @@
       />
     </ElCard>
 
-    <{{ page.dialog_component_name }}
-      v-model="dialogVisible"
-      :dialog-type="dialogType"
+    <{{ page.form_panel_component_name }}
+      v-model="formPanelVisible"
+      :panel-mode="formPanelMode"
       :{{ page.item_prop_attr_name }}="{{ page.current_item_ref_name }}"
       @success="refreshData"
     />
@@ -52,8 +52,9 @@
     {{ api.fetch_list_fn }},
     {{ api.fetch_delete_fn }}
   } from '{{ api.import_path }}'
+  import type { {{ page.list_item_alias }}, SearchFormModel } from './types'
   import {{ page.search_component_name }} from './modules/{{ page.search_file_name }}'
-  import {{ page.dialog_component_name }} from './modules/{{ page.dialog_file_name }}'
+  import {{ page.form_panel_component_name }} from './modules/{{ page.form_panel_file_name }}'
   import { ElMessageBox{% if flags.uses_table_tag %}, ElTag{% endif %}{% if flags.uses_table_image %}, ElImage{% endif %} } from 'element-plus'
 {% if flags.uses_table_dict %}
   import { useDict, dictClassToTagType } from '@/utils/dict'
@@ -63,20 +64,6 @@
 {% endif %}
 
   defineOptions({ name: '{{ page.component_name }}' })
-
-  type {{ page.list_item_alias }} = Api.{{ api.namespace }}.{{ api.list_item_type_name }}
-  type SearchFormModel = {
-{% for field in search_fields %}
-{% if field.search_exclude_param %}
-    {{ field.search_model_key }}?: [
-      Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_param_start }}'],
-      Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_param_end }}']
-    ] | undefined
-{% else %}
-    {{ field.search_model_key }}?: Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_model_key }}']
-{% endif %}
-{% endfor %}
-  }
 
 {% if flags.uses_table_dict %}
   const { getDictLabel, getDictClass } = useDict()
@@ -89,8 +76,8 @@
   })
 
   const showSearchBar = ref(false)
-  const dialogVisible = ref(false)
-  const dialogType = ref<'add' | 'edit'>('add')
+  const formPanelVisible = ref(false)
+  const formPanelMode = ref<'add' | 'edit'>('add')
   const {{ page.current_item_ref_name }} = ref<{{ page.list_item_alias }} | undefined>(undefined)
 
   const {
@@ -145,7 +132,9 @@
 {% elif field.table_display == "image" %}
           formatter: (row) => {
             const src = row.{{ field.camel_name }}{{ " || defaultAvatar" if field.semantic_kind == "avatar" else "" }}
+{% if field.semantic_kind != "avatar" %}
             if (!src) return '-'
+{% endif %}
             return h(ElImage, {
               class: 'size-10 rounded-md',
               src,
@@ -213,10 +202,10 @@
     }
   })
 
-  const showDialog = (type: 'add' | 'edit', row?: {{ page.list_item_alias }}) => {
-    dialogType.value = type
+  const showFormPanel = (type: 'add' | 'edit', row?: {{ page.list_item_alias }}) => {
+    formPanelMode.value = type
     {{ page.current_item_ref_name }}.value = row
-    dialogVisible.value = true
+    formPanelVisible.value = true
   }
 
   const handleSearch = (params: SearchFormModel) => {
@@ -238,7 +227,7 @@
   const handleMoreClick = (item: ButtonMoreItem, row: {{ page.list_item_alias }}) => {
     switch (item.key) {
       case 'edit':
-        showDialog('edit', row)
+        showFormPanel('edit', row)
         break
       case 'delete':
         handleDelete(row)

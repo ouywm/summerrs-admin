@@ -3,7 +3,7 @@
 {% if form_container.use_drawer %}
   <ElDrawer
     v-model="visible"
-    :title="dialogType === 'add' ? '新增{{ table.subject_label }}' : '编辑{{ table.subject_label }}'"
+    :title="panelMode === 'add' ? '新增{{ table.subject_label }}' : '编辑{{ table.subject_label }}'"
     size="{{ form_container.size }}"
     destroy-on-close
     @close="handleClose"
@@ -11,7 +11,7 @@
 {% else %}
   <ElDialog
     v-model="visible"
-    :title="dialogType === 'add' ? '新增{{ table.subject_label }}' : '编辑{{ table.subject_label }}'"
+    :title="panelMode === 'add' ? '新增{{ table.subject_label }}' : '编辑{{ table.subject_label }}'"
     width="{{ form_container.size }}"
     align-center
     @close="handleClose"
@@ -22,9 +22,9 @@
 {% for field in form_fields %}
         <ElCol
 {% if field.form_visibility == "add_only" %}
-          v-if="dialogType === 'add'"
+          v-if="panelMode === 'add'"
 {% elif field.form_visibility == "edit_only" %}
-          v-if="dialogType === 'edit'"
+          v-if="panelMode === 'edit'"
 {% endif %}
           :span="{{ field.form_span or 24 }}"
         >
@@ -265,6 +265,7 @@
 
 <script setup lang="ts">
   import { {{ api.fetch_create_fn }}, {{ api.fetch_detail_fn }}, {{ api.fetch_update_fn }} } from '{{ api.import_path }}'
+  import type { {{ page.list_item_alias }}, {{ page.list_item_alias }}Detail, FormModel } from '../types'
   import type { FormInstance, FormRules } from 'element-plus'
 {% if flags.uses_form_dict %}
   import { useDict } from '@/utils/dict'
@@ -278,17 +279,10 @@
 {% if flags.uses_avatar_placeholder %}
   import defaultAvatar from '@imgs/user/avatar.webp'
 {% endif %}
-  type {{ page.list_item_alias }} = Api.{{ api.namespace }}.{{ api.list_item_type_name }}
-  type {{ page.list_item_alias }}Detail = Api.{{ api.namespace }}.{{ api.detail_type_name }}
-  type FormModel = {
-{% for field in form_fields %}
-    {{ field.camel_name }}: {{ field.form_model_type }};
-{% endfor %}
-  }
 
   interface Props {
     modelValue: boolean
-    dialogType: 'add' | 'edit'
+    panelMode: 'add' | 'edit'
     {{ page.item_prop_name }}?: {{ page.list_item_alias }}
   }
 
@@ -297,9 +291,11 @@
     (e: 'success'): void
   }
 
+  type PanelWatchState = [boolean, Props['panelMode'], {{ page.list_item_alias }}['{{ primary_key.camel_name }}'] | null]
+
   const props = withDefaults(defineProps<Props>(), {
     modelValue: false,
-    dialogType: 'add',
+    panelMode: 'add',
     {{ page.item_prop_name }}: undefined
   })
 
@@ -320,7 +316,7 @@
 
   const visible = computed({
     get: () => props.modelValue,
-    set: (value) => emit('update:modelValue', value)
+    set: (value: boolean) => emit('update:modelValue', value)
   })
 
   const createDefaultForm = (): FormModel => ({
@@ -336,6 +332,11 @@
     {{ field.camel_name }}: [{ required: true, message: '{{ field.form_placeholder }}', trigger: '{{ field.form_rule_trigger }}' }],
 {% endfor %}
   })
+
+  const normalizeDateTimeValue = (value?: string | null) => {
+    if (!value) return undefined
+    return value.includes('T') ? value : value.replace(' ', 'T')
+  }
 {% if flags.uses_form_upload %}
   const resetUploadState = () => {
 {% for field in form_fields if field.form_widget == "image_upload" or field.form_widget == "file_upload" %}
@@ -366,13 +367,17 @@
   }
 
   const initForm = async () => {
-    if (props.dialogType === 'edit' && props.{{ page.item_prop_name }}) {
+    if (props.panelMode === 'edit' && props.{{ page.item_prop_name }}) {
 {% if flags.uses_form_upload %}
       resetUploadState()
 {% endif %}
       Object.assign(form, {
 {% for field in form_fields %}
+{% if field.type_info.value_kind == "date_time" %}
+        {{ field.camel_name }}: normalizeDateTimeValue(props.{{ page.item_prop_name }}?.{{ field.camel_name }}) ?? {{ field.form_default_value }},
+{% else %}
         {{ field.camel_name }}: props.{{ page.item_prop_name }}?.{{ field.camel_name }} ?? {{ field.form_default_value }},
+{% endif %}
 {% endfor %}
       })
       const id = props.{{ page.item_prop_name }}?.{{ primary_key.camel_name }}
@@ -382,7 +387,11 @@
           const detail: {{ page.list_item_alias }}Detail = await {{ api.fetch_detail_fn }}(id)
           Object.assign(form, {
 {% for field in form_fields %}
+{% if field.type_info.value_kind == "date_time" %}
+            {{ field.camel_name }}: normalizeDateTimeValue(detail.{{ field.camel_name }}) ?? form.{{ field.camel_name }},
+{% else %}
             {{ field.camel_name }}: detail.{{ field.camel_name }} ?? form.{{ field.camel_name }},
+{% endif %}
 {% endfor %}
           })
         } finally {
@@ -395,22 +404,20 @@
   }
 
   watch(
-    () => props.modelValue,
-    (open) => {
-      if (open) {
-        void initForm()
-      }
-    }
-  )
-
-  watch(
-    () => props.{{ page.item_prop_name }},
-    () => {
-      if (props.modelValue) {
-        void initForm()
+    (): PanelWatchState => [
+      props.modelValue,
+      props.panelMode,
+      props.{{ page.item_prop_name }}?.{{ primary_key.camel_name }} ?? null
+    ],
+    async ([visible]: PanelWatchState) => {
+      if (visible) {
+        await initForm()
+        nextTick(() => {
+          formRef.value?.clearValidate()
+        })
       }
     },
-    { deep: true }
+    { immediate: true }
   )
 
   const handleClose = () => {
@@ -421,36 +428,38 @@
   const handleSubmit = async () => {
     if (!formRef.value) return
 
-    await formRef.value.validate(async (valid) => {
-      if (!valid) return
+    try {
+      await formRef.value.validate()
+    } catch {
+      return
+    }
 
-      submitLoading.value = true
-      try {
-        if (props.dialogType === 'add') {
-          const payload: Api.{{ api.namespace }}.{{ api.create_params_type_name }} = {
+    submitLoading.value = true
+    try {
+      if (props.panelMode === 'add') {
+        const payload: Api.{{ api.namespace }}.{{ api.create_params_type_name }} = {
 {% for field in form_fields if field.form_visibility != "edit_only" %}
-            {{ field.camel_name }}: {{ field.create_submit_value }},
+          {{ field.camel_name }}: {{ field.create_submit_value }},
 {% endfor %}
-          }
-          await {{ api.fetch_create_fn }}(payload)
-        } else {
-          const id = props.{{ page.item_prop_name }}?.{{ primary_key.camel_name }}
-          if (id == null) return
-
-          const payload: Api.{{ api.namespace }}.{{ api.update_params_type_name }} = {
-{% for field in form_fields if field.form_visibility != "add_only" %}
-            {{ field.camel_name }}: {{ field.update_submit_value }},
-{% endfor %}
-          }
-          await {{ api.fetch_update_fn }}(id, payload)
         }
+        await {{ api.fetch_create_fn }}(payload)
+      } else {
+        const id = props.{{ page.item_prop_name }}?.{{ primary_key.camel_name }}
+        if (id == null) return
 
-        ElMessage.success(props.dialogType === 'add' ? '新增成功' : '更新成功')
-        emit('success')
-        handleClose()
-      } finally {
-        submitLoading.value = false
+        const payload: Api.{{ api.namespace }}.{{ api.update_params_type_name }} = {
+{% for field in form_fields if field.form_visibility != "add_only" %}
+          {{ field.camel_name }}: {{ field.update_submit_value }},
+{% endfor %}
+        }
+        await {{ api.fetch_update_fn }}(id, payload)
       }
-    })
+
+      ElMessage.success(props.panelMode === 'add' ? '新增成功' : '更新成功')
+      emit('success')
+      handleClose()
+    } finally {
+      submitLoading.value = false
+    }
   }
 </script>

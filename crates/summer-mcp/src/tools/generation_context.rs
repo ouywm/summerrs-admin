@@ -82,6 +82,8 @@ pub(crate) struct CrudPathContext {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CrudGenerationFlags {
     pub(crate) uses_datetime_format: bool,
+    pub(crate) uses_date_format: bool,
+    pub(crate) uses_time_format: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -282,7 +284,13 @@ fn build_context(
     let flags = CrudGenerationFlags {
         uses_datetime_format: read_fields
             .iter()
-            .any(|field| field.type_info.datetime_like && !field.nullable_entity),
+            .any(|field| field.type_info.datetime_like),
+        uses_date_format: read_fields
+            .iter()
+            .any(|field| matches!(field.type_info.value_kind, FieldValueKind::Date)),
+        uses_time_format: read_fields
+            .iter()
+            .any(|field| matches!(field.type_info.value_kind, FieldValueKind::Time)),
     };
 
     Ok(CrudGenerationContext {

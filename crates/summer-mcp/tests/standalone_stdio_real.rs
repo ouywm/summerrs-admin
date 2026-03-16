@@ -628,15 +628,17 @@ async fn standalone_binary_generates_real_frontend_bundle_to_temp_dir()
     let api_file = output_dir.join("api/user.ts");
     let api_type_file = output_dir.join("api_type/user.d.ts");
     let page_dir = output_dir.join("views/system/user");
+    let types_file = page_dir.join("types.ts");
     let index_file = page_dir.join("index.vue");
     let search_file = page_dir.join("modules/user-search.vue");
-    let dialog_file = page_dir.join("modules/user-dialog.vue");
+    let form_panel_file = page_dir.join("modules/user-form-panel.vue");
 
     let api_contents = tokio::fs::read_to_string(&api_file).await?;
     let api_type_contents = tokio::fs::read_to_string(&api_type_file).await?;
+    let types_contents = tokio::fs::read_to_string(&types_file).await?;
     let index_contents = tokio::fs::read_to_string(&index_file).await?;
     let search_contents = tokio::fs::read_to_string(&search_file).await?;
-    let dialog_contents = tokio::fs::read_to_string(&dialog_file).await?;
+    let form_panel_contents = tokio::fs::read_to_string(&form_panel_file).await?;
 
     assert!(api_contents.contains("fetchGetUserList"));
     assert!(api_contents.contains("fetchGetUserDetail"));
@@ -646,31 +648,39 @@ async fn standalone_binary_generates_real_frontend_bundle_to_temp_dir()
     assert!(api_type_contents.contains("createTimeEnd?: string"));
 
     assert!(index_contents.contains("UserSearch"));
-    assert!(index_contents.contains("UserDialog"));
+    assert!(index_contents.contains("UserFormPanel"));
     assert!(index_contents.contains("fetchGetUserList"));
     assert!(index_contents.contains("fetchDeleteUser"));
     assert!(index_contents.contains("ElImage"));
     assert!(index_contents.contains("mailto:"));
     assert!(index_contents.contains("getDictLabel('user_status'"));
+    assert!(index_contents.contains("import type { UserListItem, SearchFormModel } from './types'"));
+
+    assert!(types_contents.contains("export type UserListItem = Api.User.UserVo"));
+    assert!(types_contents.contains("export type SearchFormModel = Omit<"));
+    assert!(types_contents.contains("export type FormModel = FormBase & {"));
 
     assert!(search_contents.contains("ArtSearchBar"));
     assert!(search_contents.contains("getDict('user_status')"));
     assert!(search_contents.contains("getDict('user_gender')"));
     assert!(search_contents.contains("type: 'datetimerange'"));
     assert!(search_contents.contains("key: 'createTimeRange'"));
+    assert!(search_contents.contains("import type { SearchFormModel } from '../types'"));
+    assert!(search_contents.contains("modelValue: SearchFormModel"));
 
-    assert!(dialog_contents.contains("fetchCreateUser"));
-    assert!(dialog_contents.contains("fetchGetUserDetail"));
-    assert!(dialog_contents.contains("fetchUpdateUser"));
-    assert!(dialog_contents.contains("from '@/api/user'"));
-    assert!(dialog_contents.contains("userName"));
-    assert!(dialog_contents.contains("password"));
-    assert!(dialog_contents.contains("ArtFileUpload"));
-    assert!(dialog_contents.contains("handleAvatarUploadSuccess"));
-    assert!(dialog_contents.contains("type UserListItem = Api.User.UserVo"));
-    assert!(dialog_contents.contains("type UserListItemDetail = Api.User.UserDetailVo"));
-    assert!(dialog_contents.contains("getDict('user_gender')"));
-    assert!(dialog_contents.contains("defaultAvatar"));
+    assert!(form_panel_contents.contains("fetchCreateUser"));
+    assert!(form_panel_contents.contains("fetchGetUserDetail"));
+    assert!(form_panel_contents.contains("fetchUpdateUser"));
+    assert!(form_panel_contents.contains("from '@/api/user'"));
+    assert!(form_panel_contents.contains("userName"));
+    assert!(form_panel_contents.contains("password"));
+    assert!(form_panel_contents.contains("ArtFileUpload"));
+    assert!(form_panel_contents.contains("handleAvatarUploadSuccess"));
+    assert!(form_panel_contents.contains(
+        "import type { UserListItem, UserListItemDetail, FormModel } from '../types'"
+    ));
+    assert!(form_panel_contents.contains("getDict('user_gender')"));
+    assert!(form_panel_contents.contains("defaultAvatar"));
 
     let dict_drafts = generate_json["dict_bundle_drafts"]
         .as_array()
@@ -1205,15 +1215,17 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
     let api_file = frontend_output_dir.join("src/api/showcase-profile.ts");
     let api_type_file = frontend_output_dir.join("src/types/api/showcase-profile.d.ts");
     let page_dir = frontend_output_dir.join("src/views/system/showcase-profile");
+    let types_file = page_dir.join("types.ts");
     let index_file = page_dir.join("index.vue");
     let search_file = page_dir.join("modules/showcase-profile-search.vue");
-    let dialog_file = page_dir.join("modules/showcase-profile-dialog.vue");
+    let form_panel_file = page_dir.join("modules/showcase-profile-form-panel.vue");
 
     let api_contents = tokio::fs::read_to_string(&api_file).await?;
     let api_type_contents = tokio::fs::read_to_string(&api_type_file).await?;
+    let types_contents = tokio::fs::read_to_string(&types_file).await?;
     let index_contents = tokio::fs::read_to_string(&index_file).await?;
     let search_contents = tokio::fs::read_to_string(&search_file).await?;
-    let dialog_contents = tokio::fs::read_to_string(&dialog_file).await?;
+    let form_panel_contents = tokio::fs::read_to_string(&form_panel_file).await?;
 
     assert!(api_contents.contains("fetchGetShowcaseProfileList"));
     assert!(api_contents.contains("fetchGetShowcaseProfileDetail"));
@@ -1228,26 +1240,37 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
     assert!(index_contents.contains("ElImage"));
     assert!(index_contents.contains("mailto:"));
     assert!(index_contents.contains("row.officialUrl"));
+    assert!(index_contents.contains(
+        "import type { ShowcaseProfileListItem, SearchFormModel } from './types'"
+    ));
+
+    assert!(types_contents.contains(
+        "export type ShowcaseProfileListItem = Api.ShowcaseProfile.ShowcaseProfileVo"
+    ));
+    assert!(types_contents.contains("export type SearchFormModel = Omit<"));
+    assert!(types_contents.contains("export type FormModel = FormBase & {"));
 
     assert!(search_contents.contains("key: 'contactGender'"));
     assert!(search_contents.contains("type: 'radiogroup'"));
     assert!(search_contents.contains("getDict('showcase_gender')"));
     assert!(search_contents.contains("type: 'daterange'"));
+    assert!(search_contents.contains("import type { SearchFormModel } from '../types'"));
+    assert!(search_contents.contains("modelValue: SearchFormModel"));
     assert!(search_contents.contains("type: 'datetimerange'"));
     assert!(search_contents.contains("key: 'publishDateRange'"));
     assert!(search_contents.contains("key: 'launchAtRange'"));
 
-    assert!(dialog_contents.contains("fetchCreateShowcaseProfile"));
-    assert!(dialog_contents.contains("fetchGetShowcaseProfileDetail"));
-    assert!(dialog_contents.contains("fetchUpdateShowcaseProfile"));
-    assert!(dialog_contents.contains("ArtFileUpload"));
-    assert!(dialog_contents.contains("handleAvatarUploadSuccess"));
-    assert!(dialog_contents.contains("handleAttachmentUrlUploadSuccess"));
-    assert!(dialog_contents.contains("type=\"textarea\""));
-    assert!(dialog_contents.contains("getDict('showcase_status')"));
-    assert!(dialog_contents.contains("getDict('showcase_gender')"));
-    assert!(!dialog_contents.contains("createdAt"));
-    assert!(!dialog_contents.contains("updatedAt"));
+    assert!(form_panel_contents.contains("fetchCreateShowcaseProfile"));
+    assert!(form_panel_contents.contains("fetchGetShowcaseProfileDetail"));
+    assert!(form_panel_contents.contains("fetchUpdateShowcaseProfile"));
+    assert!(form_panel_contents.contains("ArtFileUpload"));
+    assert!(form_panel_contents.contains("handleAvatarUploadSuccess"));
+    assert!(form_panel_contents.contains("handleAttachmentUrlUploadSuccess"));
+    assert!(form_panel_contents.contains("type=\"textarea\""));
+    assert!(form_panel_contents.contains("getDict('showcase_status')"));
+    assert!(form_panel_contents.contains("getDict('showcase_gender')"));
+    assert!(!form_panel_contents.contains("createdAt"));
+    assert!(!form_panel_contents.contains("updatedAt"));
 
     let showcase_status_bundle = json!({
         "dictName": "展示状态",

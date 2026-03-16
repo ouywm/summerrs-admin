@@ -14,8 +14,8 @@ use crate::{
         frontend_target::FrontendTargetPreset,
         generation_context::{
             CrudGenerationContext, CrudGenerationContextBuilder, CrudNamingContext,
-            EnumOptionContext, FieldGenerationContext, FieldTypeContext, FieldValueKind,
-            TableGenerationContext,
+            EnumOptionContext, EnumOptionValueKind, FieldGenerationContext, FieldTypeContext,
+            FieldValueKind, TableGenerationContext,
         },
         support::{default_route_base, io_error, workspace_root},
         template_renderer::{EmbeddedTemplate, TemplateRenderer},
@@ -26,7 +26,8 @@ const MODEL_ENTITY_DIR: &str = "crates/model/src/entity";
 
 const FRONTEND_PAGE_INDEX_TEMPLATE_NAME: &str = "frontend/page/index.vue.j2";
 const FRONTEND_PAGE_SEARCH_TEMPLATE_NAME: &str = "frontend/page/search.vue.j2";
-const FRONTEND_PAGE_DIALOG_TEMPLATE_NAME: &str = "frontend/page/dialog.vue.j2";
+const FRONTEND_PAGE_FORM_PANEL_TEMPLATE_NAME: &str = "frontend/page/form-panel.vue.j2";
+const FRONTEND_PAGE_TYPES_TEMPLATE_NAME: &str = "frontend/page/types.ts.j2";
 const FRONTEND_PAGE_MACROS_TEMPLATE_NAME: &str = "frontend/page/_macros.j2";
 const FORM_DRAWER_FIELD_THRESHOLD: usize = 8;
 const FORM_DIALOG_WIDTH: &str = "36%";
@@ -86,7 +87,7 @@ const SKIP_DEFAULT_TABLE_FIELD_KEYWORDS: &[&str] = &[
     "delete_time",
 ];
 
-const FRONTEND_PAGE_TEMPLATES: [EmbeddedTemplate; 4] = [
+const FRONTEND_PAGE_TEMPLATES: [EmbeddedTemplate; 5] = [
     EmbeddedTemplate {
         name: FRONTEND_PAGE_MACROS_TEMPLATE_NAME,
         source: include_str!("../../templates/frontend/page/_macros.j2"),
@@ -100,8 +101,12 @@ const FRONTEND_PAGE_TEMPLATES: [EmbeddedTemplate; 4] = [
         source: include_str!("../../templates/frontend/page/search.vue.j2"),
     },
     EmbeddedTemplate {
-        name: FRONTEND_PAGE_DIALOG_TEMPLATE_NAME,
-        source: include_str!("../../templates/frontend/page/dialog.vue.j2"),
+        name: FRONTEND_PAGE_FORM_PANEL_TEMPLATE_NAME,
+        source: include_str!("../../templates/frontend/page/form-panel.vue.j2"),
+    },
+    EmbeddedTemplate {
+        name: FRONTEND_PAGE_TYPES_TEMPLATE_NAME,
+        source: include_str!("../../templates/frontend/page/types.ts.j2"),
     },
 ];
 
@@ -137,9 +142,10 @@ pub struct GenerateFrontendPageResult {
     pub api_import_path: String,
     pub api_namespace: String,
     pub page_dir: PathBuf,
+    pub types_file: PathBuf,
     pub index_file: PathBuf,
     pub search_file: PathBuf,
-    pub dialog_file: PathBuf,
+    pub form_panel_file: PathBuf,
     pub required_dict_types: Vec<String>,
 }
 
@@ -147,9 +153,10 @@ pub struct GenerateFrontendPageResult {
 struct GeneratedPaths {
     entity_file: PathBuf,
     page_dir: PathBuf,
+    types_file: PathBuf,
     index_file: PathBuf,
     search_file: PathBuf,
-    dialog_file: PathBuf,
+    form_panel_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -192,9 +199,9 @@ struct FrontendPageNamingContext {
     folder_name: String,
     component_name: String,
     search_component_name: String,
-    dialog_component_name: String,
+    form_panel_component_name: String,
     search_file_name: String,
-    dialog_file_name: String,
+    form_panel_file_name: String,
     list_item_alias: String,
     current_item_ref_name: String,
     item_prop_name: String,
@@ -342,7 +349,6 @@ struct FrontendPageFieldContext {
     table_overflow: bool,
     form_required: bool,
     form_default_value: String,
-    form_model_type: String,
     create_submit_value: String,
     update_submit_value: String,
     search_placeholder: String,
@@ -803,7 +809,12 @@ impl FrontendPageGenerator {
             request.output_dir.as_deref(),
             request.target_preset,
         )?;
-        for path in [&paths.index_file, &paths.search_file, &paths.dialog_file] {
+        for path in [
+            &paths.types_file,
+            &paths.index_file,
+            &paths.search_file,
+            &paths.form_panel_file,
+        ] {
             if tokio::fs::try_exists(path).await.map_err(|error| {
                 io_error(format!("check generated file `{}`", path.display()), error)
             })? && !request.overwrite
@@ -832,8 +843,18 @@ impl FrontendPageGenerator {
         let index_source = renderer.render(FRONTEND_PAGE_INDEX_TEMPLATE_NAME, &template_context)?;
         let search_source =
             renderer.render(FRONTEND_PAGE_SEARCH_TEMPLATE_NAME, &template_context)?;
-        let dialog_source =
-            renderer.render(FRONTEND_PAGE_DIALOG_TEMPLATE_NAME, &template_context)?;
+        let form_panel_source =
+            renderer.render(FRONTEND_PAGE_FORM_PANEL_TEMPLATE_NAME, &template_context)?;
+        let types_source = renderer.render(FRONTEND_PAGE_TYPES_TEMPLATE_NAME, &template_context)?;
+
+        tokio::fs::write(&paths.types_file, types_source)
+            .await
+            .map_err(|error| {
+                io_error(
+                    format!("write frontend page types file `{}`", paths.types_file.display()),
+                    error,
+                )
+            })?;
 
         tokio::fs::write(&paths.index_file, index_source)
             .await
@@ -854,13 +875,13 @@ impl FrontendPageGenerator {
                     error,
                 )
             })?;
-        tokio::fs::write(&paths.dialog_file, dialog_source)
+        tokio::fs::write(&paths.form_panel_file, form_panel_source)
             .await
             .map_err(|error| {
                 io_error(
                     format!(
-                        "write frontend dialog file `{}`",
-                        paths.dialog_file.display()
+                        "write frontend form panel file `{}`",
+                        paths.form_panel_file.display()
                     ),
                     error,
                 )
@@ -872,9 +893,10 @@ impl FrontendPageGenerator {
             api_import_path: template_context.api.import_path.clone(),
             api_namespace: template_context.api.namespace.clone(),
             page_dir: paths.page_dir,
+            types_file: paths.types_file,
             index_file: paths.index_file,
             search_file: paths.search_file,
-            dialog_file: paths.dialog_file,
+            form_panel_file: paths.form_panel_file,
             required_dict_types: template_context.required_dict_types,
         })
     }
@@ -995,9 +1017,10 @@ impl FrontendPageGenerator {
                 .join(MODEL_ENTITY_DIR)
                 .join(format!("{table}.rs")),
             page_dir: page_dir.clone(),
+            types_file: page_dir.join("types.ts"),
             index_file: page_dir.join("index.vue"),
             search_file: modules_dir.join(format!("{file_stem}-search.vue")),
-            dialog_file: modules_dir.join(format!("{file_stem}-dialog.vue")),
+            form_panel_file: modules_dir.join(format!("{file_stem}-form-panel.vue")),
         })
     }
 
@@ -1005,7 +1028,7 @@ impl FrontendPageGenerator {
         for directory in [
             Some(paths.page_dir.as_path()),
             paths.search_file.parent(),
-            paths.dialog_file.parent(),
+            paths.form_panel_file.parent(),
         ]
         .into_iter()
         .flatten()
@@ -1045,7 +1068,7 @@ fn build_template_context(
     let names = crud_context.names.clone();
     let primary_key = crud_context.primary_key.clone();
     let api = build_api_context(&crud_context, &request);
-    let field_map = build_field_map(&request.schema, &crud_context, &request, &api)?;
+    let field_map = build_field_map(&request.schema, &crud_context, &request)?;
 
     let allowed_search_fields = crud_context
         .query_fields
@@ -1177,7 +1200,6 @@ fn build_field_map(
     schema: &TableSchema,
     crud_context: &CrudGenerationContext,
     request: &GenerateFrontendPageRequest,
-    api: &FrontendPageApiContext,
 ) -> Result<BTreeMap<String, FrontendPageFieldContext>, McpError> {
     let columns = schema
         .columns
@@ -1245,7 +1267,6 @@ fn build_field_map(
                     create_fields.contains(field.name.as_str()),
                     update_fields.contains(field.name.as_str()),
                     resolved_ui_meta,
-                    api,
                 ),
             ))
         })
@@ -1275,7 +1296,6 @@ fn build_frontend_field_context(
     create_enabled: bool,
     update_enabled: bool,
     ui_meta: ResolvedFrontendFieldUiMeta,
-    api: &FrontendPageApiContext,
 ) -> FrontendPageFieldContext {
     let semantic_signals = FieldSemanticSignals::from_field(field, column);
     let option_context = resolve_field_option_context(field, column, &ui_meta);
@@ -1352,13 +1372,6 @@ fn build_frontend_field_context(
         ),
         form_required,
         form_default_value: form_default_value.clone(),
-        form_model_type: form_model_type(
-            field,
-            &form_default_value,
-            create_enabled,
-            update_enabled,
-            api,
-        ),
         create_submit_value: submit_value(&field.camel_name, &form_default_value, form_required),
         update_submit_value: format!("form.{}", field.camel_name),
         search_placeholder,
@@ -1388,6 +1401,7 @@ fn resolve_field_option_context(
     let option_items_literal = render_option_items_literal(
         dict_type.as_deref(),
         field.type_info.value_kind,
+        &field.type_info.enum_options,
         local_options_literal.as_deref(),
         &bool_true_label,
         &bool_false_label,
@@ -1669,9 +1683,9 @@ fn build_page_naming_context(
         folder_name: folder_name.clone(),
         component_name: resource_pascal.clone(),
         search_component_name: format!("{resource_pascal}Search"),
-        dialog_component_name: format!("{resource_pascal}Dialog"),
+        form_panel_component_name: format!("{resource_pascal}FormPanel"),
         search_file_name: format!("{folder_name}-search.vue"),
-        dialog_file_name: format!("{folder_name}-dialog.vue"),
+        form_panel_file_name: format!("{folder_name}-form-panel.vue"),
         list_item_alias: format!("{resource_pascal}ListItem"),
         current_item_ref_name: format!("current{resource_pascal}Data"),
         item_prop_name: item_prop_name.clone(),
@@ -2022,12 +2036,13 @@ fn render_local_options_literal(local_options: &[EnumOptionContext]) -> Option<S
 fn render_option_items_literal(
     dict_type: Option<&str>,
     value_kind: FieldValueKind,
+    enum_options: &[EnumOptionContext],
     local_options_literal: Option<&str>,
     bool_true_label: &str,
     bool_false_label: &str,
 ) -> String {
     if let Some(dict_type) = dict_type {
-        return render_dict_options_literal(dict_type, value_kind);
+        return render_dict_options_literal(dict_type, value_kind, enum_options);
     }
     if let Some(local_options_literal) = local_options_literal {
         return local_options_literal.to_string();
@@ -2038,17 +2053,32 @@ fn render_option_items_literal(
     "[]".to_string()
 }
 
-fn render_dict_options_literal(dict_type: &str, value_kind: FieldValueKind) -> String {
+fn render_dict_options_literal(
+    dict_type: &str,
+    value_kind: FieldValueKind,
+    enum_options: &[EnumOptionContext],
+) -> String {
     format!(
         "getDict('{}').map((item) => ({{ label: item.label, value: {} }}))",
         escape_js_single_quoted_string(dict_type),
-        dict_option_value_expression(value_kind)
+        dict_option_value_expression(value_kind, enum_options)
     )
 }
 
-fn dict_option_value_expression(value_kind: FieldValueKind) -> &'static str {
+fn dict_option_value_expression(
+    value_kind: FieldValueKind,
+    enum_options: &[EnumOptionContext],
+) -> &'static str {
     match value_kind {
         FieldValueKind::Integer | FieldValueKind::Float => "Number(item.value)",
+        FieldValueKind::Enum
+            if !enum_options.is_empty()
+                && enum_options
+                    .iter()
+                    .all(|option| option.value_kind == EnumOptionValueKind::Number) =>
+        {
+            "Number(item.value)"
+        }
         FieldValueKind::Boolean => "item.value === 'true'",
         _ => "item.value",
     }
@@ -2059,33 +2089,6 @@ fn render_boolean_options_literal(true_label: &str, false_label: &str) -> String
         "[{{ label: {:?}, value: true }}, {{ label: {:?}, value: false }}]",
         true_label, false_label
     )
-}
-
-fn form_model_type(
-    field: &FieldGenerationContext,
-    default_value: &str,
-    create_enabled: bool,
-    update_enabled: bool,
-    api: &FrontendPageApiContext,
-) -> String {
-    let base = if create_enabled {
-        format!(
-            "Api.{}.{}['{}']",
-            api.namespace, api.create_params_type_name, field.camel_name
-        )
-    } else if update_enabled {
-        format!(
-            "Api.{}.{}['{}']",
-            api.namespace, api.update_params_type_name, field.camel_name
-        )
-    } else {
-        field.type_info.ts_input.clone()
-    };
-    if default_value == "undefined" && !base.contains("undefined") {
-        format!("{base} | undefined")
-    } else {
-        base
-    }
 }
 
 fn submit_value(field_camel_name: &str, form_default_value: &str, form_required: bool) -> String {
@@ -2515,7 +2518,6 @@ pub struct Model {
     fn field_ui_meta_overrides_hints_and_dict_bindings() {
         let schema = sample_user_schema();
         let crud_context = sample_crud_context(&schema);
-        let api = FrontendPageApiContext::from_generated_contract(&crud_context);
         let mut request = sample_page_request(schema.clone());
         request.dict_bindings = BTreeMap::from([("status".to_string(), "user_status".to_string())]);
         request.field_hints = BTreeMap::from([
@@ -2575,7 +2577,7 @@ pub struct Model {
             ),
         ]);
 
-        let field_map = build_field_map(&schema, &crud_context, &request, &api).unwrap();
+        let field_map = build_field_map(&schema, &crud_context, &request).unwrap();
         let status = field_map.get("status").unwrap();
         assert_eq!(status.label, "用户状态");
         assert_eq!(status.dict_type.as_deref(), Some("showcase_status"));
@@ -2619,8 +2621,7 @@ pub struct Model {
                 .any(|field| field.name == "status")
         );
 
-        let api = FrontendPageApiContext::from_generated_contract(&crud_context);
-        let field_map = build_field_map(&schema, &crud_context, &request, &api).unwrap();
+        let field_map = build_field_map(&schema, &crud_context, &request).unwrap();
         let status = field_map.get("status").unwrap();
         assert!(!status.search_visible);
     }
@@ -2695,12 +2696,12 @@ pub struct Model {
 
         let search_file = std::fs::read_to_string(&result.search_file).unwrap();
         let index_file = std::fs::read_to_string(&result.index_file).unwrap();
-        let dialog_file = std::fs::read_to_string(&result.dialog_file).unwrap();
+        let form_panel_file = std::fs::read_to_string(&result.form_panel_file).unwrap();
 
         assert!(search_file.contains("...{'maxlength':20}"));
-        assert!(dialog_file.contains("...{'rows':6}"));
-        assert!(dialog_file.contains(":span=\"24\""));
-        assert!(dialog_file.contains("...{'buttonText':'重新上传头像'}"));
+        assert!(form_panel_file.contains("...{'rows':6}"));
+        assert!(form_panel_file.contains(":span=\"24\""));
+        assert!(form_panel_file.contains("...{'buttonText':'重新上传头像'}"));
         assert!(index_file.contains("prop: 'avatar'"));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2799,18 +2800,18 @@ pub struct Model {
             .unwrap();
 
         let search_file = std::fs::read_to_string(&result.search_file).unwrap();
-        let dialog_file = std::fs::read_to_string(&result.dialog_file).unwrap();
+        let form_panel_file = std::fs::read_to_string(&result.form_panel_file).unwrap();
 
         assert!(search_file.contains("type: 'cascader'"));
         assert!(search_file.contains("type: 'checkboxgroup'"));
         assert!(search_file.contains("getDict('user_status').map((item) => ({"));
-        assert!(dialog_file.contains("<ElTreeSelect"));
-        assert!(dialog_file.contains("<ElRadioGroup"));
-        assert!(dialog_file.contains("<ArtWangEditor"));
-        assert!(dialog_file.contains("import ArtWangEditor"));
-        assert!(dialog_file.contains("...{'height':'320px'}"));
+        assert!(form_panel_file.contains("<ElTreeSelect"));
+        assert!(form_panel_file.contains("<ElRadioGroup"));
+        assert!(form_panel_file.contains("<ArtWangEditor"));
+        assert!(form_panel_file.contains("import ArtWangEditor"));
+        assert!(form_panel_file.contains("...{'height':'320px'}"));
         assert_no_triple_newlines(&search_file);
-        assert_no_triple_newlines(&dialog_file);
+        assert_no_triple_newlines(&form_panel_file);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3018,12 +3019,12 @@ pub struct Model {
             .await
             .unwrap();
 
-        let dialog_file = std::fs::read_to_string(&result.dialog_file).unwrap();
-        assert!(dialog_file.contains("<ElDrawer"));
-        assert!(!dialog_file.contains("<ElDialog"));
-        assert!(dialog_file.contains("size=\"760px\""));
-        assert!(dialog_file.contains(":span=\"12\""));
-        assert!(dialog_file.contains(":span=\"24\""));
+        let form_panel_file = std::fs::read_to_string(&result.form_panel_file).unwrap();
+        assert!(form_panel_file.contains("<ElDrawer"));
+        assert!(!form_panel_file.contains("<ElDialog"));
+        assert!(form_panel_file.contains("size=\"760px\""));
+        assert!(form_panel_file.contains(":span=\"12\""));
+        assert!(form_panel_file.contains(":span=\"24\""));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3111,47 +3112,87 @@ pub struct Model {
             .unwrap();
 
         let index_file = std::fs::read_to_string(&result.index_file).unwrap();
+        let types_file = std::fs::read_to_string(&result.types_file).unwrap();
         assert!(index_file.contains("UserSearch"));
-        assert!(index_file.contains("UserDialog"));
+        assert!(index_file.contains("UserFormPanel"));
         assert!(index_file.contains("fetchGetUserList"));
         assert!(index_file.contains("from '@/api/user'"));
+        assert!(index_file.contains("import type { UserListItem, SearchFormModel } from './types'"));
         assert!(index_file.contains("getDictLabel('user_status'"));
         assert!(index_file.contains("ElImage"));
         assert!(index_file.contains("mailto:"));
+        assert!(!index_file.contains("type SearchRangeParamKeys ="));
+        assert!(!index_file.contains("type SearchFormModel = Omit<"));
         assert!(!index_file.contains("width: 96,\n          minWidth:"));
+        assert!(
+            !index_file.contains(
+                "const src = row.avatar || defaultAvatar\n            if (!src) return '-'"
+            )
+        );
         assert_no_triple_newlines(&index_file);
+
+        assert!(types_file.contains("export type UserListItem = Api.User.UserVo"));
+        assert!(types_file.contains("type SearchRangeParamKeys ="));
+        assert!(types_file.contains("export type SearchFormModel = Omit<"));
+        assert!(types_file.contains("type FormBase = Api.User.CreateUserParams &"));
+        assert!(types_file.contains("export type FormModel = FormBase & {"));
+        assert_no_triple_newlines(&types_file);
 
         let search_file = std::fs::read_to_string(&result.search_file).unwrap();
         assert!(search_file.contains("getDict('user_status')"));
+        assert!(search_file.contains("value: Number(item.value)"));
         assert!(search_file.contains("type: 'datetimerange'"));
-        assert!(search_file.contains("type SearchFormModel = {"));
+        assert!(search_file.contains("import type { SearchFormModel } from '../types'"));
+        assert!(search_file.contains("modelValue: SearchFormModel"));
+        assert!(!search_file.contains("Record<string, any>"));
         assert!(search_file.contains("key: 'createTimeRange'"));
-        assert!(search_file.contains("Api.User.UserSearchParams['createTimeStart']"));
-        assert!(search_file.contains("Api.User.UserSearchParams['createTimeEnd']"));
         assert!(search_file.contains("valueFormat: 'YYYY-MM-DDTHH:mm:ss'"));
         assert_no_triple_newlines(&search_file);
 
-        let dialog_file = std::fs::read_to_string(&result.dialog_file).unwrap();
-        assert!(dialog_file.contains("fetchCreateUser"));
-        assert!(dialog_file.contains("fetchGetUserDetail"));
-        assert!(dialog_file.contains("fetchUpdateUser"));
-        assert!(dialog_file.contains("type UserListItem = Api.User.UserVo"));
-        assert!(dialog_file.contains("type UserListItemDetail = Api.User.UserDetailVo"));
-        assert!(dialog_file.contains("type: 'textarea'"));
-        assert!(dialog_file.contains("<ElDialog"));
-        assert!(!dialog_file.contains("<ElDrawer"));
-        assert!(dialog_file.contains("ArtFileUpload"));
-        assert!(dialog_file.contains("handleAvatarUploadSuccess"));
+        let form_panel_file = std::fs::read_to_string(&result.form_panel_file).unwrap();
+        assert!(form_panel_file.contains("fetchCreateUser"));
+        assert!(form_panel_file.contains("fetchGetUserDetail"));
+        assert!(form_panel_file.contains("fetchUpdateUser"));
+        assert!(form_panel_file.contains(
+            "import type { UserListItem, UserListItemDetail, FormModel } from '../types'"
+        ));
+        assert!(!form_panel_file.contains("type UserListItem = Api.User.UserVo"));
+        assert!(!form_panel_file.contains("type UserListItemDetail = Api.User.UserDetailVo"));
+        assert!(!form_panel_file.contains("type FormBase = Api.User.CreateUserParams & Api.User.UpdateUserParams"));
+        assert!(!form_panel_file.contains("type FormModel = FormBase & {"));
+        assert!(form_panel_file.contains("type: 'textarea'"));
+        assert!(form_panel_file.contains("<ElDialog"));
+        assert!(!form_panel_file.contains("<ElDrawer"));
+        assert!(form_panel_file.contains("ArtFileUpload"));
+        assert!(form_panel_file.contains("handleAvatarUploadSuccess"));
         assert!(
-            dialog_file
+            form_panel_file
                 .contains("const avatarUploadFiles = ref<Api.FileUpload.FileUploadVo[]>([])")
         );
-        assert!(dialog_file.contains(r#"label: "男", value: 1"#));
-        assert!(dialog_file.contains("trigger: 'change'"));
+        assert!(form_panel_file.contains("value: Number(item.value)"));
+        assert!(form_panel_file.contains(r#"label: "男", value: 1"#));
         assert!(
-            dialog_file.contains("const detail: UserListItemDetail = await fetchGetUserDetail(id)")
+            form_panel_file
+                .contains("(): PanelWatchState => [")
         );
-        assert_no_triple_newlines(&dialog_file);
+        assert!(form_panel_file.contains("props.userData?.id ?? null"));
+        assert!(form_panel_file.contains(
+            "type PanelWatchState = [boolean, Props['panelMode'], UserListItem['id'] | null]"
+        ));
+        assert_eq!(form_panel_file.matches("watch(").count(), 1);
+        assert!(form_panel_file.contains("async ([visible]: PanelWatchState) => {"));
+        assert!(form_panel_file.contains("await initForm()"));
+        assert!(form_panel_file.contains("nextTick(() => {"));
+        assert!(form_panel_file.contains("formRef.value?.clearValidate()"));
+        assert!(form_panel_file.contains("{ immediate: true }"));
+        assert!(form_panel_file.contains("trigger: 'change'"));
+        assert!(form_panel_file.contains("await formRef.value.validate()"));
+        assert!(!form_panel_file.contains("validate(async (valid) => {"));
+        assert!(
+            form_panel_file
+                .contains("const detail: UserListItemDetail = await fetchGetUserDetail(id)")
+        );
+        assert_no_triple_newlines(&form_panel_file);
 
         assert_eq!(result.required_dict_types, vec!["user_status".to_string()]);
         assert_eq!(result.api_import_path, "@/api/user");
@@ -3331,18 +3372,25 @@ pub struct Model {
 
         let index_file = std::fs::read_to_string(&result.index_file).unwrap();
         let search_file = std::fs::read_to_string(&result.search_file).unwrap();
-        let dialog_file = std::fs::read_to_string(&result.dialog_file).unwrap();
+        let form_panel_file = std::fs::read_to_string(&result.form_panel_file).unwrap();
 
         assert!(!index_file.contains("userName: undefined,\n\n    status: undefined"));
         assert!(!search_file.contains(
             "userName?: Api.User.UserSearchParams['userName']\n\n    status?: Api.User.UserSearchParams['status']"
         ));
-        assert!(!dialog_file.contains("userName: '',\n\n    avatar: ''"));
+        assert!(!form_panel_file.contains("userName: '',\n\n    avatar: ''"));
         assert!(search_file.contains("valueFormat: 'YYYY-MM-DDTHH:mm:ss'"));
-        assert!(dialog_file.contains("valueFormat: 'YYYY-MM-DDTHH:mm:ss'"));
+        assert!(form_panel_file.contains("valueFormat: 'YYYY-MM-DDTHH:mm:ss'"));
+        assert!(
+            form_panel_file.contains("const normalizeDateTimeValue = (value?: string | null) => {")
+        );
+        assert!(
+            form_panel_file
+                .contains("return value.includes('T') ? value : value.replace(' ', 'T')")
+        );
         assert_no_triple_newlines(&index_file);
         assert_no_triple_newlines(&search_file);
-        assert_no_triple_newlines(&dialog_file);
+        assert_no_triple_newlines(&form_panel_file);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3459,10 +3507,16 @@ pub struct Model {
             .await
             .unwrap();
 
-        let dialog_file = std::fs::read_to_string(&result.dialog_file).unwrap();
-        assert!(dialog_file.contains("from '@/api/system-manage'"));
-        assert!(dialog_file.contains("type UserListItem = Api.SystemManage.UserListItem"));
-        assert!(dialog_file.contains("type UserListItemDetail = Api.SystemManage.UserDetailVo"));
+        let form_panel_file = std::fs::read_to_string(&result.form_panel_file).unwrap();
+        let types_file = std::fs::read_to_string(&result.types_file).unwrap();
+        assert!(form_panel_file.contains("from '@/api/system-manage'"));
+        assert!(form_panel_file.contains(
+            "import type { UserListItem, UserListItemDetail, FormModel } from '../types'"
+        ));
+        assert!(types_file.contains("export type UserListItem = Api.SystemManage.UserListItem"));
+        assert!(
+            types_file.contains("export type UserListItemDetail = Api.SystemManage.UserDetailVo")
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -160,14 +160,7 @@ pub async fn validate_art_design_pro_typecheck(
         );
     }
 
-    let include = generated_files
-        .iter()
-        .filter_map(|path| {
-            path.strip_prefix(frontend_root)
-                .ok()
-                .map(relative_path_string)
-        })
-        .collect::<Vec<_>>();
+    let include = build_art_design_pro_validation_include(frontend_root, generated_files);
 
     if include.is_empty() {
         return skipped(
@@ -279,6 +272,27 @@ fn relative_path_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn build_art_design_pro_validation_include(
+    frontend_root: &Path,
+    generated_files: &[PathBuf],
+) -> Vec<String> {
+    let mut include = generated_files
+        .iter()
+        .filter_map(|path| {
+            path.strip_prefix(frontend_root)
+                .ok()
+                .map(relative_path_string)
+        })
+        .collect::<Vec<_>>();
+
+    // Generated pages depend on ambient API namespaces, auto-import declarations,
+    // and project-level module declarations that are not imported explicitly.
+    include.extend(["*.d.ts".to_string(), "src/**/*.d.ts".to_string()]);
+    include.sort();
+    include.dedup();
+    include
+}
+
 fn passed(name: &str) -> ValidationCheckResult {
     passed_with_command(name, String::new())
 }
@@ -348,5 +362,27 @@ mod tests {
         assert_eq!(summary.checks.len(), 1);
         assert_eq!(summary.checks[0].name, "frontend_typecheck");
         assert_eq!(summary.checks[0].status, ValidationStatus::Skipped);
+    }
+
+    #[test]
+    fn art_design_pro_validation_include_keeps_generated_files_and_global_declarations() {
+        let frontend_root = Path::new("/tmp/art-design-pro");
+        let include = build_art_design_pro_validation_include(
+            frontend_root,
+            &[
+                frontend_root.join("src/views/system/showcase-profile/index.vue"),
+                frontend_root.join("src/types/api/showcase-profile.d.ts"),
+            ],
+        );
+
+        assert_eq!(
+            include,
+            vec![
+                "*.d.ts".to_string(),
+                "src/**/*.d.ts".to_string(),
+                "src/types/api/showcase-profile.d.ts".to_string(),
+                "src/views/system/showcase-profile/index.vue".to_string(),
+            ]
+        );
     }
 }

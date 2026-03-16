@@ -185,9 +185,10 @@ pub struct GenerateFrontendPageFromTableResult {
     pub api_import_path: String,
     pub api_namespace: String,
     pub page_dir: String,
+    pub types_file: String,
     pub index_file: String,
     pub search_file: String,
-    pub dialog_file: String,
+    pub form_panel_file: String,
     pub required_dict_types: Vec<String>,
     pub artifacts: ArtifactBundleSummary,
     pub validation: GenerationValidationSummary,
@@ -203,9 +204,10 @@ pub struct GenerateFrontendBundleFromTableResult {
     pub api_file: String,
     pub api_type_file: String,
     pub page_dir: String,
+    pub types_file: String,
     pub index_file: String,
     pub search_file: String,
-    pub dialog_file: String,
+    pub form_panel_file: String,
     pub required_dict_types: Vec<String>,
     pub enum_drafts: Vec<EnumDraftSpec>,
     pub dict_bundle_drafts: Vec<DictBundleSpec>,
@@ -795,17 +797,19 @@ fn build_frontend_api_artifacts(
 fn build_frontend_page_artifacts(
     output_dir: Option<&str>,
     page_dir: &Path,
+    types_file: &Path,
     index_file: &Path,
     search_file: &Path,
-    dialog_file: &Path,
+    form_panel_file: &Path,
 ) -> ArtifactBundleSummary {
     build_artifact_bundle(
         generator_artifact_mode(output_dir),
         page_dir,
         [
+            ("types_file", types_file),
             ("index_file", index_file),
             ("search_file", search_file),
-            ("dialog_file", dialog_file),
+            ("form_panel_file", form_panel_file),
         ],
     )
 }
@@ -815,9 +819,10 @@ fn build_frontend_bundle_artifacts(
     frontend_root_dir: &Path,
     api_file: &Path,
     api_type_file: &Path,
+    types_file: &Path,
     index_file: &Path,
     search_file: &Path,
-    dialog_file: &Path,
+    form_panel_file: &Path,
 ) -> ArtifactBundleSummary {
     build_artifact_bundle(
         generator_artifact_mode(output_dir),
@@ -825,9 +830,10 @@ fn build_frontend_bundle_artifacts(
         [
             ("api_file", api_file),
             ("api_type_file", api_type_file),
+            ("types_file", types_file),
             ("index_file", index_file),
             ("search_file", search_file),
-            ("dialog_file", dialog_file),
+            ("form_panel_file", form_panel_file),
         ],
     )
 }
@@ -1224,9 +1230,10 @@ impl AdminMcpServer {
                 &result.frontend_root_dir,
                 &result.api_file,
                 &result.api_type_file,
+                &result.types_file,
                 &result.index_file,
                 &result.search_file,
-                &result.dialog_file,
+                &result.form_panel_file,
             );
 
             Ok(Json(GenerateFrontendBundleFromTableResult {
@@ -1238,9 +1245,10 @@ impl AdminMcpServer {
                 api_file: result.api_file.display().to_string(),
                 api_type_file: result.api_type_file.display().to_string(),
                 page_dir: result.page_dir.display().to_string(),
+                types_file: result.types_file.display().to_string(),
                 index_file: result.index_file.display().to_string(),
                 search_file: result.search_file.display().to_string(),
-                dialog_file: result.dialog_file.display().to_string(),
+                form_panel_file: result.form_panel_file.display().to_string(),
                 required_dict_types: result.required_dict_types,
                 enum_drafts: result.enum_drafts,
                 dict_bundle_drafts: result.dict_bundle_drafts,
@@ -1296,17 +1304,19 @@ impl AdminMcpServer {
             let artifacts = build_frontend_page_artifacts(
                 args.output_dir.as_deref(),
                 &result.page_dir,
+                &result.types_file,
                 &result.index_file,
                 &result.search_file,
-                &result.dialog_file,
+                &result.form_panel_file,
             );
             let validation = validate_frontend_target_output(
                 target_preset,
                 &frontend_root_dir,
                 &[
+                    result.types_file.clone(),
                     result.index_file.clone(),
                     result.search_file.clone(),
-                    result.dialog_file.clone(),
+                    result.form_panel_file.clone(),
                 ],
             )
             .await;
@@ -1317,9 +1327,10 @@ impl AdminMcpServer {
                 api_import_path: result.api_import_path,
                 api_namespace: result.api_namespace,
                 page_dir: result.page_dir.display().to_string(),
+                types_file: result.types_file.display().to_string(),
                 index_file: result.index_file.display().to_string(),
                 search_file: result.search_file.display().to_string(),
-                dialog_file: result.dialog_file.display().to_string(),
+                form_panel_file: result.form_panel_file.display().to_string(),
                 required_dict_types: result.required_dict_types,
                 artifacts,
                 validation,

@@ -3,6 +3,12 @@
 {% if flags.uses_datetime_format %}
 use common::serde_utils::datetime_format;
 {% endif %}
+{% if flags.uses_date_format %}
+use common::serde_utils::date_format;
+{% endif %}
+{% if flags.uses_time_format %}
+use common::serde_utils::time_format;
+{% endif %}
 use schemars::JsonSchema;
 use serde::Serialize;
 {% for import in imports.vo %}
@@ -21,8 +27,18 @@ pub struct {{ names.vo }} {
 {% for line in field.comment_lines %}
     /// {{ line }}
 {% endfor %}
-{% if field.type_info.datetime_like and not field.nullable_entity %}
+{% if field.type_info.value_kind == "date_time" and field.nullable_entity %}
+    #[serde(serialize_with = "datetime_format::serialize_option")]
+{% elif field.type_info.value_kind == "date_time" %}
     #[serde(serialize_with = "datetime_format::serialize")]
+{% elif field.type_info.value_kind == "date" and field.nullable_entity %}
+    #[serde(serialize_with = "date_format::serialize_option")]
+{% elif field.type_info.value_kind == "date" %}
+    #[serde(serialize_with = "date_format::serialize")]
+{% elif field.type_info.value_kind == "time" and field.nullable_entity %}
+    #[serde(serialize_with = "time_format::serialize_option")]
+{% elif field.type_info.value_kind == "time" %}
+    #[serde(serialize_with = "time_format::serialize")]
 {% endif %}
     pub {{ field.name }}: {{ field.type_info.rust_entity }},
 {% endfor %}

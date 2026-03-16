@@ -1,0 +1,43 @@
+export type {{ page.list_item_alias }} = Api.{{ api.namespace }}.{{ api.list_item_type_name }}
+export type {{ page.list_item_alias }}Detail = Api.{{ api.namespace }}.{{ api.detail_type_name }}
+
+type SearchSystemParamKeys = keyof Api.Common.CommonSearchParams
+{% if flags.uses_range_search %}
+type SearchRangeParamKeys =
+{% for field in search_fields if field.search_exclude_param %}
+  | '{{ field.search_param_start }}'
+  | '{{ field.search_param_end }}'
+{% endfor %}
+
+export type SearchFormModel = Omit<
+  Api.{{ api.namespace }}.{{ api.search_params_type_name }},
+  SearchSystemParamKeys | SearchRangeParamKeys
+> & {
+{% for field in search_fields if field.search_exclude_param %}
+  {{ field.search_model_key }}?: [
+    Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_param_start }}'],
+    Api.{{ api.namespace }}.{{ api.search_params_type_name }}['{{ field.search_param_end }}']
+  ]
+{% endfor %}
+}
+{% else %}
+export type SearchFormModel = Omit<
+  Api.{{ api.namespace }}.{{ api.search_params_type_name }},
+  SearchSystemParamKeys
+>
+{% endif %}
+
+type FormBase = Api.{{ api.namespace }}.{{ api.create_params_type_name }} &
+  Api.{{ api.namespace }}.{{ api.update_params_type_name }}
+{% if form_fields | selectattr("form_default_value", "equalto", "undefined") | list %}
+type FormUndefinedKeys =
+{% for field in form_fields if field.form_default_value == "undefined" %}
+  | '{{ field.camel_name }}'
+{% endfor %}
+
+export type FormModel = FormBase & {
+  [K in FormUndefinedKeys]-?: FormBase[K] | undefined
+}
+{% else %}
+export type FormModel = FormBase
+{% endif %}

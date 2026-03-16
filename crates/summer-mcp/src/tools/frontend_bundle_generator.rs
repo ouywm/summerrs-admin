@@ -64,9 +64,10 @@ pub struct GenerateFrontendBundleResult {
     pub api_file: PathBuf,
     pub api_type_file: PathBuf,
     pub page_dir: PathBuf,
+    pub types_file: PathBuf,
     pub index_file: PathBuf,
     pub search_file: PathBuf,
-    pub dialog_file: PathBuf,
+    pub form_panel_file: PathBuf,
     pub required_dict_types: Vec<String>,
     pub enum_drafts: Vec<EnumDraftSpec>,
     pub dict_bundle_drafts: Vec<DictBundleSpec>,
@@ -143,9 +144,10 @@ impl FrontendBundleGenerator {
             [
                 api_result.api_file.as_path(),
                 api_result.api_type_file.as_path(),
+                page_result.types_file.as_path(),
                 page_result.index_file.as_path(),
                 page_result.search_file.as_path(),
-                page_result.dialog_file.as_path(),
+                page_result.form_panel_file.as_path(),
             ],
         )
         .await?;
@@ -156,9 +158,10 @@ impl FrontendBundleGenerator {
             &[
                 api_result.api_file.clone(),
                 api_result.api_type_file.clone(),
+                page_result.types_file.clone(),
                 page_result.index_file.clone(),
                 page_result.search_file.clone(),
-                page_result.dialog_file.clone(),
+                page_result.form_panel_file.clone(),
             ],
         )
         .await;
@@ -172,9 +175,10 @@ impl FrontendBundleGenerator {
             api_file: api_result.api_file,
             api_type_file: api_result.api_type_file,
             page_dir: page_result.page_dir,
+            types_file: page_result.types_file,
             index_file: page_result.index_file,
             search_file: page_result.search_file,
-            dialog_file: page_result.dialog_file,
+            form_panel_file: page_result.form_panel_file,
             required_dict_types: page_result.required_dict_types,
             enum_drafts: crud_context.enum_drafts,
             dict_bundle_drafts,
@@ -210,7 +214,7 @@ impl FrontendBundleGenerator {
 async fn format_generated_frontend_bundle(
     target_preset: FrontendTargetPreset,
     frontend_root_dir: &Path,
-    generated_files: [&Path; 5],
+    generated_files: [&Path; 6],
 ) -> Result<(), McpError> {
     if target_preset != FrontendTargetPreset::ArtDesignPro {
         return Ok(());

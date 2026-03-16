@@ -441,7 +441,9 @@ mod tests {
 
         let vo = std::fs::read_to_string(&result.vo_file).unwrap();
         assert!(vo.contains("pub struct RoleVo"));
+        assert!(vo.contains("use common::serde_utils::datetime_format;"));
         assert!(vo.contains("pub create_time: chrono::NaiveDateTime"));
+        assert!(vo.contains(r#"#[serde(serialize_with = "datetime_format::serialize")]"#));
         assert_no_sparse_generated_fields(&vo);
 
         let router_mod = std::fs::read_to_string(root.join(APP_ROUTER_DIR).join("mod.rs")).unwrap();
@@ -664,6 +666,126 @@ pub struct Model {
         );
         assert!(!root.join(MODEL_DTO_DIR).join("sys_role.rs").exists());
         assert!(!root.join(MODEL_VO_DIR).join("sys_role.rs").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn generator_serializes_temporal_vo_fields_with_custom_formatters() {
+        let root = std::env::temp_dir().join(format!(
+            "summer-mcp-admin-module-generator-temporal-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        for dir in [
+            root.join(APP_ROUTER_DIR),
+            root.join(APP_SERVICE_DIR),
+            root.join(MODEL_DTO_DIR),
+            root.join(MODEL_VO_DIR),
+            root.join(MODEL_ENTITY_DIR),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            root.join(MODEL_ENTITY_DIR).join("biz_schedule.rs"),
+            r#"
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub work_date: Option<Date>,
+    pub start_at: Option<DateTime>,
+    pub check_time: Option<Time>,
+}
+"#,
+        )
+        .unwrap();
+
+        let generator = AdminModuleGenerator::with_workspace_root(root.clone());
+        let result = generator
+            .generate(GenerateAdminModuleRequest {
+                schema: TableSchema {
+                    schema: "public".to_string(),
+                    table: "biz_schedule".to_string(),
+                    comment: Some("排班".to_string()),
+                    primary_key: vec!["id".to_string()],
+                    columns: vec![
+                        TableColumnSchema {
+                            name: "id".to_string(),
+                            pg_type: "bigint".to_string(),
+                            nullable: false,
+                            primary_key: true,
+                            hidden_on_read: false,
+                            writable_on_create: false,
+                            writable_on_update: false,
+                            default_value: Some("nextval(...)".to_string()),
+                            comment: Some("主键".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "work_date".to_string(),
+                            pg_type: "date".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("工作日期".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "start_at".to_string(),
+                            pg_type: "timestamp without time zone".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("开始时间".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        TableColumnSchema {
+                            name: "check_time".to_string(),
+                            pg_type: "time without time zone".to_string(),
+                            nullable: true,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: None,
+                            comment: Some("签到时间".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                    ],
+                    indexes: vec![],
+                    foreign_keys: vec![],
+                    check_constraints: vec![],
+                },
+                overwrite: true,
+                route_base: None,
+                output_dir: None,
+            })
+            .await
+            .unwrap();
+
+        let vo = std::fs::read_to_string(&result.vo_file).unwrap();
+        assert!(vo.contains("use common::serde_utils::date_format;"));
+        assert!(vo.contains("use common::serde_utils::datetime_format;"));
+        assert!(vo.contains("use common::serde_utils::time_format;"));
+        assert!(vo.contains(r#"#[serde(serialize_with = "date_format::serialize_option")]"#));
+        assert!(vo.contains(r#"#[serde(serialize_with = "datetime_format::serialize_option")]"#));
+        assert!(vo.contains(r#"#[serde(serialize_with = "time_format::serialize_option")]"#));
 
         let _ = std::fs::remove_dir_all(&root);
     }
