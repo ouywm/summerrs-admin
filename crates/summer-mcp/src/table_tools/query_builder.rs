@@ -39,6 +39,15 @@ pub(crate) struct TableFilter {
     pub values: Option<Vec<JsonValue>>,
 }
 
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub(crate) enum TableFilterInput {
+    /// 结构化过滤参数，如 {"column":"id","op":"eq","value":1}
+    Structured(TableFilter),
+    /// 简写过滤参数，如 "id = 1"、"name ilike admin"、"status in [1,2]"
+    Shorthand(String),
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SortDirection {
@@ -208,7 +217,7 @@ pub(crate) fn build_key_clause(
 
 pub(crate) fn build_filters_clause(
     schema: &TableSchema,
-    filters: Option<&[TableFilter]>,
+    filters: Option<&[TableFilterInput]>,
 ) -> Result<(Option<String>, Vec<Value>), McpError> {
     let Some(filters) = filters else {
         return Ok((None, Vec::new()));
@@ -216,7 +225,8 @@ pub(crate) fn build_filters_clause(
 
     let mut clauses = Vec::with_capacity(filters.len());
     let mut params = Vec::new();
-    for filter in filters {
+    for filter_input in filters {
+        let filter = parse_filter_input(filter_input)?;
         ensure_valid_identifier(&filter.column, "column")?;
         let Some(column) = schema.column(&filter.column) else {
             return Err(McpError::invalid_params(
@@ -237,7 +247,7 @@ pub(crate) fn build_filters_clause(
             ));
         }
 
-        clauses.push(build_filter_clause(column, filter, &mut params)?);
+        clauses.push(build_filter_clause(column, &filter, &mut params)?);
     }
 
     if clauses.is_empty() {
@@ -245,6 +255,144 @@ pub(crate) fn build_filters_clause(
     } else {
         Ok((Some(clauses.join(" AND ")), params))
     }
+}
+
+fn parse_filter_input(filter: &TableFilterInput) -> Result<TableFilter, McpError> {
+    match filter {
+        TableFilterInput::Structured(filter) => Ok(filter.clone()),
+        TableFilterInput::Shorthand(filter) => parse_filter_shorthand(filter),
+    }
+}
+
+fn parse_filter_shorthand(input: &str) -> Result<TableFilter, McpError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(McpError::invalid_params(
+            "filter shorthand cannot be empty",
+            None,
+        ));
+    }
+
+    let mut parts = trimmed.splitn(3, char::is_whitespace);
+    let column = parts
+        .next()
+        .ok_or_else(|| McpError::invalid_params("filter shorthand requires a column", None))?;
+    let operator = parts
+        .next()
+        .ok_or_else(|| McpError::invalid_params("filter shorthand requires an operator", None))?;
+    let remainder = parts.next().map(str::trim).unwrap_or_default();
+
+    let (op, value, values) = match operator.to_ascii_lowercase().as_str() {
+        "=" | "eq" => (
+            FilterOp::Eq,
+            Some(parse_filter_value_literal(remainder)?),
+            None,
+        ),
+        "!=" | "<>" | "ne" => (
+            FilterOp::Ne,
+            Some(parse_filter_value_literal(remainder)?),
+            None,
+        ),
+        ">" | "gt" => (
+            FilterOp::Gt,
+            Some(parse_filter_value_literal(remainder)?),
+            None,
+        ),
+        ">=" | "gte" => (
+            FilterOp::Gte,
+            Some(parse_filter_value_literal(remainder)?),
+            None,
+        ),
+        "<" | "lt" => (
+            FilterOp::Lt,
+            Some(parse_filter_value_literal(remainder)?),
+            None,
+        ),
+        "<=" | "lte" => (
+            FilterOp::Lte,
+            Some(parse_filter_value_literal(remainder)?),
+            None,
+        ),
+        "like" => (
+            FilterOp::Like,
+            Some(parse_filter_value_literal(remainder)?),
+            None,
+        ),
+        "ilike" => (
+            FilterOp::ILike,
+            Some(parse_filter_value_literal(remainder)?),
+            None,
+        ),
+        "in" => (
+            FilterOp::In,
+            None,
+            Some(parse_filter_values_literal(remainder)?),
+        ),
+        "is_null" => (FilterOp::IsNull, None, None),
+        "is_not_null" => (FilterOp::IsNotNull, None, None),
+        "is" if remainder.eq_ignore_ascii_case("null") => (FilterOp::IsNull, None, None),
+        "is" if remainder.eq_ignore_ascii_case("not null") => (FilterOp::IsNotNull, None, None),
+        other => {
+            return Err(McpError::invalid_params(
+                format!("unsupported filter operator shorthand `{other}`"),
+                None,
+            ));
+        }
+    };
+
+    Ok(TableFilter {
+        column: column.to_string(),
+        op,
+        value,
+        values,
+    })
+}
+
+fn parse_filter_value_literal(input: &str) -> Result<JsonValue, McpError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(McpError::invalid_params(
+            "filter shorthand requires a value",
+            None,
+        ));
+    }
+
+    Ok(parse_jsonish_literal(trimmed))
+}
+
+fn parse_filter_values_literal(input: &str) -> Result<Vec<JsonValue>, McpError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(McpError::invalid_params(
+            "filter shorthand `in` requires a JSON array value",
+            None,
+        ));
+    }
+
+    let parsed = serde_json::from_str::<JsonValue>(trimmed).map_err(|_| {
+        McpError::invalid_params(
+            "filter shorthand `in` requires a JSON array value like `[1,2,3]`",
+            None,
+        )
+    })?;
+    let Some(values) = parsed.as_array() else {
+        return Err(McpError::invalid_params(
+            "filter shorthand `in` requires a JSON array value like `[1,2,3]`",
+            None,
+        ));
+    };
+    if values.is_empty() {
+        return Err(McpError::invalid_params(
+            "filter shorthand `in` requires at least one array item",
+            None,
+        ));
+    }
+    Ok(values.clone())
+}
+
+fn parse_jsonish_literal(input: &str) -> JsonValue {
+    serde_json::from_str::<JsonValue>(input)
+        .unwrap_or_else(|_| JsonValue::String(input.to_string()))
 }
 
 fn build_filter_clause(
@@ -453,6 +601,7 @@ fn parse_sort_shorthand(input: &str) -> Result<TableSort, McpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn parse_sort_shorthand_accepts_common_forms() {
@@ -463,5 +612,25 @@ mod tests {
         let sort = parse_sort_shorthand("role_name").unwrap();
         assert_eq!(sort.column, "role_name");
         assert_eq!(sort.direction, None);
+    }
+
+    #[test]
+    fn parse_filter_shorthand_accepts_common_forms() {
+        let eq = parse_filter_shorthand("id = 13").unwrap();
+        assert_eq!(eq.column, "id");
+        assert!(matches!(eq.op, FilterOp::Eq));
+        assert_eq!(eq.value, Some(json!(13)));
+
+        let ilike = parse_filter_shorthand("role_name ilike admin").unwrap();
+        assert_eq!(ilike.column, "role_name");
+        assert!(matches!(ilike.op, FilterOp::ILike));
+        assert_eq!(ilike.value, Some(json!("admin")));
+
+        let is_null = parse_filter_shorthand("deleted_at is null").unwrap();
+        assert!(matches!(is_null.op, FilterOp::IsNull));
+
+        let in_values = parse_filter_shorthand("status in [1,2,3]").unwrap();
+        assert!(matches!(in_values.op, FilterOp::In));
+        assert_eq!(in_values.values, Some(vec![json!(1), json!(2), json!(3)]));
     }
 }

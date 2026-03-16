@@ -16,7 +16,8 @@ use crate::{
     tools::{
         frontend_api_generator::{FrontendApiGenerator, GenerateFrontendApiRequest},
         frontend_page_generator::{
-            FrontendFieldUiHint, FrontendPageGenerator, GenerateFrontendPageRequest,
+            FrontendFieldUiHint, FrontendFieldUiMeta, FrontendPageGenerator,
+            GenerateFrontendPageRequest,
         },
         frontend_target::FrontendTargetPreset,
         generation_context::{
@@ -46,6 +47,7 @@ pub struct GenerateFrontendBundleRequest {
     pub target_preset: FrontendTargetPreset,
     pub dict_bindings: BTreeMap<String, String>,
     pub field_hints: BTreeMap<String, FrontendFieldUiHint>,
+    pub field_ui_meta: BTreeMap<String, FrontendFieldUiMeta>,
     pub search_fields: Option<Vec<String>>,
     pub table_fields: Option<Vec<String>>,
     pub form_fields: Option<Vec<String>>,
@@ -126,6 +128,7 @@ impl FrontendBundleGenerator {
                 api_detail_type_name: None,
                 dict_bindings: effective_dict_bindings,
                 field_hints: request.field_hints,
+                field_ui_meta: request.field_ui_meta,
                 search_fields: request.search_fields,
                 table_fields: request.table_fields,
                 form_fields: request.form_fields,
@@ -245,10 +248,10 @@ async fn format_generated_frontend_bundle(
         format!(
             "failed to format generated frontend bundle in `{}` with prettier (status {}): stdout:\n{}\nstderr:\n{}",
             frontend_root_dir.display(),
-            output
-                .status
-                .code()
-                .map_or_else(|| "terminated by signal".to_string(), |code| code.to_string()),
+            output.status.code().map_or_else(
+                || "terminated by signal".to_string(),
+                |code| code.to_string()
+            ),
             stdout.trim(),
             stderr.trim()
         ),
@@ -273,6 +276,15 @@ fn build_effective_dict_bindings(
     request: &GenerateFrontendBundleRequest,
 ) -> BTreeMap<String, String> {
     let mut bindings = request.dict_bindings.clone();
+    for (field, meta) in &request.field_ui_meta {
+        if let Some(dict_type) = meta
+            .dict_type
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            bindings.insert(field.clone(), dict_type.clone());
+        }
+    }
     for field in &crud_context.fields {
         if bindings.contains_key(&field.name) || field.type_info.enum_options.is_empty() {
             continue;
@@ -550,6 +562,7 @@ pub struct Model {
                 target_preset: FrontendTargetPreset::SummerMcp,
                 dict_bindings: BTreeMap::from([("status".to_string(), "user_status".to_string())]),
                 field_hints: BTreeMap::new(),
+                field_ui_meta: BTreeMap::new(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,
@@ -679,6 +692,7 @@ pub struct Model {
                 target_preset: FrontendTargetPreset::ArtDesignPro,
                 dict_bindings: BTreeMap::new(),
                 field_hints: BTreeMap::new(),
+                field_ui_meta: BTreeMap::new(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,

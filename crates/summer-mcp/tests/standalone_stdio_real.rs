@@ -120,9 +120,7 @@ $do$;"#
 }
 
 fn drop_showcase_profile_test_table_sql() -> String {
-    format!(
-        "DROP TABLE IF EXISTS public.{TEST_SHOWCASE_PROFILE_TABLE} CASCADE"
-    )
+    format!("DROP TABLE IF EXISTS public.{TEST_SHOWCASE_PROFILE_TABLE} CASCADE")
 }
 
 fn test_entity_dir() -> PathBuf {

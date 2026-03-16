@@ -52,7 +52,7 @@ impl Plugin for McpPlugin {
             }
             (transport, mode) => {
                 let transport_for_task = transport.clone();
-                tokio::spawn(async move {
+                let server_handle = tokio::spawn(async move {
                     match run_server(config, db).await {
                         Ok(()) => {
                             tracing::info!("MCP {transport_for_task} server stopped normally")
@@ -63,6 +63,16 @@ impl Plugin for McpPlugin {
                                  the admin MCP service is no longer available"
                             );
                         }
+                    }
+                });
+
+                // Monitor the server task so panics are surfaced instead of silently dropped.
+                tokio::spawn(async move {
+                    if let Err(join_error) = server_handle.await {
+                        tracing::error!(
+                            "MCP server task terminated unexpectedly: {join_error}; \
+                             the admin MCP service is no longer available"
+                        );
                     }
                 });
 

@@ -229,67 +229,28 @@ fn build_context(
             )
         })?;
 
-    let create_fields = fields
-        .iter()
-        .filter(|field| {
-            schema
-                .columns
-                .iter()
-                .find(|column| column.name == field.name)
-                .is_some_and(|column| {
-                    column.writable_on_create && !is_client_submit_blocked_field(&column.name)
-                })
-        })
-        .cloned()
-        .map(|mut field| {
-            let column = schema
-                .columns
-                .iter()
-                .find(|column| column.name == field.name)
-                .expect("field must map back to schema column");
-            field.create_required =
-                !column.nullable && column.default_value.is_none() && !field.nullable_entity;
-            field
-        })
-        .collect::<Vec<_>>();
+    let create_fields = filter_fields_by_column(&fields, &schema, |column| {
+        column.writable_on_create && !is_client_submit_blocked_field(&column.name)
+    })
+    .into_iter()
+    .map(|mut field| {
+        let column = schema
+            .columns
+            .iter()
+            .find(|column| column.name == field.name)
+            .expect("field must map back to schema column");
+        field.create_required =
+            !column.nullable && column.default_value.is_none() && !field.nullable_entity;
+        field
+    })
+    .collect::<Vec<_>>();
 
-    let update_fields = fields
-        .iter()
-        .filter(|field| {
-            schema
-                .columns
-                .iter()
-                .find(|column| column.name == field.name)
-                .is_some_and(|column| {
-                    column.writable_on_update && !is_client_submit_blocked_field(&column.name)
-                })
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+    let update_fields = filter_fields_by_column(&fields, &schema, |column| {
+        column.writable_on_update && !is_client_submit_blocked_field(&column.name)
+    });
 
-    let query_fields = fields
-        .iter()
-        .filter(|field| {
-            schema
-                .columns
-                .iter()
-                .find(|column| column.name == field.name)
-                .is_some_and(|column| !column.hidden_on_read)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-
-    let read_fields = fields
-        .iter()
-        .filter(|field| {
-            schema
-                .columns
-                .iter()
-                .find(|column| column.name == field.name)
-                .is_some_and(|column| !column.hidden_on_read)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+    let read_fields = filter_fields_by_column(&fields, &schema, |column| !column.hidden_on_read);
+    let query_fields = read_fields.clone();
 
     let flags = CrudGenerationFlags {
         uses_datetime_format: read_fields
@@ -835,6 +796,24 @@ fn apply_nullable_ts_suffix(base: String, nullable: bool) -> String {
 
 fn is_client_submit_blocked_field(name: &str) -> bool {
     CLIENT_SUBMIT_BLOCKED_FIELD_NAMES.contains(&name)
+}
+
+fn filter_fields_by_column(
+    fields: &[FieldGenerationContext],
+    schema: &TableSchema,
+    predicate: impl Fn(&TableColumnSchema) -> bool,
+) -> Vec<FieldGenerationContext> {
+    fields
+        .iter()
+        .filter(|field| {
+            schema
+                .columns
+                .iter()
+                .find(|column| column.name == field.name)
+                .is_some_and(&predicate)
+        })
+        .cloned()
+        .collect()
 }
 
 fn infer_ts_enum_type(rust_type: &str, enum_options: &[EnumOptionContext]) -> String {

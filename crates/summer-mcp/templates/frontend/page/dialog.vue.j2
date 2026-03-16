@@ -1,98 +1,166 @@
+{% import "frontend/page/_macros.j2" as ui %}
 <template>
+{% if form_container.use_drawer %}
+  <ElDrawer
+    v-model="visible"
+    :title="dialogType === 'add' ? '新增{{ table.subject_label }}' : '编辑{{ table.subject_label }}'"
+    size="{{ form_container.size }}"
+    destroy-on-close
+    @close="handleClose"
+  >
+{% else %}
   <ElDialog
     v-model="visible"
     :title="dialogType === 'add' ? '新增{{ table.subject_label }}' : '编辑{{ table.subject_label }}'"
-    width="36%"
+    width="{{ form_container.size }}"
     align-center
     @close="handleClose"
   >
-    <ElForm ref="formRef" :model="form" :rules="rules" label-width="120px" v-loading="detailLoading">
-{% for field in form_fields %}
-      <ElFormItem
-{% if field.form_visibility == "add_only" %}
-        v-if="dialogType === 'add'"
-{% elif field.form_visibility == "edit_only" %}
-        v-if="dialogType === 'edit'"
 {% endif %}
+    <ElForm ref="formRef" :model="form" :rules="rules" label-width="120px" v-loading="detailLoading">
+      <ElRow :gutter="16">
+{% for field in form_fields %}
+        <ElCol
+{% if field.form_visibility == "add_only" %}
+          v-if="dialogType === 'add'"
+{% elif field.form_visibility == "edit_only" %}
+          v-if="dialogType === 'edit'"
+{% endif %}
+          :span="{{ field.form_span or 24 }}"
+        >
+      <ElFormItem
         label="{{ field.label }}"
         prop="{{ field.camel_name }}"
       >
 {% if field.form_widget == "textarea" %}
         <ElInput
           v-model="form.{{ field.camel_name }}"
-          type="textarea"
-          :rows="3"
-          placeholder="{{ field.form_placeholder }}"
+          {{ ui.vue_bind([
+            "type: 'textarea'",
+            "rows: 3",
+            "placeholder: '" ~ field.form_placeholder ~ "'"
+          ], field.form_props_literal, '            ', '          ') }}
         />
 {% elif field.form_widget == "switch" %}
-        <ElSwitch v-model="form.{{ field.camel_name }}" />
+        <ElSwitch
+          v-model="form.{{ field.camel_name }}"
+{% if field.form_props_literal %}          {{ ui.spread_bind(field.form_props_literal) }}
+{% endif %}
+        />
 {% elif field.form_widget == "select" %}
         <ElSelect
           v-model="form.{{ field.camel_name }}"
-          placeholder="{{ field.form_placeholder }}"
-          clearable
+          {{ ui.vue_bind([
+            "placeholder: '" ~ field.form_placeholder ~ "'",
+            "clearable: true"
+          ], field.form_props_literal, '            ', '          ') }}
         >
-{% if field.dict_type %}
           <ElOption
-            v-for="item in getDict('{{ field.dict_type }}')"
-            :key="item.value"
-            :label="item.label"
-{% if field.type_info.value_kind == "integer" or field.type_info.value_kind == "float" %}
-            :value="Number(item.value)"
-{% elif field.type_info.value_kind == "boolean" %}
-            :value="item.value === 'true'"
-{% else %}
-            :value="item.value"
-{% endif %}
-          />
-{% elif field.local_options_literal %}
-          <ElOption
-            v-for="item in {{ field.local_options_literal }}"
+            v-for="item in {{ field.option_items_literal }}"
             :key="item.value"
             :label="item.label"
             :value="item.value"
           />
-{% else %}
-          <ElOption label="{{ field.bool_true_label }}" :value="true" />
-          <ElOption label="{{ field.bool_false_label }}" :value="false" />
-{% endif %}
         </ElSelect>
+{% elif field.form_widget == "radio_group" %}
+        <ElRadioGroup
+          v-model="form.{{ field.camel_name }}"
+{% if field.form_props_literal %}          {{ ui.spread_bind(field.form_props_literal) }}
+{% endif %}
+        >
+          <ElRadio
+            v-for="item in {{ field.option_items_literal }}"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          />
+        </ElRadioGroup>
+{% elif field.form_widget == "checkbox_group" %}
+        <ElCheckboxGroup
+          v-model="form.{{ field.camel_name }}"
+{% if field.form_props_literal %}          {{ ui.spread_bind(field.form_props_literal) }}
+{% endif %}
+        >
+          <ElCheckbox
+            v-for="item in {{ field.option_items_literal }}"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          />
+        </ElCheckboxGroup>
+{% elif field.form_widget == "cascader" %}
+        <ElCascader
+          v-model="form.{{ field.camel_name }}"
+          {{ ui.vue_bind([
+            "placeholder: '" ~ field.form_placeholder ~ "'",
+            "clearable: true",
+            "style: { width: '100%' }",
+            "options: " ~ field.option_items_literal
+          ], field.form_props_literal, '            ', '          ') }}
+        />
+{% elif field.form_widget == "tree_select" %}
+        <ElTreeSelect
+          v-model="form.{{ field.camel_name }}"
+          {{ ui.vue_bind([
+            "placeholder: '" ~ field.form_placeholder ~ "'",
+            "clearable: true",
+            "style: { width: '100%' }",
+            "data: " ~ field.option_items_literal
+          ], field.form_props_literal, '            ', '          ') }}
+        />
 {% elif field.form_widget == "input_number" %}
         <ElInputNumber
           v-model="form.{{ field.camel_name }}"
-          :controls="false"
-          style="width: 100%"
-          placeholder="{{ field.form_placeholder }}"
+          {{ ui.vue_bind([
+            "controls: false",
+            "style: { width: '100%' }",
+            "placeholder: '" ~ field.form_placeholder ~ "'"
+          ], field.form_props_literal, '            ', '          ') }}
         />
 {% elif field.form_widget == "date" %}
         <ElDatePicker
           v-model="form.{{ field.camel_name }}"
-          type="date"
-          value-format="YYYY-MM-DD"
-          placeholder="{{ field.form_placeholder }}"
-          style="width: 100%"
+          {{ ui.vue_bind([
+            "type: 'date'",
+            "valueFormat: 'YYYY-MM-DD'",
+            "placeholder: '" ~ field.form_placeholder ~ "'",
+            "style: { width: '100%' }"
+          ], field.form_props_literal, '            ', '          ') }}
         />
 {% elif field.form_widget == "time" %}
         <ElTimePicker
           v-model="form.{{ field.camel_name }}"
-          value-format="HH:mm:ss"
-          placeholder="{{ field.form_placeholder }}"
-          style="width: 100%"
+          {{ ui.vue_bind([
+            "valueFormat: 'HH:mm:ss'",
+            "placeholder: '" ~ field.form_placeholder ~ "'",
+            "style: { width: '100%' }"
+          ], field.form_props_literal, '            ', '          ') }}
         />
 {% elif field.form_widget == "date_time" %}
         <ElDatePicker
           v-model="form.{{ field.camel_name }}"
-          type="datetime"
-          value-format="YYYY-MM-DDTHH:mm:ss"
-          placeholder="{{ field.form_placeholder }}"
-          style="width: 100%"
+          {{ ui.vue_bind([
+            "type: 'datetime'",
+            "valueFormat: 'YYYY-MM-DDTHH:mm:ss'",
+            "placeholder: '" ~ field.form_placeholder ~ "'",
+            "style: { width: '100%' }"
+          ], field.form_props_literal, '            ', '          ') }}
         />
 {% elif field.form_widget == "password" %}
         <ElInput
           v-model="form.{{ field.camel_name }}"
-          type="password"
-          show-password
-          placeholder="{{ field.form_placeholder }}"
+          {{ ui.vue_bind([
+            "type: 'password'",
+            "showPassword: true",
+            "placeholder: '" ~ field.form_placeholder ~ "'"
+          ], field.form_props_literal, '            ', '          ') }}
+        />
+{% elif field.form_widget == "editor" %}
+        <ArtWangEditor
+          v-model="form.{{ field.camel_name }}"
+          {{ ui.vue_bind([
+            "placeholder: '" ~ field.form_placeholder ~ "'"
+          ], field.form_props_literal, '            ', '          ') }}
         />
 {% elif field.form_widget == "image_upload" %}
         <div class="w-full flex flex-col gap-3">
@@ -108,10 +176,20 @@
             <ArtFileUpload
               ref="{{ field.camel_name }}UploadRef"
               v-model="{{ field.camel_name }}UploadFiles"
-              accept="{{ field.form_upload_accept }}"
-              :max-count="1"
-              :show-file-list="false"
-              button-text="{{ field.form_upload_button_text }}"
+              v-bind="{
+{% if field.form_upload_accept %}
+                accept: '{{ field.form_upload_accept }}',
+{% endif %}
+                maxCount: 1,
+                showFileList: false,
+{% if field.form_upload_button_text %}
+                buttonText: '{{ field.form_upload_button_text }}'{% if field.form_upload_props_literal %},
+{% endif %}
+{% endif %}
+{% if field.form_upload_props_literal %}
+                ...{{ field.form_upload_props_literal }}
+{% endif %}
+              }"
               @upload-success="handle{{ field.pascal_name }}UploadSuccess"
             />
             <ElButton
@@ -138,9 +216,17 @@
             <ArtFileUpload
               ref="{{ field.camel_name }}UploadRef"
               v-model="{{ field.camel_name }}UploadFiles"
-              :max-count="1"
-              :show-file-list="false"
-              button-text="{{ field.form_upload_button_text }}"
+              v-bind="{
+                maxCount: 1,
+                showFileList: false,
+{% if field.form_upload_button_text %}
+                buttonText: '{{ field.form_upload_button_text }}'{% if field.form_upload_props_literal %},
+{% endif %}
+{% endif %}
+{% if field.form_upload_props_literal %}
+                ...{{ field.form_upload_props_literal }}
+{% endif %}
+              }"
               @upload-success="handle{{ field.pascal_name }}UploadSuccess"
             />
             <ElButton
@@ -154,16 +240,27 @@
           </div>
         </div>
 {% else %}
-        <ElInput v-model="form.{{ field.camel_name }}" placeholder="{{ field.form_placeholder }}" />
+        <ElInput
+          v-model="form.{{ field.camel_name }}"
+          {{ ui.vue_bind([
+            "placeholder: '" ~ field.form_placeholder ~ "'"
+          ], field.form_props_literal, '            ', '          ') }}
+        />
 {% endif %}
       </ElFormItem>
+        </ElCol>
 {% endfor %}
+      </ElRow>
     </ElForm>
     <template #footer>
       <ElButton @click="handleClose">取消</ElButton>
       <ElButton type="primary" :loading="submitLoading" @click="handleSubmit">提交</ElButton>
     </template>
+{% if form_container.use_drawer %}
+  </ElDrawer>
+{% else %}
   </ElDialog>
+{% endif %}
 </template>
 
 <script setup lang="ts">
@@ -175,10 +272,12 @@
 {% if flags.uses_form_upload %}
   import ArtFileUpload from '@/components/core/forms/art-file-upload/index.vue'
 {% endif %}
+{% if flags.uses_form_editor %}
+  import ArtWangEditor from '@/components/core/forms/art-wang-editor/index.vue'
+{% endif %}
 {% if flags.uses_avatar_placeholder %}
   import defaultAvatar from '@imgs/user/avatar.webp'
 {% endif %}
-
   type {{ page.list_item_alias }} = Api.{{ api.namespace }}.{{ api.list_item_type_name }}
   type {{ page.list_item_alias }}Detail = Api.{{ api.namespace }}.{{ api.detail_type_name }}
   type FormModel = {
@@ -215,7 +314,6 @@
   const {{ field.camel_name }}UploadFiles = ref<Api.FileUpload.FileUploadVo[]>([])
 {% endfor %}
 {% endif %}
-
   const formRef = ref<FormInstance>()
   const submitLoading = ref(false)
   const detailLoading = ref(false)
@@ -238,7 +336,6 @@
     {{ field.camel_name }}: [{ required: true, message: '{{ field.form_placeholder }}', trigger: '{{ field.form_rule_trigger }}' }],
 {% endfor %}
   })
-
 {% if flags.uses_form_upload %}
   const resetUploadState = () => {
 {% for field in form_fields if field.form_widget == "image_upload" or field.form_widget == "file_upload" %}
@@ -260,7 +357,6 @@
   }
 {% endfor %}
 {% endif %}
-
   const resetForm = () => {
     Object.assign(form, createDefaultForm())
 {% if flags.uses_form_upload %}

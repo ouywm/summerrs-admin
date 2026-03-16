@@ -40,12 +40,16 @@ pub(crate) fn validate_database_backend(db: &DatabaseConnection) -> Result<(), M
     Ok(())
 }
 
-pub fn mount_http_service_on_router(
-    router: summer_web::Router,
-    config: McpConfig,
-    db: DatabaseConnection,
-) -> summer_web::Router {
-    let path = config.path.clone();
+struct HttpServiceComponents {
+    session_manager:
+        Arc<rmcp::transport::streamable_http_server::session::local::LocalSessionManager>,
+    server_config: rmcp::transport::streamable_http_server::StreamableHttpServerConfig,
+}
+
+fn build_http_service_components(
+    config: &McpConfig,
+    cancellation_token: tokio_util::sync::CancellationToken,
+) -> HttpServiceComponents {
     let session_manager = Arc::new(
         rmcp::transport::streamable_http_server::session::local::LocalSessionManager {
             session_config:
@@ -57,17 +61,34 @@ pub fn mount_http_service_on_router(
         },
     );
 
+    let server_config = rmcp::transport::streamable_http_server::StreamableHttpServerConfig {
+        sse_keep_alive: Some(Duration::from_secs(config.sse_keep_alive)),
+        sse_retry: Some(Duration::from_secs(config.sse_retry)),
+        stateful_mode: config.stateful_mode,
+        json_response: config.json_response,
+        cancellation_token,
+    };
+
+    HttpServiceComponents {
+        session_manager,
+        server_config,
+    }
+}
+
+pub fn mount_http_service_on_router(
+    router: summer_web::Router,
+    config: McpConfig,
+    db: DatabaseConnection,
+) -> summer_web::Router {
+    let path = config.path.clone();
+    let components =
+        build_http_service_components(&config, tokio_util::sync::CancellationToken::new());
+
     let service_config = config.clone();
     let service = rmcp::transport::streamable_http_server::StreamableHttpService::new(
         move || Ok(AdminMcpServer::new(&service_config, db.clone())),
-        session_manager,
-        rmcp::transport::streamable_http_server::StreamableHttpServerConfig {
-            sse_keep_alive: Some(Duration::from_secs(config.sse_keep_alive)),
-            sse_retry: Some(Duration::from_secs(config.sse_retry)),
-            stateful_mode: config.stateful_mode,
-            json_response: config.json_response,
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
-        },
+        components.session_manager,
+        components.server_config,
     );
 
     tracing::info!(
@@ -115,28 +136,12 @@ where
     let path = config.path.clone();
     let ct = tokio_util::sync::CancellationToken::new();
 
-    let session_manager = Arc::new(
-        rmcp::transport::streamable_http_server::session::local::LocalSessionManager {
-            session_config:
-                rmcp::transport::streamable_http_server::session::local::SessionConfig {
-                    channel_capacity: config.session_channel_capacity,
-                    keep_alive: config.session_keep_alive.map(Duration::from_secs),
-                },
-            ..Default::default()
-        },
-    );
-
+    let components = build_http_service_components(&config, ct.child_token());
     let service_config = config.clone();
     let service = rmcp::transport::streamable_http_server::StreamableHttpService::new(
         move || Ok(AdminMcpServer::new(&service_config, db.clone())),
-        session_manager,
-        rmcp::transport::streamable_http_server::StreamableHttpServerConfig {
-            sse_keep_alive: Some(Duration::from_secs(config.sse_keep_alive)),
-            sse_retry: Some(Duration::from_secs(config.sse_retry)),
-            stateful_mode: config.stateful_mode,
-            json_response: config.json_response,
-            cancellation_token: ct.child_token(),
-        },
+        components.session_manager,
+        components.server_config,
     );
 
     let router = summer_web::axum::Router::new().nest_service(&path, service);

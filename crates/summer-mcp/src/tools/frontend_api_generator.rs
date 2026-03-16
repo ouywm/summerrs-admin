@@ -244,8 +244,12 @@ mod tests {
         let api_file = std::fs::read_to_string(&result.api_file).unwrap();
         assert!(api_file.contains("fetchGetRoleList"));
         assert!(api_file.contains("url: '/api/role/list'"));
-        assert!(api_file.contains("export function fetchGetRoleList(\n  params: Api.Role.RoleSearchParams\n) {"));
-        assert!(api_file.contains("export function fetchCreateRole(\n  params: Api.Role.CreateRoleParams\n) {"));
+        assert!(api_file.contains(
+            "export function fetchGetRoleList(\n  params: Api.Role.RoleSearchParams\n) {"
+        ));
+        assert!(api_file.contains(
+            "export function fetchCreateRole(\n  params: Api.Role.CreateRoleParams\n) {"
+        ));
         assert_no_triple_newlines(&api_file);
 
         let api_type_file = std::fs::read_to_string(&result.api_type_file).unwrap();

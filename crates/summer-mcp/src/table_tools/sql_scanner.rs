@@ -1,5 +1,7 @@
 use rmcp::ErrorData as McpError;
+use schemars::JsonSchema;
 use sea_orm::Value;
+use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 const FORBIDDEN_READONLY_SQL_KEYWORDS: &[&str] = &[
@@ -70,6 +72,31 @@ const EXEC_SQL_KEYWORDS: &[&str] = &[
     "vacuum",
 ];
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub(crate) enum SqlParamInput {
+    Raw(JsonValue),
+    Typed(TypedSqlParam),
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TypedSqlParam {
+    pub kind: SqlParamKind,
+    pub value: JsonValue,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SqlParamKind {
+    Integer,
+    Bigint,
+    Float,
+    Boolean,
+    String,
+    Json,
+}
+
 pub(crate) fn normalize_readonly_sql(sql: &str) -> Result<String, McpError> {
     let normalized = normalize_single_statement_sql(sql, "sql_query_readonly")?;
     let tokens = collect_sql_tokens(normalized)?;
@@ -100,7 +127,9 @@ pub(crate) fn normalize_readonly_sql(sql: &str) -> Result<String, McpError> {
     {
         return Err(McpError::invalid_params(
             format!(
-                "sql_query_readonly rejected the statement because it contains forbidden keyword `{keyword}`"
+                "sql_query_readonly rejected the statement because it contains forbidden keyword `{keyword}`. \
+                 If `{keyword}` is a column or table name rather than a SQL command, wrap it in double quotes \
+                 (e.g. \"{keyword}\") so the scanner can distinguish it from a SQL keyword."
             ),
             None,
         ));
@@ -359,11 +388,18 @@ fn matches_bytes(haystack: &[u8], start: usize, needle: &[u8]) -> bool {
     haystack[start..].starts_with(needle)
 }
 
-pub(crate) fn convert_sql_params(params: &[JsonValue]) -> Result<Vec<Value>, McpError> {
+pub(crate) fn convert_sql_params(params: &[SqlParamInput]) -> Result<Vec<Value>, McpError> {
     params.iter().map(json_param_to_value).collect()
 }
 
-fn json_param_to_value(value: &JsonValue) -> Result<Value, McpError> {
+fn json_param_to_value(param: &SqlParamInput) -> Result<Value, McpError> {
+    match param {
+        SqlParamInput::Raw(value) => raw_json_param_to_value(value),
+        SqlParamInput::Typed(param) => typed_json_param_to_value(param),
+    }
+}
+
+fn raw_json_param_to_value(value: &JsonValue) -> Result<Value, McpError> {
     Ok(match value {
         JsonValue::Null => Value::Json(None),
         JsonValue::Bool(value) => Value::from(*value),
@@ -384,6 +420,87 @@ fn json_param_to_value(value: &JsonValue) -> Result<Value, McpError> {
         JsonValue::String(value) => Value::from(value.clone()),
         JsonValue::Array(_) | JsonValue::Object(_) => Value::from(value.clone()),
     })
+}
+
+fn typed_json_param_to_value(param: &TypedSqlParam) -> Result<Value, McpError> {
+    match param.kind {
+        SqlParamKind::Integer => {
+            let value = parse_typed_i64("integer", &param.value)?;
+            let value = i32::try_from(value).map_err(|_| {
+                McpError::invalid_params(
+                    format!("typed SQL parameter integer `{value}` is out of range for i32"),
+                    None,
+                )
+            })?;
+            Ok(Value::from(value))
+        }
+        SqlParamKind::Bigint => Ok(Value::from(parse_typed_i64("bigint", &param.value)?)),
+        SqlParamKind::Float => Ok(Value::from(parse_typed_f64("float", &param.value)?)),
+        SqlParamKind::Boolean => Ok(Value::from(parse_typed_bool(&param.value)?)),
+        SqlParamKind::String => Ok(Value::from(parse_typed_string(&param.value))),
+        SqlParamKind::Json => Ok(Value::from(param.value.clone())),
+    }
+}
+
+fn parse_typed_i64(kind: &str, value: &JsonValue) -> Result<i64, McpError> {
+    match value {
+        JsonValue::Number(number) => number.as_i64().ok_or_else(|| {
+            McpError::invalid_params(
+                format!("typed SQL parameter `{kind}` must be an integer-compatible JSON number"),
+                None,
+            )
+        }),
+        JsonValue::String(text) => text.parse::<i64>().map_err(|_| {
+            McpError::invalid_params(
+                format!("typed SQL parameter `{kind}` string `{text}` is not a valid integer"),
+                None,
+            )
+        }),
+        _ => Err(McpError::invalid_params(
+            format!("typed SQL parameter `{kind}` must be a number or numeric string"),
+            None,
+        )),
+    }
+}
+
+fn parse_typed_f64(kind: &str, value: &JsonValue) -> Result<f64, McpError> {
+    match value {
+        JsonValue::Number(number) => number.as_f64().ok_or_else(|| {
+            McpError::invalid_params(
+                format!("typed SQL parameter `{kind}` must be a numeric JSON value"),
+                None,
+            )
+        }),
+        JsonValue::String(text) => text.parse::<f64>().map_err(|_| {
+            McpError::invalid_params(
+                format!("typed SQL parameter `{kind}` string `{text}` is not a valid float"),
+                None,
+            )
+        }),
+        _ => Err(McpError::invalid_params(
+            format!("typed SQL parameter `{kind}` must be a number or numeric string"),
+            None,
+        )),
+    }
+}
+
+fn parse_typed_bool(value: &JsonValue) -> Result<bool, McpError> {
+    match value {
+        JsonValue::Bool(value) => Ok(*value),
+        JsonValue::String(text) if text.eq_ignore_ascii_case("true") => Ok(true),
+        JsonValue::String(text) if text.eq_ignore_ascii_case("false") => Ok(false),
+        _ => Err(McpError::invalid_params(
+            "typed SQL parameter `boolean` must be a bool or \"true\"/\"false\" string",
+            None,
+        )),
+    }
+}
+
+fn parse_typed_string(value: &JsonValue) -> String {
+    match value {
+        JsonValue::String(value) => value.clone(),
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -444,5 +561,22 @@ mod tests {
         let tokens =
             collect_sql_tokens(r#"SELECT * FROM t WHERE name = U&'d\0061t\+000061'"#).unwrap();
         assert_eq!(tokens, vec!["select", "from", "t", "where", "name"]);
+    }
+
+    #[test]
+    fn convert_sql_params_supports_typed_numeric_string() {
+        let params = vec![
+            SqlParamInput::Typed(TypedSqlParam {
+                kind: SqlParamKind::Bigint,
+                value: JsonValue::String("13".to_string()),
+            }),
+            SqlParamInput::Typed(TypedSqlParam {
+                kind: SqlParamKind::Boolean,
+                value: JsonValue::String("true".to_string()),
+            }),
+        ];
+
+        let values = convert_sql_params(&params).unwrap();
+        assert_eq!(values.len(), 2);
     }
 }

@@ -247,23 +247,6 @@ fn column_schema_row(
     ])
 }
 
-fn sys_role_index_rows() -> Vec<BTreeMap<String, Value>> {
-    vec![
-        row([
-            ("index_name", "sys_role_pkey".into()),
-            ("is_unique", true.into()),
-            ("is_primary", true.into()),
-            ("columns", serde_json::json!(["id"]).into()),
-        ]),
-        row([
-            ("index_name", "uk_sys_role_role_code".into()),
-            ("is_unique", true.into()),
-            ("is_primary", false.into()),
-            ("columns", serde_json::json!(["role_code"]).into()),
-        ]),
-    ]
-}
-
 fn sys_user_index_rows() -> Vec<BTreeMap<String, Value>> {
     vec![
         row([
@@ -330,11 +313,8 @@ fn sys_role_full_row(
     ])
 }
 
-fn append_sys_role_describe(db: MockDatabase) -> MockDatabase {
+fn append_sys_role_describe_for_crud(db: MockDatabase) -> MockDatabase {
     db.append_query_results([sys_role_schema_rows()])
-        .append_query_results([sys_role_index_rows()])
-        .append_query_results([empty_rows()])
-        .append_query_results([empty_rows()])
 }
 
 fn append_sys_user_describe(db: MockDatabase) -> MockDatabase {
@@ -344,24 +324,28 @@ fn append_sys_user_describe(db: MockDatabase) -> MockDatabase {
         .append_query_results([sys_user_check_rows()])
 }
 
+fn append_sys_user_describe_for_crud(db: MockDatabase) -> MockDatabase {
+    db.append_query_results([sys_user_schema_rows()])
+}
+
 fn build_runtime_mock_db() -> DatabaseConnection {
     let db = MockDatabase::new(DbBackend::Postgres).append_query_results([public_tables_rows()]);
 
     let db = append_sys_user_describe(db);
-    let db = append_sys_role_describe(db)
+    let db = append_sys_role_describe_for_crud(db)
         .append_query_results([[row([("total", 1_i64.into())])]])
         .append_query_results([[sys_role_query_row()]]);
-    let db = append_sys_user_describe(db).append_query_results([[sys_user_get_row()]]);
+    let db = append_sys_user_describe_for_crud(db).append_query_results([[sys_user_get_row()]]);
     let db = db.append_query_results([[sys_role_query_row()]]);
-    let db = append_sys_role_describe(db)
+    let db = append_sys_role_describe_for_crud(db)
         .append_query_results([[sys_role_full_row(2, true, "Editor", "R_EDITOR")]]);
-    let db = append_sys_role_describe(db).append_query_results([[sys_role_full_row(
+    let db = append_sys_role_describe_for_crud(db).append_query_results([[sys_role_full_row(
         1,
         false,
         "Administrator",
         "R_ADMIN",
     )]]);
-    let db = append_sys_role_describe(db)
+    let db = append_sys_role_describe_for_crud(db)
         .append_query_results([[row([("deleted", 1_i32.into())])]])
         .append_exec_results([MockExecResult {
             last_insert_id: 0,

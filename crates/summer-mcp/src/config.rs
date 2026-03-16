@@ -58,7 +58,7 @@ pub struct McpConfig {
     pub sse_retry: u64,
 
     /// 是否启用有状态会话模式
-    #[serde(default = "default_true")]
+    #[serde(default = "default_stateful_mode")]
     pub stateful_mode: bool,
 
     /// 无状态模式下是否返回 JSON 而非 SSE（减少帧开销）
@@ -188,6 +188,6 @@ fn default_session_channel_capacity() -> usize {
     16
 }
 
-fn default_true() -> bool {
+fn default_stateful_mode() -> bool {
     true
 }

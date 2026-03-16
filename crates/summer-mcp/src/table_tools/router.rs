@@ -27,14 +27,16 @@ use crate::{
     server::AdminMcpServer,
     table_tools::{
         query_builder::{
-            TableFilter, TableSortInput, build_filters_clause, build_insert_assignments,
+            TableFilterInput, TableSortInput, build_filters_clause, build_insert_assignments,
             build_key_clause, build_order_clause, build_update_assignments,
         },
         schema::{
-            TableSchema, db_error, describe_table, ensure_valid_identifier, list_tables,
-            quote_identifier, readable_select_list,
+            TableSchema, db_error, describe_table, describe_table_for_crud,
+            ensure_valid_identifier, list_tables, quote_identifier, readable_select_list,
         },
-        sql_scanner::{convert_sql_params, normalize_exec_sql, normalize_readonly_sql},
+        sql_scanner::{
+            SqlParamInput, convert_sql_params, normalize_exec_sql, normalize_readonly_sql,
+        },
     },
     tools::{
         admin_module_generator::{AdminModuleGenerator, GenerateAdminModuleRequest},
@@ -42,7 +44,8 @@ use crate::{
         frontend_api_generator::{FrontendApiGenerator, GenerateFrontendApiRequest},
         frontend_bundle_generator::{FrontendBundleGenerator, GenerateFrontendBundleRequest},
         frontend_page_generator::{
-            FrontendFieldUiHint, FrontendPageGenerator, GenerateFrontendPageRequest,
+            FrontendFieldUiHint, FrontendFieldUiMeta, FrontendPageGenerator,
+            GenerateFrontendPageRequest,
         },
         frontend_target::FrontendTargetPreset,
         support::{
@@ -260,8 +263,11 @@ struct TableQueryArgs {
     table: String,
     /// 需要返回的列，为空时返回所有可读列
     columns: Option<Vec<String>>,
-    /// 过滤条件列表
-    filters: Option<Vec<TableFilter>>,
+    /// 过滤条件列表。支持结构化对象：
+    /// [{"column":"id","op":"eq","value":1}]
+    /// 也支持简写字符串：
+    /// ["id = 1", "role_name ilike admin", "status in [1,2,3]"]
+    filters: Option<Vec<TableFilterInput>>,
     /// 排序条件，支持 [{"column":"id","direction":"desc"}] 或 ["id desc"]
     order_by: Option<Vec<TableSortInput>>,
     /// 返回条数，默认 20，最大 100
@@ -314,8 +320,11 @@ struct SqlQueryReadonlyArgs {
     /// 只读 SQL，当前仅允许单条 SELECT / WITH ... SELECT 语句
     sql: String,
     /// PostgreSQL 位置参数，对应 $1、$2 ...
+    /// 推荐直接传 JSON 原生类型，例如 [13, true, "admin"]。
+    /// 如果客户端只能传字符串，可显式传类型对象，例如：
+    /// [{"kind":"bigint","value":"13"}]
     #[serde(default)]
-    params: Vec<JsonValue>,
+    params: Vec<SqlParamInput>,
     /// 服务端返回行数上限，默认 200，最大 1000
     limit: Option<u64>,
 }
@@ -326,8 +335,11 @@ struct SqlExecArgs {
     /// 执行 SQL，允许单条 DDL / DML / 管理语句
     sql: String,
     /// PostgreSQL 位置参数，对应 $1、$2 ...
+    /// 推荐直接传 JSON 原生类型，例如 [13, true, "admin"]。
+    /// 如果客户端只能传字符串，可显式传类型对象，例如：
+    /// [{"kind":"bigint","value":"13"}]
     #[serde(default)]
-    params: Vec<JsonValue>,
+    params: Vec<SqlParamInput>,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -403,6 +415,9 @@ struct GenerateFrontendBundleFromTableArgs {
     /// 显式字段 UI 提示，供 AI 覆盖默认推断，例如将 avatar 指定为 image/avatar 上传、强制隐藏搜索项等
     #[serde(default)]
     field_hints: BTreeMap<String, FrontendFieldUiHint>,
+    /// 结构化字段 UI 元数据。优先级高于 field_hints / dict_bindings，可精确控制搜索、表单、表格组件与可见性
+    #[serde(default)]
+    field_ui_meta: BTreeMap<String, FrontendFieldUiMeta>,
     /// 显式指定搜索区字段；未传时会按字段语义自动排序并选出所有适合搜索的字段
     search_fields: Option<Vec<String>>,
     /// 显式指定表格列字段，默认自动选择所有可读字段
@@ -439,6 +454,9 @@ struct GenerateFrontendPageFromTableArgs {
     /// 显式字段 UI 提示，供 AI 覆盖默认推断，例如将 avatar 指定为 image/avatar 上传、强制隐藏搜索项等
     #[serde(default)]
     field_hints: BTreeMap<String, FrontendFieldUiHint>,
+    /// 结构化字段 UI 元数据。优先级高于 field_hints / dict_bindings，可精确控制搜索、表单、表格组件与可见性
+    #[serde(default)]
+    field_ui_meta: BTreeMap<String, FrontendFieldUiMeta>,
     /// 显式指定搜索区字段；未传时会按字段语义自动排序并选出所有适合搜索的字段
     search_fields: Option<Vec<String>>,
     /// 显式指定表格列字段，默认自动选择所有可读字段
@@ -693,6 +711,7 @@ impl AdminMcpServer {
                 target_preset: args.target_preset.unwrap_or_default(),
                 dict_bindings: args.dict_bindings,
                 field_hints: args.field_hints,
+                field_ui_meta: args.field_ui_meta,
                 search_fields: args.search_fields,
                 table_fields: args.table_fields,
                 form_fields: args.form_fields,
@@ -744,6 +763,7 @@ impl AdminMcpServer {
                 api_detail_type_name: args.api_detail_type_name,
                 dict_bindings: args.dict_bindings,
                 field_hints: args.field_hints,
+                field_ui_meta: args.field_ui_meta,
                 search_fields: args.search_fields,
                 table_fields: args.table_fields,
                 form_fields: args.form_fields,
@@ -965,7 +985,7 @@ impl AdminMcpServer {
                         )
                         .all(txn)
                         .await
-                        .map_err(|error| db_error("execute read-only SQL query", error))
+                        .map_err(|error| sql_tool_db_error("execute read-only SQL query", error))
                     })
                 },
                 None,
@@ -974,7 +994,7 @@ impl AdminMcpServer {
             .await
             .map_err(|error| match error {
                 TransactionError::Connection(error) => {
-                    db_error("start read-only SQL transaction", error)
+                    sql_tool_db_error("start read-only SQL transaction", error)
                 }
                 TransactionError::Transaction(error) => error,
             })?;
@@ -1009,14 +1029,14 @@ impl AdminMcpServer {
                     let result = txn
                         .execute_raw(statement)
                         .await
-                        .map_err(|error| db_error("execute SQL statement", error))?;
+                        .map_err(|error| sql_tool_db_error("execute SQL statement", error))?;
                     Ok(result.rows_affected())
                 })
             })
             .await
             .map_err(|error| match error {
                 TransactionError::Connection(error) => {
-                    db_error("start sql_exec transaction", error)
+                    sql_tool_db_error("start sql_exec transaction", error)
                 }
                 TransactionError::Transaction(error) => error,
             })?;
@@ -1029,7 +1049,7 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableGetArgs>,
     ) -> Result<Json<TableLookupResult>, McpError> {
-        let schema = describe_table(self.db(), &args.table).await?;
+        let schema = describe_table_for_crud(self.db(), &args.table).await?;
         let select_list = readable_select_list(&schema, None)?;
         let mut params = Vec::new();
         let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
@@ -1062,7 +1082,7 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableQueryArgs>,
     ) -> Result<Json<TableListResult>, McpError> {
-        let schema = describe_table(self.db(), &args.table).await?;
+        let schema = describe_table_for_crud(self.db(), &args.table).await?;
         let select_list = readable_select_list(&schema, args.columns.as_deref())?;
         let window = ListWindow::from_args(args.limit, args.offset);
 
@@ -1124,7 +1144,7 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableInsertArgs>,
     ) -> Result<Json<TableMutationResult>, McpError> {
-        let schema = describe_table(self.db(), &args.table).await?;
+        let schema = describe_table_for_crud(self.db(), &args.table).await?;
         let (columns, values, params) = build_insert_assignments(&schema, &args.values)?;
         let returning = readable_select_list(&schema, None)?;
         let statement = Statement::from_sql_and_values(
@@ -1155,7 +1175,7 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableUpdateArgs>,
     ) -> Result<Json<TableMutationResult>, McpError> {
-        let schema = describe_table(self.db(), &args.table).await?;
+        let schema = describe_table_for_crud(self.db(), &args.table).await?;
         let (set_clause, mut params) = build_update_assignments(&schema, &args.values)?;
         let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
         let returning = readable_select_list(&schema, None)?;
@@ -1213,7 +1233,7 @@ impl AdminMcpServer {
         &self,
         Parameters(args): Parameters<TableDeleteArgs>,
     ) -> Result<Json<TableDeleteResult>, McpError> {
-        let schema = describe_table(self.db(), &args.table).await?;
+        let schema = describe_table_for_crud(self.db(), &args.table).await?;
         let mut params = Vec::new();
         let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
         let statement = Statement::from_sql_and_values(
@@ -1231,10 +1251,35 @@ impl AdminMcpServer {
             .map_err(|error| db_error(format!("delete row from `{}`", schema.table), error))?
             .is_some();
 
+        let found = if deleted {
+            true
+        } else {
+            // DELETE RETURNING returned nothing — check whether the row exists at all
+            // so we can distinguish "not found" from "found but blocked by trigger".
+            let mut key_params = Vec::new();
+            let key_where = build_key_clause(&schema, &args.key, &mut key_params)?;
+            let exists_sql = format!(
+                "SELECT 1 AS v FROM {} WHERE {key_where} LIMIT 1",
+                schema.qualified_name()
+            );
+            SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(
+                Statement::from_sql_and_values(DbBackend::Postgres, exists_sql, key_params),
+            )
+            .one(self.db())
+            .await
+            .map_err(|error| {
+                db_error(
+                    format!("check existence of row in `{}`", schema.table),
+                    error,
+                )
+            })?
+            .is_some()
+        };
+
         Ok(Json(TableDeleteResult {
             schema: schema.schema,
             table: schema.table,
-            found: deleted,
+            found,
             deleted,
             rows_affected: u64::from(deleted),
         }))
@@ -1342,9 +1387,30 @@ fn empty_dict_data_query() -> DictDataQueryDto {
     }
 }
 
+fn sql_tool_db_error(action: impl Into<String>, error: sea_orm::DbErr) -> McpError {
+    let action = action.into();
+    let detail = error_chain_message(&error);
+    let mut message = format!("failed to {action}: {detail}");
+    if looks_like_sql_param_type_mismatch(&detail) {
+        message.push_str(
+            " Hint: JSON string parameters are bound as text. Pass numbers/bools as JSON native values like `13`/`true`, or use typed params such as {\"kind\":\"bigint\",\"value\":\"13\"}.",
+        );
+    }
+    McpError::internal_error(message, None)
+}
+
+fn looks_like_sql_param_type_mismatch(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("operator does not exist")
+        || lower.contains("could not determine data type")
+        || lower.contains("invalid input syntax")
+        || lower.contains("cannot cast")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn router_exposes_small_generic_surface() {
@@ -1376,5 +1442,35 @@ mod tests {
                 "table_update",
             ]
         );
+    }
+
+    #[test]
+    fn table_query_args_accept_structured_and_shorthand_filters() {
+        let args: TableQueryArgs = serde_json::from_value(json!({
+            "table": "sys_role",
+            "filters": [
+                {"column":"id","op":"eq","value": 1},
+                "role_name ilike admin"
+            ]
+        }))
+        .unwrap();
+
+        let filters = args.filters.unwrap();
+        assert_eq!(filters.len(), 2);
+        assert!(matches!(filters[0], TableFilterInput::Structured(_)));
+        assert!(matches!(filters[1], TableFilterInput::Shorthand(_)));
+    }
+
+    #[test]
+    fn sql_args_accept_typed_params() {
+        let args: SqlQueryReadonlyArgs = serde_json::from_value(json!({
+            "sql": "select * from sys_role where id = $1",
+            "params": [
+                {"kind":"bigint","value":"13"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(args.params.len(), 1);
     }
 }

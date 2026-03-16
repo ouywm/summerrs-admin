@@ -343,7 +343,7 @@ impl SessionManager {
             .ok_or(AuthError::InvalidRefreshToken)?;
         let device = DeviceType::from(device_str);
 
-        // 3. 检查 deny key
+        // 3. 检查 deny key（无论 enable_deny_check 如何，refresh 时始终检查封禁状态）
         if let Some(deny_value) = self.storage.get_string(&deny_key(&login_id)).await? {
             if deny_value == "banned" {
                 return Err(AuthError::AccountBanned);
@@ -417,33 +417,35 @@ impl SessionManager {
         let login_id = LoginId::decode(&claims.sub).ok_or(AuthError::InvalidToken)?;
 
         // 2. Redis GET deny key（~0.1ms）
-        if let Some(deny_value) = self.storage.get_string(&deny_key(&login_id)).await? {
-            match deny_value.as_str() {
-                "banned" => return Err(AuthError::AccountBanned),
-                v if v.starts_with("refresh:") => {
-                    // 时间戳方案：token 签发时间 <= deny 设置时间 → 需要刷新
-                    // refresh 后签发的新 token (iat > deny_ts) 自动放行
-                    if let Ok(deny_ts) = v[8..].parse::<i64>() {
-                        if claims.iat <= deny_ts {
-                            return Err(AuthError::RefreshRequired);
+        if self.config.per_request_deny_check {
+            if let Some(deny_value) = self.storage.get_string(&deny_key(&login_id)).await? {
+                match deny_value.as_str() {
+                    "banned" => return Err(AuthError::AccountBanned),
+                    v if v.starts_with("refresh:") => {
+                        // 时间戳方案：token 签发时间 <= deny 设置时间 → 需要刷新
+                        // refresh 后签发的新 token (iat > deny_ts) 自动放行
+                        if let Ok(deny_ts) = v[8..].parse::<i64>() {
+                            if claims.iat <= deny_ts {
+                                return Err(AuthError::RefreshRequired);
+                            }
+                            // token 在 deny 之后签发，权限已是最新，放行
+                        } else {
+                            tracing::warn!(
+                                "畸形 deny 值: {}, login_id: {}",
+                                deny_value,
+                                login_id.encode()
+                            );
+                            return Err(AuthError::InvalidToken);
                         }
-                        // token 在 deny 之后签发，权限已是最新，放行
-                    } else {
+                    }
+                    _ => {
                         tracing::warn!(
-                            "畸形 deny 值: {}, login_id: {}",
+                            "未知 deny 值: {}, login_id: {}",
                             deny_value,
                             login_id.encode()
                         );
                         return Err(AuthError::InvalidToken);
                     }
-                }
-                _ => {
-                    tracing::warn!(
-                        "未知 deny 值: {}, login_id: {}",
-                        deny_value,
-                        login_id.encode()
-                    );
-                    return Err(AuthError::InvalidToken);
                 }
             }
         }

@@ -96,6 +96,11 @@ pub struct AuthConfig {
     #[serde(default = "default_max_devices")]
     pub max_devices: usize,
 
+    /// 是否启用每次请求的 deny 黑名单检查，默认 true
+    /// 关闭后不再每次请求查 Redis，仅在 refresh token 时检查封禁状态
+    #[serde(default = "default_true")]
+    pub per_request_deny_check: bool,
+
     /// 是否从 Cookie 中读取 Token，默认 false
     /// TODO: 启用 Cookie 模式时需要实现 CSRF 防护
     /// 方案：登录时签发 CSRF token，前端在 Header 中携带，中间件双重校验

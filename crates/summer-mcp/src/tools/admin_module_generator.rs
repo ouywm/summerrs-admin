@@ -8,8 +8,7 @@ use serde::Serialize;
 
 use crate::tools::{
     generation_context::{
-        CrudGenerationContext, CrudGenerationContextBuilder, FieldGenerationContext,
-        FieldValueKind,
+        CrudGenerationContext, CrudGenerationContextBuilder, FieldGenerationContext, FieldValueKind,
     },
     support::{io_error, resolve_output_dir, sync_mod_file, workspace_root},
     template_renderer::{EmbeddedTemplate, TemplateRenderer},
@@ -288,9 +287,7 @@ impl AdminModuleGenerator {
     }
 }
 
-fn build_admin_module_template_context(
-    crud: CrudGenerationContext,
-) -> AdminModuleTemplateContext {
+fn build_admin_module_template_context(crud: CrudGenerationContext) -> AdminModuleTemplateContext {
     AdminModuleTemplateContext {
         imports: AdminModuleImportContext {
             router: vec![],

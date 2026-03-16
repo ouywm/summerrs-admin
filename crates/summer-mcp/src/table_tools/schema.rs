@@ -177,6 +177,51 @@ pub async fn list_tables(db: &DatabaseConnection) -> Result<Vec<String>, McpErro
 pub async fn describe_table(db: &DatabaseConnection, table: &str) -> Result<TableSchema, McpError> {
     ensure_valid_identifier(table, "table")?;
 
+    let (comment, columns, primary_key) = load_columns_and_primary_key(db, table).await?;
+
+    let indexes = load_indexes(db, table).await?;
+    let foreign_keys = load_foreign_keys(db, table).await?;
+    let check_constraints = load_check_constraints(db, table).await?;
+
+    Ok(TableSchema {
+        schema: PUBLIC_SCHEMA.to_string(),
+        table: table.to_string(),
+        comment,
+        primary_key,
+        columns,
+        indexes,
+        foreign_keys,
+        check_constraints,
+    })
+}
+
+/// Lightweight variant of [`describe_table`] that only loads columns and primary key,
+/// skipping indexes, foreign keys, and check constraints. Suitable for CRUD operations
+/// where only column metadata is needed.
+pub async fn describe_table_for_crud(
+    db: &DatabaseConnection,
+    table: &str,
+) -> Result<TableSchema, McpError> {
+    ensure_valid_identifier(table, "table")?;
+
+    let (comment, columns, primary_key) = load_columns_and_primary_key(db, table).await?;
+
+    Ok(TableSchema {
+        schema: PUBLIC_SCHEMA.to_string(),
+        table: table.to_string(),
+        comment,
+        primary_key,
+        columns,
+        indexes: vec![],
+        foreign_keys: vec![],
+        check_constraints: vec![],
+    })
+}
+
+async fn load_columns_and_primary_key(
+    db: &DatabaseConnection,
+    table: &str,
+) -> Result<(Option<String>, Vec<TableColumnSchema>, Vec<String>), McpError> {
     let column_rows = load_column_rows(db, table).await?;
     if column_rows.is_empty() {
         return Err(McpError::invalid_params(
@@ -227,20 +272,7 @@ pub async fn describe_table(db: &DatabaseConnection, table: &str) -> Result<Tabl
         .map(|column| column.name.clone())
         .collect::<Vec<_>>();
 
-    let indexes = load_indexes(db, table).await?;
-    let foreign_keys = load_foreign_keys(db, table).await?;
-    let check_constraints = load_check_constraints(db, table).await?;
-
-    Ok(TableSchema {
-        schema: PUBLIC_SCHEMA.to_string(),
-        table: table.to_string(),
-        comment,
-        primary_key,
-        columns,
-        indexes,
-        foreign_keys,
-        check_constraints,
-    })
+    Ok((comment, columns, primary_key))
 }
 
 async fn load_column_rows(

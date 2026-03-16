@@ -1,3 +1,4 @@
+{% import "frontend/page/_macros.j2" as ui %}
 <template>
   <ArtSearchBar
     ref="searchBarRef"
@@ -60,112 +61,97 @@
       key: '{{ field.search_model_key }}',
 {% if field.search_widget == "input" %}
       type: 'input',
-{% if field.search_placeholder %}
-      placeholder: '{{ field.search_placeholder }}',
-{% endif %}
-      clearable: true
+      props: {{ ui.js_object([
+        "placeholder: '" ~ field.search_placeholder ~ "'",
+        "clearable: true"
+      ], field.search_props_literal, '        ', '      ') }}
 {% elif field.search_widget == "number" %}
       type: 'number',
-      props: {
-        style: { width: '100%' },
-        placeholder: '{{ field.search_placeholder }}'
-      }
+      props: {{ ui.js_object([
+        "style: { width: '100%' }",
+        "placeholder: '" ~ field.search_placeholder ~ "'"
+      ], field.search_props_literal, '        ', '      ') }}
 {% elif field.search_widget == "select" %}
       type: 'select',
-      props: {
-        placeholder: '{{ field.search_placeholder }}',
-        clearable: true,
-{% if field.dict_type %}
-        options: getDict('{{ field.dict_type }}').map((item) => ({
-          label: item.label,
-{% if field.type_info.value_kind == "integer" or field.type_info.value_kind == "float" %}
-          value: Number(item.value)
-{% elif field.type_info.value_kind == "boolean" %}
-          value: item.value === 'true'
-{% else %}
-          value: item.value
-{% endif %}
-        }))
-{% elif field.local_options_literal %}
-        options: {{ field.local_options_literal }}
-{% else %}
-        options: [
-          { label: '{{ field.bool_true_label }}', value: true },
-          { label: '{{ field.bool_false_label }}', value: false }
-        ]
-{% endif %}
-      }
+      props: {{ ui.js_object([
+        "placeholder: '" ~ field.search_placeholder ~ "'",
+        "clearable: true",
+        "options: " ~ field.option_items_literal
+      ], field.search_props_literal, '        ', '      ') }}
 {% elif field.search_widget == "radio_group" %}
       type: 'radiogroup',
-      props: {
-{% if field.dict_type %}
-        options: getDict('{{ field.dict_type }}').map((item) => ({
-          label: item.label,
-{% if field.type_info.value_kind == "integer" or field.type_info.value_kind == "float" %}
-          value: Number(item.value)
-{% elif field.type_info.value_kind == "boolean" %}
-          value: item.value === 'true'
-{% else %}
-          value: item.value
-{% endif %}
-        }))
-{% elif field.local_options_literal %}
-        options: {{ field.local_options_literal }}
-{% else %}
-        options: [
-          { label: '{{ field.bool_true_label }}', value: true },
-          { label: '{{ field.bool_false_label }}', value: false }
-        ]
-{% endif %}
-      }
+      props: {{ ui.js_object([
+        "options: " ~ field.option_items_literal
+      ], field.search_props_literal, '        ', '      ') }}
+{% elif field.search_widget == "checkbox_group" %}
+      type: 'checkboxgroup',
+      props: {{ ui.js_object([
+        "options: " ~ field.option_items_literal
+      ], field.search_props_literal, '        ', '      ') }}
+{% elif field.search_widget == "cascader" %}
+      type: 'cascader',
+      props: {{ ui.js_object([
+        "placeholder: '" ~ field.search_placeholder ~ "'",
+        "clearable: true",
+        "style: { width: '100%' }",
+        "options: " ~ field.option_items_literal
+      ], field.search_props_literal, '        ', '      ') }}
+{% elif field.search_widget == "tree_select" %}
+      type: 'treeselect',
+      props: {{ ui.js_object([
+        "placeholder: '" ~ field.search_placeholder ~ "'",
+        "clearable: true",
+        "style: { width: '100%' }",
+        "data: " ~ field.option_items_literal
+      ], field.search_props_literal, '        ', '      ') }}
 {% elif field.search_widget == "date" %}
       type: 'date',
-      props: {
-        style: { width: '100%' },
-        placeholder: '{{ field.search_placeholder }}',
-        type: 'date',
-        valueFormat: '{{ field.search_value_format }}',
-        clearable: true
-      }
+      props: {{ ui.js_object([
+        "style: { width: '100%' }",
+        "placeholder: '" ~ field.search_placeholder ~ "'",
+        "type: 'date'",
+        "valueFormat: '" ~ field.search_value_format ~ "'",
+        "clearable: true"
+      ], field.search_props_literal, '        ', '      ') }}
 {% elif field.search_widget == "date_range" %}
       type: 'daterange',
-      props: {
-        style: { width: '100%' },
-        type: 'daterange',
-        rangeSeparator: '至',
-        startPlaceholder: '开始日期',
-        endPlaceholder: '结束日期',
-        valueFormat: '{{ field.search_value_format }}',
-        clearable: true
-      }
+      props: {{ ui.js_object([
+        "style: { width: '100%' }",
+        "type: 'daterange'",
+        "rangeSeparator: '至'",
+        "startPlaceholder: '开始日期'",
+        "endPlaceholder: '结束日期'",
+        "valueFormat: '" ~ field.search_value_format ~ "'",
+        "clearable: true"
+      ], field.search_props_literal, '        ', '      ') }}
 {% elif field.search_widget == "date_time" %}
       type: 'datetime',
-      props: {
-        style: { width: '100%' },
-        placeholder: '{{ field.search_placeholder }}',
-        type: 'datetime',
-        valueFormat: '{{ field.search_value_format }}',
-        clearable: true
-      }
+      props: {{ ui.js_object([
+        "style: { width: '100%' }",
+        "placeholder: '" ~ field.search_placeholder ~ "'",
+        "type: 'datetime'",
+        "valueFormat: '" ~ field.search_value_format ~ "'",
+        "clearable: true"
+      ], field.search_props_literal, '        ', '      ') }}
 {% elif field.search_widget == "date_time_range" %}
       type: 'datetimerange',
-      props: {
-        style: { width: '100%' },
-        type: 'datetimerange',
-        rangeSeparator: '至',
-        startPlaceholder: '开始时间',
-        endPlaceholder: '结束时间',
-        valueFormat: '{{ field.search_value_format }}',
-        clearable: true
-      }
+      props: {{ ui.js_object([
+        "style: { width: '100%' }",
+        "type: 'datetimerange'",
+        "rangeSeparator: '至'",
+        "startPlaceholder: '开始时间'",
+        "endPlaceholder: '结束时间'",
+        "valueFormat: '" ~ field.search_value_format ~ "'",
+        "clearable: true"
+      ], field.search_props_literal, '        ', '      ') }}
 {% else %}
       type: 'timepicker',
-      props: {
-        style: { width: '100%' },
-        placeholder: '{{ field.search_placeholder }}',
-        valueFormat: '{{ field.search_value_format }}',
-        clearable: true
-      }
+      props: {{ ui.js_object([
+        "style: { width: '100%' }",
+        "placeholder: '" ~ field.search_placeholder ~ "'",
+        "valueFormat: '" ~ field.search_value_format ~ "'",
+        "clearable: true"
+      ], field.search_props_literal, '        ', '      ') }}
 {% endif %}
     }{{ "," if not loop.last else "" }}
 {% endfor %}

@@ -1,12 +1,12 @@
 use rmcp::{
     handler::server::{router::prompt::PromptRouter, wrapper::Parameters},
-    model::{AnnotateAble, GetPromptResult, PromptMessage, PromptMessageRole, RawResource},
+    model::{GetPromptResult, PromptMessage, PromptMessageRole},
     prompt, prompt_router,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::server::AdminMcpServer;
+use crate::server::{AdminMcpServer, schema_table_resource, schema_tables_resource};
 
 pub(crate) const DISCOVER_TABLE_WORKFLOW: &str = "discover_table_workflow";
 pub(crate) const GENERATE_CRUD_BUNDLE_WORKFLOW: &str = "generate_crud_bundle_workflow";
@@ -189,25 +189,6 @@ impl AdminMcpServer {
     ) -> GetPromptResult {
         render_rollout_menu_dict_workflow(args)
     }
-}
-
-fn schema_tables_resource() -> rmcp::model::Resource {
-    RawResource::new("schema://tables", "tables")
-        .with_title("Database Tables")
-        .with_description("Runtime-discovered public tables exposed by summer-mcp")
-        .with_mime_type("application/json")
-        .no_annotation()
-}
-
-fn schema_table_resource(table: &str) -> rmcp::model::Resource {
-    RawResource::new(
-        format!("schema://table/{table}"),
-        format!("table_schema_{table}"),
-    )
-    .with_title(format!("Table Schema: {table}"))
-    .with_description("Read live schema metadata for a database table")
-    .with_mime_type("application/json")
-    .no_annotation()
 }
 
 #[cfg(test)]

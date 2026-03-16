@@ -1,0 +1,20 @@
+{% macro js_object(lines, extra_props_literal=None, body_indent='', closing_indent='') -%}
+{
+{%- for line in lines %}
+{{ "\n" }}{{ body_indent }}{{ line }}{% if not loop.last or extra_props_literal %},{% endif %}
+{%- endfor %}
+{%- if extra_props_literal %}
+{{ "\n" }}{{ body_indent }}...{{ extra_props_literal }}
+{%- endif %}
+{{ "\n" }}{{ closing_indent }}}
+{%- endmacro %}
+
+{% macro vue_bind(lines, extra_props_literal=None, body_indent='', closing_indent='') -%}
+v-bind="{{ js_object(lines, extra_props_literal, body_indent, closing_indent) }}"
+{%- endmacro %}
+
+{% macro spread_bind(extra_props_literal=None) -%}
+{%- if extra_props_literal -%}
+v-bind="{ ...{{ extra_props_literal }} }"
+{%- endif -%}
+{%- endmacro %}

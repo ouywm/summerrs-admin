@@ -88,14 +88,25 @@ impl AdminMcpServer {
     pub(crate) fn dict_domain(&self) -> DictDomainService {
         DictDomainService::new(self.db.clone())
     }
+}
 
-    fn schema_tables_resource(&self) -> rmcp::model::Resource {
-        RawResource::new("schema://tables", "tables")
-            .with_title("Database Tables")
-            .with_description("Runtime-discovered public tables exposed by summer-mcp")
-            .with_mime_type("application/json")
-            .no_annotation()
-    }
+pub(crate) fn schema_tables_resource() -> rmcp::model::Resource {
+    RawResource::new("schema://tables", "tables")
+        .with_title("Database Tables")
+        .with_description("Runtime-discovered public tables exposed by summer-mcp")
+        .with_mime_type("application/json")
+        .no_annotation()
+}
+
+pub(crate) fn schema_table_resource(table: &str) -> rmcp::model::Resource {
+    RawResource::new(
+        format!("schema://table/{table}"),
+        format!("table_schema_{table}"),
+    )
+    .with_title(format!("Table Schema: {table}"))
+    .with_description("Read live schema metadata for a database table")
+    .with_mime_type("application/json")
+    .no_annotation()
 }
 
 #[tool_handler]
@@ -121,7 +132,7 @@ impl ServerHandler for AdminMcpServer {
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         Ok(ListResourcesResult {
-            resources: vec![self.schema_tables_resource()],
+            resources: vec![schema_tables_resource()],
             next_cursor: None,
             meta: None,
         })
