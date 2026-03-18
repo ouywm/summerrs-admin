@@ -77,7 +77,6 @@ pub enum EntityEnumNameSource {
 pub enum EntityEnumVariantNameSource {
     Override,
     LabelAscii,
-    CommonLabel,
     ValueFallback,
 }
 
@@ -138,8 +137,7 @@ impl EntityEnumUpgrader {
         })
     }
 
-    #[cfg(test)]
-    fn with_workspace_root(workspace_root: PathBuf) -> Self {
+    pub(crate) fn with_workspace_root(workspace_root: PathBuf) -> Self {
         Self { workspace_root }
     }
 
@@ -500,10 +498,10 @@ fn build_variant_plans(
                 .cloned();
             let (candidate_name, source) = if let Some(name) = override_name {
                 (name, EntityEnumVariantNameSource::Override)
+            } else if let Some(name) = semantic_label_identifier(&option.label) {
+                (name, EntityEnumVariantNameSource::LabelAscii)
             } else if let Some(name) = label_ascii_identifier(&option.label) {
                 (name, EntityEnumVariantNameSource::LabelAscii)
-            } else if let Some(name) = common_label_identifier(&option.label) {
-                (name, EntityEnumVariantNameSource::CommonLabel)
             } else {
                 (
                     fallback_variant_name(&option.value, idx),
@@ -521,6 +519,57 @@ fn build_variant_plans(
             }
         })
         .collect()
+}
+
+fn semantic_label_identifier(label: &str) -> Option<String> {
+    let normalized = normalize_semantic_label(label);
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let identifier = match normalized.as_str() {
+        "unknown" | "未知" => "Unknown",
+        "male" | "男" | "男性" => "Male",
+        "female" | "女" | "女性" => "Female",
+        "enabled" | "启用" => "Enabled",
+        "disabled" | "禁用" | "停用" | "关闭" => "Disabled",
+        "success" | "成功" => "Success",
+        "failed" | "failure" | "失败" => "Failed",
+        "text" | "文本" => "Text",
+        "number" | "数字" | "数值" => "Number",
+        "boolean" | "bool" | "布尔" => "Boolean",
+        "textarea" | "文本域" | "多行文本" => "Textarea",
+        "select" | "下拉单选" | "单选下拉" | "下拉" => "Select",
+        "json" => "Json",
+        "password" | "密码" => "Password",
+        "image" | "图片" | "图像" => "Image",
+        _ => return None,
+    };
+
+    Some(identifier.to_string())
+}
+
+fn normalize_semantic_label(label: &str) -> String {
+    let mut normalized = label.trim();
+    while let Some(stripped) = normalized
+        .strip_prefix("已")
+        .or_else(|| normalized.strip_prefix("是否"))
+        .or_else(|| normalized.strip_prefix("是否已"))
+    {
+        normalized = stripped.trim();
+    }
+
+    let normalized = normalized
+        .trim_matches(|ch: char| {
+            ch.is_whitespace() || matches!(ch, '(' | ')' | '（' | '）' | '[' | ']' | '【' | '】')
+        })
+        .trim();
+
+    if normalized.is_ascii() {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized.to_string()
+    }
 }
 
 fn dedupe_variant_name(candidate: String, used: &mut BTreeSet<String>) -> String {
@@ -549,7 +598,15 @@ fn label_ascii_identifier(label: &str) -> Option<String> {
 
     let mut result = String::new();
     for segment in segments {
-        let mut chars = segment.chars();
+        let normalized = if segment
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+        {
+            segment.to_ascii_lowercase()
+        } else {
+            segment.to_string()
+        };
+        let mut chars = normalized.chars();
         if let Some(first) = chars.next() {
             if result.is_empty() && first.is_ascii_digit() {
                 result.push_str("Value");
@@ -560,36 +617,6 @@ fn label_ascii_identifier(label: &str) -> Option<String> {
     }
 
     (!result.is_empty()).then_some(result)
-}
-
-fn common_label_identifier(label: &str) -> Option<String> {
-    match label.trim() {
-        "未知" => Some("Unknown".to_string()),
-        "男" => Some("Male".to_string()),
-        "女" => Some("Female".to_string()),
-        "启用" => Some("Enabled".to_string()),
-        "正常" => Some("Normal".to_string()),
-        "禁用" => Some("Disabled".to_string()),
-        "停用" => Some("Disabled".to_string()),
-        "注销" => Some("Cancelled".to_string()),
-        "成功" => Some("Success".to_string()),
-        "失败" => Some("Failed".to_string()),
-        "异常" => Some("Exception".to_string()),
-        "草稿" => Some("Draft".to_string()),
-        "已发布" => Some("Published".to_string()),
-        "已归档" => Some("Archived".to_string()),
-        "菜单" => Some("Menu".to_string()),
-        "按钮" | "按钮权限" => Some("Button".to_string()),
-        "其他" => Some("Other".to_string()),
-        "新增" => Some("Create".to_string()),
-        "修改" => Some("Update".to_string()),
-        "删除" => Some("Delete".to_string()),
-        "查询" => Some("Query".to_string()),
-        "导出" => Some("Export".to_string()),
-        "导入" => Some("Import".to_string()),
-        "授权" | "认证" => Some("Auth".to_string()),
-        _ => None,
-    }
 }
 
 fn fallback_variant_name(value: &str, index: usize) -> String {
@@ -887,11 +914,17 @@ async fn format_rust_source(source: &str) -> Result<String, McpError> {
         })?;
     let _ = tokio::fs::remove_file(&temp_file).await;
     result?;
-    Ok(formatted)
+    Ok(restore_doc_comments(&formatted))
 }
 
 async fn try_rustfmt_file(path: &Path) -> Result<(), McpError> {
-    let output = match Command::new("rustfmt").arg(path).output().await {
+    let output = match Command::new("rustfmt")
+        .arg("--edition")
+        .arg("2024")
+        .arg(path)
+        .output()
+        .await
+    {
         Ok(output) => output,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => {
@@ -939,6 +972,47 @@ fn temp_rustfmt_file_path() -> Result<PathBuf, McpError> {
         "summer-mcp-entity-enum-upgrade-{timestamp}-{}-{seq}.rs",
         std::process::id(),
     )))
+}
+
+fn restore_doc_comments(source: &str) -> String {
+    let mut restored = source
+        .lines()
+        .map(restore_doc_comment_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if source.ends_with('\n') {
+        restored.push('\n');
+    }
+    restored
+}
+
+fn restore_doc_comment_line(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+
+    if let Some(value) = trimmed
+        .strip_prefix("#[doc = ")
+        .and_then(|value| value.strip_suffix(']'))
+        .and_then(parse_doc_comment_literal)
+    {
+        return format!("{indent}/// {value}");
+    }
+
+    if let Some(value) = trimmed
+        .strip_prefix("#![doc = ")
+        .and_then(|value| value.strip_suffix(']'))
+        .and_then(parse_doc_comment_literal)
+    {
+        return format!("{indent}//! {value}");
+    }
+
+    line.to_string()
+}
+
+fn parse_doc_comment_literal(value: &str) -> Option<String> {
+    serde_json::from_str::<String>(value)
+        .ok()
+        .map(|value| value.trim_start().to_string())
 }
 
 #[cfg(test)]
@@ -1105,7 +1179,7 @@ impl ActiveModelBehavior for ActiveModel {}
     }
 
     #[test]
-    fn variant_plan_uses_common_label_and_fallback_names() {
+    fn variant_plan_prefers_override_then_ascii_then_fallback() {
         let draft = EnumDraftSpec {
             field_name: "status".to_string(),
             field_label: "状态".to_string(),
@@ -1122,6 +1196,11 @@ impl ActiveModelBehavior for ActiveModel {}
                     value_kind: EnumOptionValueKind::Number,
                 },
                 super::super::enum_semantics::EnumDraftOptionSpec {
+                    label: "JSON".to_string(),
+                    value: "2".to_string(),
+                    value_kind: EnumOptionValueKind::Number,
+                },
+                super::super::enum_semantics::EnumDraftOptionSpec {
                     label: "待人工确认".to_string(),
                     value: "9".to_string(),
                     value_kind: EnumOptionValueKind::Number,
@@ -1129,11 +1208,77 @@ impl ActiveModelBehavior for ActiveModel {}
             ],
         };
 
-        let plans = build_variant_plans(&draft, None);
+        let plans = build_variant_plans(
+            &draft,
+            Some(&BTreeMap::from([("1".to_string(), "Enabled".to_string())])),
+        );
         assert_eq!(plans[0].rust_variant_name, "Enabled");
+        assert_eq!(plans[0].name_source, EntityEnumVariantNameSource::Override);
+        assert_eq!(plans[1].rust_variant_name, "Json");
         assert_eq!(
             plans[1].name_source,
+            EntityEnumVariantNameSource::LabelAscii
+        );
+        assert_eq!(
+            plans[2].name_source,
             EntityEnumVariantNameSource::ValueFallback
         );
+    }
+
+    #[test]
+    fn label_ascii_identifier_normalizes_uppercase_acronyms() {
+        assert_eq!(label_ascii_identifier("JSON"), Some("Json".to_string()));
+    }
+
+    #[test]
+    fn semantic_label_identifier_maps_common_non_ascii_labels() {
+        assert_eq!(semantic_label_identifier("文本"), Some("Text".to_string()));
+        assert_eq!(
+            semantic_label_identifier("数字"),
+            Some("Number".to_string())
+        );
+        assert_eq!(
+            semantic_label_identifier("布尔"),
+            Some("Boolean".to_string())
+        );
+        assert_eq!(
+            semantic_label_identifier("文本域"),
+            Some("Textarea".to_string())
+        );
+        assert_eq!(
+            semantic_label_identifier("下拉单选"),
+            Some("Select".to_string())
+        );
+        assert_eq!(
+            semantic_label_identifier("密码"),
+            Some("Password".to_string())
+        );
+        assert_eq!(semantic_label_identifier("图片"), Some("Image".to_string()));
+        assert_eq!(
+            semantic_label_identifier("已启用"),
+            Some("Enabled".to_string())
+        );
+        assert_eq!(
+            semantic_label_identifier("已禁用"),
+            Some("Disabled".to_string())
+        );
+    }
+
+    #[test]
+    fn restore_doc_comments_rewrites_doc_attributes() {
+        let source = r#"#![doc = " file"]
+#[doc = " enum"]
+pub enum Demo {
+    #[doc = " item"]
+    Item,
+}
+"#;
+
+        let restored = restore_doc_comments(source);
+        assert!(restored.contains("//! file"));
+        assert!(restored.contains("/// enum"));
+        assert!(restored.contains("    /// item"));
+        assert!(!restored.contains("#[doc ="));
+        assert!(!restored.contains("#![doc ="));
     }
 }

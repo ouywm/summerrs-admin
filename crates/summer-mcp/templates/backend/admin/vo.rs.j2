@@ -20,7 +20,7 @@ use crate::entity::{{ names.table_module }};
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct {{ names.vo }} {
-{% for field in read_fields %}
+{% for field in list_fields %}
 {% if field.type_info.value_kind == "decimal" %}
     #[schemars(with = "{% if field.nullable_entity %}Option<String>{% else %}String{% endif %}")]
 {% endif %}
@@ -47,9 +47,50 @@ pub struct {{ names.vo }} {
 impl From<{{ names.table_module }}::Model> for {{ names.vo }} {
     fn from(model: {{ names.table_module }}::Model) -> Self {
         Self {
-{% for field in read_fields %}
+{% for field in list_fields %}
             {{ field.name }}: model.{{ field.name }},
 {% endfor %}
         }
     }
 }
+
+{% if flags.has_distinct_detail_fields %}
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct {{ names.detail_vo }} {
+{% for field in detail_fields %}
+{% if field.type_info.value_kind == "decimal" %}
+    #[schemars(with = "{% if field.nullable_entity %}Option<String>{% else %}String{% endif %}")]
+{% endif %}
+{% for line in field.comment_lines %}
+    /// {{ line }}
+{% endfor %}
+{% if field.type_info.value_kind == "date_time" and field.nullable_entity %}
+    #[serde(serialize_with = "datetime_format::serialize_option")]
+{% elif field.type_info.value_kind == "date_time" %}
+    #[serde(serialize_with = "datetime_format::serialize")]
+{% elif field.type_info.value_kind == "date" and field.nullable_entity %}
+    #[serde(serialize_with = "date_format::serialize_option")]
+{% elif field.type_info.value_kind == "date" %}
+    #[serde(serialize_with = "date_format::serialize")]
+{% elif field.type_info.value_kind == "time" and field.nullable_entity %}
+    #[serde(serialize_with = "time_format::serialize_option")]
+{% elif field.type_info.value_kind == "time" %}
+    #[serde(serialize_with = "time_format::serialize")]
+{% endif %}
+    pub {{ field.name }}: {{ field.type_info.rust_entity }},
+{% endfor %}
+}
+
+impl From<{{ names.table_module }}::Model> for {{ names.detail_vo }} {
+    fn from(model: {{ names.table_module }}::Model) -> Self {
+        Self {
+{% for field in detail_fields %}
+            {{ field.name }}: model.{{ field.name }},
+{% endfor %}
+        }
+    }
+}
+{% else %}
+pub type {{ names.detail_vo }} = {{ names.vo }};
+{% endif %}

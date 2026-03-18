@@ -1,17 +1,26 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use rmcp::ErrorData as McpError;
+use syn::{Fields, Item, Type, parse_file};
 use tokio::process::Command;
 
-use crate::tools::{
-    support::{io_error, sync_mod_file, workspace_root},
-    validation::{
-        GenerationValidationSummary, validate_mod_registration, validate_rust_sources,
-        validate_workspace_cargo_check_for_generated_output,
+use crate::{
+    table_tools::schema::TableSchema,
+    tools::{
+        entity_enum_upgrader::{EntityEnumUpgradeRequest, EntityEnumUpgrader},
+        support::{
+            io_error, is_create_timestamp_field_name, is_update_timestamp_field_name,
+            sync_mod_file, workspace_root,
+        },
+        validation::{
+            GenerationValidationSummary, validate_mod_registration, validate_rust_sources,
+            validate_workspace_cargo_check_for_generated_output,
+        },
     },
 };
 
@@ -35,6 +44,9 @@ pub struct GenerateEntityRequest {
     pub database_url: Option<String>,
     pub database_schema: Option<String>,
     pub cli_bin: Option<String>,
+    pub schema: Option<TableSchema>,
+    pub enum_name_overrides: BTreeMap<String, String>,
+    pub variant_name_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,7 +58,15 @@ pub struct GenerateEntityResult {
     pub overwritten: bool,
     pub database_schema: String,
     pub cli_bin: String,
+    pub enum_upgrade_changed: bool,
+    pub enum_upgrade_fields: Vec<String>,
     pub validation: GenerationValidationSummary,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AutoEntityEnumUpgradeSummary {
+    changed: bool,
+    fields: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +87,18 @@ struct SeaOrmCliGenerateEntityOptions {
     date_time_crate: &'static str,
     banner_version: &'static str,
     impl_active_model_behavior: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AuditTimestampFieldContext {
+    name: String,
+    optional: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AuditTimestampBehaviorContext {
+    create_field: Option<AuditTimestampFieldContext>,
+    update_field: Option<AuditTimestampFieldContext>,
 }
 
 impl Default for SeaOrmCliGenerateEntityOptions {
@@ -234,6 +266,11 @@ impl EntityGenerator {
             })?;
         let normalized_contents =
             normalize_generated_entity_contents(&generated_contents, &request.table);
+        let normalized_contents = request
+            .schema
+            .as_ref()
+            .map(|schema| inject_entity_field_comments(&normalized_contents, schema))
+            .unwrap_or(normalized_contents);
         tokio::fs::write(&entity_file, normalized_contents)
             .await
             .map_err(|error| {
@@ -244,6 +281,7 @@ impl EntityGenerator {
             })?;
 
         sync_mod_file(&mod_file, &request.table).await?;
+        let enum_upgrade = self.auto_upgrade_entity_enums(&request).await?;
         let validation = self
             .validate_generated_output(&request, &entity_file, &mod_file)
             .await;
@@ -256,6 +294,8 @@ impl EntityGenerator {
             overwritten: existed,
             database_schema,
             cli_bin,
+            enum_upgrade_changed: enum_upgrade.changed,
+            enum_upgrade_fields: enum_upgrade.fields,
             validation,
         })
     }
@@ -322,6 +362,38 @@ impl EntityGenerator {
 
         GenerationValidationSummary::from_checks(checks)
     }
+
+    async fn auto_upgrade_entity_enums(
+        &self,
+        request: &GenerateEntityRequest,
+    ) -> Result<AutoEntityEnumUpgradeSummary, McpError> {
+        let Some(schema) = request.schema.clone() else {
+            return Ok(AutoEntityEnumUpgradeSummary::default());
+        };
+
+        let upgrader = EntityEnumUpgrader::with_workspace_root(self.workspace_root.clone());
+        let result = upgrader
+            .apply(EntityEnumUpgradeRequest {
+                schema,
+                route_base: None,
+                output_dir: request.output_dir.clone(),
+                fields: None,
+                enum_name_overrides: request.enum_name_overrides.clone(),
+                variant_name_overrides: request.variant_name_overrides.clone(),
+            })
+            .await?;
+
+        Ok(AutoEntityEnumUpgradeSummary {
+            changed: result.preview.changed,
+            fields: result
+                .preview
+                .plan
+                .fields
+                .into_iter()
+                .map(|field| field.field_name)
+                .collect(),
+        })
+    }
 }
 
 async fn run_sea_orm_cli(
@@ -360,14 +432,239 @@ async fn run_sea_orm_cli(
     ))
 }
 fn normalize_generated_entity_contents(contents: &str, table: &str) -> String {
-    contents
+    let normalized = contents
         .replace(
             &format!("#[sea_orm(schema_name = \"public\", table_name = \"{table}\")]"),
             &format!("#[sea_orm(table_name = \"{table}\")]"),
         )
         .trim()
-        .to_string()
-        + "\n"
+        .to_string();
+    inject_audit_timestamp_behavior(&normalized) + "\n"
+}
+
+fn inject_entity_field_comments(contents: &str, schema: &TableSchema) -> String {
+    let field_comments = schema
+        .columns
+        .iter()
+        .filter_map(|column| {
+            normalize_entity_doc_comment(column.comment.as_deref())
+                .map(|comment| (column.name.as_str(), comment))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    if field_comments.is_empty() {
+        return contents.to_string();
+    }
+
+    let mut output = Vec::new();
+    let mut pending_attrs = Vec::new();
+    let mut inside_model = false;
+
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+
+        if !inside_model {
+            if trimmed.starts_with("pub struct Model") {
+                inside_model = true;
+            }
+            output.push(line.to_string());
+            continue;
+        }
+
+        if trimmed == "}" {
+            output.append(&mut pending_attrs);
+            output.push(line.to_string());
+            inside_model = false;
+            continue;
+        }
+
+        if trimmed.starts_with("#[") {
+            pending_attrs.push(line.to_string());
+            continue;
+        }
+
+        if let Some(field_name) = parse_entity_model_field_name(trimmed) {
+            if let Some(comment) = field_comments.get(field_name) {
+                output.push(format!("    /// {comment}"));
+            }
+            output.append(&mut pending_attrs);
+            output.push(line.to_string());
+            continue;
+        }
+
+        output.append(&mut pending_attrs);
+        output.push(line.to_string());
+    }
+
+    if !pending_attrs.is_empty() {
+        output.append(&mut pending_attrs);
+    }
+
+    let mut rendered = output.join("\n");
+    if contents.ends_with('\n') {
+        rendered.push('\n');
+    }
+    rendered
+}
+
+fn normalize_entity_doc_comment(comment: Option<&str>) -> Option<String> {
+    let normalized = comment?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn parse_entity_model_field_name(line: &str) -> Option<&str> {
+    let field = line.strip_prefix("pub ")?;
+    let (name, _) = field.split_once(':')?;
+    Some(name.trim())
+}
+
+fn inject_audit_timestamp_behavior(contents: &str) -> String {
+    let Some(context) = parse_audit_timestamp_behavior_context(contents) else {
+        return contents.to_string();
+    };
+
+    let behavior_block = render_audit_timestamp_behavior(&context);
+    let mut normalized = contents.replace(
+        "impl ActiveModelBehavior for ActiveModel {}",
+        &behavior_block,
+    );
+
+    if !normalized.contains("use sea_orm::Set;") {
+        normalized = inject_set_import(&normalized);
+    }
+
+    normalized
+}
+
+fn parse_audit_timestamp_behavior_context(contents: &str) -> Option<AuditTimestampBehaviorContext> {
+    let file = parse_file(contents).ok()?;
+    let model = file.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "Model" => Some(item),
+        _ => None,
+    })?;
+    let Fields::Named(fields) = &model.fields else {
+        return None;
+    };
+
+    let mut context = AuditTimestampBehaviorContext::default();
+    for field in &fields.named {
+        let Some(ident) = &field.ident else {
+            continue;
+        };
+        let field_name = ident.to_string();
+        let optional = option_inner_type(&field.ty).is_some();
+        let raw_type = option_inner_type(&field.ty).unwrap_or(&field.ty);
+        if !is_entity_datetime_type(raw_type) {
+            continue;
+        }
+
+        if context.update_field.is_none() && is_update_timestamp_field_name(&field_name) {
+            context.update_field = Some(AuditTimestampFieldContext {
+                name: field_name,
+                optional,
+            });
+            continue;
+        }
+
+        if context.create_field.is_none() && is_create_timestamp_field_name(&field_name) {
+            context.create_field = Some(AuditTimestampFieldContext {
+                name: field_name,
+                optional,
+            });
+        }
+    }
+
+    if context.create_field.is_none() && context.update_field.is_none() {
+        None
+    } else {
+        Some(context)
+    }
+}
+
+fn render_audit_timestamp_behavior(context: &AuditTimestampBehaviorContext) -> String {
+    let mut lines = vec![
+        "#[async_trait::async_trait]".to_string(),
+        "impl ActiveModelBehavior for ActiveModel {".to_string(),
+        "    async fn before_save<C>(mut self, _db: &C, insert: bool) -> Result<Self, DbErr>"
+            .to_string(),
+        "    where".to_string(),
+        "        C: ConnectionTrait,".to_string(),
+        "    {".to_string(),
+        "        let now = chrono::Local::now().naive_local();".to_string(),
+    ];
+
+    if let Some(field) = &context.update_field {
+        lines.push(format!(
+            "        self.{} = Set({});",
+            field.name,
+            render_now_assignment(field.optional)
+        ));
+    }
+
+    if let Some(field) = &context.create_field {
+        lines.push("        if insert {".to_string());
+        lines.push(format!(
+            "            self.{} = Set({});",
+            field.name,
+            render_now_assignment(field.optional)
+        ));
+        lines.push("        }".to_string());
+    }
+
+    lines.push("        Ok(self)".to_string());
+    lines.push("    }".to_string());
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+fn render_now_assignment(optional: bool) -> &'static str {
+    if optional { "Some(now)" } else { "now" }
+}
+
+fn inject_set_import(contents: &str) -> String {
+    const PRELUDE_USE: &str = "use sea_orm::entity::prelude::*;";
+    if contents.contains(PRELUDE_USE) {
+        contents.replacen(PRELUDE_USE, &format!("{PRELUDE_USE}\nuse sea_orm::Set;"), 1)
+    } else {
+        format!("use sea_orm::Set;\n{contents}")
+    }
+}
+
+fn option_inner_type(ty: &Type) -> Option<&Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = &type_path.path.segments[0];
+    if segment.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    let first = arguments.args.first()?;
+    let syn::GenericArgument::Type(inner) = first else {
+        return None;
+    };
+    Some(inner)
+}
+
+fn is_entity_datetime_type(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "DateTime")
 }
 
 struct TempDirGuard {
@@ -417,6 +714,105 @@ pub struct Model;
         let normalized = normalize_generated_entity_contents(input, "sys_role");
         assert!(normalized.contains("#[sea_orm(table_name = \"sys_role\")]"));
         assert!(!normalized.contains("schema_name"));
+    }
+
+    #[test]
+    fn normalize_generated_entity_contents_injects_audit_timestamp_behavior() {
+        let input = r#"
+use sea_orm::entity::prelude::*;
+
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub create_time: DateTime,
+    pub update_time: DateTime,
+}
+
+impl ActiveModelBehavior for ActiveModel {}
+"#;
+
+        let normalized = normalize_generated_entity_contents(input, "sys_role");
+        assert!(normalized.contains("use sea_orm::Set;"));
+        assert!(normalized.contains("#[async_trait::async_trait]"));
+        assert!(normalized.contains("self.update_time = Set(now);"));
+        assert!(normalized.contains("self.create_time = Set(now);"));
+        assert!(!normalized.contains("impl ActiveModelBehavior for ActiveModel {}"));
+    }
+
+    #[test]
+    fn normalize_generated_entity_contents_handles_nullable_audit_timestamps() {
+        let input = r#"
+use sea_orm::entity::prelude::*;
+
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub created_at: Option<DateTime>,
+    pub updated_at: Option<DateTime>,
+}
+
+impl ActiveModelBehavior for ActiveModel {}
+"#;
+
+        let normalized = normalize_generated_entity_contents(input, "biz_article");
+        assert!(normalized.contains("self.updated_at = Set(Some(now));"));
+        assert!(normalized.contains("self.created_at = Set(Some(now));"));
+    }
+
+    #[test]
+    fn inject_entity_field_comments_places_docs_above_field_attributes() {
+        let contents = r#"use sea_orm::entity::prelude::*;
+
+#[sea_orm::model]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i64,
+    pub config_name: String,
+}
+"#;
+        let schema = TableSchema {
+            schema: "public".to_string(),
+            table: "sys_config".to_string(),
+            comment: Some("系统参数配置表".to_string()),
+            primary_key: vec!["id".to_string()],
+            columns: vec![
+                crate::table_tools::schema::TableColumnSchema {
+                    name: "id".to_string(),
+                    pg_type: "bigint".to_string(),
+                    nullable: false,
+                    primary_key: true,
+                    hidden_on_read: false,
+                    writable_on_create: false,
+                    writable_on_update: false,
+                    default_value: Some("nextval(...)".to_string()),
+                    comment: Some("配置ID".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                crate::table_tools::schema::TableColumnSchema {
+                    name: "config_name".to_string(),
+                    pg_type: "character varying".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: None,
+                    comment: Some("配置名称".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            check_constraints: vec![],
+        };
+
+        let rendered = inject_entity_field_comments(contents, &schema);
+        assert!(rendered.contains("    /// 配置ID\n    #[sea_orm(primary_key)]\n    pub id: i64,"));
+        assert!(rendered.contains("    /// 配置名称\n    pub config_name: String,"));
     }
 
     #[test]
@@ -493,6 +889,9 @@ pub struct Model;
                     database_url: None,
                     database_schema: None,
                     cli_bin: None,
+                    schema: None,
+                    enum_name_overrides: BTreeMap::new(),
+                    variant_name_overrides: BTreeMap::new(),
                 },
                 &entity_file,
                 &mod_file,
@@ -507,6 +906,111 @@ pub struct Model;
                 .any(|check| check.name == "rust_workspace_check"
                     && check.status == ValidationStatus::Skipped)
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn auto_upgrade_entity_enums_promotes_comment_backed_numeric_fields() {
+        let root = std::env::temp_dir().join(format!(
+            "summer-mcp-entity-enum-auto-upgrade-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let entity_dir = root.join("generated/entity");
+        std::fs::create_dir_all(&entity_dir).unwrap();
+        let entity_file = entity_dir.join("sys_config.rs");
+        std::fs::write(
+            &entity_file,
+            r#"use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[sea_orm::model]
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+#[sea_orm(table_name = "sys_config")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i64,
+    pub value_type: i16,
+}
+
+impl ActiveModelBehavior for ActiveModel {}
+"#,
+        )
+        .unwrap();
+
+        let generator = EntityGenerator::with_workspace_root(root.clone());
+        let summary = generator
+            .auto_upgrade_entity_enums(&GenerateEntityRequest {
+                table: "sys_config".to_string(),
+                overwrite: true,
+                output_dir: Some(entity_dir.display().to_string()),
+                database_url: None,
+                database_schema: None,
+                cli_bin: None,
+                schema: Some(TableSchema {
+                    schema: "public".to_string(),
+                    table: "sys_config".to_string(),
+                    comment: Some("系统参数配置表".to_string()),
+                    primary_key: vec!["id".to_string()],
+                    columns: vec![
+                        crate::table_tools::schema::TableColumnSchema {
+                            name: "id".to_string(),
+                            pg_type: "bigint".to_string(),
+                            nullable: false,
+                            primary_key: true,
+                            hidden_on_read: false,
+                            writable_on_create: false,
+                            writable_on_update: false,
+                            default_value: Some("nextval(...)".to_string()),
+                            comment: Some("配置ID".to_string()),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                        crate::table_tools::schema::TableColumnSchema {
+                            name: "value_type".to_string(),
+                            pg_type: "smallint".to_string(),
+                            nullable: false,
+                            primary_key: false,
+                            hidden_on_read: false,
+                            writable_on_create: true,
+                            writable_on_update: true,
+                            default_value: Some("1".to_string()),
+                            comment: Some(
+                                "值类型：1=文本 2=数字 3=布尔 4=文本域 5=下拉单选 6=JSON 7=密码 8=图片"
+                                    .to_string(),
+                            ),
+                            is_identity: false,
+                            is_generated: false,
+                            enum_values: None,
+                        },
+                    ],
+                    indexes: vec![],
+                    foreign_keys: vec![],
+                    check_constraints: vec![],
+                }),
+                enum_name_overrides: BTreeMap::new(),
+                variant_name_overrides: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+
+        let upgraded = std::fs::read_to_string(&entity_file).unwrap();
+        assert!(summary.changed);
+        assert_eq!(summary.fields, vec!["value_type"]);
+        assert!(upgraded.contains("pub enum ValueType"));
+        assert!(upgraded.contains("#[sea_orm(rs_type = \"i16\", db_type = \"SmallInteger\")]"));
+        assert!(upgraded.contains("Text = 1"));
+        assert!(upgraded.contains("Number = 2"));
+        assert!(upgraded.contains("Boolean = 3"));
+        assert!(upgraded.contains("Textarea = 4"));
+        assert!(upgraded.contains("Select = 5"));
+        assert!(upgraded.contains("#[sea_orm(num_value = 6)]"));
+        assert!(upgraded.contains("Password = 7"));
+        assert!(upgraded.contains("Image = 8"));
+        assert!(upgraded.contains("pub value_type: ValueType,"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

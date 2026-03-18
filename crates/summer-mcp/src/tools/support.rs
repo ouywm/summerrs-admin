@@ -9,6 +9,21 @@ use serde::Serialize;
 
 use crate::error_model::internal_error;
 
+const SYSTEM_MANAGED_FIELD_NAMES: &[&str] = &[
+    "create_by",
+    "update_by",
+    "created_by",
+    "updated_by",
+    "create_time",
+    "update_time",
+    "created_at",
+    "updated_at",
+];
+
+const AUDIT_ACTOR_FIELD_NAMES: &[&str] = &["create_by", "update_by", "created_by", "updated_by"];
+const CREATE_TIMESTAMP_FIELD_NAMES: &[&str] = &["create_time", "created_at"];
+const UPDATE_TIMESTAMP_FIELD_NAMES: &[&str] = &["update_time", "updated_at"];
+
 pub(crate) async fn sync_mod_file(mod_file: &Path, module: &str) -> Result<(), McpError> {
     let existing = match tokio::fs::read_to_string(mod_file).await {
         Ok(contents) => contents,
@@ -135,6 +150,44 @@ pub(crate) fn sanitize_file_stem(value: &str) -> String {
     }
 }
 
+/// Match snake_case / identifier-style names by token rather than raw substring.
+/// This avoids accidental hits such as `resort_name` matching `sort`.
+pub(crate) fn identifier_has_any_token(value: &str, needles: &[&str]) -> bool {
+    if needles
+        .iter()
+        .any(|needle| value.eq_ignore_ascii_case(needle))
+    {
+        return true;
+    }
+
+    value
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            needles
+                .iter()
+                .any(|needle| token.eq_ignore_ascii_case(needle))
+        })
+}
+
+/// These are schema-level system managed fields, so exact-name matching is intentional.
+pub(crate) fn is_system_managed_field_name(name: &str) -> bool {
+    SYSTEM_MANAGED_FIELD_NAMES.contains(&name)
+}
+
+/// Actor audit fields are often not useful as default search/table columns.
+pub(crate) fn is_audit_actor_field_name(name: &str) -> bool {
+    AUDIT_ACTOR_FIELD_NAMES.contains(&name)
+}
+
+pub(crate) fn is_create_timestamp_field_name(name: &str) -> bool {
+    CREATE_TIMESTAMP_FIELD_NAMES.contains(&name)
+}
+
+pub(crate) fn is_update_timestamp_field_name(name: &str) -> bool {
+    UPDATE_TIMESTAMP_FIELD_NAMES.contains(&name)
+}
+
 pub(crate) async fn write_pretty_json_file<T: Serialize>(
     path: &Path,
     value: &T,
@@ -181,6 +234,36 @@ mod tests {
     fn sanitize_file_stem_normalizes_non_identifier_characters() {
         assert_eq!(sanitize_file_stem("sys/user"), "sys-user".to_string());
         assert_eq!(sanitize_file_stem(" 菜单 "), "export".to_string());
+    }
+
+    #[test]
+    fn identifier_has_any_token_matches_by_identifier_segment() {
+        assert!(identifier_has_any_token("user_status", &["status"]));
+        assert!(identifier_has_any_token("deleted_at", &["deleted_at"]));
+        assert!(identifier_has_any_token("password_hash", &["password"]));
+        assert!(!identifier_has_any_token("resort_name", &["sort"]));
+    }
+
+    #[test]
+    fn system_managed_field_name_uses_exact_matches() {
+        assert!(is_system_managed_field_name("create_time"));
+        assert!(!is_system_managed_field_name("create_time_text"));
+    }
+
+    #[test]
+    fn audit_actor_field_name_is_more_specific_than_system_managed() {
+        assert!(is_audit_actor_field_name("create_by"));
+        assert!(!is_audit_actor_field_name("create_time"));
+    }
+
+    #[test]
+    fn timestamp_field_name_helpers_use_exact_matches() {
+        assert!(is_create_timestamp_field_name("create_time"));
+        assert!(is_create_timestamp_field_name("created_at"));
+        assert!(is_update_timestamp_field_name("update_time"));
+        assert!(is_update_timestamp_field_name("updated_at"));
+        assert!(!is_create_timestamp_field_name("create_time_text"));
+        assert!(!is_update_timestamp_field_name("updated_time_text"));
     }
 
     #[test]

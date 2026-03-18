@@ -5,6 +5,8 @@ use serde::Serialize;
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OnlineUserVo {
+    /// 登录会话 ID（用于强制下线）
+    pub login_id: String,
     /// 用户 ID
     pub user_id: i64,
     /// 用户名

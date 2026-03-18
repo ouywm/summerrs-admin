@@ -190,6 +190,12 @@ fn parse_comment_enum_options(
     (!options.is_empty()).then_some(options)
 }
 
+/// Decide whether a comment suffix still looks like an enum list such as
+/// `1=启用 2=禁用` or `SUCCESS:成功 FAILED:失败`.
+pub(crate) fn looks_like_comment_enum_suffix(comment: &str) -> bool {
+    enum_token_regex().captures_iter(comment).take(2).count() >= 2
+}
+
 fn option_from_raw_value(value: &str, value_kind: FieldValueKind) -> Option<EnumOptionContext> {
     let label = value.trim();
     if label.is_empty() {
@@ -240,6 +246,12 @@ fn trim_enum_label(value: &str) -> String {
         .to_string()
 }
 
+/// Match the leading enum token in fragments like:
+/// - `1=启用`
+/// - `2-禁用`
+/// - `SUCCESS:成功`
+///
+/// The parser then slices the text between two matched tokens as the human label.
 fn enum_token_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
@@ -384,6 +396,12 @@ mod tests {
     }
 
     #[test]
+    fn looks_like_comment_enum_suffix_requires_multiple_tokens() {
+        assert!(looks_like_comment_enum_suffix("1=启用 2=禁用"));
+        assert!(!looks_like_comment_enum_suffix("当 value_type=5 时使用"));
+    }
+
+    #[test]
     fn infer_dict_type_code_avoids_duplicate_route_prefix() {
         assert_eq!(infer_dict_type_code("menu", "menu_type"), "menu_type");
         assert_eq!(infer_dict_type_code("user", "status"), "user_status");
@@ -420,6 +438,7 @@ mod tests {
             update_dto: "UpdateShowcaseProfileDto".to_string(),
             query_dto: "ShowcaseProfileQueryDto".to_string(),
             vo: "ShowcaseProfileVo".to_string(),
+            detail_vo: "ShowcaseProfileDetailVo".to_string(),
             ts_namespace: "ShowcaseProfile".to_string(),
             api_function_base: "ShowcaseProfile".to_string(),
         };

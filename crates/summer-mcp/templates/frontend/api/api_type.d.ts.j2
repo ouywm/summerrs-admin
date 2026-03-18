@@ -6,7 +6,7 @@ declare namespace Api {
 
     /** {{ table.subject_label }}列表项（对应后端 {{ names.vo }}） */
     interface {{ names.resource_pascal }}Vo {
-{% for field in read_fields %}
+{% for field in list_fields %}
 {% for line in field.comment_lines %}
       /** {{ line }} */
 {% endfor %}
@@ -15,15 +15,29 @@ declare namespace Api {
     }
 
     /** {{ table.subject_label }}详情 */
+{% if flags.has_distinct_detail_fields %}
+    /** {{ table.subject_label }}详情项（对应后端 {{ names.detail_vo }}） */
+    interface {{ names.resource_pascal }}DetailVo {
+{% for field in detail_fields %}
+{% for line in field.comment_lines %}
+      /** {{ line }} */
+{% endfor %}
+      {{ field.camel_name }}: {{ field.type_info.ts_read }}
+{% endfor %}
+    }
+{% else %}
     type {{ names.resource_pascal }}DetailVo = {{ names.resource_pascal }}Vo
+{% endif %}
 
-    /** {{ table.subject_label }}查询参数（对应后端 {{ names.query_dto }}） */
-    interface {{ names.resource_pascal }}SearchParams extends Api.Common.CommonSearchParams {
+    /** {{ table.subject_label }}筛选字段（不包含分页） */
+    interface {{ names.resource_pascal }}SearchFilters {
 {% for field in query_fields %}
+{% if not field.query_range_only %}
 {% for line in field.comment_lines %}
       /** {{ line }} */
 {% endfor %}
       {{ field.camel_name }}?: {{ field.type_info.ts_input }}
+{% endif %}
 {% if field.type_info.value_kind == "date" or field.type_info.value_kind == "date_time" %}
 {% for line in field.comment_lines %}
       /** {{ line }}开始 */
@@ -36,6 +50,9 @@ declare namespace Api {
 {% endif %}
 {% endfor %}
     }
+
+    /** {{ table.subject_label }}查询参数（对应后端 {{ names.query_dto }}） */
+    interface {{ names.resource_pascal }}SearchParams extends Api.Common.CommonSearchParams, {{ names.resource_pascal }}SearchFilters {}
 
     /** 创建{{ table.subject_label }}参数（对应后端 {{ names.create_dto }}） */
     interface Create{{ names.resource_pascal }}Params {

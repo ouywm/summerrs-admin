@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
@@ -12,22 +12,18 @@ use crate::table_tools::schema::{TableColumnSchema, TableSchema};
 
 use super::{
     enum_semantics::{
-        EnumDraftSpec, EnumSemanticSource, build_enum_draft, render_ts_option_union,
-        resolve_field_enum,
+        EnumDraftSpec, EnumSemanticSource, build_enum_draft, looks_like_comment_enum_suffix,
+        render_ts_option_union, resolve_field_enum,
     },
-    support::default_route_base,
+    support::{
+        default_route_base, identifier_has_any_token, is_audit_actor_field_name,
+        is_create_timestamp_field_name, is_system_managed_field_name,
+        is_update_timestamp_field_name,
+    },
 };
 
-const CLIENT_SUBMIT_BLOCKED_FIELD_NAMES: &[&str] = &[
-    "create_by",
-    "update_by",
-    "created_by",
-    "updated_by",
-    "create_time",
-    "update_time",
-    "created_at",
-    "updated_at",
-];
+const SKIP_DEFAULT_QUERY_FIELD_KEYWORDS: &[&str] =
+    &["remark", "memo", "sort", "order", "rank", "seq", "sequence"];
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CrudGenerationContext {
@@ -35,13 +31,15 @@ pub(crate) struct CrudGenerationContext {
     pub(crate) names: CrudNamingContext,
     pub(crate) paths: CrudPathContext,
     pub(crate) flags: CrudGenerationFlags,
+    pub(crate) list_order_columns: Vec<String>,
     pub(crate) enum_drafts: Vec<EnumDraftSpec>,
     pub(crate) primary_key: FieldGenerationContext,
     pub(crate) fields: Vec<FieldGenerationContext>,
     pub(crate) create_fields: Vec<FieldGenerationContext>,
     pub(crate) update_fields: Vec<FieldGenerationContext>,
     pub(crate) query_fields: Vec<FieldGenerationContext>,
-    pub(crate) read_fields: Vec<FieldGenerationContext>,
+    pub(crate) list_fields: Vec<FieldGenerationContext>,
+    pub(crate) detail_fields: Vec<FieldGenerationContext>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +63,7 @@ pub(crate) struct CrudNamingContext {
     pub(crate) update_dto: String,
     pub(crate) query_dto: String,
     pub(crate) vo: String,
+    pub(crate) detail_vo: String,
     pub(crate) ts_namespace: String,
     pub(crate) api_function_base: String,
 }
@@ -84,6 +83,22 @@ pub(crate) struct CrudGenerationFlags {
     pub(crate) uses_datetime_format: bool,
     pub(crate) uses_date_format: bool,
     pub(crate) uses_time_format: bool,
+    pub(crate) has_distinct_detail_fields: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CrudFieldSelection {
+    /// Explicit backend/frontend query contract. When omitted, the generator uses its default query-field selection.
+    pub query_fields: Option<Vec<String>>,
+    /// Explicit create payload contract. When omitted, the generator uses writable create columns.
+    pub create_fields: Option<Vec<String>>,
+    /// Explicit update payload contract. When omitted, the generator uses writable update columns.
+    pub update_fields: Option<Vec<String>>,
+    /// Explicit list response contract. When omitted, the generator uses readable columns.
+    pub list_fields: Option<Vec<String>>,
+    /// Explicit detail response contract. When omitted, the generator uses readable columns.
+    pub detail_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,7 +110,10 @@ pub(crate) struct FieldGenerationContext {
     pub(crate) comment_lines: Vec<String>,
     pub(crate) nullable_entity: bool,
     pub(crate) create_required: bool,
+    pub(crate) create_validation_attrs: Vec<String>,
+    pub(crate) update_validation_attrs: Vec<String>,
     pub(crate) query_filter_method: String,
+    pub(crate) query_range_only: bool,
     pub(crate) type_info: FieldTypeContext,
 }
 
@@ -164,8 +182,22 @@ impl CrudGenerationContextBuilder {
         route_base_override: Option<String>,
         entity_source: &str,
     ) -> Result<CrudGenerationContext, McpError> {
+        Self::build_from_entity_source_with_selection(
+            schema,
+            route_base_override,
+            entity_source,
+            &CrudFieldSelection::default(),
+        )
+    }
+
+    pub(crate) fn build_from_entity_source_with_selection(
+        schema: TableSchema,
+        route_base_override: Option<String>,
+        entity_source: &str,
+        field_selection: &CrudFieldSelection,
+    ) -> Result<CrudGenerationContext, McpError> {
         let entity_source = parse_entity_source(entity_source)?;
-        build_context(schema, route_base_override, &entity_source)
+        build_context(schema, route_base_override, &entity_source, field_selection)
     }
 }
 
@@ -173,6 +205,7 @@ fn build_context(
     schema: TableSchema,
     route_base_override: Option<String>,
     entity_source: &ParsedEntitySource,
+    field_selection: &CrudFieldSelection,
 ) -> Result<CrudGenerationContext, McpError> {
     let primary_key_columns = schema.primary_key_columns();
     if primary_key_columns.len() != 1 {
@@ -207,6 +240,7 @@ fn build_context(
         update_dto: format!("Update{resource_pascal}Dto"),
         query_dto: format!("{resource_pascal}QueryDto"),
         vo: format!("{resource_pascal}Vo"),
+        detail_vo: format!("{resource_pascal}DetailVo"),
         ts_namespace: resource_pascal.clone(),
         api_function_base: resource_pascal,
     };
@@ -258,39 +292,85 @@ fn build_context(
             )
         })?;
 
-    let create_fields = filter_fields_by_column(&fields, &schema, |column| {
+    let default_create_fields = filter_fields_by_column(&fields, &schema, |_, column| {
         column.writable_on_create && !is_client_submit_blocked_field(&column.name)
-    })
-    .into_iter()
-    .map(|mut field| {
-        let column = schema
-            .columns
-            .iter()
-            .find(|column| column.name == field.name)
-            .expect("field must map back to schema column");
-        field.create_required =
-            !column.nullable && column.default_value.is_none() && !field.nullable_entity;
-        field
-    })
-    .collect::<Vec<_>>();
+    });
 
-    let update_fields = filter_fields_by_column(&fields, &schema, |column| {
+    let default_update_fields = filter_fields_by_column(&fields, &schema, |_, column| {
         column.writable_on_update && !is_client_submit_blocked_field(&column.name)
     });
 
-    let read_fields = filter_fields_by_column(&fields, &schema, |column| !column.hidden_on_read);
-    let query_fields = read_fields.clone();
+    let default_list_fields =
+        filter_fields_by_column(&fields, &schema, |_, column| !column.hidden_on_read);
+    let default_detail_fields =
+        filter_fields_by_column(&fields, &schema, |_, column| !column.hidden_on_read);
+    let default_query_fields = filter_fields_by_column(&fields, &schema, |field, column| {
+        !column.hidden_on_read && should_include_default_query_field(field, column)
+    });
+
+    let create_fields = select_generation_fields(
+        &schema,
+        &fields,
+        "create_fields",
+        field_selection.create_fields.as_deref(),
+        default_create_fields,
+        |column| column.writable_on_create && !is_client_submit_blocked_field(&column.name),
+    )?;
+    let update_fields = select_generation_fields(
+        &schema,
+        &fields,
+        "update_fields",
+        field_selection.update_fields.as_deref(),
+        default_update_fields,
+        |column| column.writable_on_update && !is_client_submit_blocked_field(&column.name),
+    )?;
+    let query_fields = select_generation_fields(
+        &schema,
+        &fields,
+        "query_fields",
+        field_selection.query_fields.as_deref(),
+        default_query_fields,
+        |_| true,
+    )?;
+    let list_fields = ensure_identity_field_for_read_contract(
+        select_generation_fields(
+            &schema,
+            &fields,
+            "list_fields",
+            field_selection.list_fields.as_deref(),
+            default_list_fields,
+            |column| !column.hidden_on_read,
+        )?,
+        &primary_key,
+    );
+    let detail_fields = ensure_identity_field_for_read_contract(
+        select_generation_fields(
+            &schema,
+            &fields,
+            "detail_fields",
+            field_selection.detail_fields.as_deref(),
+            default_detail_fields,
+            |column| !column.hidden_on_read,
+        )?,
+        &primary_key,
+    );
+    let list_order_columns = default_list_order_columns(&fields, &primary_key);
+    let has_distinct_detail_fields = has_distinct_field_contracts(&list_fields, &detail_fields);
 
     let flags = CrudGenerationFlags {
-        uses_datetime_format: read_fields
+        uses_datetime_format: list_fields
             .iter()
+            .chain(detail_fields.iter())
             .any(|field| field.type_info.datetime_like),
-        uses_date_format: read_fields
+        uses_date_format: list_fields
             .iter()
+            .chain(detail_fields.iter())
             .any(|field| matches!(field.type_info.value_kind, FieldValueKind::Date)),
-        uses_time_format: read_fields
+        uses_time_format: list_fields
             .iter()
+            .chain(detail_fields.iter())
             .any(|field| matches!(field.type_info.value_kind, FieldValueKind::Time)),
+        has_distinct_detail_fields,
     };
 
     Ok(CrudGenerationContext {
@@ -305,14 +385,102 @@ fn build_context(
             base: base_path,
         },
         flags,
+        list_order_columns,
         enum_drafts,
         primary_key,
         fields,
         create_fields,
         update_fields,
         query_fields,
-        read_fields,
+        list_fields,
+        detail_fields,
     })
+}
+
+fn select_generation_fields(
+    schema: &TableSchema,
+    all_fields: &[FieldGenerationContext],
+    label: &str,
+    explicit_fields: Option<&[String]>,
+    default_fields: Vec<FieldGenerationContext>,
+    allow: impl Fn(&TableColumnSchema) -> bool,
+) -> Result<Vec<FieldGenerationContext>, McpError> {
+    let Some(explicit_fields) = explicit_fields else {
+        return Ok(default_fields);
+    };
+
+    let field_map = all_fields
+        .iter()
+        .map(|field| (field.name.as_str(), field))
+        .collect::<BTreeMap<_, _>>();
+    let column_map = schema
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut selected = Vec::with_capacity(explicit_fields.len());
+
+    for field_name in explicit_fields {
+        let Some(field) = field_map.get(field_name.as_str()) else {
+            let available = field_map.keys().copied().collect::<Vec<_>>().join(", ");
+            return Err(McpError::invalid_params(
+                format!(
+                    "`{label}` contains unknown field `{field_name}` for table `{}`; available fields: {available}",
+                    schema.table
+                ),
+                None,
+            ));
+        };
+        let Some(column) = column_map.get(field_name.as_str()) else {
+            return Err(McpError::internal_error(
+                format!(
+                    "schema column `{field_name}` was not found while resolving `{label}` for table `{}`",
+                    schema.table
+                ),
+                None,
+            ));
+        };
+        if !allow(column) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "`{label}` field `{field_name}` is not allowed for table `{}`",
+                    schema.table
+                ),
+                None,
+            ));
+        }
+        if seen.insert(field_name.as_str()) {
+            selected.push((*field).clone());
+        }
+    }
+
+    Ok(selected)
+}
+
+fn has_distinct_field_contracts(
+    left: &[FieldGenerationContext],
+    right: &[FieldGenerationContext],
+) -> bool {
+    left.len() != right.len()
+        || left
+            .iter()
+            .zip(right.iter())
+            .any(|(left, right)| left.name != right.name)
+}
+
+fn ensure_identity_field_for_read_contract(
+    selected: Vec<FieldGenerationContext>,
+    primary_key: &FieldGenerationContext,
+) -> Vec<FieldGenerationContext> {
+    if selected.iter().any(|field| field.name == primary_key.name) {
+        return selected;
+    }
+
+    let mut result = Vec::with_capacity(selected.len() + 1);
+    result.push(primary_key.clone());
+    result.extend(selected);
+    result
 }
 
 fn build_generated_field(
@@ -338,6 +506,11 @@ fn build_generated_field(
     let rust_entity = rewrite_type_for_generated_code(raw_type, table_module)?;
     let rust_input = resolve_input_type(raw_type, table_module)?;
     let comment_lines = split_comment_lines(column.comment.as_deref());
+    let label = comment_lines
+        .first()
+        .map(|line| normalize_field_label(line))
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| column.name.clone());
     let value_kind = infer_value_kind(raw_type, &rust_input);
     let entity_enum_options = resolve_entity_enum_options(raw_type, value_kind, entity_source);
     let enum_resolution = resolve_field_enum(column, value_kind, entity_enum_options);
@@ -348,37 +521,40 @@ fn build_generated_field(
     let enum_entity_path = (value_kind == FieldValueKind::Enum)
         .then(|| rust_input.clone())
         .filter(|path| path.starts_with("crate::entity::"));
+    let create_required = !column.nullable && column.default_value.is_none() && !nullable_entity;
     let ts_input = ts_type_for_input(value_kind, &rust_input, nullable_entity, &enum_options);
     let ts_read = ts_type_for_read(value_kind, &rust_entity, nullable_entity, &enum_options);
+    let type_info = FieldTypeContext {
+        string_like: is_string_type(&rust_input),
+        datetime_like: is_datetime_type(&rust_input),
+        rust_entity,
+        rust_input,
+        ts_read,
+        ts_input,
+        value_kind,
+        enum_source,
+        enum_entity_path,
+        enum_options,
+    };
+    let (create_validation_attrs, update_validation_attrs) =
+        build_validation_attributes(column, &label, &type_info, create_required);
     Ok(FieldGenerationContext {
         name: column.name.clone(),
         camel_name: snake_to_camel(&column.name),
         pascal_name: snake_to_pascal(&column.name),
-        label: comment_lines
-            .first()
-            .map(|line| normalize_field_label(line))
-            .filter(|label| !label.is_empty())
-            .unwrap_or_else(|| column.name.clone()),
+        label,
         comment_lines,
         nullable_entity,
-        create_required: false,
-        query_filter_method: if is_string_type(&rust_input) {
+        create_required,
+        create_validation_attrs,
+        update_validation_attrs,
+        query_filter_method: if type_info.string_like {
             "contains".to_string()
         } else {
             "eq".to_string()
         },
-        type_info: FieldTypeContext {
-            string_like: is_string_type(&rust_input),
-            datetime_like: is_datetime_type(&rust_input),
-            rust_entity,
-            rust_input,
-            ts_read,
-            ts_input,
-            value_kind,
-            enum_source,
-            enum_entity_path,
-            enum_options,
-        },
+        query_range_only: is_audit_timestamp_range_only_field(&column.name, value_kind),
+        type_info,
     })
 }
 
@@ -765,15 +941,7 @@ pub(crate) fn normalize_field_label(label: &str) -> String {
     }
     for separator in ['：', ':'] {
         if let Some((prefix, suffix)) = trimmed.split_once(separator) {
-            let suffix = suffix.trim();
-            if suffix.chars().any(|ch| ch.is_ascii_digit())
-                || suffix.contains('-')
-                || suffix.contains('=')
-                || suffix.contains('男')
-                || suffix.contains('女')
-                || suffix.contains('启')
-                || suffix.contains('停')
-            {
+            if looks_like_comment_enum_suffix(suffix.trim()) {
                 let prefix = prefix.trim();
                 if !prefix.is_empty() {
                     return prefix.to_string();
@@ -783,21 +951,7 @@ pub(crate) fn normalize_field_label(label: &str) -> String {
     }
     for separator in ['，', ','] {
         if let Some((prefix, suffix)) = trimmed.split_once(separator) {
-            let suffix = suffix.trim();
-            if suffix.starts_with('当')
-                || suffix.starts_with("用于")
-                || suffix.starts_with("用来")
-                || suffix.contains("对应")
-                || suffix.contains("解析")
-                || suffix.contains("维护")
-                || suffix.contains("重置")
-                || suffix.contains("回退")
-                || suffix.contains("靠前")
-                || suffix.contains("后续")
-                || suffix.contains("如 ")
-                || suffix.contains("如basic")
-                || suffix.contains("value_type")
-            {
+            if looks_like_explanatory_comment_suffix(suffix.trim()) {
                 let prefix = prefix.trim();
                 if !prefix.is_empty() {
                     return prefix.to_string();
@@ -806,6 +960,19 @@ pub(crate) fn normalize_field_label(label: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+fn looks_like_explanatory_comment_suffix(suffix: &str) -> bool {
+    suffix.starts_with('当')
+        || suffix.starts_with("用于")
+        || suffix.starts_with("用来")
+        || suffix.starts_with('值')
+        || suffix.starts_with("如")
+        || looks_like_schema_reference(suffix)
+}
+
+fn looks_like_schema_reference(value: &str) -> bool {
+    value.chars().any(|ch| ch.is_ascii_lowercase()) && (value.contains('.') || value.contains('_'))
 }
 
 fn infer_value_kind(raw_type: &Type, rust_input: &str) -> FieldValueKind {
@@ -900,13 +1067,101 @@ fn apply_nullable_ts_suffix(base: String, nullable: bool) -> String {
 }
 
 fn is_client_submit_blocked_field(name: &str) -> bool {
-    CLIENT_SUBMIT_BLOCKED_FIELD_NAMES.contains(&name)
+    is_system_managed_field_name(name)
+}
+
+fn default_list_order_columns(
+    fields: &[FieldGenerationContext],
+    primary_key: &FieldGenerationContext,
+) -> Vec<String> {
+    let mut order_columns = fields
+        .iter()
+        .find(|field| {
+            is_update_timestamp_field_name(&field.name)
+                && matches!(
+                    field.type_info.value_kind,
+                    FieldValueKind::Date | FieldValueKind::Time | FieldValueKind::DateTime
+                )
+        })
+        .or_else(|| {
+            fields.iter().find(|field| {
+                is_create_timestamp_field_name(&field.name)
+                    && matches!(
+                        field.type_info.value_kind,
+                        FieldValueKind::Date | FieldValueKind::Time | FieldValueKind::DateTime
+                    )
+            })
+        })
+        .map(|field| vec![field.pascal_name.clone()])
+        .unwrap_or_default();
+
+    if order_columns
+        .last()
+        .map_or(true, |column| column != &primary_key.pascal_name)
+    {
+        order_columns.push(primary_key.pascal_name.clone());
+    }
+
+    order_columns
+}
+
+fn build_validation_attributes(
+    column: &TableColumnSchema,
+    label: &str,
+    type_info: &FieldTypeContext,
+    create_required: bool,
+) -> (Vec<String>, Vec<String>) {
+    if !type_info.string_like {
+        return (Vec::new(), Vec::new());
+    }
+
+    let Some(attr) = render_string_validation_attribute(
+        label,
+        create_required,
+        parse_character_max_length(&column.pg_type),
+    ) else {
+        return (Vec::new(), Vec::new());
+    };
+
+    (vec![attr.clone()], vec![attr])
+}
+
+fn render_string_validation_attribute(
+    label: &str,
+    required: bool,
+    max_length: Option<usize>,
+) -> Option<String> {
+    let label = label.replace('"', "\\\"");
+    match (required, max_length) {
+        (true, Some(max)) => Some(format!(
+            "#[validate(length(min = 1, max = {max}, message = \"{label}长度必须在1-{max}之间\"))]"
+        )),
+        (true, None) => Some(format!(
+            "#[validate(length(min = 1, message = \"{label}不能为空\"))]"
+        )),
+        (false, Some(max)) => Some(format!(
+            "#[validate(length(max = {max}, message = \"{label}长度不能超过{max}\"))]"
+        )),
+        (false, None) => None,
+    }
+}
+
+fn parse_character_max_length(pg_type: &str) -> Option<usize> {
+    let normalized = pg_type.trim().to_ascii_lowercase();
+    for prefix in ["character varying(", "varchar(", "character(", "char("] {
+        let suffix = normalized.strip_prefix(prefix)?;
+        let length = suffix.strip_suffix(')')?;
+        if let Ok(length) = length.parse::<usize>() {
+            return Some(length);
+        }
+    }
+    None
 }
 
 fn filter_fields_by_column(
     fields: &[FieldGenerationContext],
     schema: &TableSchema,
-    predicate: impl Fn(&TableColumnSchema) -> bool,
+    predicate: impl Fn(&FieldGenerationContext, &TableColumnSchema) -> bool,
 ) -> Vec<FieldGenerationContext> {
     fields
         .iter()
@@ -915,10 +1170,46 @@ fn filter_fields_by_column(
                 .columns
                 .iter()
                 .find(|column| column.name == field.name)
-                .is_some_and(&predicate)
+                .is_some_and(|column| predicate(field, column))
         })
         .cloned()
         .collect()
+}
+
+fn should_include_default_query_field(
+    field: &FieldGenerationContext,
+    column: &TableColumnSchema,
+) -> bool {
+    if is_audit_actor_field_name(field.name.as_str()) {
+        return false;
+    }
+
+    if matches!(
+        field.type_info.value_kind,
+        FieldValueKind::Json | FieldValueKind::Other
+    ) {
+        return false;
+    }
+
+    if is_large_text_query_column(column, field) {
+        return false;
+    }
+
+    if identifier_has_any_token(field.name.as_str(), SKIP_DEFAULT_QUERY_FIELD_KEYWORDS) {
+        return false;
+    }
+
+    true
+}
+
+fn is_large_text_query_column(column: &TableColumnSchema, field: &FieldGenerationContext) -> bool {
+    column.pg_type.eq_ignore_ascii_case("text")
+        && matches!(field.type_info.value_kind, FieldValueKind::String)
+}
+
+fn is_audit_timestamp_range_only_field(name: &str, value_kind: FieldValueKind) -> bool {
+    matches!(value_kind, FieldValueKind::Date | FieldValueKind::DateTime)
+        && (is_create_timestamp_field_name(name) || is_update_timestamp_field_name(name))
 }
 
 fn infer_ts_enum_type(rust_type: &str, enum_options: &[EnumOptionContext]) -> String {
@@ -1088,6 +1379,7 @@ mod tests {
         assert_eq!(context.table.route_base, "role");
         assert_eq!(context.names.service_struct, "SysRoleService");
         assert_eq!(context.paths.list, "/role/list");
+        assert_eq!(context.list_order_columns, vec!["CreateTime", "Id"]);
 
         let role_name = context
             .fields
@@ -1097,7 +1389,332 @@ mod tests {
         assert_eq!(role_name.camel_name, "roleName");
         assert_eq!(role_name.label, "角色名称");
         assert_eq!(role_name.type_info.value_kind, FieldValueKind::String);
+        assert!(role_name.create_required);
+        assert_eq!(
+            role_name.create_validation_attrs,
+            vec![
+                "#[validate(length(min = 1, max = 64, message = \"角色名称长度必须在1-64之间\"))]"
+                    .to_string()
+            ]
+        );
         assert_eq!(role_name.query_filter_method, "contains");
+
+        let create_time = context
+            .fields
+            .iter()
+            .find(|field| field.name == "create_time")
+            .unwrap();
+        assert!(create_time.query_range_only);
+    }
+
+    #[test]
+    fn default_query_fields_skip_low_signal_fields() {
+        let schema = TableSchema {
+            schema: "public".to_string(),
+            table: "sys_config".to_string(),
+            comment: Some("系统参数配置表".to_string()),
+            primary_key: vec!["id".to_string()],
+            columns: vec![
+                TableColumnSchema {
+                    name: "id".to_string(),
+                    pg_type: "bigint".to_string(),
+                    nullable: false,
+                    primary_key: true,
+                    hidden_on_read: false,
+                    writable_on_create: false,
+                    writable_on_update: false,
+                    default_value: Some("nextval(...)".to_string()),
+                    comment: Some("配置ID".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "config_name".to_string(),
+                    pg_type: "character varying(100)".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: None,
+                    comment: Some("配置名称".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "config_sort".to_string(),
+                    pg_type: "integer".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: Some("0".to_string()),
+                    comment: Some("排序".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "remark".to_string(),
+                    pg_type: "character varying(500)".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: Some("''".to_string()),
+                    comment: Some("备注".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "create_by".to_string(),
+                    pg_type: "character varying(64)".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: false,
+                    writable_on_update: false,
+                    default_value: Some("''".to_string()),
+                    comment: Some("创建人".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "create_time".to_string(),
+                    pg_type: "timestamp without time zone".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: false,
+                    writable_on_update: false,
+                    default_value: Some("CURRENT_TIMESTAMP".to_string()),
+                    comment: Some("创建时间".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "config_value".to_string(),
+                    pg_type: "text".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: Some("''".to_string()),
+                    comment: Some("配置值".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "enabled".to_string(),
+                    pg_type: "boolean".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: Some("true".to_string()),
+                    comment: Some("是否启用".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            check_constraints: vec![],
+        };
+
+        let entity_source = r#"
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub config_name: String,
+    pub config_sort: i32,
+    pub remark: String,
+    pub create_by: String,
+    pub create_time: DateTime,
+    pub config_value: String,
+    pub enabled: bool,
+}
+"#;
+
+        let context =
+            CrudGenerationContextBuilder::build_from_entity_source(schema, None, entity_source)
+                .unwrap();
+        let query_field_names = context
+            .query_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(query_field_names.contains(&"id"));
+        assert!(query_field_names.contains(&"config_name"));
+        assert!(query_field_names.contains(&"create_time"));
+        assert!(query_field_names.contains(&"enabled"));
+        assert!(!query_field_names.contains(&"config_sort"));
+        assert!(!query_field_names.contains(&"remark"));
+        assert!(!query_field_names.contains(&"create_by"));
+        assert!(!query_field_names.contains(&"config_value"));
+    }
+
+    #[test]
+    fn explicit_field_selection_overrides_backend_and_response_contracts() {
+        let schema = TableSchema {
+            schema: "public".to_string(),
+            table: "sys_config".to_string(),
+            comment: Some("系统参数配置表".to_string()),
+            primary_key: vec!["id".to_string()],
+            columns: vec![
+                TableColumnSchema {
+                    name: "id".to_string(),
+                    pg_type: "bigint".to_string(),
+                    nullable: false,
+                    primary_key: true,
+                    hidden_on_read: false,
+                    writable_on_create: false,
+                    writable_on_update: false,
+                    default_value: Some("nextval(...)".to_string()),
+                    comment: Some("配置ID".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "config_name".to_string(),
+                    pg_type: "character varying(100)".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: None,
+                    comment: Some("配置名称".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "config_key".to_string(),
+                    pg_type: "character varying(100)".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: false,
+                    default_value: None,
+                    comment: Some("配置键".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "remark".to_string(),
+                    pg_type: "character varying(500)".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: true,
+                    writable_on_update: true,
+                    default_value: Some("''".to_string()),
+                    comment: Some("备注".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+                TableColumnSchema {
+                    name: "create_time".to_string(),
+                    pg_type: "timestamp without time zone".to_string(),
+                    nullable: false,
+                    primary_key: false,
+                    hidden_on_read: false,
+                    writable_on_create: false,
+                    writable_on_update: false,
+                    default_value: Some("CURRENT_TIMESTAMP".to_string()),
+                    comment: Some("创建时间".to_string()),
+                    is_identity: false,
+                    is_generated: false,
+                    enum_values: None,
+                },
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            check_constraints: vec![],
+        };
+        let entity_source = r#"
+#[sea_orm::model]
+pub struct Model {
+    pub id: i64,
+    pub config_name: String,
+    pub config_key: String,
+    pub remark: String,
+    pub create_time: DateTime,
+}
+"#;
+
+        let context = CrudGenerationContextBuilder::build_from_entity_source_with_selection(
+            schema,
+            None,
+            entity_source,
+            &CrudFieldSelection {
+                query_fields: Some(vec!["remark".to_string(), "create_time".to_string()]),
+                create_fields: Some(vec!["config_key".to_string(), "config_name".to_string()]),
+                update_fields: Some(vec!["remark".to_string()]),
+                list_fields: Some(vec!["config_name".to_string()]),
+                detail_fields: Some(vec!["config_name".to_string(), "remark".to_string()]),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            context
+                .query_fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["remark", "create_time"]
+        );
+        assert_eq!(
+            context
+                .create_fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["config_key", "config_name"]
+        );
+        assert_eq!(
+            context
+                .update_fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["remark"]
+        );
+        assert_eq!(
+            context
+                .list_fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id", "config_name"]
+        );
+        assert_eq!(
+            context
+                .detail_fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id", "config_name", "remark"]
+        );
+        assert!(context.flags.has_distinct_detail_fields);
     }
 
     #[test]
@@ -1264,6 +1881,7 @@ pub struct Model {
 
         assert_eq!(create_field_names, vec!["title", "metadata"]);
         assert_eq!(update_field_names, vec!["title", "metadata"]);
+        assert_eq!(context.list_order_columns, vec!["UpdatedAt", "Id"]);
 
         let metadata = context
             .fields
@@ -1350,6 +1968,10 @@ pub struct Model {
                 "候选项字典类型编码，当 value_type=5 时使用，对应 sys_dict_type.dict_type"
             ),
             "候选项字典类型编码"
+        );
+        assert_eq!(
+            normalize_field_label("同分组内排序，值越小越靠前"),
+            "同分组内排序"
         );
         assert_eq!(
             normalize_field_label("角色ID（关联 sys_role.id）"),

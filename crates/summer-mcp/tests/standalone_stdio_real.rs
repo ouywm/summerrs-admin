@@ -659,6 +659,7 @@ async fn standalone_binary_generates_real_frontend_bundle_to_temp_dir()
     );
 
     assert!(types_contents.contains("export type UserListItem = Api.User.UserVo"));
+    assert!(types_contents.contains("Api.User.UserSearchFilters"));
     assert!(types_contents.contains("export type SearchFormModel = Omit<"));
     assert!(types_contents.contains("export type FormModel = FormBase & {"));
 
@@ -1254,6 +1255,7 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
             "export type ShowcaseProfileListItem = Api.ShowcaseProfile.ShowcaseProfileVo"
         )
     );
+    assert!(types_contents.contains("Api.ShowcaseProfile.ShowcaseProfileSearchFilters"));
     assert!(types_contents.contains("export type SearchFormModel = Omit<"));
     assert!(types_contents.contains("export type FormModel = FormBase & {"));
 

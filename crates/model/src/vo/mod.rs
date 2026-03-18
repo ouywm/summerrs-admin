@@ -1,12 +1,13 @@
 pub mod auth;
-pub mod biz_showcase_profile;
 pub mod login_log;
 pub mod monitor;
 pub mod operation_log;
 pub mod sys_config;
+pub mod sys_config_group;
 pub mod sys_dict;
 pub mod sys_file;
 pub mod sys_menu;
 pub mod sys_role;
 pub mod sys_user;
 pub mod user_profile;
+pub mod online;

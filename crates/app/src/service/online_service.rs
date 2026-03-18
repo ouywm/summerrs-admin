@@ -9,8 +9,8 @@ use summer::plugin::Service;
 use summer_auth::{LoginId, OnlineUserQuery, SessionManager, UserType};
 
 use crate::plugin::ip2region::Ip2RegionSearcher;
-use summer_sea_orm::DbConn;
 use summer_sea_orm::pagination::{Page, Pagination};
+use summer_sea_orm::DbConn;
 
 #[derive(Clone, Service)]
 pub struct OnlineUserService {
@@ -69,6 +69,7 @@ impl OnlineUserService {
                     .map(|ip| self.ip_searcher.search_location(&ip))
                     .unwrap_or_default();
                 Some(OnlineUserVo {
+                    login_id: item.login_id.clone(),
                     user_id: login_id.user_id,
                     user_name: user.map(|u| u.user_name.clone()).unwrap_or_default(),
                     nick_name: user.map(|u| u.nick_name.clone()).unwrap_or_default(),

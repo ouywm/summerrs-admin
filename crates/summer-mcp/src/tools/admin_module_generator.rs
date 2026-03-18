@@ -8,7 +8,8 @@ use serde::Serialize;
 
 use crate::tools::{
     generation_context::{
-        CrudGenerationContext, CrudGenerationContextBuilder, FieldGenerationContext, FieldValueKind,
+        CrudFieldSelection, CrudGenerationContext, CrudGenerationContextBuilder,
+        FieldGenerationContext, FieldValueKind,
     },
     support::{io_error, resolve_output_dir, sync_mod_file, workspace_root},
     template_renderer::{EmbeddedTemplate, TemplateRenderer},
@@ -59,6 +60,7 @@ pub struct GenerateAdminModuleRequest {
     pub overwrite: bool,
     pub route_base: Option<String>,
     pub output_dir: Option<String>,
+    pub field_selection: CrudFieldSelection,
 }
 
 #[derive(Debug, Clone)]
@@ -145,11 +147,13 @@ impl AdminModuleGenerator {
 
         let entity_source = self.load_entity_source(&paths.entity_file).await?;
         let (context, router_source, service_source, dto_source, vo_source) = {
-            let crud_context = CrudGenerationContextBuilder::build_from_entity_source(
-                request.schema.clone(),
-                request.route_base.clone(),
-                &entity_source,
-            )?;
+            let crud_context =
+                CrudGenerationContextBuilder::build_from_entity_source_with_selection(
+                    request.schema.clone(),
+                    request.route_base.clone(),
+                    &entity_source,
+                    &request.field_selection,
+                )?;
             let render_context = build_admin_module_template_context(crud_context.clone());
             let renderer = TemplateRenderer::new(&ADMIN_MODULE_TEMPLATES)?;
             let router_source = renderer.render(ROUTER_TEMPLATE_NAME, &render_context)?;
@@ -349,7 +353,9 @@ fn build_admin_module_template_context(crud: CrudGenerationContext) -> AdminModu
                     .chain(crud.update_fields.iter())
                     .chain(crud.query_fields.iter()),
             ),
-            vo: collect_backend_type_imports(crud.read_fields.iter()),
+            vo: collect_backend_type_imports(
+                crud.list_fields.iter().chain(crud.detail_fields.iter()),
+            ),
         },
         crud,
     }
@@ -418,6 +424,7 @@ mod tests {
                 overwrite: true,
                 route_base: None,
                 output_dir: None,
+                field_selection: CrudFieldSelection::default(),
             })
             .await
             .unwrap();
@@ -429,10 +436,15 @@ mod tests {
         let service = std::fs::read_to_string(&result.service_file).unwrap();
         assert!(service.contains("pub struct SysRoleService"));
         assert!(service.contains("pub async fn get_by_id"));
+        assert!(service.contains(".order_by_desc(sys_role::Column::CreateTime)"));
+        assert!(service.contains(".order_by_desc(sys_role::Column::Id)"));
 
         let dto = std::fs::read_to_string(&result.dto_file).unwrap();
         assert!(dto.contains("pub struct CreateRoleDto"));
         assert!(dto.contains("impl From<CreateRoleDto> for sys_role::ActiveModel"));
+        assert!(dto.contains(
+            "#[validate(length(min = 1, max = 64, message = \"角色名称长度必须在1-64之间\"))]"
+        ));
         assert!(dto.contains("pub create_time_start: Option<chrono::NaiveDateTime>"));
         assert!(dto.contains("pub create_time_end: Option<chrono::NaiveDateTime>"));
         assert!(dto.contains("Column::CreateTime.gte(start)"));
@@ -576,6 +588,7 @@ pub struct Model {
                 overwrite: true,
                 route_base: None,
                 output_dir: None,
+                field_selection: CrudFieldSelection::default(),
             })
             .await
             .unwrap();
@@ -630,6 +643,7 @@ pub struct Model {
                 overwrite: true,
                 route_base: None,
                 output_dir: Some(output_dir.display().to_string()),
+                field_selection: CrudFieldSelection::default(),
             })
             .await
             .unwrap();
@@ -775,6 +789,7 @@ pub struct Model {
                 overwrite: true,
                 route_base: None,
                 output_dir: None,
+                field_selection: CrudFieldSelection::default(),
             })
             .await
             .unwrap();

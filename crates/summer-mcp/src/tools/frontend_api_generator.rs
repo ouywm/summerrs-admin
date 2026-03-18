@@ -4,7 +4,7 @@ use rmcp::ErrorData as McpError;
 
 use crate::tools::{
     frontend_target::FrontendTargetPreset,
-    generation_context::CrudGenerationContextBuilder,
+    generation_context::{CrudFieldSelection, CrudGenerationContextBuilder},
     support::{default_route_base, io_error, workspace_root},
     template_renderer::{EmbeddedTemplate, TemplateRenderer},
 };
@@ -37,6 +37,7 @@ pub struct GenerateFrontendApiRequest {
     pub route_base: Option<String>,
     pub output_dir: Option<String>,
     pub target_preset: FrontendTargetPreset,
+    pub field_selection: CrudFieldSelection,
 }
 
 #[derive(Debug, Clone)]
@@ -96,10 +97,11 @@ impl FrontendApiGenerator {
 
         let entity_source = self.load_entity_source(&paths.entity_file).await?;
         let (context, api_source, api_type_source) = {
-            let context = CrudGenerationContextBuilder::build_from_entity_source(
+            let context = CrudGenerationContextBuilder::build_from_entity_source_with_selection(
                 request.schema,
                 request.route_base,
                 &entity_source,
+                &request.field_selection,
             )?;
             let renderer = TemplateRenderer::new(&FRONTEND_API_TEMPLATES)?;
             let api_source = renderer.render(FRONTEND_API_TEMPLATE_NAME, &context)?;
@@ -237,6 +239,7 @@ mod tests {
                 route_base: None,
                 output_dir: None,
                 target_preset: FrontendTargetPreset::SummerMcp,
+                field_selection: CrudFieldSelection::default(),
             })
             .await
             .unwrap();
@@ -255,6 +258,10 @@ mod tests {
         let api_type_file = std::fs::read_to_string(&result.api_type_file).unwrap();
         assert!(api_type_file.contains("namespace Role"));
         assert!(api_type_file.contains("interface RoleVo"));
+        assert!(api_type_file.contains("interface RoleSearchFilters"));
+        assert!(api_type_file.contains(
+            "interface RoleSearchParams extends Api.Common.CommonSearchParams, RoleSearchFilters {}"
+        ));
         assert!(api_type_file.contains("roleName: string"));
         assert!(api_type_file.contains("createTime: string"));
         assert!(api_type_file.contains("createTimeStart?: string"));
@@ -290,6 +297,7 @@ mod tests {
                 route_base: None,
                 output_dir: Some("generated/art-design-pro".to_string()),
                 target_preset: FrontendTargetPreset::ArtDesignPro,
+                field_selection: CrudFieldSelection::default(),
             })
             .await
             .unwrap();
@@ -302,6 +310,58 @@ mod tests {
             result.api_type_file,
             root.join("generated/art-design-pro/src/types/api/role.d.ts")
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn generator_supports_distinct_list_and_detail_contracts() {
+        let root = std::env::temp_dir().join(format!(
+            "summer-mcp-frontend-api-generator-detail-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        for dir in [
+            root.join(DEFAULT_SUMMER_FRONTEND_ROOT_DIR).join("api"),
+            root.join(DEFAULT_SUMMER_FRONTEND_ROOT_DIR).join("api_type"),
+            root.join(MODEL_ENTITY_DIR),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        std::fs::write(
+            root.join(MODEL_ENTITY_DIR).join("sys_role.rs"),
+            SAMPLE_ROLE_ENTITY_SOURCE,
+        )
+        .unwrap();
+
+        let generator = FrontendApiGenerator::with_workspace_root(root.clone());
+        let result = generator
+            .generate(GenerateFrontendApiRequest {
+                schema: sample_role_schema(),
+                overwrite: true,
+                route_base: None,
+                output_dir: None,
+                target_preset: FrontendTargetPreset::SummerMcp,
+                field_selection: CrudFieldSelection {
+                    list_fields: Some(vec!["role_name".to_string()]),
+                    detail_fields: Some(vec!["role_name".to_string(), "enabled".to_string()]),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+
+        let api_type_file = std::fs::read_to_string(&result.api_type_file).unwrap();
+        assert!(api_type_file.contains("interface RoleVo"));
+        assert!(api_type_file.contains("id: number"));
+        assert!(api_type_file.contains("roleName: string"));
+        assert!(!api_type_file.contains(
+            "enabled: boolean\n    }\n\n    /** 角色管理详情 */\n    type RoleDetailVo = RoleVo"
+        ));
+        assert!(api_type_file.contains("interface RoleDetailVo"));
+        assert!(api_type_file.contains("enabled: boolean"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -440,6 +500,7 @@ pub struct Model {
                 route_base: None,
                 output_dir: None,
                 target_preset: FrontendTargetPreset::SummerMcp,
+                field_selection: CrudFieldSelection::default(),
             })
             .await
             .unwrap();

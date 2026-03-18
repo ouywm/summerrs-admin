@@ -1,10 +1,16 @@
+{% macro object_entries(extra_props_literal=None) -%}
+{%- if extra_props_literal -%}
+{{ extra_props_literal[1:-1] | trim if extra_props_literal[0] == '{' and extra_props_literal[-1] == '}' else extra_props_literal }}
+{%- endif -%}
+{%- endmacro %}
+
 {% macro js_object(lines, extra_props_literal=None, body_indent='', closing_indent='') -%}
 {
 {%- for line in lines %}
 {{ "\n" }}{{ body_indent }}{{ line }}{% if not loop.last or extra_props_literal %},{% endif %}
 {%- endfor %}
 {%- if extra_props_literal %}
-{{ "\n" }}{{ body_indent }}...{{ extra_props_literal }}
+{{ "\n" }}{{ body_indent }}{{ object_entries(extra_props_literal) }}
 {%- endif %}
 {{ "\n" }}{{ closing_indent }}}
 {%- endmacro %}
@@ -15,6 +21,6 @@ v-bind="{{ js_object(lines, extra_props_literal, body_indent, closing_indent) }}
 
 {% macro spread_bind(extra_props_literal=None) -%}
 {%- if extra_props_literal -%}
-v-bind="{ ...{{ extra_props_literal }} }"
+v-bind="{{ extra_props_literal }}"
 {%- endif -%}
 {%- endmacro %}

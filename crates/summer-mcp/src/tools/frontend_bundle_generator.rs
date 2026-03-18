@@ -21,7 +21,9 @@ use crate::{
             GenerateFrontendPageRequest,
         },
         frontend_target::FrontendTargetPreset,
-        generation_context::{CrudGenerationContext, CrudGenerationContextBuilder},
+        generation_context::{
+            CrudFieldSelection, CrudGenerationContext, CrudGenerationContextBuilder,
+        },
         support::{io_error, workspace_root},
         validation::{GenerationValidationSummary, validate_frontend_target_output},
     },
@@ -48,6 +50,7 @@ pub struct GenerateFrontendBundleRequest {
     pub dict_bindings: BTreeMap<String, String>,
     pub field_hints: BTreeMap<String, FrontendFieldUiHint>,
     pub field_ui_meta: BTreeMap<String, FrontendFieldUiMeta>,
+    pub field_selection: CrudFieldSelection,
     pub search_fields: Option<Vec<String>>,
     pub table_fields: Option<Vec<String>>,
     pub form_fields: Option<Vec<String>>,
@@ -113,6 +116,7 @@ impl FrontendBundleGenerator {
                 route_base: request.route_base.clone(),
                 output_dir: request.output_dir.clone(),
                 target_preset: request.target_preset,
+                field_selection: request.field_selection.clone(),
             })
             .await?;
 
@@ -132,6 +136,7 @@ impl FrontendBundleGenerator {
                 dict_bindings: effective_dict_bindings,
                 field_hints: request.field_hints,
                 field_ui_meta: request.field_ui_meta,
+                field_selection: request.field_selection,
                 search_fields: request.search_fields,
                 table_fields: request.table_fields,
                 form_fields: request.form_fields,
@@ -203,10 +208,11 @@ impl FrontendBundleGenerator {
                     error,
                 )
             })?;
-        CrudGenerationContextBuilder::build_from_entity_source(
+        CrudGenerationContextBuilder::build_from_entity_source_with_selection(
             request.schema.clone(),
             request.route_base.clone(),
             &entity_source,
+            &request.field_selection,
         )
     }
 }
@@ -576,6 +582,7 @@ pub struct Model {
                 dict_bindings: BTreeMap::from([("status".to_string(), "user_status".to_string())]),
                 field_hints: BTreeMap::new(),
                 field_ui_meta: BTreeMap::new(),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,
@@ -718,6 +725,7 @@ pub struct Model {
                 dict_bindings: BTreeMap::new(),
                 field_hints: BTreeMap::new(),
                 field_ui_meta: BTreeMap::new(),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,
@@ -839,6 +847,7 @@ pub struct Model {
                 dict_bindings: BTreeMap::new(),
                 field_hints: BTreeMap::new(),
                 field_ui_meta: BTreeMap::new(),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,

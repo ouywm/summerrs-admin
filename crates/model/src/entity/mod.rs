@@ -1,9 +1,9 @@
 pub mod biz_role;
-pub mod biz_showcase_profile;
 pub mod biz_user;
 pub mod biz_user_role;
 pub mod customer;
 pub mod sys_config;
+pub mod sys_config_group;
 pub mod sys_dict_data;
 pub mod sys_dict_type;
 pub mod sys_file;

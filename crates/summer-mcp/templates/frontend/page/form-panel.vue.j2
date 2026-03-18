@@ -187,7 +187,7 @@
 {% endif %}
 {% endif %}
 {% if field.form_upload_props_literal %}
-                ...{{ field.form_upload_props_literal }}
+                {{ ui.object_entries(field.form_upload_props_literal) }}
 {% endif %}
               }"
               @upload-success="handle{{ field.pascal_name }}UploadSuccess"
@@ -224,7 +224,7 @@
 {% endif %}
 {% endif %}
 {% if field.form_upload_props_literal %}
-                ...{{ field.form_upload_props_literal }}
+                {{ ui.object_entries(field.form_upload_props_literal) }}
 {% endif %}
               }"
               @upload-success="handle{{ field.pascal_name }}UploadSuccess"
@@ -267,6 +267,7 @@
   import { {{ api.fetch_create_fn }}, {{ api.fetch_detail_fn }}, {{ api.fetch_update_fn }} } from '{{ api.import_path }}'
   import type { {{ page.list_item_alias }}, {{ page.list_item_alias }}Detail, FormModel } from '../types'
   import type { FormInstance, FormRules } from 'element-plus'
+  import { ElMessage } from 'element-plus'
 {% if flags.uses_form_dict %}
   import { useDict } from '@/utils/dict'
 {% endif %}

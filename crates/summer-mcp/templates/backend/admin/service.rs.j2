@@ -4,8 +4,8 @@ use anyhow::Context;
 use common::error::{ApiErrors, ApiResult};
 use model::dto::{{ names.table_module }}::{ {{ names.create_dto }}, {{ names.query_dto }}, {{ names.update_dto }} };
 use model::entity::{{ names.table_module }};
-use model::vo::{{ names.table_module }}::{{ names.vo }};
-use sea_orm::{ActiveModelTrait, EntityTrait, QueryFilter};
+use model::vo::{{ names.table_module }}::{ {{ names.detail_vo }}, {{ names.vo }} };
+use sea_orm::{ActiveModelTrait, EntityTrait, QueryFilter, QueryOrder};
 use summer::plugin::Service;
 use summer_sea_orm::DbConn;
 use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
@@ -23,6 +23,9 @@ impl {{ names.service_struct }} {
     pub async fn list(&self, query: {{ names.query_dto }}, pagination: Pagination) -> ApiResult<Page<{{ names.vo }}>> {
         let page = {{ names.table_module }}::Entity::find()
             .filter(query)
+{% for order_column in list_order_columns %}
+            .order_by_desc({{ names.table_module }}::Column::{{ order_column }})
+{% endfor %}
             .page(&self.db, &pagination)
             .await
             .context("查询{{ table.label }}列表失败")?;
@@ -30,14 +33,14 @@ impl {{ names.service_struct }} {
         Ok(page.map({{ names.vo }}::from))
     }
 
-    pub async fn get_by_id(&self, id: {{ primary_key.type_info.rust_input }}) -> ApiResult<{{ names.vo }}> {
+    pub async fn get_by_id(&self, id: {{ primary_key.type_info.rust_input }}) -> ApiResult<{{ names.detail_vo }}> {
         let model = {{ names.table_module }}::Entity::find_by_id(id)
             .one(&self.db)
             .await
             .context("查询{{ table.label }}详情失败")?
             .ok_or_else(|| ApiErrors::NotFound("{{ table.label }}不存在".to_string()))?;
 
-        Ok({{ names.vo }}::from(model))
+        Ok({{ names.detail_vo }}::from(model))
     }
 
     pub async fn create(&self, dto: {{ names.create_dto }}) -> ApiResult<()> {

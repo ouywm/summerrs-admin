@@ -55,7 +55,7 @@
   import type { {{ page.list_item_alias }}, SearchFormModel } from './types'
   import {{ page.search_component_name }} from './modules/{{ page.search_file_name }}'
   import {{ page.form_panel_component_name }} from './modules/{{ page.form_panel_file_name }}'
-  import { ElMessageBox{% if flags.uses_table_tag %}, ElTag{% endif %}{% if flags.uses_table_image %}, ElImage{% endif %} } from 'element-plus'
+  import { ElMessage, ElMessageBox{% if flags.uses_table_tag %}, ElTag{% endif %}{% if flags.uses_table_image %}, ElImage{% endif %} } from 'element-plus'
 {% if flags.uses_table_dict %}
   import { useDict, dictClassToTagType } from '@/utils/dict'
 {% endif %}

@@ -17,6 +17,9 @@ pub struct {{ names.create_dto }} {
 {% if field.type_info.value_kind == "decimal" %}
     #[schemars(with = "{% if field.create_required %}String{% else %}Option<String>{% endif %}")]
 {% endif %}
+{% for attr in field.create_validation_attrs %}
+    {{ attr }}
+{% endfor %}
 {% for line in field.comment_lines %}
     /// {{ line }}
 {% endfor %}
@@ -42,6 +45,9 @@ pub struct {{ names.update_dto }} {
 {% if field.type_info.value_kind == "decimal" %}
     #[schemars(with = "Option<String>")]
 {% endif %}
+{% for attr in field.update_validation_attrs %}
+    {{ attr }}
+{% endfor %}
 {% for line in field.comment_lines %}
     /// {{ line }}
 {% endfor %}
@@ -66,10 +72,12 @@ pub struct {{ names.query_dto }} {
 {% if field.type_info.value_kind == "decimal" %}
     #[schemars(with = "Option<String>")]
 {% endif %}
+{% if not field.query_range_only %}
 {% for line in field.comment_lines %}
     /// {{ line }}
 {% endfor %}
     pub {{ field.name }}: Option<{{ field.type_info.rust_input }}>,
+{% endif %}
 {% if field.type_info.value_kind == "date" or field.type_info.value_kind == "date_time" %}
 {% for line in field.comment_lines %}
     /// {{ line }}开始
@@ -87,9 +95,11 @@ impl From<{{ names.query_dto }}> for Condition {
     fn from(query: {{ names.query_dto }}) -> Self {
         let mut cond = Condition::all();
 {% for field in query_fields %}
+{% if not field.query_range_only %}
         if let Some(value) = query.{{ field.name }} {
             cond = cond.add({{ names.table_module }}::Column::{{ field.pascal_name }}.{{ field.query_filter_method }}(value));
         }
+{% endif %}
 {% if field.type_info.value_kind == "date" or field.type_info.value_kind == "date_time" %}
         if let Some(start) = query.{{ field.name }}_start {
             cond = cond.add({{ names.table_module }}::Column::{{ field.pascal_name }}.gte(start));

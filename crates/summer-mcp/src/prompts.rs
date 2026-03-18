@@ -92,11 +92,13 @@ pub(crate) fn render_generate_crud_bundle_workflow(
             format!(
                 "Follow this Summerrs Admin CRUD generation workflow for table `{table}`:\n\
                  1. Read `schema://table/{table}` first and confirm the primary key, hidden fields, enum values, and nullable columns.\n\
-                 2. Generate the SeaORM entity with `generate_entity_from_table`.\n\
-                 3. Generate the backend CRUD skeleton with `generate_admin_module_from_table`, writing to `{output_dir}` first if you want a safe temp preview.\n\
-                 4. Generate the frontend bundle with `generate_frontend_bundle_from_table`, also targeting `{output_dir}` first when you want to inspect output before moving files.\n\
-                 5. Review the returned `menu_config_draft` and `dict_bundle_drafts` instead of hand-writing menu or dict SQL.\n\
-                 6. If the generated drafts look correct, hand them to `menu_tool` and `dict_tool` using `plan_*` or `export_*` first, then `apply_*` when you really want to persist them."
+                 2. Generate the SeaORM entity with `generate_entity_from_table`; default comment/native enum semantics will be upgraded into `DeriveActiveEnum` automatically.\n\
+                 3. If enum labels are non-ASCII or you care about readable Rust names, pass `enum_name_overrides` and `variant_name_overrides` directly to `generate_entity_from_table`.\n\
+                 4. If you need to preview the enum plan before apply, or refine overrides separately, call `upgrade_entity_enums_from_table` explicitly before moving on.\n\
+                 5. Generate the backend CRUD skeleton with `generate_admin_module_from_table`, writing to `{output_dir}` first if you want a safe temp preview.\n\
+                 6. Generate the frontend bundle with `generate_frontend_bundle_from_table`, also targeting `{output_dir}` first when you want to inspect output before moving files.\n\
+                 7. Review the returned `menu_config_draft` and `dict_bundle_drafts` instead of hand-writing menu or dict SQL.\n\
+                 8. If the generated drafts look correct, hand them to `menu_tool` and `dict_tool` using `plan_*` or `export_*` first, then `apply_*` when you really want to persist them."
             ),
         ),
         PromptMessage::new_resource_link(

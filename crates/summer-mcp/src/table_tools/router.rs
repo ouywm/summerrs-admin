@@ -59,6 +59,7 @@ use crate::{
             GenerateFrontendPageRequest,
         },
         frontend_target::FrontendTargetPreset,
+        generation_context::CrudFieldSelection,
         support::{
             error_chain_message, resolve_output_dir, sanitize_file_stem, workspace_root,
             write_pretty_json_file,
@@ -150,6 +151,8 @@ pub struct GenerateEntityFromTableResult {
     pub overwritten: bool,
     pub database_schema: String,
     pub cli_bin: String,
+    pub enum_upgrade_changed: bool,
+    pub enum_upgrade_fields: Vec<String>,
     pub artifacts: ArtifactBundleSummary,
     pub validation: GenerationValidationSummary,
 }
@@ -496,6 +499,12 @@ struct GenerateEntityFromTableArgs {
     database_schema: Option<String>,
     /// sea-orm-cli 可执行文件，默认 sea-orm-cli
     cli_bin: Option<String>,
+    /// 可选：覆盖字段的 Rust 枚举名，例如 { "contact_gender": "ContactGender" }
+    #[serde(default)]
+    enum_name_overrides: BTreeMap<String, String>,
+    /// 可选：覆盖枚举值到 Rust 变体名的映射，例如 { "status": { "1": "Enabled" } }
+    #[serde(default)]
+    variant_name_overrides: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -514,6 +523,16 @@ struct GenerateAdminModuleFromTableArgs {
     /// - <dir>/dto
     /// - <dir>/vo
     output_dir: Option<String>,
+    /// 显式后端/前端查询契约；未传时使用生成器默认查询字段选择
+    query_fields: Option<Vec<String>>,
+    /// 显式创建参数契约；未传时使用可写创建字段
+    create_fields: Option<Vec<String>>,
+    /// 显式更新参数契约；未传时使用可写更新字段
+    update_fields: Option<Vec<String>>,
+    /// 显式列表返回契约；未传时使用可读字段
+    list_fields: Option<Vec<String>>,
+    /// 显式详情返回契约；未传时使用可读字段
+    detail_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -530,6 +549,16 @@ struct GenerateFrontendApiFromTableArgs {
     output_dir: Option<String>,
     /// 前端输出 preset，默认 summer_mcp；art_design_pro 需要 output_dir 指向前端项目根目录
     target_preset: Option<FrontendTargetPreset>,
+    /// 显式后端/前端查询契约；未传时使用生成器默认查询字段选择
+    query_fields: Option<Vec<String>>,
+    /// 显式创建参数契约；未传时使用可写创建字段
+    create_fields: Option<Vec<String>>,
+    /// 显式更新参数契约；未传时使用可写更新字段
+    update_fields: Option<Vec<String>>,
+    /// 显式列表返回契约；未传时使用可读字段
+    list_fields: Option<Vec<String>>,
+    /// 显式详情返回契约；未传时使用可读字段
+    detail_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -557,6 +586,16 @@ struct GenerateFrontendBundleFromTableArgs {
     /// 结构化字段 UI 元数据。优先级高于 field_hints / dict_bindings，可精确控制搜索、表单、表格组件与可见性
     #[serde(default)]
     field_ui_meta: BTreeMap<String, FrontendFieldUiMeta>,
+    /// 显式后端/前端查询契约；未传时使用生成器默认查询字段选择
+    query_fields: Option<Vec<String>>,
+    /// 显式创建参数契约；未传时使用可写创建字段
+    create_fields: Option<Vec<String>>,
+    /// 显式更新参数契约；未传时使用可写更新字段
+    update_fields: Option<Vec<String>>,
+    /// 显式列表返回契约；未传时使用可读字段
+    list_fields: Option<Vec<String>>,
+    /// 显式详情返回契约；未传时使用可读字段
+    detail_fields: Option<Vec<String>>,
     /// 显式指定搜索区字段；未传时会按字段语义自动排序并选出所有适合搜索的字段
     search_fields: Option<Vec<String>>,
     /// 显式指定表格列字段，默认自动选择所有可读字段
@@ -596,6 +635,16 @@ struct GenerateFrontendPageFromTableArgs {
     /// 结构化字段 UI 元数据。优先级高于 field_hints / dict_bindings，可精确控制搜索、表单、表格组件与可见性
     #[serde(default)]
     field_ui_meta: BTreeMap<String, FrontendFieldUiMeta>,
+    /// 显式后端/前端查询契约；未传时使用生成器默认查询字段选择
+    query_fields: Option<Vec<String>>,
+    /// 显式创建参数契约；未传时使用可写创建字段
+    create_fields: Option<Vec<String>>,
+    /// 显式更新参数契约；未传时使用可写更新字段
+    update_fields: Option<Vec<String>>,
+    /// 显式列表返回契约；未传时使用可读字段
+    list_fields: Option<Vec<String>>,
+    /// 显式详情返回契约；未传时使用可读字段
+    detail_fields: Option<Vec<String>>,
     /// 显式指定搜索区字段；未传时会按字段语义自动排序并选出所有适合搜索的字段
     search_fields: Option<Vec<String>>,
     /// 显式指定表格列字段，默认自动选择所有可读字段
@@ -850,6 +899,39 @@ fn build_export_artifacts(
     )
 }
 
+fn validate_crud_field_selection(field_selection: &CrudFieldSelection) -> Result<(), McpError> {
+    for (label, fields) in [
+        ("query_fields", field_selection.query_fields.as_deref()),
+        ("create_fields", field_selection.create_fields.as_deref()),
+        ("update_fields", field_selection.update_fields.as_deref()),
+        ("list_fields", field_selection.list_fields.as_deref()),
+        ("detail_fields", field_selection.detail_fields.as_deref()),
+    ] {
+        if let Some(fields) = fields {
+            for field in fields {
+                ensure_valid_identifier(field, label)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_crud_field_selection(
+    query_fields: Option<Vec<String>>,
+    create_fields: Option<Vec<String>>,
+    update_fields: Option<Vec<String>>,
+    list_fields: Option<Vec<String>>,
+    detail_fields: Option<Vec<String>>,
+) -> CrudFieldSelection {
+    CrudFieldSelection {
+        query_fields,
+        create_fields,
+        update_fields,
+        list_fields,
+        detail_fields,
+    }
+}
+
 #[tool_router(router = tool_router, vis = "pub(crate)")]
 impl AdminMcpServer {
     #[tool(
@@ -936,6 +1018,15 @@ impl AdminMcpServer {
             let database_url = args.database_url.clone();
             let database_schema = args.database_schema.clone();
             let cli_bin = args.cli_bin.clone();
+            let enum_name_overrides = args.enum_name_overrides.clone();
+            let variant_name_overrides = args.variant_name_overrides.clone();
+            for field in enum_name_overrides.keys() {
+                ensure_valid_identifier(field, "enum_name_overrides field")?;
+            }
+            for field in variant_name_overrides.keys() {
+                ensure_valid_identifier(field, "variant_name_overrides field")?;
+            }
+            let schema = describe_table_for_crud(self.db(), &table).await?;
 
             let generator =
                 EntityGenerator::new(self.default_database_url().map(ToOwned::to_owned))?;
@@ -947,6 +1038,9 @@ impl AdminMcpServer {
                     database_url,
                     database_schema,
                     cli_bin,
+                    schema: Some(schema),
+                    enum_name_overrides,
+                    variant_name_overrides,
                 })
                 .await?;
             let artifacts = build_entity_generator_artifacts(
@@ -962,6 +1056,8 @@ impl AdminMcpServer {
                 overwritten: result.overwritten,
                 database_schema: result.database_schema,
                 cli_bin: result.cli_bin,
+                enum_upgrade_changed: result.enum_upgrade_changed,
+                enum_upgrade_fields: result.enum_upgrade_fields,
                 artifacts,
                 validation: result.validation,
             }))
@@ -1094,6 +1190,14 @@ impl AdminMcpServer {
             if let Some(route_base) = &args.route_base {
                 ensure_valid_identifier(route_base, "route_base")?;
             }
+            let field_selection = build_crud_field_selection(
+                args.query_fields.clone(),
+                args.create_fields.clone(),
+                args.update_fields.clone(),
+                args.list_fields.clone(),
+                args.detail_fields.clone(),
+            );
+            validate_crud_field_selection(&field_selection)?;
 
             let route_base = args.route_base.clone();
             let output_dir = args.output_dir.clone();
@@ -1107,6 +1211,7 @@ impl AdminMcpServer {
                     overwrite,
                     route_base,
                     output_dir: output_dir.clone(),
+                    field_selection,
                 })
                 .await?;
             let artifacts = build_admin_generator_artifacts(
@@ -1149,6 +1254,14 @@ impl AdminMcpServer {
             if let Some(route_base) = &args.route_base {
                 ensure_valid_identifier(route_base, "route_base")?;
             }
+            let field_selection = build_crud_field_selection(
+                args.query_fields.clone(),
+                args.create_fields.clone(),
+                args.update_fields.clone(),
+                args.list_fields.clone(),
+                args.detail_fields.clone(),
+            );
+            validate_crud_field_selection(&field_selection)?;
 
             let target_preset = args.target_preset.unwrap_or_default();
             let route_base = args.route_base.clone();
@@ -1167,6 +1280,7 @@ impl AdminMcpServer {
                     route_base,
                     output_dir,
                     target_preset,
+                    field_selection,
                 })
                 .await?;
             let artifacts = build_frontend_api_artifacts(
@@ -1206,6 +1320,14 @@ impl AdminMcpServer {
             if let Some(route_base) = &args.route_base {
                 ensure_valid_identifier(route_base, "route_base")?;
             }
+            let field_selection = build_crud_field_selection(
+                args.query_fields.clone(),
+                args.create_fields.clone(),
+                args.update_fields.clone(),
+                args.list_fields.clone(),
+                args.detail_fields.clone(),
+            );
+            validate_crud_field_selection(&field_selection)?;
 
             let schema = describe_table(self.db(), &args.table).await?;
             let generator = FrontendBundleGenerator::new()?;
@@ -1220,6 +1342,7 @@ impl AdminMcpServer {
                     dict_bindings: args.dict_bindings,
                     field_hints: args.field_hints,
                     field_ui_meta: args.field_ui_meta,
+                    field_selection,
                     search_fields: args.search_fields,
                     table_fields: args.table_fields,
                     form_fields: args.form_fields,
@@ -1271,6 +1394,14 @@ impl AdminMcpServer {
             if let Some(route_base) = &args.route_base {
                 ensure_valid_identifier(route_base, "route_base")?;
             }
+            let field_selection = build_crud_field_selection(
+                args.query_fields.clone(),
+                args.create_fields.clone(),
+                args.update_fields.clone(),
+                args.list_fields.clone(),
+                args.detail_fields.clone(),
+            );
+            validate_crud_field_selection(&field_selection)?;
 
             let target_preset = args.target_preset.unwrap_or_default();
             let route_base = args.route_base.clone();
@@ -1296,6 +1427,7 @@ impl AdminMcpServer {
                     dict_bindings: args.dict_bindings,
                     field_hints: args.field_hints,
                     field_ui_meta: args.field_ui_meta,
+                    field_selection,
                     search_fields: args.search_fields,
                     table_fields: args.table_fields,
                     form_fields: args.form_fields,
@@ -2305,6 +2437,53 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.params.len(), 1);
+    }
+
+    #[test]
+    fn generator_args_accept_explicit_field_contracts() {
+        let args: GenerateFrontendBundleFromTableArgs = serde_json::from_value(json!({
+            "table": "sys_config",
+            "query_fields": ["config_name", "config_key"],
+            "create_fields": ["config_name", "config_key", "config_value"],
+            "update_fields": ["config_value"],
+            "list_fields": ["config_name", "config_key", "enabled"],
+            "detail_fields": ["config_name", "config_key", "config_value", "remark"],
+            "search_fields": ["config_name"],
+            "table_fields": ["config_name", "enabled"],
+            "form_fields": ["config_name", "config_value"]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            args.query_fields,
+            Some(vec!["config_name".to_string(), "config_key".to_string()])
+        );
+        assert_eq!(
+            args.create_fields,
+            Some(vec![
+                "config_name".to_string(),
+                "config_key".to_string(),
+                "config_value".to_string(),
+            ])
+        );
+        assert_eq!(args.update_fields, Some(vec!["config_value".to_string()]));
+        assert_eq!(
+            args.list_fields,
+            Some(vec![
+                "config_name".to_string(),
+                "config_key".to_string(),
+                "enabled".to_string(),
+            ])
+        );
+        assert_eq!(
+            args.detail_fields,
+            Some(vec![
+                "config_name".to_string(),
+                "config_key".to_string(),
+                "config_value".to_string(),
+                "remark".to_string(),
+            ])
+        );
     }
 
     #[tokio::test]

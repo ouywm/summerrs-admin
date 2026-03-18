@@ -189,7 +189,30 @@
 
 - 这个 tool 调的是 `sea-orm-cli`
 - 它负责把数据库表同步成 SeaORM entity
+- 如果注释枚举是中文，且你希望 Rust 枚举名/变体名可读，不要依赖服务端硬编码猜测；应由 AI 显式传 `enum_name_overrides` / `variant_name_overrides`
 - 推荐先输出到 `/tmp` 看结果，再决定是否写回正式项目
+
+例如：
+
+```json
+{
+  "table": "sys_config",
+  "output_dir": "/tmp/mcp-preview/entity",
+  "overwrite": true,
+  "variant_name_overrides": {
+    "value_type": {
+      "1": "Text",
+      "2": "Number",
+      "3": "Boolean",
+      "4": "Textarea",
+      "5": "Select",
+      "6": "Json",
+      "7": "Password",
+      "8": "Image"
+    }
+  }
+}
+```
 
 ## 5.2 生成后端 CRUD 骨架
 

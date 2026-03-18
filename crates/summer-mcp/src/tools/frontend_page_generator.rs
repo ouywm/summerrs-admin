@@ -13,11 +13,14 @@ use crate::{
     tools::{
         frontend_target::FrontendTargetPreset,
         generation_context::{
-            CrudGenerationContext, CrudGenerationContextBuilder, CrudNamingContext,
-            EnumOptionContext, EnumOptionValueKind, FieldGenerationContext, FieldTypeContext,
-            FieldValueKind, TableGenerationContext,
+            CrudFieldSelection, CrudGenerationContext, CrudGenerationContextBuilder,
+            CrudNamingContext, EnumOptionContext, EnumOptionValueKind, FieldGenerationContext,
+            FieldTypeContext, FieldValueKind, TableGenerationContext,
         },
-        support::{default_route_base, io_error, workspace_root},
+        support::{
+            default_route_base, identifier_has_any_token, io_error, is_audit_actor_field_name,
+            is_system_managed_field_name, workspace_root,
+        },
         template_renderer::{EmbeddedTemplate, TemplateRenderer},
     },
 };
@@ -58,34 +61,11 @@ const TEXTAREA_FIELD_NAME_KEYWORDS: &[&str] = &["description", "remark", "conten
 const SEARCH_PRIORITY_KEYWORDS: &[&str] = &[
     "name", "title", "code", "status", "enabled", "type", "phone", "email", "gender",
 ];
-const SKIP_DEFAULT_FORM_FIELD_KEYWORDS: &[&str] = &[
-    "create_by",
-    "update_by",
-    "create_time",
-    "update_time",
-    "created_at",
-    "updated_at",
-    "deleted",
-    "deleted_at",
-    "delete_time",
-    "sort",
-    "version",
-];
-const SKIP_DEFAULT_SEARCH_FIELD_KEYWORDS: &[&str] = &[
-    "create_by",
-    "update_by",
-    "deleted",
-    "deleted_at",
-    "delete_time",
-    "password",
-];
-const SKIP_DEFAULT_TABLE_FIELD_KEYWORDS: &[&str] = &[
-    "create_by",
-    "update_by",
-    "deleted",
-    "deleted_at",
-    "delete_time",
-];
+const SKIP_DEFAULT_FORM_FIELD_KEYWORDS: &[&str] =
+    &["deleted", "deleted_at", "delete_time", "sort", "version"];
+const SKIP_DEFAULT_SEARCH_FIELD_KEYWORDS: &[&str] =
+    &["deleted", "deleted_at", "delete_time", "password"];
+const SKIP_DEFAULT_TABLE_FIELD_KEYWORDS: &[&str] = &["deleted", "deleted_at", "delete_time"];
 
 const FRONTEND_PAGE_TEMPLATES: [EmbeddedTemplate; 5] = [
     EmbeddedTemplate {
@@ -129,6 +109,7 @@ pub struct GenerateFrontendPageRequest {
     pub dict_bindings: BTreeMap<String, String>,
     pub field_hints: BTreeMap<String, FrontendFieldUiHint>,
     pub field_ui_meta: BTreeMap<String, FrontendFieldUiMeta>,
+    pub field_selection: CrudFieldSelection,
     pub search_fields: Option<Vec<String>>,
     pub table_fields: Option<Vec<String>>,
     pub form_fields: Option<Vec<String>>,
@@ -292,17 +273,14 @@ struct FieldSemanticSignals {
 }
 
 impl FieldSemanticSignals {
-    fn from_field(field: &FieldGenerationContext) -> Self {
+    fn from_field(field: &FieldGenerationContext, column: &TableColumnSchema) -> Self {
         let hints = [field.name.as_str(), field.label.as_str()];
 
         Self {
             hint_text: hints.join(" ").to_ascii_lowercase(),
             string_value: field.type_info.value_kind == FieldValueKind::String,
-            textarea_like: is_textarea_field_like_name(field.name.as_str())
-                || field.label.contains("描述")
-                || field.label.contains("备注")
-                || field.label.contains("内容")
-                || field.label.contains("说明"),
+            textarea_like: is_large_text_column_type(&column.pg_type)
+                || is_textarea_field_like_name(field.name.as_str()),
             gender_like: contains_any(&format!("{} {}", field.name, field.label), GENDER_KEYWORDS),
         }
     }
@@ -835,10 +813,11 @@ impl FrontendPageGenerator {
         self.ensure_parent_dirs(&paths).await?;
 
         let entity_source = self.load_entity_source(&paths.entity_file).await?;
-        let crud_context = CrudGenerationContextBuilder::build_from_entity_source(
+        let crud_context = CrudGenerationContextBuilder::build_from_entity_source_with_selection(
             request.schema.clone(),
             request.route_base.clone(),
             &entity_source,
+            &request.field_selection,
         )?;
         let template_context = build_template_context(request, crud_context)?;
         let renderer = TemplateRenderer::new(&FRONTEND_PAGE_TEMPLATES)?;
@@ -990,6 +969,26 @@ impl FrontendPageGenerator {
             }
         }
         for (label, fields) in [
+            (
+                "query_fields",
+                request.field_selection.query_fields.as_deref(),
+            ),
+            (
+                "create_fields",
+                request.field_selection.create_fields.as_deref(),
+            ),
+            (
+                "update_fields",
+                request.field_selection.update_fields.as_deref(),
+            ),
+            (
+                "list_fields",
+                request.field_selection.list_fields.as_deref(),
+            ),
+            (
+                "detail_fields",
+                request.field_selection.detail_fields.as_deref(),
+            ),
             ("search_fields", request.search_fields.as_deref()),
             ("table_fields", request.table_fields.as_deref()),
             ("form_fields", request.form_fields.as_deref()),
@@ -1076,11 +1075,12 @@ fn build_template_context(
     let api = build_api_context(&crud_context, &request);
     let field_map = build_field_map(&request.schema, &crud_context, &request)?;
 
+    // Explicit search_fields are caller-owned. The generator should only validate that a field
+    // exists in the query contract; default auto-selection remains heuristic-driven.
     let allowed_search_fields = crud_context
         .query_fields
         .iter()
         .filter_map(|field| field_map.get(&field.name))
-        .filter(|field| field.search_visible)
         .map(|field| field.name.clone())
         .collect::<BTreeSet<_>>();
     let search_fields = select_field_contexts(
@@ -1092,7 +1092,7 @@ fn build_template_context(
     )?;
     ensure_unique_search_model_keys(&search_fields)?;
     let allowed_table_fields = crud_context
-        .read_fields
+        .list_fields
         .iter()
         .filter_map(|field| field_map.get(&field.name))
         .map(|field| field.name.clone())
@@ -1115,7 +1115,12 @@ fn build_template_context(
     }
 
     let default_form_fields = default_form_field_names(&crud_context, &field_map);
-    let allowed_form_fields = default_form_fields.iter().cloned().collect::<BTreeSet<_>>();
+    let allowed_form_fields = crud_context
+        .create_fields
+        .iter()
+        .chain(crud_context.update_fields.iter())
+        .map(|field| field.name.clone())
+        .collect::<BTreeSet<_>>();
     let form_fields = select_field_contexts(
         "form_fields",
         &field_map,
@@ -1303,7 +1308,7 @@ fn build_frontend_field_context(
     update_enabled: bool,
     ui_meta: ResolvedFrontendFieldUiMeta,
 ) -> FrontendPageFieldContext {
-    let semantic_signals = FieldSemanticSignals::from_field(field);
+    let semantic_signals = FieldSemanticSignals::from_field(field, column);
     let option_context = resolve_field_option_context(field, column, &ui_meta);
     let ui_components = resolve_field_ui_components(
         field,
@@ -1617,7 +1622,7 @@ fn default_table_field_names(
     crud_context: &CrudGenerationContext,
     field_map: &BTreeMap<String, FrontendPageFieldContext>,
 ) -> Vec<String> {
-    filtered_field_names(crud_context.read_fields.iter(), field_map, |field, _| {
+    filtered_field_names(crud_context.list_fields.iter(), field_map, |field, _| {
         !matches!(field.type_info.value_kind, FieldValueKind::Json)
             && !should_skip_default_table_field(field)
     })
@@ -1897,7 +1902,7 @@ fn search_priority(field: &FrontendPageFieldContext) -> i32 {
     ) {
         score += 75;
     }
-    if contains_any(&field.name, SEARCH_PRIORITY_KEYWORDS) {
+    if identifier_has_any_token(&field.name, SEARCH_PRIORITY_KEYWORDS) {
         score += 70;
     }
     if is_textarea_field_like_name(&field.name) {
@@ -2149,22 +2154,39 @@ fn render_js_literal(value: &JsonValue) -> String {
         JsonValue::String(value) => format!("'{}'", escape_js_single_quoted_string(value)),
         JsonValue::Array(values) => {
             let items = values.iter().map(render_js_literal).collect::<Vec<_>>();
-            format!("[{}]", items.join(","))
+            format!("[{}]", items.join(", "))
         }
         JsonValue::Object(map) => {
+            if map.is_empty() {
+                return "{}".to_string();
+            }
             let properties = map
                 .iter()
                 .map(|(key, value)| {
-                    format!(
-                        "'{}':{}",
-                        escape_js_single_quoted_string(key),
-                        render_js_literal(value)
-                    )
+                    let key = if is_js_identifier(key) {
+                        key.to_string()
+                    } else {
+                        format!("'{}'", escape_js_single_quoted_string(key))
+                    };
+                    format!("{}: {}", key, render_js_literal(value))
                 })
                 .collect::<Vec<_>>();
-            format!("{{{}}}", properties.join(","))
+            format!("{{ {} }}", properties.join(", "))
         }
     }
+}
+
+fn is_js_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    if !(first == '_' || first == '$' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
 }
 
 fn escape_js_single_quoted_string(value: &str) -> String {
@@ -2189,35 +2211,36 @@ fn contains_any(hint: &str, needles: &[&str]) -> bool {
 }
 
 fn is_textarea_field_like_name(name: &str) -> bool {
-    contains_any(name, TEXTAREA_FIELD_NAME_KEYWORDS)
+    identifier_has_any_token(name, TEXTAREA_FIELD_NAME_KEYWORDS)
 }
 
 fn should_skip_default_form_field(field: &FieldGenerationContext) -> bool {
-    contains_any(field.name.as_str(), SKIP_DEFAULT_FORM_FIELD_KEYWORDS)
+    is_system_managed_field_name(field.name.as_str())
+        || identifier_has_any_token(field.name.as_str(), SKIP_DEFAULT_FORM_FIELD_KEYWORDS)
 }
 
 fn should_skip_default_search_field(field: &FieldGenerationContext) -> bool {
-    contains_any(field.name.as_str(), SKIP_DEFAULT_SEARCH_FIELD_KEYWORDS)
+    is_audit_actor_field_name(field.name.as_str())
+        || identifier_has_any_token(field.name.as_str(), SKIP_DEFAULT_SEARCH_FIELD_KEYWORDS)
 }
 
 fn should_skip_default_table_field(field: &FieldGenerationContext) -> bool {
-    contains_any(field.name.as_str(), SKIP_DEFAULT_TABLE_FIELD_KEYWORDS)
+    is_audit_actor_field_name(field.name.as_str())
+        || identifier_has_any_token(field.name.as_str(), SKIP_DEFAULT_TABLE_FIELD_KEYWORDS)
 }
 
-fn boolean_true_label(field: &FieldGenerationContext) -> String {
-    if field.name.contains("enabled") {
-        "启用".to_string()
-    } else {
-        "是".to_string()
-    }
+fn is_large_text_column_type(pg_type: &str) -> bool {
+    pg_type.eq_ignore_ascii_case("text")
 }
 
-fn boolean_false_label(field: &FieldGenerationContext) -> String {
-    if field.name.contains("enabled") {
-        "禁用".to_string()
-    } else {
-        "否".to_string()
-    }
+// Use stable default copy for bare booleans. Domain-specific wording should come
+// from enum/dict metadata or explicit field_ui_meta, not from field-name guesses.
+fn boolean_true_label(_field: &FieldGenerationContext) -> String {
+    "是".to_string()
+}
+
+fn boolean_false_label(_field: &FieldGenerationContext) -> String {
+    "否".to_string()
 }
 
 fn lower_first(value: &str) -> String {
@@ -2481,6 +2504,7 @@ pub struct Model {
             dict_bindings: BTreeMap::new(),
             field_hints: BTreeMap::new(),
             field_ui_meta: BTreeMap::new(),
+            field_selection: CrudFieldSelection::default(),
             search_fields: None,
             table_fields: None,
             form_fields: None,
@@ -2608,6 +2632,25 @@ pub struct Model {
         assert!(!status.search_visible);
     }
 
+    #[test]
+    fn explicit_search_fields_override_internal_search_visibility() {
+        let schema = sample_user_schema();
+        let crud_context = sample_crud_context(&schema);
+        let mut request = sample_page_request(schema);
+        request.field_hints = BTreeMap::from([(
+            "status".to_string(),
+            FrontendFieldUiHint {
+                search_visible: Some(false),
+                ..Default::default()
+            },
+        )]);
+        request.search_fields = Some(vec!["status".to_string()]);
+
+        let template_context = build_template_context(request, crud_context).unwrap();
+        assert_eq!(template_context.search_fields.len(), 1);
+        assert_eq!(template_context.search_fields[0].name, "status");
+    }
+
     #[tokio::test]
     async fn generator_renders_field_ui_props_into_templates() {
         let root = std::env::temp_dir().join(format!(
@@ -2669,6 +2712,7 @@ pub struct Model {
                         },
                     ),
                 ]),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: Some(vec!["user_name".to_string(), "status".to_string()]),
                 table_fields: Some(vec!["avatar".to_string(), "user_name".to_string()]),
                 form_fields: Some(vec!["avatar".to_string(), "description".to_string()]),
@@ -2680,11 +2724,13 @@ pub struct Model {
         let index_file = std::fs::read_to_string(&result.index_file).unwrap();
         let form_panel_file = std::fs::read_to_string(&result.form_panel_file).unwrap();
 
-        assert!(search_file.contains("...{'maxlength':20}"));
-        assert!(form_panel_file.contains("...{'rows':6}"));
+        assert!(search_file.contains("maxlength: 20"));
+        assert!(form_panel_file.contains("rows: 6"));
         assert!(!form_panel_file.contains("const normalizeDateTimeValue ="));
         assert!(form_panel_file.contains(":span=\"24\""));
-        assert!(form_panel_file.contains("...{'buttonText':'重新上传头像'}"));
+        assert!(form_panel_file.contains("buttonText: '重新上传头像'"));
+        assert!(!search_file.contains("...{"));
+        assert!(!form_panel_file.contains("...{"));
         assert!(index_file.contains("prop: 'avatar'"));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2771,6 +2817,7 @@ pub struct Model {
                         },
                     ),
                 ]),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: Some(vec!["status".to_string(), "gender".to_string()]),
                 table_fields: Some(vec!["user_name".to_string(), "status".to_string()]),
                 form_fields: Some(vec![
@@ -2792,7 +2839,8 @@ pub struct Model {
         assert!(form_panel_file.contains("<ElRadioGroup"));
         assert!(form_panel_file.contains("<ArtWangEditor"));
         assert!(form_panel_file.contains("import ArtWangEditor"));
-        assert!(form_panel_file.contains("...{'height':'320px'}"));
+        assert!(form_panel_file.contains("height: '320px'"));
+        assert!(!form_panel_file.contains("...{"));
         assert_no_triple_newlines(&search_file);
         assert_no_triple_newlines(&form_panel_file);
 
@@ -2995,6 +3043,7 @@ pub struct Model {
                 dict_bindings: BTreeMap::new(),
                 field_hints: BTreeMap::new(),
                 field_ui_meta: BTreeMap::new(),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,
@@ -3087,6 +3136,7 @@ pub struct Model {
                     },
                 )]),
                 field_ui_meta: BTreeMap::new(),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,
@@ -3118,6 +3168,7 @@ pub struct Model {
 
         assert!(types_file.contains("export type UserListItem = Api.User.UserVo"));
         assert!(types_file.contains("type SearchRangeParamKeys ="));
+        assert!(types_file.contains("Api.User.UserSearchFilters"));
         assert!(types_file.contains("export type SearchFormModel = Omit<"));
         assert!(types_file.contains("type FormBase = Api.User.CreateUserParams &"));
         assert!(types_file.contains("export type FormModel = FormBase & {"));
@@ -3333,6 +3384,7 @@ pub struct Model {
                 dict_bindings: BTreeMap::from([("status".to_string(), "user_status".to_string())]),
                 field_hints: BTreeMap::new(),
                 field_ui_meta: BTreeMap::new(),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: Some(vec![
                     "user_name".to_string(),
                     "status".to_string(),
@@ -3361,7 +3413,7 @@ pub struct Model {
 
         assert!(!index_file.contains("userName: undefined,\n\n    status: undefined"));
         assert!(!search_file.contains(
-            "userName?: Api.User.UserSearchParams['userName']\n\n    status?: Api.User.UserSearchParams['status']"
+            "userName?: Api.User.UserSearchFilters['userName']\n\n    status?: Api.User.UserSearchFilters['status']"
         ));
         assert!(!form_panel_file.contains("userName: '',\n\n    avatar: ''"));
         assert!(search_file.contains("valueFormat: 'YYYY-MM-DDTHH:mm:ss'"));
@@ -3485,6 +3537,7 @@ pub struct Model {
                 dict_bindings: BTreeMap::new(),
                 field_hints: BTreeMap::new(),
                 field_ui_meta: BTreeMap::new(),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,
@@ -3595,6 +3648,7 @@ pub struct Model {
                 dict_bindings: BTreeMap::new(),
                 field_hints: BTreeMap::new(),
                 field_ui_meta: BTreeMap::new(),
+                field_selection: CrudFieldSelection::default(),
                 search_fields: None,
                 table_fields: None,
                 form_fields: None,

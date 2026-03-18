@@ -23,7 +23,7 @@ pub(crate) fn sample_role_schema() -> TableSchema {
             },
             TableColumnSchema {
                 name: "role_name".to_string(),
-                pg_type: "character varying".to_string(),
+                pg_type: "character varying(64)".to_string(),
                 nullable: false,
                 primary_key: false,
                 hidden_on_read: false,

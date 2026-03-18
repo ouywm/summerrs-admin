@@ -22,7 +22,6 @@ use summer_web::LayerConfigurator;
 use summer_web::WebConfigurator;
 use summer_web::WebPlugin;
 use summer_web::axum::body::Body;
-use summer_web::axum::extract::DefaultBodyLimit;
 use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
 
@@ -50,7 +49,6 @@ async fn main() {
         )
         .add_router_layer(|router| {
             router
-                .layer(DefaultBodyLimit::max(1024 * 1024 * 1024)) // 1GB
                 .layer(ClientIpSource::ConnectInfo.into_extension())
                 .layer(CatchPanicLayer::custom(handle_panic))
         })
