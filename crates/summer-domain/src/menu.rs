@@ -1,7 +1,7 @@
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
 
 use anyhow::Context;
-use common::error::{ApiErrors, ApiResult};
+use common::error::{ApiErrors, ApiResult, map_transaction_error};
 use model::{
     dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto},
     entity::{sys_menu, sys_role, sys_role_menu, sys_user_role},
@@ -1043,15 +1043,6 @@ async fn create_button_from_spec<C: ConnectionTrait>(
 
     *next_bit_position += 1;
     Ok(())
-}
-
-fn map_transaction_error(error: sea_orm::TransactionError<ApiErrors>) -> ApiErrors {
-    match error {
-        sea_orm::TransactionError::Connection(error) => {
-            ApiErrors::Internal(anyhow::Error::new(error).context("数据库连接错误"))
-        }
-        sea_orm::TransactionError::Transaction(error) => error,
-    }
 }
 
 fn build_menu_tree(

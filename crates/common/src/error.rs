@@ -2,6 +2,18 @@ use summer_web::ProblemDetails;
 
 pub type ApiResult<T, E = ApiErrors> = Result<T, E>;
 
+pub fn map_transaction_error<E>(error: sea_orm::TransactionError<E>) -> E
+where
+    E: From<anyhow::Error>,
+{
+    match error {
+        sea_orm::TransactionError::Connection(error) => {
+            anyhow::Error::new(error).context("数据库连接错误").into()
+        }
+        sea_orm::TransactionError::Transaction(error) => error,
+    }
+}
+
 #[derive(Debug, thiserror::Error, ProblemDetails)]
 pub enum ApiErrors {
     #[status_code(400)]

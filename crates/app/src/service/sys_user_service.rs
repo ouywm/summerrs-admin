@@ -1,6 +1,6 @@
 use anyhow::Context;
 use common::crypto::{hash_password, verify_password};
-use common::error::{ApiErrors, ApiResult};
+use common::error::{ApiErrors, ApiResult, map_transaction_error};
 use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
 use model::entity::sys_menu;
@@ -194,12 +194,7 @@ impl SysUserService {
                 })
             })
             .await
-            .map_err(|e| match e {
-                sea_orm::TransactionError::Connection(err) => {
-                    ApiErrors::Internal(anyhow::anyhow!("数据库连接错误: {}", err))
-                }
-                sea_orm::TransactionError::Transaction(err) => err,
-            })
+            .map_err(map_transaction_error)
     }
 
     /// 更新用户
@@ -262,12 +257,7 @@ impl SysUserService {
                 })
             })
             .await
-            .map_err(|e| match e {
-                sea_orm::TransactionError::Connection(err) => {
-                    ApiErrors::Internal(anyhow::anyhow!("数据库连接错误: {}", err))
-                }
-                sea_orm::TransactionError::Transaction(err) => err,
-            })?;
+            .map_err(map_transaction_error)?;
 
         // 角色变更后，强制用户刷新 token 以获取最新权限
         if has_role_change {
@@ -308,12 +298,7 @@ impl SysUserService {
                 })
             })
             .await
-            .map_err(|e| match e {
-                sea_orm::TransactionError::Connection(err) => {
-                    ApiErrors::Internal(anyhow::anyhow!("数据库连接错误: {}", err))
-                }
-                sea_orm::TransactionError::Transaction(err) => err,
-            })?;
+            .map_err(map_transaction_error)?;
 
         // 用户注销后，封禁其所有会话
         let _ = self.auth.ban_user(&LoginId::admin(id)).await;

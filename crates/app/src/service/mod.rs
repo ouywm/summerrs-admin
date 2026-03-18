@@ -1,6 +1,7 @@
 pub mod auth_service;
 pub mod login_log_service;
 pub mod monitor_service;
+pub mod online_service;
 pub mod operation_log_service;
 pub mod sys_config_group_service;
 pub mod sys_config_service;
@@ -8,6 +9,7 @@ pub mod sys_dict_service;
 pub mod sys_file_service;
 pub mod sys_file_upload_service;
 pub mod sys_menu_service;
+pub mod sys_notice_service;
 pub mod sys_role_service;
 pub mod sys_user_service;
-pub mod online_service;
+pub mod user_notice_service;

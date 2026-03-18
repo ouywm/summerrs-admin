@@ -45,7 +45,7 @@ COMMENT ON TABLE sys_notice IS '系统公告表';
 COMMENT ON COLUMN sys_notice.id IS '公告ID';
 COMMENT ON COLUMN sys_notice.notice_title IS '公告标题';
 COMMENT ON COLUMN sys_notice.notice_content IS '公告正文内容';
-COMMENT ON COLUMN sys_notice.notice_level IS '公告级别：1=普通 2=成功 3=警告 4=危险';
+COMMENT ON COLUMN sys_notice.notice_level IS '公告级别：1=普通 2=提示 3=重要 4=紧急';
 COMMENT ON COLUMN sys_notice.notice_scope IS '公告范围：1=全体后台用户 2=指定角色 3=指定用户';
 COMMENT ON COLUMN sys_notice.publish_status IS '发布状态：1=草稿 2=已发布 3=已撤回';
 COMMENT ON COLUMN sys_notice.pinned IS '是否置顶';

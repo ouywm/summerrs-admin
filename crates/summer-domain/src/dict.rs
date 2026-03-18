@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
-use common::error::{ApiErrors, ApiResult};
+use common::error::{ApiErrors, ApiResult, map_transaction_error};
 use model::{
     dto::sys_dict::{
         CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto,
@@ -659,15 +659,6 @@ async fn apply_dict_item_spec<C: ConnectionTrait>(
     .map_err(ApiErrors::Internal)?;
 
     Ok(())
-}
-
-fn map_transaction_error(error: sea_orm::TransactionError<ApiErrors>) -> ApiErrors {
-    match error {
-        sea_orm::TransactionError::Connection(error) => {
-            ApiErrors::Internal(anyhow::Error::new(error).context("数据库连接错误"))
-        }
-        sea_orm::TransactionError::Transaction(error) => error,
-    }
 }
 
 #[cfg(test)]

@@ -21,6 +21,7 @@ password-hash = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
+sea-orm = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 summer-auth = { workspace = true }

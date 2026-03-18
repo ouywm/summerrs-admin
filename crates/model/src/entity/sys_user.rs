@@ -98,6 +98,12 @@ pub struct Model {
     /// sys_user → sys_role（多对多，通过 sys_user_role）
     #[sea_orm(has_many, via = "sys_user_role")]
     pub roles: HasMany<super::sys_role::Entity>,
+    /// sys_user → sys_notice_user（一对多）
+    #[sea_orm(has_many)]
+    pub notice_users: HasMany<super::sys_notice_user::Entity>,
+    /// sys_user → sys_notice（多对多，通过 sys_notice_user）
+    #[sea_orm(has_many, via = "sys_notice_user")]
+    pub notices: HasMany<super::sys_notice::Entity>,
 }
 
 #[async_trait::async_trait]
