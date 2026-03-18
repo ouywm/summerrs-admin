@@ -6,8 +6,8 @@ use summer_web::axum::extract::Path;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api};
 
-use summer_sea_orm::pagination::{Page, Pagination};
 use crate::service::online_service::OnlineUserService;
+use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "在线用户", action = "查询在线用户列表", biz_type = Query)]
 #[get_api("/online/list")]

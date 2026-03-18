@@ -9,8 +9,8 @@ use summer::plugin::Service;
 use summer_auth::{LoginId, OnlineUserQuery, SessionManager, UserType};
 
 use crate::plugin::ip2region::Ip2RegionSearcher;
-use summer_sea_orm::pagination::{Page, Pagination};
 use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination};
 
 #[derive(Clone, Service)]
 pub struct OnlineUserService {

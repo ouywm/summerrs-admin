@@ -9,8 +9,8 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
 use summer::plugin::Service;
-use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 
 #[derive(Clone, Service)]
 pub struct SysConfigGroupService {
