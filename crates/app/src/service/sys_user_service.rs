@@ -3,7 +3,10 @@ use common::crypto::{hash_password, verify_password};
 use common::error::{ApiErrors, ApiResult, map_transaction_error};
 use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
+use model::entity::sys_file;
 use model::entity::sys_menu;
+use model::entity::sys_notice_target;
+use model::entity::sys_notice_user;
 use model::entity::sys_role;
 use model::entity::sys_role_menu;
 use model::entity::sys_user;
@@ -267,32 +270,59 @@ impl SysUserService {
         Ok(())
     }
 
-    /// 删除用户（逻辑删除，设置状态为注销）
+    /// 删除用户（物理删除，并清理关联资源）
     pub async fn delete_user(&self, id: i64) -> ApiResult<()> {
         self.db
             .transaction::<_, (), ApiErrors>(|txn| {
                 Box::pin(async move {
-                    // 查询用户是否存在
-                    let user = sys_user::Entity::find_by_id(id)
+                    sys_user::Entity::find_by_id(id)
                         .one(txn)
                         .await
                         .context("查询用户失败")
                         .map_err(|e| ApiErrors::Internal(e))?
                         .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
 
-                    // 检查是否已经注销
-                    if user.status == sys_user::UserStatus::Cancelled {
-                        return Err(ApiErrors::BadRequest("用户已注销".to_string()));
-                    }
-
-                    // 设置状态为注销
-                    let mut active: sys_user::ActiveModel = user.into();
-                    active.status = Set(sys_user::UserStatus::Cancelled);
-                    active
-                        .update(txn)
+                    sys_user_role::Entity::delete_many()
+                        .filter(sys_user_role::Column::UserId.eq(id))
+                        .exec(txn)
                         .await
-                        .context("注销用户失败")
-                        .map_err(|e| ApiErrors::Internal(e))?;
+                        .context("删除用户角色关联失败")
+                        .map_err(ApiErrors::Internal)?;
+
+                    sys_notice_user::Entity::delete_many()
+                        .filter(sys_notice_user::Column::UserId.eq(id))
+                        .exec(txn)
+                        .await
+                        .context("删除用户公告接收记录失败")
+                        .map_err(ApiErrors::Internal)?;
+
+                    sys_notice_target::Entity::delete_many()
+                        .filter(
+                            sys_notice_target::Column::TargetType
+                                .eq(sys_notice_target::NoticeTargetType::User),
+                        )
+                        .filter(sys_notice_target::Column::TargetId.eq(id))
+                        .exec(txn)
+                        .await
+                        .context("删除用户公告目标关联失败")
+                        .map_err(ApiErrors::Internal)?;
+
+                    sys_file::Entity::update_many()
+                        .set(sys_file::ActiveModel {
+                            upload_by_id: Set(None),
+                            ..Default::default()
+                        })
+                        .filter(sys_file::Column::UploadById.eq(id))
+                        .exec(txn)
+                        .await
+                        .context("清理用户文件归属失败")
+                        .map_err(ApiErrors::Internal)?;
+
+                    sys_user::Entity::delete_by_id(id)
+                        .exec(txn)
+                        .await
+                        .context("删除用户失败")
+                        .map_err(ApiErrors::Internal)?;
 
                     Ok(())
                 })
@@ -300,8 +330,7 @@ impl SysUserService {
             .await
             .map_err(map_transaction_error)?;
 
-        // 用户注销后，封禁其所有会话
-        let _ = self.auth.ban_user(&LoginId::admin(id)).await;
+        let _ = self.auth.logout_all(&LoginId::admin(id)).await;
 
         Ok(())
     }

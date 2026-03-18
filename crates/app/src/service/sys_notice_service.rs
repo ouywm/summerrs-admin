@@ -484,7 +484,6 @@ impl SysNoticeService {
         match scope {
             sys_notice::NoticeScope::AllAdmin => {
                 let ids = sys_user::Entity::find()
-                    .filter(sys_user::Column::Status.ne(sys_user::UserStatus::Cancelled))
                     .all(db)
                     .await
                     .context("查询公告接收用户失败")?
@@ -503,15 +502,15 @@ impl SysNoticeService {
                     .map(|item| item.user_id)
                     .collect();
 
-                Self::filter_active_user_ids(db, related_user_ids).await
+                Self::filter_existing_user_ids(db, related_user_ids).await
             }
             sys_notice::NoticeScope::User => {
-                Self::filter_active_user_ids(db, user_ids.to_vec()).await
+                Self::filter_existing_user_ids(db, user_ids.to_vec()).await
             }
         }
     }
 
-    async fn filter_active_user_ids<C>(db: &C, user_ids: Vec<i64>) -> ApiResult<Vec<i64>>
+    async fn filter_existing_user_ids<C>(db: &C, user_ids: Vec<i64>) -> ApiResult<Vec<i64>>
     where
         C: ConnectionTrait,
     {
@@ -522,7 +521,6 @@ impl SysNoticeService {
         let unique_ids = normalize_ids(user_ids);
         let ids = sys_user::Entity::find()
             .filter(sys_user::Column::Id.is_in(unique_ids.iter().copied()))
-            .filter(sys_user::Column::Status.ne(sys_user::UserStatus::Cancelled))
             .all(db)
             .await
             .context("过滤公告接收用户失败")?

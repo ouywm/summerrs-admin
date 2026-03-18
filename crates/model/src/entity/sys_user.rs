@@ -33,7 +33,7 @@ pub enum Gender {
     Female = 2,
 }
 
-/// 用户账号状态（1: 启用, 2: 禁用, 3: 注销）
+/// 用户账号状态（1: 启用, 2: 禁用）
 #[derive(
     Debug,
     Clone,
@@ -55,9 +55,6 @@ pub enum UserStatus {
     /// 禁用 - 管理员封禁，禁止登录
     #[sea_orm(num_value = 2)]
     Disabled = 2,
-    /// 注销 - 用户主动注销或管理员删除（逻辑删除）
-    #[sea_orm(num_value = 3)]
-    Cancelled = 3,
 }
 
 #[sea_orm::model]

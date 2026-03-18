@@ -89,8 +89,7 @@ INSERT INTO sys_dict_type (dict_name, dict_type, status, is_system, remark, crea
 -- 用户状态
 INSERT INTO sys_dict_data (dict_type, dict_label, dict_value, dict_sort, list_class, is_system, create_by) VALUES
 ('user_status', '启用', '1', 1, 'success', true, 'system'),
-('user_status', '禁用', '2', 2, 'danger', true, 'system'),
-('user_status', '注销', '3', 3, 'info', true, 'system');
+('user_status', '禁用', '2', 2, 'danger', true, 'system');
 
 -- 用户性别
 INSERT INTO sys_dict_data (dict_type, dict_label, dict_value, dict_sort, list_class, is_system, create_by) VALUES

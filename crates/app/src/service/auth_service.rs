@@ -62,17 +62,6 @@ impl AuthService {
         let user = user.unwrap();
 
         // 验证用户状态
-        if user.status == sys_user::UserStatus::Cancelled {
-            self.login_log_service.record_login_async(
-                user.id,
-                user.user_name.clone(),
-                client_ip,
-                ua_info,
-                sys_login_log::LoginStatus::Failed,
-                Some("账号已注销".to_string()),
-            );
-            return Err(ApiErrors::Forbidden("账号已注销".to_string()));
-        }
         if user.status == sys_user::UserStatus::Disabled {
             self.login_log_service.record_login_async(
                 user.id,
