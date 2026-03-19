@@ -275,12 +275,18 @@ impl SysUserService {
         self.db
             .transaction::<_, (), ApiErrors>(|txn| {
                 Box::pin(async move {
-                    sys_user::Entity::find_by_id(id)
+                    let user = sys_user::Entity::find_by_id(id)
                         .one(txn)
                         .await
                         .context("查询用户失败")
                         .map_err(|e| ApiErrors::Internal(e))?
                         .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
+
+                    if user.status != sys_user::UserStatus::Disabled {
+                        return Err(ApiErrors::BadRequest(
+                            "该用户仍处于启用状态，请先禁用后再删除".to_string(),
+                        ));
+                    }
 
                     sys_user_role::Entity::delete_many()
                         .filter(sys_user_role::Column::UserId.eq(id))
