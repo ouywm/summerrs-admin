@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
-use common::error::{ApiErrors, ApiResult, map_transaction_error};
+use common::error::{ApiErrors, ApiResult};
 use model::{
     dto::sys_dict::{
         CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto,
@@ -132,7 +132,7 @@ impl DictDomainService {
         validate_dict_bundle_spec(&spec)?;
         let operator = operator.to_string();
 
-        self.db
+        Ok(self.db
             .transaction::<_, DictBundleSyncResult, ApiErrors>(|txn| {
                 let spec = spec.clone();
                 let operator = operator.clone();
@@ -170,8 +170,7 @@ impl DictDomainService {
                     Ok(result)
                 })
             })
-            .await
-            .map_err(map_transaction_error)
+            .await?)
     }
 
     pub async fn create_dict_type(

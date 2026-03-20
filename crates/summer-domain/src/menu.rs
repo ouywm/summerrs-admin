@@ -1,7 +1,7 @@
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
 
 use anyhow::Context;
-use common::error::{ApiErrors, ApiResult, map_transaction_error};
+use common::error::{ApiErrors, ApiResult};
 use model::{
     dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto},
     entity::{sys_menu, sys_role, sys_role_menu, sys_user_role},
@@ -264,8 +264,7 @@ impl MenuDomainService {
                     Ok((result, permission_changed))
                 })
             })
-            .await
-            .map_err(map_transaction_error)?;
+            .await?;
 
         if permission_changed {
             self.reload_permission_map().await?;

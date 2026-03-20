@@ -1,6 +1,6 @@
 use anyhow::Context;
 use common::crypto::{hash_password, verify_password};
-use common::error::{ApiErrors, ApiResult, map_transaction_error};
+use common::error::{ApiErrors, ApiResult};
 use model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
 use model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
 use model::entity::sys_file;
@@ -10,6 +10,7 @@ use model::entity::sys_notice_user;
 use model::entity::sys_role;
 use model::entity::sys_role_menu;
 use model::entity::sys_user;
+use model::entity::sys_user::UserStatus;
 use model::entity::sys_user_role;
 use model::vo::sys_role::RoleDetailVo;
 use model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
@@ -21,8 +22,9 @@ use sea_orm::{
 use summer::plugin::Service;
 use summer_auth::{LoginId, SessionManager};
 
-use summer_sea_orm::DbConn;
+use crate::socketio::service::{KickoutPayload, SocketGatewayService};
 use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
+use summer_sea_orm::DbConn;
 
 #[derive(Clone, Service)]
 pub struct SysUserService {
@@ -30,6 +32,8 @@ pub struct SysUserService {
     db: DbConn,
     #[inject(component)]
     auth: SessionManager,
+    #[inject(component)]
+    socket_gateway: SocketGatewayService,
 }
 
 impl SysUserService {
@@ -196,8 +200,8 @@ impl SysUserService {
                     Ok(())
                 })
             })
-            .await
-            .map_err(map_transaction_error)
+            .await?;
+        Ok(())
     }
 
     /// 更新用户
@@ -205,9 +209,11 @@ impl SysUserService {
         let role_ids = dto.role_ids.clone();
         let has_role_change = role_ids.is_some();
         let operator = operator.to_string();
+        let login_id = LoginId::admin(id);
 
-        self.db
-            .transaction::<_, (), ApiErrors>(|txn| {
+        let (previous_status, current_status) = self
+            .db
+            .transaction::<_, (UserStatus, UserStatus), ApiErrors>(|txn| {
                 let operator = operator.clone();
                 Box::pin(async move {
                     // 查询用户
@@ -217,6 +223,8 @@ impl SysUserService {
                         .context("查询用户失败")
                         .map_err(|e| ApiErrors::Internal(e))?
                         .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
+                    let previous_status = user.status;
+                    let current_status = dto.status.unwrap_or(previous_status);
 
                     // 更新用户信息
                     let mut active: sys_user::ActiveModel = user.into();
@@ -256,15 +264,20 @@ impl SysUserService {
                         }
                     }
 
-                    Ok(())
+                    Ok((previous_status, current_status))
                 })
             })
-            .await
-            .map_err(map_transaction_error)?;
+            .await?;
+
+        if previous_status != UserStatus::Disabled && current_status == UserStatus::Disabled {
+            self.disable_user_runtime(&login_id).await?;
+        } else if previous_status == UserStatus::Disabled && current_status == UserStatus::Enabled {
+            self.enable_user_runtime(&login_id).await?;
+        }
 
         // 角色变更后，强制用户刷新 token 以获取最新权限
-        if has_role_change {
-            let _ = self.auth.force_refresh(&LoginId::admin(id)).await;
+        if has_role_change && current_status != UserStatus::Disabled {
+            let _ = self.auth.force_refresh(&login_id).await;
         }
 
         Ok(())
@@ -272,6 +285,8 @@ impl SysUserService {
 
     /// 删除用户（物理删除，并清理关联资源）
     pub async fn delete_user(&self, id: i64) -> ApiResult<()> {
+        let login_id = LoginId::admin(id);
+
         self.db
             .transaction::<_, (), ApiErrors>(|txn| {
                 Box::pin(async move {
@@ -333,10 +348,9 @@ impl SysUserService {
                     Ok(())
                 })
             })
-            .await
-            .map_err(map_transaction_error)?;
+            .await?;
 
-        let _ = self.auth.logout_all(&LoginId::admin(id)).await;
+        self.revoke_user_sessions(&login_id).await?;
 
         Ok(())
     }
@@ -433,4 +447,40 @@ impl SysUserService {
 
         Ok(UserProfileVo::from_model(updated_user))
     }
+
+    async fn disable_user_runtime(&self, login_id: &LoginId) -> ApiResult<()> {
+        self.auth
+            .ban_user(login_id)
+            .await
+            .map_err(map_auth_runtime_error)?;
+        self.revoke_user_sessions(login_id).await
+    }
+
+    async fn enable_user_runtime(&self, login_id: &LoginId) -> ApiResult<()> {
+        self.auth
+            .unban_user(login_id)
+            .await
+            .map_err(map_auth_runtime_error)
+    }
+
+    async fn revoke_user_sessions(&self, login_id: &LoginId) -> ApiResult<()> {
+        self.auth
+            .logout_all(login_id)
+            .await
+            .map_err(map_auth_runtime_error)?;
+        self.socket_gateway
+            .notify_and_disconnect(
+                login_id,
+                &KickoutPayload {
+                    reason: "account_disabled".to_string(),
+                    message: "账号已被禁用".to_string(),
+                },
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+fn map_auth_runtime_error(err: impl std::fmt::Display) -> ApiErrors {
+    ApiErrors::Internal(anyhow::anyhow!("{err}"))
 }

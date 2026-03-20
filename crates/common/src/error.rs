@@ -1,18 +1,7 @@
+use summer_auth::AuthError;
 use summer_web::ProblemDetails;
 
 pub type ApiResult<T, E = ApiErrors> = Result<T, E>;
-
-pub fn map_transaction_error<E>(error: sea_orm::TransactionError<E>) -> E
-where
-    E: From<anyhow::Error>,
-{
-    match error {
-        sea_orm::TransactionError::Connection(error) => {
-            anyhow::Error::new(error).context("数据库连接错误").into()
-        }
-        sea_orm::TransactionError::Transaction(error) => error,
-    }
-}
 
 #[derive(Debug, thiserror::Error, ProblemDetails)]
 pub enum ApiErrors {
@@ -66,4 +55,32 @@ pub enum ApiErrors {
     #[problem_type("service-unavailable")]
     #[error("{0}")]
     ServiceUnavailable(String),
+}
+
+impl From<AuthError> for ApiErrors {
+    fn from(err: AuthError) -> Self {
+        match err {
+            AuthError::AccountBanned | AuthError::NoRole(_) | AuthError::NoPermission(_) => {
+                ApiErrors::Forbidden(err.to_string())
+            }
+            AuthError::StorageError(msg) | AuthError::Internal(msg) => {
+                ApiErrors::Internal(anyhow::anyhow!(msg))
+            }
+            AuthError::QrCodeNotFound | AuthError::QrCodeInvalidState => {
+                ApiErrors::BadRequest(err.to_string())
+            }
+            _ => ApiErrors::Unauthorized(err.to_string()),
+        }
+    }
+}
+
+impl From<sea_orm::TransactionError<ApiErrors>> for ApiErrors {
+    fn from(error: sea_orm::TransactionError<ApiErrors>) -> Self {
+        match error {
+            sea_orm::TransactionError::Connection(err) => {
+                ApiErrors::Internal(anyhow::Error::new(err).context("数据库连接错误"))
+            }
+            sea_orm::TransactionError::Transaction(err) => err,
+        }
+    }
 }

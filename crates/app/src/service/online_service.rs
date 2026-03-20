@@ -9,6 +9,7 @@ use summer::plugin::Service;
 use summer_auth::{LoginId, OnlineUserQuery, SessionManager, UserType};
 
 use crate::plugin::ip2region::Ip2RegionSearcher;
+use crate::socketio::service::{KickoutPayload, SocketGatewayService};
 use summer_sea_orm::DbConn;
 use summer_sea_orm::pagination::{Page, Pagination};
 
@@ -20,6 +21,8 @@ pub struct OnlineUserService {
     db: DbConn,
     #[inject(component)]
     ip_searcher: Ip2RegionSearcher,
+    #[inject(component)]
+    socket_gateway: SocketGatewayService,
 }
 
 impl OnlineUserService {
@@ -93,6 +96,15 @@ impl OnlineUserService {
             .kick_out(&login_id, None)
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
+        self.socket_gateway
+            .notify_and_disconnect(
+                &login_id,
+                &KickoutPayload {
+                    reason: "admin_kickout".to_string(),
+                    message: "当前账号已被管理员强制下线".to_string(),
+                },
+            )
+            .await?;
         Ok(())
     }
 
@@ -105,6 +117,16 @@ impl OnlineUserService {
             .kick_out(&login_id, Some(&device))
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
+        self.socket_gateway
+            .notify_and_disconnect_device(
+                &login_id,
+                device_str,
+                &KickoutPayload {
+                    reason: "admin_kickout".to_string(),
+                    message: "当前账号已被管理员强制下线".to_string(),
+                },
+            )
+            .await?;
         Ok(())
     }
 }

@@ -218,11 +218,102 @@ default_namespace = "/admin"
 - `role:{role_code}`：给某个角色广播
 - `all-admin`：给全部后台在线用户广播
 
+---
+
+## 七、双 Token 下的 Socket.IO 认证与重连流程
+
+当前项目采用双 token 机制，因此 Socket.IO 推荐遵循下面的约定：
+
+### 1. 连接时只使用 accessToken
+
+- Socket.IO 连接阶段只传 `accessToken`
+- 不通过 Socket 传 `refreshToken`
+- `refreshToken` 只保留给 HTTP 刷新接口使用
+
+推荐连接方式：
+
+```ts
+import { io } from "socket.io-client";
+
+const socket = io("ws://localhost:8080/summer-admin", {
+  path: "/api/socket.io",
+  auth: {
+    accessToken: accessTokenStore.value
+  }
+});
+```
+
+### 2. accessToken 过期后的处理流程
+
+- Socket.IO 连接失败，收到 `connect_error`
+- 或业务侧发现当前连接因鉴权失败被服务端断开
+- 前端不要在 Socket 内直接做 refresh
+- 应先调用现有 HTTP `/auth/refresh`
+- 刷新成功后，更新本地 `accessToken`
+- 然后重新发起 Socket 连接
+
+推荐顺序：
+
+```txt
+socket connect failed
+-> call /auth/refresh with refreshToken
+-> receive new accessToken
+-> reconnect socket with new accessToken
+```
+
+### 3. 用户被禁用时的联动策略
+
+用户被禁用后，不应只阻止后续登录，还应立即处理现有会话：
+
+- 写入 deny / banned 状态
+- 注销当前用户全部登录设备
+- 主动断开该用户现有 Socket.IO 连接
+
+这样可以保证：
+
+- 已建立的 Socket 连接不会继续长期存活
+- 旧 accessToken 不会继续可用
+- 前端会在断开后走 refresh / 重新登录流程
+
+### 4. 前端建议实现
+
+前端建议统一封装一个 `socket.ts`，最少包含：
+
+- `connectSocket(accessToken)`
+- `disconnectSocket()`
+- `reconnectSocket(nextAccessToken)`
+- `handleConnectError(err)`
+- `handleDisconnect(reason)`
+
+其中 `handleConnectError(err)` 建议处理：
+
+- 缺少 token
+- token 过期
+- token 无效
+- 账号被禁用
+
+其中 `handleDisconnect(reason)` 建议按 Socket.IO 原因区分：
+
+- `io server disconnect`：服务端主动断开，优先尝试 HTTP refresh
+- `transport close` / `ping timeout`：网络波动，直接按当前 token 重连
+- `transport error`：先检查网关和路径配置，再决定是否重连
+
+推荐前端流程：
+
+```txt
+connect_error / disconnect
+-> 判断是否为鉴权类问题
+-> 是：调用 /auth/refresh
+-> refresh 成功：reconnectSocket(newAccessToken)
+-> refresh 失败：清理登录态并跳转登录页
+-> 否：按普通断线重连
+```
+
 这样基本已经能覆盖后台常见推送需求。
 
 ---
 
-## 七、连接与鉴权建议
+## 八、连接与鉴权建议
 
 这里建议分两步，不要第一版就做得很重。
 

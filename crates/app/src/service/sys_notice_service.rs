@@ -1,5 +1,5 @@
 use anyhow::Context;
-use common::error::{ApiErrors, ApiResult, map_transaction_error};
+use common::error::{ApiErrors, ApiResult};
 use model::dto::sys_notice::{CreateNoticeDto, NoticeQueryDto, UpdateNoticeDto};
 use model::entity::{
     sys_notice, sys_notice_target, sys_notice_user, sys_role, sys_user, sys_user_role,
@@ -96,8 +96,8 @@ impl SysNoticeService {
                     Ok(())
                 })
             })
-            .await
-            .map_err(map_transaction_error)
+            .await?;
+        Ok(())
     }
 
     pub async fn update(&self, id: i64, dto: UpdateNoticeDto, operator: &str) -> ApiResult<()> {
@@ -148,8 +148,8 @@ impl SysNoticeService {
                     Ok(())
                 })
             })
-            .await
-            .map_err(map_transaction_error)
+            .await?;
+        Ok(())
     }
 
     pub async fn delete(&self, id: i64) -> ApiResult<()> {
@@ -186,8 +186,8 @@ impl SysNoticeService {
                     Ok(())
                 })
             })
-            .await
-            .map_err(map_transaction_error)
+            .await?;
+        Ok(())
     }
 
     pub async fn publish(&self, id: i64, operator: &str) -> ApiResult<()> {
@@ -237,8 +237,8 @@ impl SysNoticeService {
                     Ok(())
                 })
             })
-            .await
-            .map_err(map_transaction_error)
+            .await?;
+        Ok(())
     }
 
     pub async fn revoke(&self, id: i64, operator: &str) -> ApiResult<()> {
@@ -267,8 +267,8 @@ impl SysNoticeService {
                     Ok(())
                 })
             })
-            .await
-            .map_err(map_transaction_error)
+            .await?;
+        Ok(())
     }
 
     pub async fn pin(&self, id: i64, operator: &str) -> ApiResult<()> {

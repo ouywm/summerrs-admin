@@ -2,12 +2,14 @@ mod job;
 mod plugin;
 mod router;
 mod service;
+mod socketio;
 
 use crate::plugin::background_task::BackgroundTaskPlugin;
 use crate::plugin::ip2region::Ip2RegionPlugin;
 use crate::plugin::log_batch_collector::LogBatchCollectorPlugin;
 use crate::plugin::perm_bitmap::PermBitmapPlugin;
 use crate::plugin::s3::S3Plugin;
+use crate::plugin::socket_gateway::SocketGatewayPlugin;
 use axum_client_ip::ClientIpSource;
 use summer::App;
 use summer::auto_config;
@@ -36,6 +38,7 @@ async fn main() {
         .add_plugin(MailPlugin)
         .add_plugin(SummerAuthPlugin)
         .add_plugin(PermBitmapPlugin)
+        .add_plugin(SocketGatewayPlugin)
         .add_plugin(Ip2RegionPlugin)
         .add_plugin(S3Plugin)
         .add_plugin(BackgroundTaskPlugin)
@@ -45,7 +48,9 @@ async fn main() {
             PathAuthBuilder::new()
                 .include("/**")
                 .exclude_all(UserType::all_login_paths())
-                .exclude("/auth/refresh"),
+                .exclude("/auth/refresh")
+                .exclude("/socket.io/**")
+                .exclude("/api/socket.io/**"),
         )
         .add_router_layer(|router| {
             router

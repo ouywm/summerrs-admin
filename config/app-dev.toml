@@ -31,6 +31,14 @@ cors = { enable = true, allow_origins = [
     "DELETE",
 ], max_age = 60 }
 
+[socket_io]
+default_namespace = "/summer-admin"
+
+[socket-gateway]
+redis_prefix = "summerrs:socket"
+session_ttl_seconds = 86400
+
+
 
 [sea-orm]
 uri = "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai"
@@ -64,6 +72,7 @@ jwt_secret = "SRKhqjfTyXMjnfMW0419DJfZFqxnsF97AQMk5soPlnk2dI/O0dUR3GIp/OUHXTptzR
 #jwt_algorithm = "RS256"
 #jwt_private_key = "./data/rsa_private.pem"
 #jwt_public_key = "./data/rsa_public.pem"
+#per_request_deny_check = false
 
 [log-batch]
 batch_size = 100
