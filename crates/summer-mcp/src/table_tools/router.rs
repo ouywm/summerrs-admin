@@ -3,8 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use common::error::ApiErrors;
-use model::{
+use summer_common::error::ApiErrors;
+use summer_model::{
     dto::sys_dict::{
         CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto,
         UpdateDictDataDto, UpdateDictTypeDto,

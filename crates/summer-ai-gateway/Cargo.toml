@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 futures = { workspace = true }
-model = { workspace = true }
+summer-model = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }
 reqwest-eventsource = "0.6"
 sea-orm = { workspace = true }

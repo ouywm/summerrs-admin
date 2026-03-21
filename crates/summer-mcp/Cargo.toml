@@ -24,8 +24,8 @@ rmcp = { workspace = true, features = [
     "schemars",
 ] }
 sea-orm = { workspace = true, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
-common = { workspace = true }
-model = { workspace = true }
+summer-common = { workspace = true }
+summer-model = { workspace = true }
 summer = { workspace = true }
 summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
 summer-domain = { workspace = true }

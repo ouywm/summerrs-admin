@@ -1,0 +1,55 @@
+[package]
+name = "summer-system"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-smithy-types = { workspace = true }
+axum-client-ip = { workspace = true, features = ["connect-info", "serde", "forwarded-header"] }
+axum-valid = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+summer-common = { workspace = true }
+futures = { workspace = true }
+summer-admin-macros = { workspace = true }
+md-5 = { workspace = true }
+mime = { workspace = true }
+summer-model = { workspace = true }
+summer-plugins = { workspace = true }
+regex = { workspace = true }
+schema = { workspace = true }
+schemars = { workspace = true, features = ["derive", "chrono04"] }
+sea-orm = { workspace = true, features = ["with-chrono", "sqlx-postgres", "runtime-tokio-rustls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+summer = { workspace = true }
+summer-sea-orm = { workspace = true, features = ["postgres", "rustls", "with-web", "with-web-openapi"] }
+sysinfo = { workspace = true }
+summer-job = { workspace = true }
+summer-mail = { workspace = true }
+summer-redis = { workspace = true }
+summer-auth = { workspace = true, features = ["web", "redis", "openapi"] }
+summer-web = { workspace = true, features = ["openapi", "openapi-swagger", "multipart", "socket_io"] }
+summer-domain = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+validator = { workspace = true }
+woothee = { workspace = true }
+
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+kanal = { workspace = true }
+flume = { workspace = true }
+reqwest = { workspace = true }
+
+[[bench]]
+name = "task_queue"
+harness = false

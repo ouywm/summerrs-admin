@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use rmcp::{
     ClientHandler, ServiceExt,
-    model::{CallToolRequestParams, ClientInfo, ReadResourceRequestParams, ResourceContents},
+    summer_model::{CallToolRequestParams, ClientInfo, ReadResourceRequestParams, ResourceContents},
 };
 use sea_orm::{DatabaseConnection, DbBackend, MockDatabase, MockExecResult, Value};
 use summer_mcp::{AdminMcpServer, config::McpConfig};

@@ -1,10 +1,10 @@
 //! Generated admin service skeleton.
 
 use anyhow::Context;
-use common::error::{ApiErrors, ApiResult};
-use model::dto::{{ names.table_module }}::{ {{ names.create_dto }}, {{ names.query_dto }}, {{ names.update_dto }} };
-use model::entity::{{ names.table_module }};
-use model::vo::{{ names.table_module }}::{ {{ names.detail_vo }}, {{ names.vo }} };
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_model::dto::{{ names.table_module }}::{ {{ names.create_dto }}, {{ names.query_dto }}, {{ names.update_dto }} };
+use summer_model::entity::{{ names.table_module }};
+use summer_model::vo::{{ names.table_module }}::{ {{ names.detail_vo }}, {{ names.vo }} };
 use sea_orm::{ActiveModelTrait, EntityTrait, QueryFilter, QueryOrder};
 use summer::plugin::Service;
 use summer_sea_orm::DbConn;

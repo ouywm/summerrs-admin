@@ -453,7 +453,7 @@ mod tests {
 
         let vo = std::fs::read_to_string(&result.vo_file).unwrap();
         assert!(vo.contains("pub struct RoleVo"));
-        assert!(vo.contains("use common::serde_utils::datetime_format;"));
+        assert!(vo.contains("use summer_common::serde_utils::datetime_format;"));
         assert!(vo.contains("pub create_time: chrono::NaiveDateTime"));
         assert!(vo.contains(r#"#[serde(serialize_with = "datetime_format::serialize")]"#));
         assert_no_sparse_generated_fields(&vo);
@@ -795,9 +795,9 @@ pub struct Model {
             .unwrap();
 
         let vo = std::fs::read_to_string(&result.vo_file).unwrap();
-        assert!(vo.contains("use common::serde_utils::date_format;"));
-        assert!(vo.contains("use common::serde_utils::datetime_format;"));
-        assert!(vo.contains("use common::serde_utils::time_format;"));
+        assert!(vo.contains("use summer_common::serde_utils::date_format;"));
+        assert!(vo.contains("use summer_common::serde_utils::datetime_format;"));
+        assert!(vo.contains("use summer_common::serde_utils::time_format;"));
         assert!(vo.contains(r#"#[serde(serialize_with = "date_format::serialize_option")]"#));
         assert!(vo.contains(r#"#[serde(serialize_with = "datetime_format::serialize_option")]"#));
         assert!(vo.contains(r#"#[serde(serialize_with = "time_format::serialize_option")]"#));

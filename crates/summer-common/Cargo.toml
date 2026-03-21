@@ -1,0 +1,33 @@
+[package]
+name = "summer-common"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+axum-client-ip = { workspace = true }
+axum-valid = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+garde = { workspace = true }
+indexmap = { workspace = true }
+md-5 = { workspace = true }
+mime = { workspace = true }
+mime_guess = { workspace = true }
+parking_lot = { workspace = true }
+password-hash = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+schemars = { workspace = true, features = ["derive", "chrono04"] }
+sea-orm = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+summer-auth = { workspace = true }
+summer-web = { workspace = true, features = ["openapi", "multipart"] }
+thiserror = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+validator = { workspace = true }
+woothee = { workspace = true }

@@ -1,14 +1,16 @@
 [workspace]
 members = [
     "crates/app",
-    "crates/model",
-    "crates/common",
-    "crates/macros",
+    "crates/summer-model",
+    "crates/summer-common",
+    "crates/summer-admin-macros",
     "crates/summer-rig",
     "crates/summer-domain",
     "crates/summer-auth",
     "crates/summer-mcp",
     "crates/summer-ai-gateway",
+    "crates/summer-system",
+    "crates/summer-plugins",
 ]
 resolver = "2"
 
@@ -25,17 +27,17 @@ base64 = "0.22.1"
 bytes = "1.11.1"
 calamine = "0.31.0"
 chrono = "0.4.43"
-common = { path = "crates/common" }
+summer-common = { path = "crates/summer-common" }
 flume = "0.12"
 futures = "0.3.32"
 garde = "0.22.1"
 kanal = "0.1"
 ipnetwork = "0.20.0"
-macros = { path = "crates/macros" }
+summer-admin-macros = { path = "crates/summer-admin-macros" }
 mime = "0.3.17"
 mime_guess = "2"
 md-5 = "0.10"
-model = { path = "crates/model" }
+summer-model = { path = "crates/summer-model" }
 summer-rig = { path = "crates/summer-rig" }
 summer-mcp = { path = "crates/summer-mcp" }
 summer-domain = { path = "crates/summer-domain" }
@@ -78,8 +80,10 @@ ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master
 #ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
 indexmap = "2.13.0"
 jsonwebtoken = "9"
-rmcp = { path = "/Volumes/990pro/code/rust/rust-mcp/crates/rmcp" }
+rmcp = "1.2.0"
 summer-ai-gateway = { path = "crates/summer-ai-gateway" }
+summer-system = { path = "crates/summer-system" }
+summer-plugins = { path = "crates/summer-plugins" }
 reqwest-eventsource = "0.6"
 tokio-stream = "0.1"
 [patch.crates-io]

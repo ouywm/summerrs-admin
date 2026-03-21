@@ -1,8 +1,8 @@
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
 
 use anyhow::Context;
-use common::error::{ApiErrors, ApiResult};
-use model::{
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_model::{
     dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto},
     entity::{sys_menu, sys_role, sys_role_menu, sys_user_role},
     vo::sys_menu::{AuthItem, MenuMeta, MenuTreeVo, MenuVo},

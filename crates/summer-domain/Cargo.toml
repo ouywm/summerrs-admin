@@ -5,8 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-common = { workspace = true }
-model = { workspace = true }
+summer-common = { workspace = true }
+summer-model = { workspace = true }
 schemars = { workspace = true }
 sea-orm = { workspace = true, features = ["with-chrono", "sqlx-postgres", "runtime-tokio-rustls"] }
 serde = { workspace = true, features = ["derive"] }

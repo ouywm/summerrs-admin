@@ -4,57 +4,24 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
-anyhow = { workspace = true }
-aws-config = { workspace = true }
-aws-credential-types = { workspace = true }
-aws-sdk-s3 = { workspace = true }
-aws-smithy-types = { workspace = true }
-axum-client-ip = { workspace = true, features = ["connect-info", "serde", "forwarded-header"] }
-axum-valid = { workspace = true }
-bytes = { workspace = true }
-chrono = { workspace = true }
-common = { workspace = true }
-flume = { workspace = true }
-futures = { workspace = true }
-macros = { workspace = true }
-summer-mcp = { workspace = true }
-summer-rig = { workspace = true }
-summer-domain = { workspace = true }
-md-5 = { workspace = true }
-mime = { workspace = true }
-model = { workspace = true }
-regex = { workspace = true }
-schema = { workspace = true }
-schemars = { workspace = true, features = ["derive", "chrono04"] }
-sea-orm = { workspace = true, features = ["with-chrono", "sqlx-postgres", "runtime-tokio-rustls"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 summer = { workspace = true }
+summer-web = { workspace = true, features = ["openapi", "openapi-swagger", "multipart", "socket_io"] }
 summer-sea-orm = { workspace = true, features = ["postgres", "rustls", "with-web", "with-web-openapi"] }
-sysinfo = { workspace = true }
+summer-redis = { workspace = true }
 summer-job = { workspace = true }
 summer-mail = { workspace = true }
-summer-redis = { workspace = true }
 summer-auth = { workspace = true, features = ["web", "redis", "openapi"] }
-#summer-web = { workspace = true, features = ["openapi", "openapi-swagger", "openapi-scalar", "openapi-redoc"] }
-summer-web = { workspace = true, features = ["openapi", "openapi-swagger", "multipart","socket_io"] }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-tower = { workspace = true }
+
+summer-system = { workspace = true }
+summer-plugins = { workspace = true }
+summer-mcp = { workspace = true }
+summer-rig = { workspace = true }
+
+axum-client-ip = { workspace = true, features = ["connect-info"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
-url = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
-validator = { workspace = true }
-woothee = { workspace = true }
-ip2region = { workspace = true }
-rustc-hash = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
-[dev-dependencies]
-criterion = { workspace = true, features = ["async_tokio"] }
-kanal = { workspace = true }
-reqwest = { workspace = true }
-
-[[bench]]
-name = "task_queue"
-harness = false
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

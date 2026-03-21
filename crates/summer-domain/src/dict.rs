@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
-use common::error::{ApiErrors, ApiResult};
-use model::{
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_model::{
     dto::sys_dict::{
         CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto,
         UpdateDictDataDto, UpdateDictTypeDto,

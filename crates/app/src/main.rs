@@ -1,15 +1,3 @@
-mod job;
-mod plugin;
-mod router;
-mod service;
-mod socketio;
-
-use crate::plugin::background_task::BackgroundTaskPlugin;
-use crate::plugin::ip2region::Ip2RegionPlugin;
-use crate::plugin::log_batch_collector::LogBatchCollectorPlugin;
-use crate::plugin::perm_bitmap::PermBitmapPlugin;
-use crate::plugin::s3::S3Plugin;
-use crate::plugin::socket_gateway::SocketGatewayPlugin;
 use axum_client_ip::ClientIpSource;
 use summer::App;
 use summer::auto_config;
@@ -27,6 +15,12 @@ use summer_web::WebPlugin;
 use summer_web::axum::body::Body;
 use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
+
+use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
+
+use summer_plugins::{
+    BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin,
+};
 
 #[auto_config(WebConfigurator, JobConfigurator)]
 #[tokio::main]

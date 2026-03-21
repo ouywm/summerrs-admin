@@ -1,13 +1,13 @@
 //! Generated admin VO skeleton.
 
 {% if flags.uses_datetime_format %}
-use common::serde_utils::datetime_format;
+use summer_common::serde_utils::datetime_format;
 {% endif %}
 {% if flags.uses_date_format %}
-use common::serde_utils::date_format;
+use summer_common::serde_utils::date_format;
 {% endif %}
 {% if flags.uses_time_format %}
-use common::serde_utils::time_format;
+use summer_common::serde_utils::time_format;
 {% endif %}
 use schemars::JsonSchema;
 use serde::Serialize;

@@ -39,7 +39,6 @@ redis_prefix = "summerrs:socket"
 session_ttl_seconds = 86400
 
 
-
 [sea-orm]
 uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai}"
 enable_logging = true
