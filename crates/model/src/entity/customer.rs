@@ -22,7 +22,7 @@ pub enum CustomerStatus {
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "customer")]
+#[sea_orm(schema_name = "biz", table_name = "customer")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,

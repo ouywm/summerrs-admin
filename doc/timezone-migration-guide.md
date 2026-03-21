@@ -16,7 +16,7 @@
 
 **执行迁移脚本**：
 ```bash
-psql -U admin -d summerrs-admin -f sql/migrate_to_utc.sql
+psql -U admin -d summerrs-admin -f sql/migration/migrate_to_utc.sql
 ```
 
 **迁移说明**：
@@ -80,7 +80,7 @@ const localTime = dayjs.utc(createTime).local().format('YYYY-MM-DD HH:mm:ss');
 
 **1. 执行数据库迁移**：
 ```bash
-psql -U admin -d summerrs-admin -f sql/migrate_to_utc.sql
+psql -U admin -d summerrs-admin -f sql/migration/migrate_to_utc.sql
 ```
 
 **2. 重启应用**：
@@ -101,7 +101,7 @@ curl -X POST http://localhost:8080/api/system/menu \
 SELECT id, title, create_time,
        create_time AT TIME ZONE 'UTC' as utc_time,
        create_time AT TIME ZONE 'Asia/Shanghai' as shanghai_time
-FROM sys_menu
+FROM sys.menu
 ORDER BY id DESC
 LIMIT 1;
 ```
@@ -131,7 +131,7 @@ LIMIT 1;
 
 ```sql
 -- 回滚到 timestamp without time zone
-ALTER TABLE sys_user
+ALTER TABLE sys."user"
   ALTER COLUMN create_time TYPE timestamp USING create_time AT TIME ZONE 'Asia/Shanghai',
   ALTER COLUMN update_time TYPE timestamp USING update_time AT TIME ZONE 'Asia/Shanghai';
 

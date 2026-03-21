@@ -78,7 +78,7 @@ impl SqlGenerator {
         result.push_str("-- ============================================================\n\n");
         result.push_str(&self.statements.join("\n\n"));
         result.push_str("\n\n-- 重置序列\n");
-        result.push_str("SELECT setval('sys_menu_id_seq', (SELECT MAX(id) FROM sys_menu));\n");
+        result.push_str("SELECT setval('sys.menu_id_seq', (SELECT MAX(id) FROM sys.menu));\n");
         result
     }
 
@@ -120,7 +120,7 @@ impl SqlGenerator {
         };
 
         format!(
-            "INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, \
+            "INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, \
              is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, \
              show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) \
              VALUES ({}, {}, 1, '{}', '{}', '{}', '{}', '{}', '{}', '{}', {}, {}, {}, {}, {}, {}, {}, {}, '{}', '{}', '', '', {}, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
@@ -149,7 +149,7 @@ impl SqlGenerator {
 
     fn generate_auth_insert(&self, id: i64, parent_id: i64, auth: &AuthItem, sort: i32) -> String {
         format!(
-            "INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, \
+            "INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, \
              is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, \
              show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) \
              VALUES ({}, {}, 2, '', '', '', '', '', '{}', '', false, false, false, false, false, false, false, false, '', '', '{}', '{}', {}, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",

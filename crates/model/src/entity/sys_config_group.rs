@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "sys_config_group")]
+#[sea_orm(schema_name = "sys", table_name = "config_group")]
 pub struct Model {
     /// 分组ID
     #[sea_orm(primary_key)]

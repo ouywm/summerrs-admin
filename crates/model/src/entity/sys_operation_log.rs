@@ -77,7 +77,7 @@ pub enum OperationStatus {
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "sys_operation_log")]
+#[sea_orm(schema_name = "sys", table_name = "operation_log")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,

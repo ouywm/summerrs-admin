@@ -29,7 +29,7 @@ pub enum NoticeTargetType {
 }
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "sys_notice_target")]
+#[sea_orm(schema_name = "sys", table_name = "notice_target")]
 pub struct Model {
     /// 主键ID
     #[sea_orm(primary_key)]

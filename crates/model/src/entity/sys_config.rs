@@ -47,7 +47,7 @@ pub enum ValueType {
 }
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "sys_config")]
+#[sea_orm(schema_name = "sys", table_name = "config")]
 pub struct Model {
     /// 配置ID
     #[sea_orm(primary_key)]

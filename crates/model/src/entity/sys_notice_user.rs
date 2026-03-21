@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "sys_notice_user")]
+#[sea_orm(schema_name = "sys", table_name = "notice_user")]
 pub struct Model {
     /// 主键ID
     #[sea_orm(primary_key)]

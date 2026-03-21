@@ -32,7 +32,7 @@ pub enum DictStatus {
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "sys_dict_type")]
+#[sea_orm(schema_name = "sys", table_name = "dict_type")]
 pub struct Model {
     /// 主键 ID
     #[sea_orm(primary_key)]

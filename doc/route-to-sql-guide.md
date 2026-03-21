@@ -33,7 +33,7 @@ ts-node export-routes.ts
 ### 2. 运行转换工具
 
 ```bash
-cargo run --bin route_to_sql routes.json 1 > sql/sys_menu_data.sql
+cargo run --bin route_to_sql routes.json 1 > sql/sys/menu_data.sql
 ```
 
 参数说明：
@@ -44,7 +44,7 @@ cargo run --bin route_to_sql routes.json 1 > sql/sys_menu_data.sql
 ### 3. 导入数据库
 
 ```bash
-psql -U postgres -d your_database -f sql/sys_menu_data.sql
+psql -U postgres -d your_database -f sql/sys/menu_data.sql
 ```
 
 ## JSON 格式示例
@@ -120,13 +120,13 @@ psql -U postgres -d your_database -f sql/sys_menu_data.sql
 
 会生成：
 ```sql
-INSERT INTO sys_menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
+INSERT INTO sys.menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
 VALUES (10, 5, 2, '新增', '新增', 'add', 1);
 
-INSERT INTO sys_menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
+INSERT INTO sys.menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
 VALUES (11, 5, 2, '编辑', '编辑', 'edit', 2);
 
-INSERT INTO sys_menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
+INSERT INTO sys.menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
 VALUES (12, 5, 2, '删除', '删除', 'delete', 3);
 ```
 
@@ -173,22 +173,22 @@ export const systemRoutes: AppRouteRecord = {
 生成的 SQL：
 
 ```sql
-INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title,
+INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title,
  is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab,
  show_badge, show_text_badge, active_path, sort)
  VALUES (1, 0, 1, 'System', '/system', '/index/index', '', 'ri:user-3-line', '系统管理', false, false, false, false, false, false, false, false, '', '', 0);
 
-INSERT INTO sys_menu (id, parent_id, menu_type, name, path, component, redirect, icon, title,
+INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title,
  is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab,
  show_badge, show_text_badge, active_path, sort)
  VALUES (2, 1, 1, 'User', 'user', '/system/user', '', 'ri:user-line', '用户管理', false, false, false, false, false, true, false, false, '', '', 1);
 
-INSERT INTO sys_menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
+INSERT INTO sys.menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
  VALUES (3, 2, 2, '新增', '新增', 'add', 1);
 
-INSERT INTO sys_menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
+INSERT INTO sys.menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
  VALUES (4, 2, 2, '编辑', '编辑', 'edit', 2);
 
 -- 重置序列
-SELECT setval('sys_menu_id_seq', (SELECT MAX(id) FROM sys_menu));
+SELECT setval('sys.menu_id_seq', (SELECT MAX(id) FROM sys.menu));
 ```
