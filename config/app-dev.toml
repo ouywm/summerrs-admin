@@ -41,7 +41,7 @@ session_ttl_seconds = 86400
 
 
 [sea-orm]
-uri = "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai"
+uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai}"
 enable_logging = true
 
 [sea-orm-web]
@@ -68,7 +68,7 @@ jwt_issuer = "summer-admin"
 jwt_audience = "summer-admin"
 # cookie_name = "token"
 jwt_algorithm = "HS256"
-jwt_secret = "SRKhqjfTyXMjnfMW0419DJfZFqxnsF97AQMk5soPlnk2dI/O0dUR3GIp/OUHXTptzR7DqlXJsQ99GUK6v28YcA=="
+jwt_secret = "${JWT_SECRET:change-me-in-local-dev}"
 #jwt_algorithm = "RS256"
 #jwt_private_key = "./data/rsa_private.pem"
 #jwt_public_key = "./data/rsa_public.pem"
@@ -84,8 +84,8 @@ test_connection = false
 [s3]
 endpoint = "http://localhost:9000"
 region = "us-east-1"
-access_key = "bvqw5TKkyLU8GPgtjhId"
-secret_key = "lE1tiudk0UrGfsbp5wH6vKqmM4N7T3QWCLXcIhRZ"
+access_key = "${S3_ACCESS_KEY:minioadmin}"
+secret_key = "${S3_SECRET_KEY:minioadmin}"
 bucket = "summer-admin"
 
 # ── 传输层（全部可选，不写则用 SDK 默认值） ──
@@ -151,3 +151,23 @@ json_response = false                   # 无状态模式下返回 JSON 而非 S
 # ── 会话配置（SessionConfig） ──
 session_channel_capacity = 16           # 会话通道缓冲容量
 # session_keep_alive = 3600             # 会话不活动超时（秒），不设置则永不超时
+
+# ── Rig LLM 框架配置 ──
+[rig]
+default_provider = "openai"
+
+[rig.providers.openai]
+provider_type = "openai"
+api_key = "${RIG_OPENAI_API_KEY}"
+base_url = "https://codex-api.packycode.com/v1"
+default_model = "gpt-5.4"
+
+#[rig.providers.deepseek]
+#provider_type = "deepseek"
+#api_key = "sk-xxx"
+#default_model = "deepseek-chat"
+
+#[rig.providers.local]
+#provider_type = "ollama"
+#base_url = "http://localhost:11434"
+#default_model = "qwen2.5:14b"
