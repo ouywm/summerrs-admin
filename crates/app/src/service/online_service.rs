@@ -99,10 +99,7 @@ impl OnlineUserService {
         self.socket_gateway
             .notify_and_disconnect(
                 &login_id,
-                &KickoutPayload {
-                    reason: "admin_kickout".to_string(),
-                    message: "当前账号已被管理员强制下线".to_string(),
-                },
+                &KickoutPayload::admin_kickout(),
             )
             .await?;
         Ok(())
@@ -121,10 +118,7 @@ impl OnlineUserService {
             .notify_and_disconnect_device(
                 &login_id,
                 device_str,
-                &KickoutPayload {
-                    reason: "admin_kickout".to_string(),
-                    message: "当前账号已被管理员强制下线".to_string(),
-                },
+                &KickoutPayload::admin_kickout(),
             )
             .await?;
         Ok(())

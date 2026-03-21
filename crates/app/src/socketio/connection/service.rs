@@ -1,12 +1,9 @@
 use chrono::Utc;
 use common::error::ApiResult;
-use std::str::FromStr;
 use summer::plugin::Service;
 use summer_auth::{LoginId, SessionManager};
-use summer_web::socketioxide::socket::Sid;
-use summer_web::socketioxide::SocketIo;
 
-use super::super::core::model::SocketSessionState;
+use super::super::core::{emitter::SocketEmitter, event, model::SocketSessionState};
 use super::session::SocketSessionStore;
 
 // 重导出：保持外部 `use crate::socketio::service::{...}` 可用
@@ -15,14 +12,15 @@ pub use super::super::core::model::{KickoutPayload, SocketConnectAuthDto, Socket
 #[derive(Clone, Service)]
 pub struct SocketGatewayService {
     #[inject(component)]
-    io: SocketIo,
-    #[inject(component)]
     auth: SessionManager,
     #[inject(component)]
     sessions: SocketSessionStore,
+    #[inject(component)]
+    emitter: SocketEmitter,
 }
 
 impl SocketGatewayService {
+    /// 认证新连接：校验 token，创建会话并存入 Redis
     pub async fn authenticate_connection(
         &self,
         socket_id: &str,
@@ -54,6 +52,7 @@ impl SocketGatewayService {
         Ok((session, identity))
     }
 
+    /// 注销连接：清理 Redis 中的会话和索引
     pub async fn unregister_connection(
         &self,
         socket_id: &str,
@@ -63,20 +62,31 @@ impl SocketGatewayService {
         self.sessions.cleanup(socket_id, namespace, login_id).await
     }
 
+    /// 静默断开该用户的所有 socket（不推送事件）
     #[allow(dead_code)]
     pub async fn disconnect_by_login_id(&self, login_id: &LoginId) -> ApiResult<usize> {
         self.disconnect_login_sockets(login_id, None, None).await
     }
 
+    /// 推送踢出事件后断开该用户的所有 socket
+    ///
+    /// 通过 room 广播推送事件（一次 emit 覆盖所有设备），
+    /// 然后遍历断开各 socket 并清理 Redis。
     pub async fn notify_and_disconnect(
         &self,
         login_id: &LoginId,
         payload: &KickoutPayload,
     ) -> ApiResult<usize> {
-        self.disconnect_login_sockets(login_id, None, Some(payload))
-            .await
+        self.emitter
+            .emit_to_user(login_id.user_id, event::SESSION_KICKOUT, payload)
+            .await?;
+        self.disconnect_login_sockets(login_id, None, None).await
     }
 
+    /// 推送踢出事件后断开该用户指定设备的 socket
+    ///
+    /// 单设备踢出无法使用 room 广播（会误通知其他设备），
+    /// 由 `disconnect_login_sockets` 在循环内按 socket 精确推送。
     pub async fn notify_and_disconnect_device(
         &self,
         login_id: &LoginId,
@@ -87,11 +97,12 @@ impl SocketGatewayService {
             .await
     }
 
-    /// GC 委托
+    /// GC 委托：清理过期的 socket 索引条目
     pub async fn gc_stale_index_entries(&self) -> ApiResult<usize> {
         self.sessions.gc_stale_entries().await
     }
 
+    /// 内部统一方法：按 login_id 查找 socket，可选设备过滤，可选 per-socket 推送后断开
     async fn disconnect_login_sockets(
         &self,
         login_id: &LoginId,
@@ -123,30 +134,26 @@ impl SocketGatewayService {
                 }
             }
 
-            if let Some(socket) = self.find_socket(&session.namespace, &session.socket_id) {
-                if let Some(payload) = &notify {
-                    if let Err(err) = socket.emit(
-                        super::super::core::event::SESSION_KICKOUT,
-                        payload,
-                    ) {
+            if let Some(socket) = self.emitter.get_socket(&session.namespace, &session.socket_id) {
+                if let Some(payload) = notify {
+                    if let Err(err) = socket.emit(event::SESSION_KICKOUT, payload) {
                         tracing::warn!(
                             socket_id = %session.socket_id,
-                            event = super::super::core::event::SESSION_KICKOUT,
+                            event = event::SESSION_KICKOUT,
                             error = %err,
                             "Socket emit before disconnect failed"
                         );
                     }
                 }
 
-                if let Err(err) = socket.disconnect() {
-                    tracing::warn!(
+                match socket.disconnect() {
+                    Ok(()) => disconnected += 1,
+                    Err(err) => tracing::warn!(
                         socket_id = %session.socket_id,
                         namespace = %session.namespace,
                         error = %err,
                         "Socket disconnect failed, cleaning session eagerly"
-                    );
-                } else {
-                    disconnected += 1;
+                    ),
                 }
             }
 
@@ -159,14 +166,5 @@ impl SocketGatewayService {
         self.sessions.cleanup_batch(&cleanup_sessions).await?;
 
         Ok(disconnected)
-    }
-
-    fn find_socket(
-        &self,
-        namespace: &str,
-        socket_id: &str,
-    ) -> Option<summer_web::socketioxide::extract::SocketRef> {
-        let sid = Sid::from_str(socket_id).ok()?;
-        self.io.of(namespace)?.get_socket(sid)
     }
 }

@@ -5,3 +5,8 @@
 
 /// 强制下线通知，payload: [`super::model::KickoutPayload`]
 pub const SESSION_KICKOUT: &str = "session.kickout";
+
+/// 踢出原因：管理员强制下线
+pub const REASON_ADMIN_KICKOUT: &str = "admin_kickout";
+/// 踢出原因：账号被禁用
+pub const REASON_ACCOUNT_DISABLED: &str = "account_disabled";

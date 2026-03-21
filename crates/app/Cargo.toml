@@ -18,6 +18,7 @@ flume = { workspace = true }
 futures = { workspace = true }
 macros = { workspace = true }
 summer-mcp = { workspace = true }
+summer-rig = { workspace = true }
 summer-domain = { workspace = true }
 md-5 = { workspace = true }
 mime = { workspace = true }

@@ -32,3 +32,19 @@ pub struct KickoutPayload {
     pub reason: String,
     pub message: String,
 }
+
+impl KickoutPayload {
+    pub fn admin_kickout() -> Self {
+        Self {
+            reason: super::event::REASON_ADMIN_KICKOUT.to_string(),
+            message: "当前账号已被管理员强制下线".to_string(),
+        }
+    }
+
+    pub fn account_disabled() -> Self {
+        Self {
+            reason: super::event::REASON_ACCOUNT_DISABLED.to_string(),
+            message: "账号已被禁用".to_string(),
+        }
+    }
+}

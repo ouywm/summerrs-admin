@@ -4,9 +4,11 @@ members = [
     "crates/model",
     "crates/common",
     "crates/macros",
+    "crates/summer-rig",
     "crates/summer-domain",
     "crates/summer-auth",
     "crates/summer-mcp",
+    "crates/summer-ai-gateway",
 ]
 resolver = "2"
 
@@ -34,6 +36,7 @@ mime = "0.3.17"
 mime_guess = "2"
 md-5 = "0.10"
 model = { path = "crates/model" }
+summer-rig = { path = "crates/summer-rig" }
 summer-mcp = { path = "crates/summer-mcp" }
 summer-domain = { path = "crates/summer-domain" }
 parking_lot = "0.12.5"
@@ -41,6 +44,7 @@ password-hash = "0.5"
 rand = "0.10.0"
 regex = "1.12.3"
 reqwest = "0.13.2"
+rig-core = "0.33.0"
 rust_xlsxwriter = "0.91.0"
 rustc-hash = "2"
 schema = "0.1.0"
@@ -75,6 +79,9 @@ ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master
 indexmap = "2.13.0"
 jsonwebtoken = "9"
 rmcp = { path = "/Volumes/990pro/code/rust/rust-mcp/crates/rmcp" }
+summer-ai-gateway = { path = "crates/summer-ai-gateway" }
+reqwest-eventsource = "0.6"
+tokio-stream = "0.1"
 [patch.crates-io]
 summer = { path = "/Volumes/990pro/code/rust/spring-rs/summer" }
 summer-macros = { path = "/Volumes/990pro/code/rust/spring-rs/summer-macros" }

@@ -19,6 +19,7 @@ use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
 use summer_mcp::McpPlugin;
 use summer_redis::RedisPlugin;
+use summer_rig::SummerRigPlugin;
 use summer_sea_orm::SeaOrmPlugin;
 use summer_web::LayerConfigurator;
 use summer_web::WebConfigurator;
@@ -44,6 +45,7 @@ async fn main() {
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
         .add_plugin(McpPlugin)
+        .add_plugin(SummerRigPlugin)
         .auth_configure(
             PathAuthBuilder::new()
                 .include("/**")

@@ -471,10 +471,7 @@ impl SysUserService {
         self.socket_gateway
             .notify_and_disconnect(
                 login_id,
-                &KickoutPayload {
-                    reason: "account_disabled".to_string(),
-                    message: "账号已被禁用".to_string(),
-                },
+                &KickoutPayload::account_disabled(),
             )
             .await?;
         Ok(())
