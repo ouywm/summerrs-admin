@@ -102,6 +102,16 @@ description: >
 - `#[log]` 必须放在路由宏上方
 - 菜单、按钮、字典优先走 MCP 业务工具，不要直接手写裸 SQL
 
+## Commit Checks
+
+- 每次提交前必须先跑 `./build-tools/taplofmt.sh --check`
+- 如果 `taplo` 检查失败，先跑 `./build-tools/taplofmt.sh --fix`，再重新执行 `--check`
+- 如果本次改动涉及 Rust 代码，提交前至少补跑一次受影响 crate 的 `cargo check`
+- 推荐在本地执行一次 `./build-tools/install-git-hooks.sh`，启用项目内置的 `pre-commit` hook
+- `pre-commit` hook 当前会按改动类型自动执行 `./build-tools/taplofmt.sh --check`、`./build-tools/rustfmt.sh --check`、`./build-tools/rustcheck.sh check`、`./build-tools/rustcheck.sh clippy`、`./build-tools/rustcheck.sh test-compile`
+- Git hook 入口统一使用 `build-tools/pre-commit`，不要再额外维护一份 `.githooks/pre-commit`
+- Git hook 只能约束本地提交，不能替代 CI
+
 ## Canonical Files
 
 - 应用装配：`crates/app/src/main.rs`

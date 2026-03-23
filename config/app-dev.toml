@@ -80,10 +80,10 @@ test_connection = false
 
 [s3]
 access_key = "${S3_ACCESS_KEY}"
-secret_key = "${S3_SECRET_KEY}"
 bucket = "summer-admin"
 endpoint = "http://localhost:9000"
 region = "us-east-1"
+secret_key = "${S3_SECRET_KEY}"
 
 # ── 传输层（全部可选，不写则用 SDK 默认值） ──
 # force_path_style = true          # MinIO/RustFS 必须 true（默认 true）
