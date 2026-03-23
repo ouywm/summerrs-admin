@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name    = "summer-plugins"
+name = "summer-plugins"
 version = "0.0.1"
 
 [dependencies]
@@ -30,6 +30,6 @@ tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-bytes   = { workspace = true }
-mime    = { workspace = true }
+bytes = { workspace = true }
+mime = { workspace = true }
 reqwest = { workspace = true }

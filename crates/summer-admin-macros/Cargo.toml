@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name    = "summer-admin-macros"
+name = "summer-admin-macros"
 version = "0.0.1"
 
 [lib]
@@ -8,5 +8,5 @@ proc-macro = true
 
 [dependencies]
 proc-macro2 = "1"
-quote       = "1"
-syn         = { version = "2", features = ["full"] }
+quote = "1"
+syn = { version = "2", features = ["full"] }

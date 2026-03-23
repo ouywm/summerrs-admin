@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name    = "summer-system-model"
+name = "summer-system-model"
 version = "0.0.1"
 
 [dependencies]

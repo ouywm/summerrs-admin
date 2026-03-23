@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name    = "summer-system"
+name = "summer-system"
 version = "0.0.1"
 
 [dependencies]
@@ -65,10 +65,10 @@ woothee = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
-flume     = { workspace = true }
-kanal     = { workspace = true }
-reqwest   = { workspace = true }
+flume = { workspace = true }
+kanal = { workspace = true }
+reqwest = { workspace = true }
 
 [[bench]]
 harness = false
-name    = "task_queue"
+name = "task_queue"

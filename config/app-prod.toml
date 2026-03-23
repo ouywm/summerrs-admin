@@ -5,21 +5,21 @@
 limit_payload = { enable = true, body_limit = "1GB" }
 
 [mail]
-auth            = { user = "noreply@example.com", password = "your-password" }
-host            = "smtp.example.com"
-port            = 465
-secure          = true
-stub            = false
+auth = { user = "noreply@example.com", password = "your-password" }
+host = "smtp.example.com"
+port = 465
+secure = true
+stub = false
 test_connection = true
 
 [s3]
-access_key           = "minioadmin"
-allowed_extensions   = []
-bucket               = "public"
-endpoint             = "http://localhost:9000"
-max_file_size        = 524288000
+access_key = "minioadmin"
+allowed_extensions = []
+bucket = "public"
+endpoint = "http://localhost:9000"
+max_file_size = 524288000
 multipart_chunk_size = 10485760
-multipart_threshold  = 10485760
-presign_expiry       = 3600
-region               = "us-east-1"
-secret_key           = "minioadmin"
+multipart_threshold = 10485760
+presign_expiry = 3600
+region = "us-east-1"
+secret_key = "minioadmin"

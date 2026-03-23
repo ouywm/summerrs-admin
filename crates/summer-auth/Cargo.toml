@@ -1,34 +1,34 @@
 [package]
 description = "Authentication and authorization plugin for summer-rs"
-edition     = "2024"
-name        = "summer-auth"
-version     = "0.1.0"
+edition = "2024"
+name = "summer-auth"
+version = "0.1.0"
 
 [dependencies]
-anyhow        = { workspace = true }
-async-trait   = "0.1"
-base64        = { workspace = true }
-chrono        = { workspace = true }
-jsonwebtoken  = { workspace = true }
-parking_lot   = { workspace = true }
-schemars      = { workspace = true, features = ["derive"] }
-serde         = { workspace = true, features = ["derive"] }
-serde_json    = { workspace = true }
-summer        = { workspace = true }
-summer-redis  = { workspace = true, optional = true }
-summer-web    = { workspace = true, features = ["openapi"], optional = true }
-thiserror     = { workspace = true }
-tower-layer   = { version = "0.3", optional = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+base64 = { workspace = true }
+chrono = { workspace = true }
+jsonwebtoken = { workspace = true }
+parking_lot = { workspace = true }
+schemars = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+summer = { workspace = true }
+summer-redis = { workspace = true, optional = true }
+summer-web = { workspace = true, features = ["openapi"], optional = true }
+thiserror = { workspace = true }
+tower-layer = { version = "0.3", optional = true }
 tower-service = { version = "0.3", optional = true }
-tracing       = { workspace = true }
-uuid          = { workspace = true, features = ["v4"] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [features]
 default = ["memory", "web"]
-memory  = []
+memory = []
 openapi = ["summer-web/openapi"]
-redis   = ["summer-redis"]
-web     = ["summer-web", "tower-layer", "tower-service"]
+redis = ["summer-redis"]
+web = ["summer-web", "tower-layer", "tower-service"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

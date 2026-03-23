@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name    = "summer-ai-model"
+name = "summer-ai-model"
 version = "0.0.1"
 
 [dependencies]

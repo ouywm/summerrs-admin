@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name    = "summer-mcp"
+name = "summer-mcp"
 version = "0.0.1"
 
 [features]
@@ -11,8 +11,8 @@ standalone = [
 ]
 
 [[bin]]
-name              = "summerrs-mcp"
-path              = "src/bin/main.rs"
+name = "summerrs-mcp"
+path = "src/bin/main.rs"
 required-features = ["standalone"]
 
 [dependencies]
@@ -51,7 +51,7 @@ tracing-subscriber = { version = "0.3", features = [
 ], optional = true }
 
 [dev-dependencies]
-anyhow  = { workspace = true }
-chrono  = { workspace = true }
-rmcp    = { workspace = true, features = ["client", "transport-child-process"] }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 sea-orm = { workspace = true, features = ["mock"] }
