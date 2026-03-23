@@ -1,8 +1,12 @@
 //! S3 分片上传过期清理
 
-use std::time::SystemTime;
+use std::{error::Error as StdError, time::SystemTime};
 
-use aws_smithy_types::DateTime;
+use aws_sdk_s3::{
+    error::SdkError,
+    operation::{RequestId, RequestIdExt, list_multipart_uploads::ListMultipartUploadsError},
+};
+use aws_smithy_types::{DateTime, error::metadata::ProvideErrorMetadata};
 use summer::extractor::{Component, Config};
 use summer_job::cron;
 use tracing::{error, info};
@@ -19,14 +23,29 @@ async fn s3_multipart_cleanup(
     let cutoff = DateTime::from_secs(now.secs() - config.multipart_max_age as i64);
     let bucket = &config.bucket;
 
+    info!("开始清理过期分片上传");
+
     match cleanup_stale_multipart_uploads(&s3, bucket, &cutoff).await {
         Ok(count) if count > 0 => {
             info!("清理了 {} 个过期分片上传", count);
         }
-        Err(e) => {
-            error!(%e, "分片上传清理任务失败");
+        Ok(_) => {
+            info!("未发现需要清理的过期分片上传");
         }
-        _ => {}
+        Err(e) => {
+            let service_error = e.as_service_error();
+            error!(
+                sdk_error = %e,
+                sdk_error_debug = ?e,
+                http_status = ?e.raw_response().map(|raw| raw.status().as_u16()),
+                aws_error_code = ?service_error.and_then(|err| err.code()),
+                aws_error_message = ?service_error.and_then(|err| err.message()),
+                request_id = ?e.request_id(),
+                extended_request_id = ?e.extended_request_id(),
+                source_error = ?service_error.and_then(|err| err.source().map(ToString::to_string)),
+                "分片上传清理任务失败"
+            );
+        }
     }
 }
 
@@ -35,12 +54,7 @@ async fn cleanup_stale_multipart_uploads(
     s3: &aws_sdk_s3::Client,
     bucket: &str,
     cutoff: &DateTime,
-) -> Result<
-    u32,
-    aws_sdk_s3::error::SdkError<
-        aws_sdk_s3::operation::list_multipart_uploads::ListMultipartUploadsError,
-    >,
-> {
+) -> Result<u32, SdkError<ListMultipartUploadsError>> {
     let mut aborted = 0u32;
     let mut key_marker: Option<String> = None;
     let mut upload_id_marker: Option<String> = None;
@@ -74,7 +88,20 @@ async fn cleanup_stale_multipart_uploads(
                         aborted += 1;
                     }
                     Err(e) => {
-                        error!(key, upload_id = uid, %e, "abort 分片上传失败");
+                        let service_error = e.as_service_error();
+                        error!(
+                            key,
+                            upload_id = uid,
+                            sdk_error = %e,
+                            sdk_error_debug = ?e,
+                            http_status = ?e.raw_response().map(|raw| raw.status().as_u16()),
+                            aws_error_code = ?service_error.and_then(|err| err.code()),
+                            aws_error_message = ?service_error.and_then(|err| err.message()),
+                            request_id = ?e.request_id(),
+                            extended_request_id = ?e.extended_request_id(),
+                            source_error = ?service_error.and_then(|err| err.source().map(ToString::to_string)),
+                            "abort 分片上传失败"
+                        );
                     }
                 }
             }
