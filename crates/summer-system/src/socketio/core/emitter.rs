@@ -1,12 +1,12 @@
 use std::str::FromStr;
 
-use summer_common::error::{ApiErrors, ApiResult};
 use serde::Serialize;
 use summer::plugin::Service;
+use summer_common::error::{ApiErrors, ApiResult};
 use summer_web::config::SocketIOConfig;
+use summer_web::socketioxide::SocketIo;
 use summer_web::socketioxide::extract::SocketRef;
 use summer_web::socketioxide::socket::Sid;
-use summer_web::socketioxide::SocketIo;
 
 use super::room;
 
@@ -85,12 +85,7 @@ impl SocketEmitter {
     }
 
     /// 底层方法：向指定 room 推送
-    async fn emit_to_room<T: Serialize>(
-        &self,
-        room: &str,
-        event: &str,
-        data: &T,
-    ) -> ApiResult<()> {
+    async fn emit_to_room<T: Serialize>(&self, room: &str, event: &str, data: &T) -> ApiResult<()> {
         if let Some(ns_ref) = self.io.of(self.ns()) {
             ns_ref
                 .within(room.to_string())

@@ -11,7 +11,7 @@ CREATE TABLE ai.ability (
     channel_group   VARCHAR(64)     NOT NULL,
     endpoint_scope  VARCHAR(32)     NOT NULL DEFAULT 'chat',
     model           VARCHAR(128)    NOT NULL,
-    channel_id      BIGINT          NOT NULL REFERENCES ai.channel(id) ON DELETE CASCADE,
+    channel_id      BIGINT          NOT NULL,
     enabled         BOOLEAN         NOT NULL DEFAULT TRUE,
     priority        INT             NOT NULL DEFAULT 0,
     weight          INT             NOT NULL DEFAULT 1 CHECK (weight >= 1),

@@ -1,11 +1,11 @@
 //! 系统文件管理服务（列表、详情、删除）
 
 use anyhow::Context;
-use summer_common::error::{ApiErrors, ApiResult};
-use summer_model::dto::sys_file::FileQueryDto;
-use summer_model::vo::sys_file::FileVo;
 use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder};
 use summer::plugin::Service;
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_system_model::dto::sys_file::FileQueryDto;
+use summer_system_model::vo::sys_file::FileVo;
 
 use summer_plugins::background_task::BackgroundTaskQueue;
 use summer_plugins::s3::S3Config;
@@ -31,9 +31,9 @@ impl SysFileService {
         query: FileQueryDto,
         pagination: Pagination,
     ) -> ApiResult<Page<FileVo>> {
-        let page = summer_model::entity::sys_file::Entity::find()
+        let page = summer_system_model::entity::sys_file::Entity::find()
             .filter(query)
-            .order_by_desc(summer_model::entity::sys_file::Column::CreateTime)
+            .order_by_desc(summer_system_model::entity::sys_file::Column::CreateTime)
             .page(&self.db, &pagination)
             .await
             .context("查询文件列表失败")?;
@@ -47,7 +47,7 @@ impl SysFileService {
 
     /// 文件详情
     pub async fn get_file(&self, file_id: i64) -> ApiResult<FileVo> {
-        let file = summer_model::entity::sys_file::Entity::find_by_id(file_id)
+        let file = summer_system_model::entity::sys_file::Entity::find_by_id(file_id)
             .one(&self.db)
             .await
             .context("查询文件失败")?
@@ -59,7 +59,7 @@ impl SysFileService {
 
     /// 删除文件（DB 记录 + S3 对象引用计数）
     pub async fn delete_file(&self, file_id: i64) -> ApiResult<()> {
-        let file = summer_model::entity::sys_file::Entity::find_by_id(file_id)
+        let file = summer_system_model::entity::sys_file::Entity::find_by_id(file_id)
             .one(&self.db)
             .await
             .context("查询文件失败")?
@@ -69,15 +69,15 @@ impl SysFileService {
         let bucket = file.bucket.clone();
 
         // 先删 DB 记录
-        summer_model::entity::sys_file::Entity::delete_by_id(file.id)
+        summer_system_model::entity::sys_file::Entity::delete_by_id(file.id)
             .exec(&self.db)
             .await
             .context("删除文件记录失败")?;
 
         // 检查是否还有其他记录引用同一个 S3 对象
-        let ref_count = summer_model::entity::sys_file::Entity::find()
-            .filter(summer_model::entity::sys_file::Column::FilePath.eq(&file_path))
-            .filter(summer_model::entity::sys_file::Column::Bucket.eq(&bucket))
+        let ref_count = summer_system_model::entity::sys_file::Entity::find()
+            .filter(summer_system_model::entity::sys_file::Column::FilePath.eq(&file_path))
+            .filter(summer_system_model::entity::sys_file::Column::Bucket.eq(&bucket))
             .count(&self.db)
             .await
             .context("查询文件引用计数失败")?;

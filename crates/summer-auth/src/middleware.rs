@@ -92,12 +92,11 @@ where
                 match manager.validate_token(&token).await {
                     Ok(validated) => {
                         // 检查用户类型限制
-                        if let Some(path_config) = &path_config {
-                            if let Some(allowed_types) = path_config.allowed_user_types(&path) {
-                                if !allowed_types.contains(&validated.login_id.user_type) {
-                                    return Ok(forbidden_response());
-                                }
-                            }
+                        if let Some(path_config) = &path_config
+                            && let Some(allowed_types) = path_config.allowed_user_types(&path)
+                            && !allowed_types.contains(&validated.login_id.user_type)
+                        {
+                            return Ok(forbidden_response());
                         }
 
                         // 从 ValidatedAccess 构造 UserSession 并注入 extensions
@@ -151,10 +150,10 @@ fn extract_token(req: &Request, config: &AuthConfig) -> Option<String> {
     // 2. 从 Cookie 提取（如果启用）
     // TODO: 启用 Cookie 模式时需要实现 CSRF 防护
     // 方案：登录时签发 CSRF token，前端在 Header 中携带，中间件双重校验
-    if config.is_read_cookie {
-        if let Some(token) = extract_token_from_cookie(req, config) {
-            return Some(token);
-        }
+    if config.is_read_cookie
+        && let Some(token) = extract_token_from_cookie(req, config)
+    {
+        return Some(token);
     }
 
     None
@@ -167,12 +166,11 @@ fn extract_token_from_header(req: &Request, config: &AuthConfig) -> Option<Strin
     let value = header.to_str().ok()?;
 
     // 如果配置了 token_prefix，先尝试去除前缀
-    if let Some(ref prefix) = config.token_prefix {
-        if !prefix.is_empty() {
-            if let Some(token) = value.strip_prefix(prefix.as_str()) {
-                return Some(token.to_string());
-            }
-        }
+    if let Some(ref prefix) = config.token_prefix
+        && !prefix.is_empty()
+        && let Some(token) = value.strip_prefix(prefix.as_str())
+    {
+        return Some(token.to_string());
     }
 
     // 没有前缀或前缀不匹配时，直接使用整个值
@@ -189,10 +187,10 @@ fn extract_token_from_cookie(req: &Request, config: &AuthConfig) -> Option<Strin
     // 解析 Cookie: name1=value1; name2=value2
     for pair in cookie_str.split(';') {
         let pair = pair.trim();
-        if let Some((name, value)) = pair.split_once('=') {
-            if name.trim() == cookie_name {
-                return Some(value.trim().to_string());
-            }
+        if let Some((name, value)) = pair.split_once('=')
+            && name.trim() == cookie_name
+        {
+            return Some(value.trim().to_string());
         }
     }
 

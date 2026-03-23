@@ -6,8 +6,8 @@ CREATE SCHEMA IF NOT EXISTS sys;
 
 CREATE TABLE sys.user_oauth_binding (
     id                 BIGSERIAL       PRIMARY KEY,
-    user_id            BIGINT          NOT NULL REFERENCES sys."user"(id) ON DELETE CASCADE,
-    provider_id        BIGINT          NOT NULL REFERENCES sys.custom_oauth_provider(id) ON DELETE CASCADE,
+    user_id            BIGINT          NOT NULL,
+    provider_id        BIGINT          NOT NULL,
     external_user_id   VARCHAR(128)    NOT NULL,
     external_user_name VARCHAR(128)    NOT NULL DEFAULT '',
     external_email     VARCHAR(255)    NOT NULL DEFAULT '',

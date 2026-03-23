@@ -5,9 +5,9 @@ use summer::plugin::{ComponentRegistry, Plugin};
 use summer_web::config::SocketIOConfig;
 use summer_web::extractor::Component;
 use summer_web::handler::auto_socketio_setup;
+use summer_web::socketioxide::SocketIo;
 use summer_web::socketioxide::extract::{SocketRef, TryData};
 use summer_web::socketioxide::handler::ConnectHandler;
-use summer_web::socketioxide::SocketIo;
 
 use crate::socketio::room;
 use crate::socketio::service::{SocketConnectAuthDto, SocketGatewayService};

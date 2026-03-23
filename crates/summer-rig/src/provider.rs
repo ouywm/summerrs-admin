@@ -4,6 +4,7 @@ use rig::providers::{
     anthropic, cohere, deepseek, gemini, groq, moonshot, ollama, openai, openrouter, perplexity,
     together, xai,
 };
+use std::str::FromStr;
 
 use crate::config::ProviderConfig;
 
@@ -24,8 +25,10 @@ pub enum ProviderType {
     Moonshot,
 }
 
-impl ProviderType {
-    pub fn from_str(s: &str) -> Result<Self> {
+impl FromStr for ProviderType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "openai" => Ok(Self::OpenAI),
             "anthropic" => Ok(Self::Anthropic),
@@ -42,7 +45,9 @@ impl ProviderType {
             other => bail!("不支持的 provider 类型: {other}"),
         }
     }
+}
 
+impl ProviderType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::OpenAI => "openai",
@@ -181,7 +186,7 @@ fn require_api_key<'a>(config: &'a ProviderConfig, provider_name: &str) -> Resul
 mod tests {
     use super::*;
 
-    // ── ProviderType::from_str 测试 ──
+    // ── ProviderType 解析测试 ──
 
     #[test]
     fn test_provider_type_from_str_all_variants() {
@@ -205,24 +210,36 @@ mod tests {
         ];
 
         for (input, expected) in &cases {
-            let result = ProviderType::from_str(input).unwrap();
-            assert_eq!(result, *expected, "from_str({input:?}) 应为 {expected:?}");
+            let result = input.parse::<ProviderType>().unwrap();
+            assert_eq!(result, *expected, "parse({input:?}) 应为 {expected:?}");
         }
     }
 
     #[test]
     fn test_provider_type_case_insensitive() {
-        assert_eq!(ProviderType::from_str("OpenAI").unwrap(), ProviderType::OpenAI);
-        assert_eq!(ProviderType::from_str("ANTHROPIC").unwrap(), ProviderType::Anthropic);
-        assert_eq!(ProviderType::from_str("DeepSeek").unwrap(), ProviderType::DeepSeek);
-        assert_eq!(ProviderType::from_str("OLLAMA").unwrap(), ProviderType::Ollama);
+        assert_eq!(
+            "OpenAI".parse::<ProviderType>().unwrap(),
+            ProviderType::OpenAI
+        );
+        assert_eq!(
+            "ANTHROPIC".parse::<ProviderType>().unwrap(),
+            ProviderType::Anthropic
+        );
+        assert_eq!(
+            "DeepSeek".parse::<ProviderType>().unwrap(),
+            ProviderType::DeepSeek
+        );
+        assert_eq!(
+            "OLLAMA".parse::<ProviderType>().unwrap(),
+            ProviderType::Ollama
+        );
     }
 
     #[test]
     fn test_provider_type_unknown() {
-        assert!(ProviderType::from_str("unknown").is_err());
-        assert!(ProviderType::from_str("").is_err());
-        assert!(ProviderType::from_str("chatgpt").is_err());
+        assert!("unknown".parse::<ProviderType>().is_err());
+        assert!("".parse::<ProviderType>().is_err());
+        assert!("chatgpt".parse::<ProviderType>().is_err());
     }
 
     #[test]
@@ -243,8 +260,8 @@ mod tests {
         ];
         for pt in &all {
             let s = pt.as_str();
-            let back = ProviderType::from_str(s).unwrap();
-            assert_eq!(*pt, back, "as_str -> from_str 往返失败: {s}");
+            let back = s.parse::<ProviderType>().unwrap();
+            assert_eq!(*pt, back, "as_str -> parse 往返失败: {s}");
         }
     }
 

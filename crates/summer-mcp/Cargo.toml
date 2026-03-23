@@ -1,7 +1,7 @@
 [package]
-name = "summer-mcp"
-version = "0.0.1"
 edition = "2024"
+name    = "summer-mcp"
+version = "0.0.1"
 
 [features]
 standalone = [
@@ -11,11 +11,14 @@ standalone = [
 ]
 
 [[bin]]
-name = "summerrs-mcp"
-path = "src/bin/main.rs"
+name              = "summerrs-mcp"
+path              = "src/bin/main.rs"
 required-features = ["standalone"]
 
 [dependencies]
+minijinja = "2"
+quote = "1"
+regex = { workspace = true }
 rmcp = { workspace = true, features = [
     "server",
     "macros",
@@ -23,31 +26,32 @@ rmcp = { workspace = true, features = [
     "transport-streamable-http-server",
     "schemars",
 ] }
-sea-orm = { workspace = true, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
-summer-common = { workspace = true }
-summer-model = { workspace = true }
-summer = { workspace = true }
-summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
-summer-domain = { workspace = true }
-summer-web = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-tokio-util = { workspace = true }
+schemars = { workspace = true }
+sea-orm = { workspace = true, features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-schemars = { workspace = true }
-tracing = { workspace = true }
-minijinja = "2"
+summer = { workspace = true }
+summer-common = { workspace = true }
+summer-domain = { workspace = true }
+summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
+summer-system-model = { workspace = true }
+summer-web = { workspace = true }
 syn = { version = "2", features = ["full", "parsing"] }
-regex = { workspace = true }
-quote = "1"
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
 
-# standalone 模式专用
-clap = { version = "4", features = ["derive", "env"], optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 anyhow = { workspace = true, optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+], optional = true }
 
 [dev-dependencies]
-anyhow = { workspace = true }
-chrono = { workspace = true }
-rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+anyhow  = { workspace = true }
+chrono  = { workspace = true }
+rmcp    = { workspace = true, features = ["client", "transport-child-process"] }
 sea-orm = { workspace = true, features = ["mock"] }

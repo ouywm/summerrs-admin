@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.trace_span (
     id                  BIGSERIAL       PRIMARY KEY,
-    trace_id            BIGINT          NOT NULL REFERENCES ai.trace(id) ON DELETE CASCADE,
+    trace_id            BIGINT          NOT NULL,
     parent_span_id      BIGINT          NOT NULL DEFAULT 0,
     span_key            VARCHAR(64)     NOT NULL,
     span_name           VARCHAR(128)    NOT NULL DEFAULT '',

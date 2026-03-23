@@ -152,10 +152,10 @@ impl SessionManager {
     /// 清理单个设备（删除 device key + 对应 refresh key）
     async fn cleanup_device(&self, login_id: &LoginId, device: &DeviceType) {
         let dk = device_key(login_id, device);
-        if let Ok(Some(json)) = self.storage.get_string(&dk).await {
-            if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
-                let _ = self.storage.delete(&refresh_key(&info.rid)).await;
-            }
+        if let Ok(Some(json)) = self.storage.get_string(&dk).await
+            && let Ok(info) = serde_json::from_str::<DeviceInfo>(&json)
+        {
+            let _ = self.storage.delete(&refresh_key(&info.rid)).await;
         }
         let _ = self.storage.delete(&dk).await;
     }
@@ -198,10 +198,10 @@ impl SessionManager {
                 // 踢掉最旧的设备（按 login_time 排序）
                 let mut devices_with_time = Vec::new();
                 for key in &keys {
-                    if let Ok(Some(json)) = self.storage.get_string(key).await {
-                        if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
-                            devices_with_time.push((key.clone(), info));
-                        }
+                    if let Ok(Some(json)) = self.storage.get_string(key).await
+                        && let Ok(info) = serde_json::from_str::<DeviceInfo>(&json)
+                    {
+                        devices_with_time.push((key.clone(), info));
                     }
                 }
                 devices_with_time.sort_by_key(|(_, info)| info.login_time);
@@ -299,10 +299,10 @@ impl SessionManager {
             .keys_by_prefix(&device_prefix(login_id))
             .await?;
         for key in &keys {
-            if let Ok(Some(json)) = self.storage.get_string(key).await {
-                if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
-                    let _ = self.storage.delete(&refresh_key(&info.rid)).await;
-                }
+            if let Ok(Some(json)) = self.storage.get_string(key).await
+                && let Ok(info) = serde_json::from_str::<DeviceInfo>(&json)
+            {
+                let _ = self.storage.delete(&refresh_key(&info.rid)).await;
             }
             let _ = self.storage.delete(key).await;
         }
@@ -344,10 +344,10 @@ impl SessionManager {
         let device = DeviceType::from(device_str);
 
         // 3. 检查 deny key（无论 enable_deny_check 如何，refresh 时始终检查封禁状态）
-        if let Some(deny_value) = self.storage.get_string(&deny_key(&login_id)).await? {
-            if deny_value == "banned" {
-                return Err(AuthError::AccountBanned);
-            }
+        if let Some(deny_value) = self.storage.get_string(&deny_key(&login_id)).await?
+            && deny_value == "banned"
+        {
+            return Err(AuthError::AccountBanned);
             // deny="refresh:xxx" 或其他值时允许 refresh 操作（这正是刷新的目的）
         }
 
@@ -387,15 +387,15 @@ impl SessionManager {
 
         // 9. 更新 device info
         let dk = device_key(&login_id, &device);
-        if let Ok(Some(json)) = self.storage.get_string(&dk).await {
-            if let Ok(mut info) = serde_json::from_str::<DeviceInfo>(&json) {
-                info.rid = new_refresh_claims.rid;
-                if let Ok(new_json) = serde_json::to_string(&info) {
-                    let _ = self
-                        .storage
-                        .set_string(&dk, &new_json, self.config.refresh_timeout)
-                        .await;
-                }
+        if let Ok(Some(json)) = self.storage.get_string(&dk).await
+            && let Ok(mut info) = serde_json::from_str::<DeviceInfo>(&json)
+        {
+            info.rid = new_refresh_claims.rid;
+            if let Ok(new_json) = serde_json::to_string(&info) {
+                let _ = self
+                    .storage
+                    .set_string(&dk, &new_json, self.config.refresh_timeout)
+                    .await;
             }
         }
 
@@ -417,35 +417,35 @@ impl SessionManager {
         let login_id = LoginId::decode(&claims.sub).ok_or(AuthError::InvalidToken)?;
 
         // 2. Redis GET deny key（~0.1ms）
-        if self.config.per_request_deny_check {
-            if let Some(deny_value) = self.storage.get_string(&deny_key(&login_id)).await? {
-                match deny_value.as_str() {
-                    "banned" => return Err(AuthError::AccountBanned),
-                    v if v.starts_with("refresh:") => {
-                        // 时间戳方案：token 签发时间 <= deny 设置时间 → 需要刷新
-                        // refresh 后签发的新 token (iat > deny_ts) 自动放行
-                        if let Ok(deny_ts) = v[8..].parse::<i64>() {
-                            if claims.iat <= deny_ts {
-                                return Err(AuthError::RefreshRequired);
-                            }
-                            // token 在 deny 之后签发，权限已是最新，放行
-                        } else {
-                            tracing::warn!(
-                                "畸形 deny 值: {}, login_id: {}",
-                                deny_value,
-                                login_id.encode()
-                            );
-                            return Err(AuthError::InvalidToken);
+        if self.config.per_request_deny_check
+            && let Some(deny_value) = self.storage.get_string(&deny_key(&login_id)).await?
+        {
+            match deny_value.as_str() {
+                "banned" => return Err(AuthError::AccountBanned),
+                v if v.starts_with("refresh:") => {
+                    // 时间戳方案：token 签发时间 <= deny 设置时间 → 需要刷新
+                    // refresh 后签发的新 token (iat > deny_ts) 自动放行
+                    if let Ok(deny_ts) = v[8..].parse::<i64>() {
+                        if claims.iat <= deny_ts {
+                            return Err(AuthError::RefreshRequired);
                         }
-                    }
-                    _ => {
+                        // token 在 deny 之后签发，权限已是最新，放行
+                    } else {
                         tracing::warn!(
-                            "未知 deny 值: {}, login_id: {}",
+                            "畸形 deny 值: {}, login_id: {}",
                             deny_value,
                             login_id.encode()
                         );
                         return Err(AuthError::InvalidToken);
                     }
+                }
+                _ => {
+                    tracing::warn!(
+                        "未知 deny 值: {}, login_id: {}",
+                        deny_value,
+                        login_id.encode()
+                    );
+                    return Err(AuthError::InvalidToken);
                 }
             }
         }
@@ -489,10 +489,10 @@ impl SessionManager {
             .keys_by_prefix(&device_prefix(login_id))
             .await?;
         for key in &keys {
-            if let Ok(Some(json)) = self.storage.get_string(key).await {
-                if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
-                    let _ = self.storage.delete(&refresh_key(&info.rid)).await;
-                }
+            if let Ok(Some(json)) = self.storage.get_string(key).await
+                && let Ok(info) = serde_json::from_str::<DeviceInfo>(&json)
+            {
+                let _ = self.storage.delete(&refresh_key(&info.rid)).await;
             }
             let _ = self.storage.delete(key).await;
         }
@@ -534,17 +534,16 @@ impl SessionManager {
 
         let mut devices = Vec::new();
         for key in &keys {
-            if let Some(device) = Self::parse_device_from_key(key, login_id) {
-                if let Ok(Some(json)) = self.storage.get_string(key).await {
-                    if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
-                        devices.push(DeviceSession {
-                            device,
-                            login_time: info.login_time,
-                            login_ip: info.login_ip,
-                            user_agent: info.user_agent,
-                        });
-                    }
-                }
+            if let Some(device) = Self::parse_device_from_key(key, login_id)
+                && let Ok(Some(json)) = self.storage.get_string(key).await
+                && let Ok(info) = serde_json::from_str::<DeviceInfo>(&json)
+            {
+                devices.push(DeviceSession {
+                    device,
+                    login_time: info.login_time,
+                    login_ip: info.login_ip,
+                    user_agent: info.user_agent,
+                });
             }
         }
 

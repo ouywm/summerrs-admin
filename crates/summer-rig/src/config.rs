@@ -56,7 +56,10 @@ mod tests {
         let openai = config.providers.get("openai").unwrap();
         assert_eq!(openai.provider_type, "openai");
         assert_eq!(openai.api_key.as_deref(), Some("sk-test"));
-        assert_eq!(openai.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(
+            openai.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
         assert_eq!(openai.default_model.as_deref(), Some("gpt-4o"));
 
         let local = config.providers.get("local").unwrap();

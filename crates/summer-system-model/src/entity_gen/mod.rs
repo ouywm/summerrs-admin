@@ -1,0 +1,15 @@
+pub mod sys_config;
+pub mod sys_config_group;
+pub mod sys_dict_data;
+pub mod sys_dict_type;
+pub mod sys_file;
+pub mod sys_login_log;
+pub mod sys_menu;
+pub mod sys_notice;
+pub mod sys_notice_target;
+pub mod sys_notice_user;
+pub mod sys_operation_log;
+pub mod sys_role;
+pub mod sys_role_menu;
+pub mod sys_user;
+pub mod sys_user_role;

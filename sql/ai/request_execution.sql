@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.request_execution (
     id                  BIGSERIAL       PRIMARY KEY,
-    ai_request_id       BIGINT          NOT NULL REFERENCES ai.request(id) ON DELETE CASCADE,
+    ai_request_id       BIGINT          NOT NULL,
     request_id          VARCHAR(64)     NOT NULL DEFAULT '',
     attempt_no          INT             NOT NULL DEFAULT 1,
     channel_id          BIGINT          NOT NULL DEFAULT 0,

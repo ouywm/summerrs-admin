@@ -16,11 +16,9 @@ use summer_web::axum::body::Body;
 use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
 
-use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
+use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin, SystemSchemaSyncPlugin};
 
-use summer_plugins::{
-    BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin,
-};
+use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
 
 #[auto_config(WebConfigurator, JobConfigurator)]
 #[tokio::main]
@@ -28,6 +26,7 @@ async fn main() {
     App::new()
         .add_plugin(WebPlugin)
         .add_plugin(SeaOrmPlugin)
+        .add_plugin(SystemSchemaSyncPlugin)
         .add_plugin(RedisPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
@@ -44,9 +43,7 @@ async fn main() {
             PathAuthBuilder::new()
                 .include("/**")
                 .exclude_all(UserType::all_login_paths())
-                .exclude("/auth/refresh")
-                .exclude("/socket.io/**")
-                .exclude("/api/socket.io/**"),
+                .exclude("/auth/refresh"),
         )
         .add_router_layer(|router| {
             router

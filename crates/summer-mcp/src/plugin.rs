@@ -32,10 +32,10 @@ impl Plugin for McpPlugin {
 
         validate_database_backend(&db).expect("summer-mcp currently supports PostgreSQL only");
 
-        if config.default_database_url.is_none() {
-            if let Ok(sea_orm_config) = app.get_config::<SeaOrmConfig>() {
-                config.default_database_url = Some(sea_orm_config.uri);
-            }
+        if config.default_database_url.is_none()
+            && let Ok(sea_orm_config) = app.get_config::<SeaOrmConfig>()
+        {
+            config.default_database_url = Some(sea_orm_config.uri);
         }
 
         match (config.transport.clone(), config.http_mode.clone()) {

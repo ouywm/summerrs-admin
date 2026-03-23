@@ -1,8 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
+use schemars::JsonSchema;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait,
+    PaginatorTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
+};
+use serde::{Deserialize, Serialize};
 use summer_common::error::{ApiErrors, ApiResult};
-use summer_model::{
+use summer_system_model::{
     dto::sys_dict::{
         CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto,
         UpdateDictDataDto, UpdateDictTypeDto,
@@ -10,12 +16,6 @@ use summer_model::{
     entity::{sys_dict_data, sys_dict_type},
     vo::sys_dict::{DictDataSimpleVo, DictDataVo, DictTypeVo},
 };
-use schemars::JsonSchema;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
-};
-use serde::{Deserialize, Serialize};
 
 use crate::sync::{SyncAction, SyncChange, SyncPlan};
 
@@ -132,7 +132,8 @@ impl DictDomainService {
         validate_dict_bundle_spec(&spec)?;
         let operator = operator.to_string();
 
-        Ok(self.db
+        Ok(self
+            .db
             .transaction::<_, DictBundleSyncResult, ApiErrors>(|txn| {
                 let spec = spec.clone();
                 let operator = operator.clone();

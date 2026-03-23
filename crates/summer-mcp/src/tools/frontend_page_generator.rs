@@ -662,10 +662,10 @@ impl ResolvedFrontendFieldUiMeta {
                 self.form_props = Some(props);
             }
         }
-        if let Some(table) = meta.table {
-            if let Some(component) = table.component {
-                self.table_display = Some(component);
-            }
+        if let Some(table) = meta.table
+            && let Some(component) = table.component
+        {
+            self.table_display = Some(component);
         }
     }
 }
@@ -891,13 +891,13 @@ impl FrontendPageGenerator {
         if let Some(route_base) = &request.route_base {
             ensure_valid_identifier(route_base, "route_base")?;
         }
-        if let Some(api_namespace) = &request.api_namespace {
-            if api_namespace.trim().is_empty() {
-                return Err(McpError::invalid_params(
-                    "api_namespace cannot be empty",
-                    None,
-                ));
-            }
+        if let Some(api_namespace) = &request.api_namespace
+            && api_namespace.trim().is_empty()
+        {
+            return Err(McpError::invalid_params(
+                "api_namespace cannot be empty",
+                None,
+            ));
         }
         for (label, value) in [
             (
@@ -909,13 +909,13 @@ impl FrontendPageGenerator {
                 request.api_detail_type_name.as_deref(),
             ),
         ] {
-            if let Some(value) = value {
-                if value.trim().is_empty() {
-                    return Err(McpError::invalid_params(
-                        format!("{label} cannot be empty"),
-                        None,
-                    ));
-                }
+            if let Some(value) = value
+                && value.trim().is_empty()
+            {
+                return Err(McpError::invalid_params(
+                    format!("{label} cannot be empty"),
+                    None,
+                ));
             }
         }
         for (field, dict_type) in &request.dict_bindings {
@@ -956,15 +956,15 @@ impl FrontendPageGenerator {
                         .and_then(|segment| segment.props.as_ref()),
                 ),
             ] {
-                if let Some(props) = props {
-                    if !props.is_object() {
-                        return Err(McpError::invalid_params(
-                            format!(
-                                "field_ui_meta {segment_label} for field `{field}` must be a JSON object"
-                            ),
-                            None,
-                        ));
-                    }
+                if let Some(props) = props
+                    && !props.is_object()
+                {
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "field_ui_meta {segment_label} for field `{field}` must be a JSON object"
+                        ),
+                        None,
+                    ));
                 }
             }
         }
@@ -1604,15 +1604,12 @@ fn default_search_field_names(
         field_map
             .get(field_name)
             .is_some_and(|field| field.search_exclude_param)
-    }) {
-        if let Some(range_field) = candidates
-            .into_iter()
-            .find(|field| field.search_exclude_param && !selected.contains(&field.name))
-        {
-            if seen_model_keys.insert(range_field.search_model_key.clone()) {
-                selected.push(range_field.name.clone());
-            }
-        }
+    }) && let Some(range_field) = candidates
+        .into_iter()
+        .find(|field| field.search_exclude_param && !selected.contains(&field.name))
+        && seen_model_keys.insert(range_field.search_model_key.clone())
+    {
+        selected.push(range_field.name.clone());
     }
 
     selected
@@ -1730,7 +1727,7 @@ fn select_delete_display_field(
     crud_context: &CrudGenerationContext,
     table_fields: &[FrontendPageFieldContext],
 ) -> String {
-    let preferred_name = table_fields
+    table_fields
         .iter()
         .find(|field| {
             field.camel_name != crud_context.primary_key.camel_name
@@ -1758,8 +1755,7 @@ fn select_delete_display_field(
                 .find(|field| field.camel_name != crud_context.primary_key.camel_name)
         })
         .map(|field| field.camel_name.clone())
-        .unwrap_or_else(|| crud_context.primary_key.camel_name.clone());
-    preferred_name
+        .unwrap_or_else(|| crud_context.primary_key.camel_name.clone())
 }
 
 fn infer_field_semantic(signals: &FieldSemanticSignals) -> FieldSemanticKind {
@@ -2562,7 +2558,6 @@ pub struct Model {
                     }),
                     table: Some(TableFieldUiMeta {
                         component: Some(TableDisplayKind::DictTag),
-                        ..Default::default()
                     }),
                     ..Default::default()
                 },
@@ -2576,7 +2571,6 @@ pub struct Model {
                     }),
                     table: Some(TableFieldUiMeta {
                         component: Some(TableDisplayKind::Image),
-                        ..Default::default()
                     }),
                     ..Default::default()
                 },

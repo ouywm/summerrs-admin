@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.guardrail_rule (
     id                  BIGSERIAL       PRIMARY KEY,
-    guardrail_config_id BIGINT          NOT NULL REFERENCES ai.guardrail_config(id) ON DELETE CASCADE,
+    guardrail_config_id BIGINT          NOT NULL,
     organization_id     BIGINT          NOT NULL DEFAULT 0,
     project_id          BIGINT          NOT NULL DEFAULT 0,
     team_id             BIGINT          NOT NULL DEFAULT 0,

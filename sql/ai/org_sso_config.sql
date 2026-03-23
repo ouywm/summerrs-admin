@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.org_sso_config (
     id                  BIGSERIAL       PRIMARY KEY,
-    organization_id     BIGINT          NOT NULL REFERENCES ai.organization(id) ON DELETE CASCADE,
+    organization_id     BIGINT          NOT NULL,
     provider_code       VARCHAR(64)     NOT NULL DEFAULT 'default',
     provider_name       VARCHAR(128)    NOT NULL DEFAULT '',
     protocol_type       VARCHAR(32)     NOT NULL DEFAULT 'oidc',

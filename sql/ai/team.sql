@@ -8,7 +8,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.team (
     id                  BIGSERIAL       PRIMARY KEY,
-    organization_id     BIGINT          NOT NULL REFERENCES ai.organization(id) ON DELETE CASCADE,
+    organization_id     BIGINT          NOT NULL,
     owner_user_id       BIGINT          NOT NULL DEFAULT 0,
     team_code           VARCHAR(64)     NOT NULL,
     team_name           VARCHAR(128)    NOT NULL DEFAULT '',

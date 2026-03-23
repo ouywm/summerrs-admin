@@ -48,9 +48,9 @@ macro_rules! do_stream_prompt {
 
         let mapped = stream.filter_map(|item| async move {
             match item {
-                Ok(MultiTurnStreamItem::StreamAssistantItem(
-                    StreamedAssistantContent::Text(text),
-                )) => Some(Ok(StreamChunk::Delta(text.text))),
+                Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(
+                    text,
+                ))) => Some(Ok(StreamChunk::Delta(text.text))),
                 Ok(MultiTurnStreamItem::FinalResponse(_)) => Some(Ok(StreamChunk::Done)),
                 Err(e) => Some(Err(format!("streaming error: {e}"))),
                 _ => None,

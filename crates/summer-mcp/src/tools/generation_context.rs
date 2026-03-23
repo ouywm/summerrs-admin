@@ -940,22 +940,22 @@ pub(crate) fn normalize_field_label(label: &str) -> String {
         }
     }
     for separator in ['：', ':'] {
-        if let Some((prefix, suffix)) = trimmed.split_once(separator) {
-            if looks_like_comment_enum_suffix(suffix.trim()) {
-                let prefix = prefix.trim();
-                if !prefix.is_empty() {
-                    return prefix.to_string();
-                }
+        if let Some((prefix, suffix)) = trimmed.split_once(separator)
+            && looks_like_comment_enum_suffix(suffix.trim())
+        {
+            let prefix = prefix.trim();
+            if !prefix.is_empty() {
+                return prefix.to_string();
             }
         }
     }
     for separator in ['，', ','] {
-        if let Some((prefix, suffix)) = trimmed.split_once(separator) {
-            if looks_like_explanatory_comment_suffix(suffix.trim()) {
-                let prefix = prefix.trim();
-                if !prefix.is_empty() {
-                    return prefix.to_string();
-                }
+        if let Some((prefix, suffix)) = trimmed.split_once(separator)
+            && looks_like_explanatory_comment_suffix(suffix.trim())
+        {
+            let prefix = prefix.trim();
+            if !prefix.is_empty() {
+                return prefix.to_string();
             }
         }
     }
@@ -1095,10 +1095,7 @@ fn default_list_order_columns(
         .map(|field| vec![field.pascal_name.clone()])
         .unwrap_or_default();
 
-    if order_columns
-        .last()
-        .map_or(true, |column| column != &primary_key.pascal_name)
-    {
+    if order_columns.last() != Some(&primary_key.pascal_name) {
         order_columns.push(primary_key.pascal_name.clone());
     }
 

@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS sys;
 
 CREATE TABLE sys.two_factor (
     id                 BIGSERIAL       PRIMARY KEY,
-    user_id            BIGINT          NOT NULL REFERENCES sys."user"(id) ON DELETE CASCADE,
+    user_id            BIGINT          NOT NULL,
     factor_type        VARCHAR(32)     NOT NULL DEFAULT 'totp',
     factor_name        VARCHAR(64)     NOT NULL DEFAULT '',
     secret_ciphertext  TEXT            NOT NULL DEFAULT '',

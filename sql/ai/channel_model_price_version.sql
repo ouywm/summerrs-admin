@@ -8,7 +8,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.channel_model_price_version (
     id                      BIGSERIAL       PRIMARY KEY,
-    channel_model_price_id  BIGINT          NOT NULL REFERENCES ai.channel_model_price(id) ON DELETE CASCADE,
+    channel_model_price_id  BIGINT          NOT NULL,
     channel_id              BIGINT          NOT NULL,
     model_name              VARCHAR(128)    NOT NULL,
     version_no              INT             NOT NULL DEFAULT 1,

@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS sys;
 
 CREATE TABLE sys.verification_token (
     id               BIGSERIAL       PRIMARY KEY,
-    user_id          BIGINT          REFERENCES sys."user"(id) ON DELETE CASCADE,
+    user_id          BIGINT,
     token_type       VARCHAR(32)     NOT NULL DEFAULT 'email_verify',
     target_type      VARCHAR(32)     NOT NULL DEFAULT 'email',
     target_value     VARCHAR(255)    NOT NULL DEFAULT '',

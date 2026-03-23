@@ -1,9 +1,9 @@
 use anyhow::Context;
-use summer_common::error::{ApiErrors, ApiResult};
 use summer::plugin::Service;
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_redis::Redis;
 use summer_redis::redis;
 use summer_redis::redis::AsyncCommands;
-use summer_redis::Redis;
 
 use super::super::core::model::SocketSessionState;
 
@@ -99,7 +99,12 @@ impl SocketSessionStore {
             .map_err(ApiErrors::Internal)
     }
 
-    pub async fn cleanup(&self, socket_id: &str, namespace: &str, login_id: Option<&str>) -> ApiResult<()> {
+    pub async fn cleanup(
+        &self,
+        socket_id: &str,
+        namespace: &str,
+        login_id: Option<&str>,
+    ) -> ApiResult<()> {
         let mut redis = self.redis.clone();
         let mut pipeline = redis::pipe();
         pipeline.atomic();
@@ -288,7 +293,6 @@ fn normalize_namespace(namespace: &str) -> String {
 fn parse_session_state(raw: &str, socket_id: &str) -> anyhow::Result<SocketSessionState> {
     serde_json::from_str(raw).with_context(|| format!("解析 Socket 会话失败: {socket_id}"))
 }
-
 
 #[cfg(test)]
 mod tests {

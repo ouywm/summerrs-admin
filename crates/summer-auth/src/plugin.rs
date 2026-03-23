@@ -64,7 +64,7 @@ impl SummerAuthPlugin {
         {
             if let Some(redis) = app.get_component::<summer_redis::Redis>() {
                 tracing::info!("Using Redis storage for summer-auth");
-                return Arc::new(crate::storage::redis::RedisStorage::new(redis));
+                Arc::new(crate::storage::redis::RedisStorage::new(redis))
             } else {
                 panic!(
                     "Feature 'redis' is enabled but RedisPlugin is not added. \
@@ -77,7 +77,7 @@ impl SummerAuthPlugin {
         #[cfg(all(feature = "memory", not(feature = "redis")))]
         {
             tracing::info!("Using Memory storage for summer-auth");
-            return Arc::new(crate::storage::memory::MemoryStorage::new());
+            Arc::new(crate::storage::memory::MemoryStorage::new())
         }
 
         #[cfg(not(any(feature = "memory", feature = "redis")))]

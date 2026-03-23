@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.rbac_policy (
     id                  BIGSERIAL       PRIMARY KEY,
-    organization_id     BIGINT          NOT NULL REFERENCES ai.organization(id) ON DELETE CASCADE,
+    organization_id     BIGINT          NOT NULL,
     scope_type          VARCHAR(32)     NOT NULL DEFAULT 'organization',
     scope_id            BIGINT          NOT NULL DEFAULT 0,
     policy_code         VARCHAR(64)     NOT NULL,

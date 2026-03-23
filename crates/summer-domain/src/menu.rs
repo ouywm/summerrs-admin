@@ -1,12 +1,6 @@
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc};
 
 use anyhow::Context;
-use summer_common::error::{ApiErrors, ApiResult};
-use summer_model::{
-    dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto},
-    entity::{sys_menu, sys_role, sys_role_menu, sys_user_role},
-    vo::sys_menu::{AuthItem, MenuMeta, MenuTreeVo, MenuVo},
-};
 use schemars::JsonSchema;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, JoinType,
@@ -14,6 +8,12 @@ use sea_orm::{
     TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_system_model::{
+    dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto},
+    entity::{sys_menu, sys_role, sys_role_menu, sys_user_role},
+    vo::sys_menu::{AuthItem, MenuMeta, MenuTreeVo, MenuVo},
+};
 
 use crate::sync::{SyncAction, SyncChange, SyncPlan};
 

@@ -6,8 +6,8 @@ CREATE SCHEMA IF NOT EXISTS sys;
 
 CREATE TABLE sys.two_factor_backup_code (
     id               BIGSERIAL       PRIMARY KEY,
-    factor_id        BIGINT          NOT NULL REFERENCES sys.two_factor(id) ON DELETE CASCADE,
-    user_id          BIGINT          NOT NULL REFERENCES sys."user"(id) ON DELETE CASCADE,
+    factor_id        BIGINT          NOT NULL,
+    user_id          BIGINT          NOT NULL,
     code_hash        VARCHAR(128)    NOT NULL,
     status           SMALLINT        NOT NULL DEFAULT 1,
     used_time        TIMESTAMP,

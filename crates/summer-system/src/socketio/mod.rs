@@ -6,6 +6,6 @@
 pub mod connection;
 pub mod core;
 pub use connection::service;
-pub use core::room;
 #[allow(unused_imports)]
 pub use core::emitter::SocketEmitter;
+pub use core::room;

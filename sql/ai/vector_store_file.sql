@@ -7,8 +7,8 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.vector_store_file (
     id                  BIGSERIAL       PRIMARY KEY,
-    vector_store_id     BIGINT          NOT NULL REFERENCES ai.vector_store(id) ON DELETE CASCADE,
-    file_id             BIGINT          NOT NULL REFERENCES ai.file(id) ON DELETE CASCADE,
+    vector_store_id     BIGINT          NOT NULL,
+    file_id             BIGINT          NOT NULL,
     status              SMALLINT        NOT NULL DEFAULT 1,
     usage_bytes         BIGINT          NOT NULL DEFAULT 0,
     last_error          JSONB           NOT NULL DEFAULT '{}'::jsonb,

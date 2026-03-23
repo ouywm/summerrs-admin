@@ -8,9 +8,9 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.service_account (
     id                  BIGSERIAL       PRIMARY KEY,
-    organization_id     BIGINT          NOT NULL REFERENCES ai.organization(id) ON DELETE CASCADE,
-    team_id             BIGINT          REFERENCES ai.team(id) ON DELETE SET NULL,
-    project_id          BIGINT          REFERENCES ai.project(id) ON DELETE SET NULL,
+    organization_id     BIGINT          NOT NULL,
+    team_id             BIGINT,
+    project_id          BIGINT,
     service_code        VARCHAR(64)     NOT NULL,
     service_name        VARCHAR(128)    NOT NULL DEFAULT '',
     status              SMALLINT        NOT NULL DEFAULT 1,

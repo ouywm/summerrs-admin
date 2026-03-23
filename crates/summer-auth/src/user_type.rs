@@ -119,8 +119,9 @@ impl std::fmt::Display for LoginId {
 }
 
 /// 设备类型
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DeviceType {
+    #[default]
     Web,
     Android,
     IOS,
@@ -141,12 +142,6 @@ impl DeviceType {
             Self::Desktop => "desktop",
             Self::Unknown(s) => s.as_str(),
         }
-    }
-}
-
-impl Default for DeviceType {
-    fn default() -> Self {
-        Self::Web
     }
 }
 

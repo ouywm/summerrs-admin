@@ -49,7 +49,7 @@ impl MemoryStorage {
     /// 每 N 次写操作后自动清理
     fn maybe_cleanup(&self) {
         let count = self.write_count.fetch_add(1, Ordering::Relaxed);
-        if count % CLEANUP_INTERVAL == 0 {
+        if count.is_multiple_of(CLEANUP_INTERVAL) {
             self.purge_expired();
         }
     }

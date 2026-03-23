@@ -1,22 +1,20 @@
 use anyhow::Context;
-use summer_common::crypto::verify_password;
-use summer_common::error::{ApiErrors, ApiResult};
-use summer_common::user_agent::UserAgentInfo;
-use summer_model::dto::auth::LoginDto;
-use summer_model::entity::sys_login_log;
-use summer_model::entity::sys_menu;
-use summer_model::entity::sys_role;
-use summer_model::entity::sys_user;
-use summer_model::entity::sys_user_role;
-use summer_model::entity::{biz_role, biz_user, biz_user_role, customer};
-use summer_model::vo::auth::{DeviceSessionVo, LoginVo};
 use sea_orm::{ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
 use std::net::IpAddr;
 use summer::plugin::Service;
 use summer_auth::{
-    AdminProfile, BusinessProfile, CustomerProfile, DeviceType, LoginId, LoginParams,
-    SessionManager, UserProfile, UserType,
+    AdminProfile, DeviceType, LoginId, LoginParams, SessionManager, UserProfile, UserType,
 };
+use summer_common::crypto::verify_password;
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_common::user_agent::UserAgentInfo;
+use summer_system_model::dto::auth::LoginDto;
+use summer_system_model::entity::sys_login_log;
+use summer_system_model::entity::sys_menu;
+use summer_system_model::entity::sys_role;
+use summer_system_model::entity::sys_user;
+use summer_system_model::entity::sys_user_role;
+use summer_system_model::vo::auth::{DeviceSessionVo, LoginVo};
 
 use crate::service::login_log_service::LoginLogService;
 use summer_sea_orm::DbConn;
@@ -216,7 +214,7 @@ impl AuthService {
 
     /// 获取用户的按钮权限标识列表
     async fn get_user_permissions(&self, user_id: i64) -> ApiResult<Vec<String>> {
-        use summer_model::entity::sys_role_menu;
+        use summer_system_model::entity::sys_role_menu;
 
         let role_ids: Vec<i64> = sys_user_role::Entity::find()
             .filter(sys_user_role::Column::UserId.eq(user_id))
@@ -276,41 +274,9 @@ impl AuthService {
                     permissions,
                 }))
             }
-            UserType::Business => {
-                let user = biz_user::Entity::find_by_id(login_id.user_id)
-                    .one(&self.db)
-                    .await
-                    .context("查询B端用户失败")?
-                    .ok_or_else(|| ApiErrors::Unauthorized("用户不存在".to_string()))?;
-
-                let roles: Vec<String> = biz_user_role::Entity::find()
-                    .filter(biz_user_role::Column::UserId.eq(user.id))
-                    .find_also_related(biz_role::Entity)
-                    .all(&self.db)
-                    .await
-                    .context("查询B端用户角色失败")?
-                    .into_iter()
-                    .filter_map(|(_, role)| role.map(|r| r.role_code))
-                    .collect();
-
-                Ok(UserProfile::Business(BusinessProfile {
-                    user_name: user.user_name,
-                    nick_name: user.nick_name,
-                    roles,
-                    permissions: vec![],
-                }))
-            }
-            UserType::Customer => {
-                let user = customer::Entity::find_by_id(login_id.user_id)
-                    .one(&self.db)
-                    .await
-                    .context("查询C端用户失败")?
-                    .ok_or_else(|| ApiErrors::Unauthorized("用户不存在".to_string()))?;
-
-                Ok(UserProfile::Customer(CustomerProfile {
-                    nick_name: user.nick_name,
-                }))
-            }
+            UserType::Business | UserType::Customer => Err(ApiErrors::Unauthorized(
+                "当前仅支持管理员会话刷新".to_string(),
+            )),
         }
     }
 }

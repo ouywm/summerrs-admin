@@ -8,7 +8,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 CREATE TABLE ai.user_subscription (
     id                  BIGSERIAL       PRIMARY KEY,
     user_id             BIGINT          NOT NULL,
-    plan_id             BIGINT          NOT NULL REFERENCES ai.subscription_plan(id) ON DELETE RESTRICT,
+    plan_id             BIGINT          NOT NULL,
     status              SMALLINT        NOT NULL DEFAULT 1,
     quota_total         BIGINT          NOT NULL DEFAULT 0,
     quota_used          BIGINT          NOT NULL DEFAULT 0,

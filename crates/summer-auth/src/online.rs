@@ -54,18 +54,17 @@ impl SessionManager {
             let keys = self.storage.keys_by_prefix(prefix).await?;
             for key in keys {
                 // 从 key 解析 login_id 和 device
-                if let Some((login_id, device_str)) = parse_device_key(&key) {
-                    if let Ok(Some(json)) = self.storage.get_string(&key).await {
-                        if let Ok(info) = serde_json::from_str::<DeviceInfo>(&json) {
-                            items.push(OnlineUserItem {
-                                login_id: login_id.encode(),
-                                user_type: login_id.user_type,
-                                device: device_str,
-                                login_time: info.login_time,
-                                login_ip: info.login_ip,
-                            });
-                        }
-                    }
+                if let Some((login_id, device_str)) = parse_device_key(&key)
+                    && let Ok(Some(json)) = self.storage.get_string(&key).await
+                    && let Ok(info) = serde_json::from_str::<DeviceInfo>(&json)
+                {
+                    items.push(OnlineUserItem {
+                        login_id: login_id.encode(),
+                        user_type: login_id.user_type,
+                        device: device_str,
+                        login_time: info.login_time,
+                        login_ip: info.login_ip,
+                    });
                 }
             }
         }

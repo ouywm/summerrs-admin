@@ -33,7 +33,9 @@ impl Plugin for SummerRigPlugin {
         let mut registered_types = HashSet::new();
 
         for (name, provider_config) in &config.providers {
-            let provider_type = ProviderType::from_str(&provider_config.provider_type)
+            let provider_type = provider_config
+                .provider_type
+                .parse::<ProviderType>()
                 .unwrap_or_else(|e| panic!("provider [{name}] 配置错误: {e}"));
 
             let (client, type_label) = match provider_type {

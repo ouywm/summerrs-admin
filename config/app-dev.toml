@@ -1,24 +1,19 @@
 [logger]
 level = "debug"
 
-
 [web]
-port = 8080
-graceful = true
+connect_info  = true
 global_prefix = "/api"
-connect_info = true
+graceful      = true
+port          = 8080
 
 [web.openapi]
 doc_prefix = "/docs"
-info = { title = "summerrs-admin", version = "0.0.1" }
+info       = { title = "summerrs-admin", version = "0.0.1" }
 
 [web.middlewares]
-static = { enable = true }
-compression = { enable = true }
-logger = { enable = true, level = "warn" }
 catch_panic = { enable = false }
-timeout_request = { enable = true, timeout = 30000 }
-limit_payload = { enable = true, body_limit = "1GB" }
+compression = { enable = true }
 cors = { enable = true, allow_origins = [
     "*",
 ], allow_headers = [
@@ -30,23 +25,26 @@ cors = { enable = true, allow_origins = [
     "PUT",
     "DELETE",
 ], max_age = 60 }
+limit_payload = { enable = true, body_limit = "1GB" }
+logger = { enable = true, level = "warn" }
+static = { enable = true }
+timeout_request = { enable = true, timeout = 30000 }
 
 [socket_io]
 default_namespace = "/summer-admin"
 
 [socket-gateway]
-redis_prefix = "summerrs:socket"
+redis_prefix        = "summerrs:socket"
 session_ttl_seconds = 86400
 
-
 [sea-orm]
-uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai}"
 enable_logging = true
+uri            = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai}"
 
 [sea-orm-web]
-one_indexed = true
 default_page_size = 20
-max_page_size = 2000
+max_page_size     = 2000
+one_indexed       = true
 
 [redis]
 uri = "redis://127.0.0.1/"
@@ -56,18 +54,18 @@ ipv4_db_path = "./data/ip2region_v4.xdb"
 # ipv6_db_path = "./data/ip2region_v6.xdb"
 
 [auth]
-token_name = "Authorization"
-token_prefix = "Bearer "
-access_timeout = 7200              # 秒（开发调试用，生产建议 7200）
-refresh_timeout = 604800            # 秒（开发调试用，生产建议 604800）
+access_timeout   = 7200            # 秒（开发调试用，生产建议 7200）
 concurrent_login = true
-max_devices = 5
-is_read_cookie = false
-jwt_issuer = "summer-admin"
-jwt_audience = "summer-admin"
+is_read_cookie   = false
+jwt_audience     = "summer-admin"
+jwt_issuer       = "summer-admin"
+max_devices      = 5
+refresh_timeout  = 604800          # 秒（开发调试用，生产建议 604800）
+token_name       = "Authorization"
+token_prefix     = "Bearer "
 # cookie_name = "token"
 jwt_algorithm = "HS256"
-jwt_secret = "${JWT_SECRET:change-me-in-local-dev}"
+jwt_secret    = "${JWT_SECRET:change-me-in-local-dev}"
 #jwt_algorithm = "RS256"
 #jwt_private_key = "./data/rsa_private.pem"
 #jwt_public_key = "./data/rsa_public.pem"
@@ -77,15 +75,15 @@ jwt_secret = "${JWT_SECRET:change-me-in-local-dev}"
 batch_size = 100
 
 [mail]
-stub = true
+stub            = true
 test_connection = false
 
 [s3]
-endpoint = "http://localhost:9000"
-region = "us-east-1"
 access_key = "${S3_ACCESS_KEY:minioadmin}"
+bucket     = "summer-admin"
+endpoint   = "http://localhost:9000"
+region     = "us-east-1"
 secret_key = "${S3_SECRET_KEY:minioadmin}"
-bucket = "summer-admin"
 
 # ── 传输层（全部可选，不写则用 SDK 默认值） ──
 # force_path_style = true          # MinIO/RustFS 必须 true（默认 true）
@@ -109,22 +107,19 @@ bucket = "summer-admin"
 # custom_domain = "https://static.oywm.top"  # 设置后 public_url 使用此域名，格式: {domain}/{key}
 
 # ── 业务层 ──
-max_file_size = 5242880000               # 5000MB
-presign_expiry = 3600                   # presigned URL 有效期（秒）
-multipart_threshold = 10485760          # 10MB，超过此大小使用分片上传
-multipart_chunk_size = 10485760         # 每个分片 10MB
-allowed_extensions = []                 # 为空则不限制，否则白名单如 ["jpg","png","pdf"]
-multipart_max_age = 86400               # 分片上传最大存活时间（秒），默认 24 小时
+allowed_extensions   = []         # 为空则不限制，否则白名单如 ["jpg","png","pdf"]
+max_file_size        = 5242880000 # 5000MB
+multipart_chunk_size = 10485760   # 每个分片 10MB
+multipart_max_age    = 86400      # 分片上传最大存活时间（秒），默认 24 小时
+multipart_threshold  = 10485760   # 10MB，超过此大小使用分片上传
+presign_expiry       = 3600       # presigned URL 有效期（秒）
 
 [mcp]
-enabled = true
-transport = "http"                      # "stdio" | "http"
-http_mode = "embedded"                 # "embedded" | "standalone"
+enabled   = true
+http_mode = "embedded" # "embedded" | "standalone"
+transport = "http"     # "stdio" | "http"
 
 # ── 服务器元信息（ServerInfo / Implementation） ──
-server_name = "summerrs-admin-mcp"      # MCP 协议中上报给客户端的名称
-server_version = "0.0.1"
-title = "Summerrs Admin MCP"            # 人类可读标题
 description = "summerrs-admin 后台管理系统 MCP Server，提供库表发现、通用表工具、代码生成和菜单/字典业务工具"
 instructions = """
 这是 summerrs-admin 管理系统的 MCP Server。
@@ -135,20 +130,23 @@ SQL 工具：sql_query_readonly 用于复杂只读查询；sql_exec 用于显式
 业务工具：menu_tool、dict_tool，优先使用 plan/export/apply 这类结构化动作，而不是手写 SQL。
 可用 prompt templates：discover_table_workflow、generate_crud_bundle_workflow、rollout_menu_dict_workflow。
 """
+server_name = "summerrs-admin-mcp" # MCP 协议中上报给客户端的名称
+server_version = "0.0.1"
+title = "Summerrs Admin MCP" # 人类可读标题
 
 # ── Streamable HTTP 模式专用（transport = "http" 时生效） ──
 # embedded 模式下实际访问地址会跟随 [web].global_prefix，例如 /api/mcp
 # standalone 模式下才会独立监听 binding:port
-binding = "127.0.0.1"
-port = 9090
-path = "/mcp"                           # MCP 服务路由路径
-sse_keep_alive = 15                     # SSE 心跳间隔（秒）
-sse_retry = 3                           # SSE 重连间隔（秒）
-stateful_mode = true                    # 有状态会话模式
-json_response = false                   # 无状态模式下返回 JSON 而非 SSE
+binding        = "127.0.0.1"
+json_response  = false       # 无状态模式下返回 JSON 而非 SSE
+path           = "/mcp"      # MCP 服务路由路径
+port           = 9090
+sse_keep_alive = 15          # SSE 心跳间隔（秒）
+sse_retry      = 3           # SSE 重连间隔（秒）
+stateful_mode  = true        # 有状态会话模式
 
 # ── 会话配置（SessionConfig） ──
-session_channel_capacity = 16           # 会话通道缓冲容量
+session_channel_capacity = 16 # 会话通道缓冲容量
 # session_keep_alive = 3600             # 会话不活动超时（秒），不设置则永不超时
 
 # ── Rig LLM 框架配置 ──
@@ -156,10 +154,10 @@ session_channel_capacity = 16           # 会话通道缓冲容量
 default_provider = "openai"
 
 [rig.providers.openai]
-provider_type = "openai"
-api_key = "${RIG_OPENAI_API_KEY}"
-base_url = "https://codex-api.packycode.com/v1"
+api_key       = "${RIG_OPENAI_API_KEY}"
+base_url      = "https://codex-api.packycode.com/v1"
 default_model = "gpt-5.4"
+provider_type = "openai"
 
 #[rig.providers.deepseek]
 #provider_type = "deepseek"

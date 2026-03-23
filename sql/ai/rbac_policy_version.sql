@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.rbac_policy_version (
     id                  BIGSERIAL       PRIMARY KEY,
-    policy_id           BIGINT          NOT NULL REFERENCES ai.rbac_policy(id) ON DELETE CASCADE,
+    policy_id           BIGINT          NOT NULL,
     version_no          INT             NOT NULL DEFAULT 1,
     change_summary      VARCHAR(255)    NOT NULL DEFAULT '',
     policy_document     JSONB           NOT NULL DEFAULT '{}'::jsonb,

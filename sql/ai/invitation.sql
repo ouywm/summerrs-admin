@@ -8,9 +8,9 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.invitation (
     id                  BIGSERIAL       PRIMARY KEY,
-    organization_id     BIGINT          NOT NULL REFERENCES ai.organization(id) ON DELETE CASCADE,
-    team_id             BIGINT          REFERENCES ai.team(id) ON DELETE CASCADE,
-    project_id          BIGINT          REFERENCES ai.project(id) ON DELETE CASCADE,
+    organization_id     BIGINT          NOT NULL,
+    team_id             BIGINT,
+    project_id          BIGINT,
     inviter_user_id     BIGINT          NOT NULL DEFAULT 0,
     invitee_user_id     BIGINT          NOT NULL DEFAULT 0,
     invitee_email       VARCHAR(255)    NOT NULL DEFAULT '',

@@ -3,16 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use summer_common::error::ApiErrors;
-use summer_model::{
-    dto::sys_dict::{
-        CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto,
-        UpdateDictDataDto, UpdateDictTypeDto,
-    },
-    dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto},
-    vo::sys_dict::{DictDataSimpleVo, DictDataVo, DictTypeVo},
-    vo::sys_menu::{MenuTreeVo, MenuVo},
-};
 use rmcp::{
     ErrorData as McpError, Json, handler::server::wrapper::Parameters, schemars, tool, tool_router,
 };
@@ -21,9 +11,19 @@ use sea_orm::{
     SelectModel, SelectorRaw, Statement, TransactionError, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
+use summer_common::error::ApiErrors;
 use summer_domain::{
     dict::{DictBundleSpec, DictBundleSyncResult},
     menu::{MenuConfigSpec, MenuConfigSyncResult},
+};
+use summer_system_model::{
+    dto::sys_dict::{
+        CreateDictDataDto, CreateDictTypeDto, DictDataQueryDto, DictTypeQueryDto,
+        UpdateDictDataDto, UpdateDictTypeDto,
+    },
+    dto::sys_menu::{CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto},
+    vo::sys_dict::{DictDataSimpleVo, DictDataVo, DictTypeVo},
+    vo::sys_menu::{MenuTreeVo, MenuVo},
 };
 
 use crate::{
@@ -863,6 +863,7 @@ fn build_frontend_page_artifacts(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_frontend_bundle_artifacts(
     output_dir: Option<&str>,
     frontend_root_dir: &Path,

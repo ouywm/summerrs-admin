@@ -1,0 +1,7 @@
+interface:
+  display_name: "Summerrs Admin"
+  short_description: "本仓库 Summer Admin 开发与 Entity-First 手册"
+  default_prompt: "Use $summerrs-admin to follow this repo's route, service, plugin, SeaORM 2.0 entity-first, and MCP coding patterns."
+
+policy:
+  allow_implicit_invocation: true

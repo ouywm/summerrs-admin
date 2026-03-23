@@ -7,8 +7,8 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.domain_verification (
     id                  BIGSERIAL       PRIMARY KEY,
-    organization_id     BIGINT          NOT NULL REFERENCES ai.organization(id) ON DELETE CASCADE,
-    sso_config_id       BIGINT          REFERENCES ai.org_sso_config(id) ON DELETE SET NULL,
+    organization_id     BIGINT          NOT NULL,
+    sso_config_id       BIGINT,
     domain_name         VARCHAR(255)    NOT NULL,
     verification_type   VARCHAR(32)     NOT NULL DEFAULT 'dns_txt',
     verification_token  VARCHAR(255)    NOT NULL DEFAULT '',

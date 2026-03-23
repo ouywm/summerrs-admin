@@ -1,19 +1,19 @@
 //! 文件上传 / 下载路由
 
+use summer_admin_macros::log;
+use summer_auth::AdminUser;
 use summer_common::error::{ApiErrors, ApiResult};
 use summer_common::extractor::{Multipart, Path, Query, ValidatedJson};
 use summer_common::file_util::read_multipart_files;
 use summer_common::response::Json;
-use summer_admin_macros::log;
-use summer_model::dto::sys_file::{
+use summer_system_model::dto::sys_file::{
     MultipartAbortDto, MultipartCompleteDto, MultipartInitDto, MultipartListPartsDto,
     PresignUploadCallbackDto, PresignUploadDto,
 };
-use summer_model::vo::sys_file::{
+use summer_system_model::vo::sys_file::{
     BatchUploadVo, FileUploadVo, MultipartInitVo, MultipartListPartsVo, PresignedDownloadVo,
     PresignedUploadVo,
 };
-use summer_auth::AdminUser;
 use summer_web::axum::body::Body;
 use summer_web::axum::http::{StatusCode, header};
 use summer_web::axum::response::IntoResponse;

@@ -1,0 +1,76 @@
+name: rust
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: chmod +x build-tools/rustfmt.sh
+      - run: ./build-tools/rustfmt.sh --check
+
+  taplo:
+    name: Taplo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked taplo-cli
+      - run: chmod +x build-tools/taplofmt.sh
+      - run: ./build-tools/taplofmt.sh --check
+
+  check:
+    name: Cargo Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: chmod +x build-tools/rustcheck.sh
+      - run: ./build-tools/rustcheck.sh check
+
+  clippy:
+    name: Clippy (Core Crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: chmod +x build-tools/rustcheck.sh
+      - run: ./build-tools/rustcheck.sh clippy
+
+  test-compile:
+    name: Test Compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: chmod +x build-tools/rustcheck.sh
+      - run: ./build-tools/rustcheck.sh test-compile

@@ -298,7 +298,7 @@ async fn batch_flush_loop<T, F, Fut>(
                     Ok(item) => {
                         buffer.push(item);
                         if buffer.len() >= batch_size {
-                            let batch: Vec<T> = buffer.drain(..).collect();
+                            let batch = std::mem::take(&mut buffer);
                             let count = batch.len();
                             handler(batch).await;
                             tracing::debug!(
@@ -309,7 +309,7 @@ async fn batch_flush_loop<T, F, Fut>(
                     }
                     Err(_) => {
                         if !buffer.is_empty() {
-                            let batch: Vec<T> = buffer.drain(..).collect();
+                            let batch = std::mem::take(&mut buffer);
                             let count = batch.len();
                             handler(batch).await;
                             tracing::debug!(
@@ -325,7 +325,7 @@ async fn batch_flush_loop<T, F, Fut>(
 
             _ = interval.tick() => {
                 if !buffer.is_empty() {
-                    let batch: Vec<T> = buffer.drain(..).collect();
+                    let batch = std::mem::take(&mut buffer);
                     let count = batch.len();
                     handler(batch).await;
                     tracing::debug!(

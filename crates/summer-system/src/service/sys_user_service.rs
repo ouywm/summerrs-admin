@@ -1,30 +1,32 @@
 use anyhow::Context;
-use summer_common::crypto::{hash_password, verify_password};
-use summer_common::error::{ApiErrors, ApiResult};
-use summer_model::dto::sys_user::{CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto};
-use summer_model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
-use summer_model::entity::sys_file;
-use summer_model::entity::sys_menu;
-use summer_model::entity::sys_notice_target;
-use summer_model::entity::sys_notice_user;
-use summer_model::entity::sys_role;
-use summer_model::entity::sys_role_menu;
-use summer_model::entity::sys_user;
-use summer_model::entity::sys_user::UserStatus;
-use summer_model::entity::sys_user_role;
-use summer_model::vo::sys_role::RoleDetailVo;
-use summer_model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
-use summer_model::vo::user_profile::UserProfileVo;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait,
     Set, TransactionTrait,
 };
 use summer::plugin::Service;
 use summer_auth::{LoginId, SessionManager};
+use summer_common::crypto::{hash_password, verify_password};
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_system_model::dto::sys_user::{
+    CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto,
+};
+use summer_system_model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
+use summer_system_model::entity::sys_file;
+use summer_system_model::entity::sys_menu;
+use summer_system_model::entity::sys_notice_target;
+use summer_system_model::entity::sys_notice_user;
+use summer_system_model::entity::sys_role;
+use summer_system_model::entity::sys_role_menu;
+use summer_system_model::entity::sys_user;
+use summer_system_model::entity::sys_user::UserStatus;
+use summer_system_model::entity::sys_user_role;
+use summer_system_model::vo::sys_role::RoleDetailVo;
+use summer_system_model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
+use summer_system_model::vo::user_profile::UserProfileVo;
 
 use crate::socketio::service::{KickoutPayload, SocketGatewayService};
-use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 
 #[derive(Clone, Service)]
 pub struct SysUserService {
@@ -157,7 +159,7 @@ impl SysUserService {
                         .one(txn)
                         .await
                         .context("检查用户名失败")
-                        .map_err(|e| ApiErrors::Internal(e))?;
+                        .map_err(ApiErrors::Internal)?;
 
                     if existing.is_some() {
                         return Err(ApiErrors::Conflict(format!(
@@ -169,32 +171,32 @@ impl SysUserService {
                     // 创建用户
                     let hashed = hash_password(summer_common::crypto::DEFAULT_PASSWORD)
                         .context("密码加密失败")
-                        .map_err(|e| ApiErrors::Internal(e))?;
+                        .map_err(ApiErrors::Internal)?;
                     let user_model = dto.into_active_model(hashed, operator);
                     let user = user_model
                         .insert(txn)
                         .await
                         .context("创建用户失败")
-                        .map_err(|e| ApiErrors::Internal(e))?;
+                        .map_err(ApiErrors::Internal)?;
 
                     // 分配角色
-                    if let Some(role_ids) = role_ids {
-                        if !role_ids.is_empty() {
-                            let models: Vec<sys_user_role::ActiveModel> = role_ids
-                                .into_iter()
-                                .map(|role_id| sys_user_role::ActiveModel {
-                                    user_id: Set(user.id),
-                                    role_id: Set(role_id),
-                                    ..Default::default()
-                                })
-                                .collect();
+                    if let Some(role_ids) = role_ids
+                        && !role_ids.is_empty()
+                    {
+                        let models: Vec<sys_user_role::ActiveModel> = role_ids
+                            .into_iter()
+                            .map(|role_id| sys_user_role::ActiveModel {
+                                user_id: Set(user.id),
+                                role_id: Set(role_id),
+                                ..Default::default()
+                            })
+                            .collect();
 
-                            sys_user_role::Entity::insert_many(models)
-                                .exec(txn)
-                                .await
-                                .context("分配角色失败")
-                                .map_err(|e| ApiErrors::Internal(e))?;
-                        }
+                        sys_user_role::Entity::insert_many(models)
+                            .exec(txn)
+                            .await
+                            .context("分配角色失败")
+                            .map_err(ApiErrors::Internal)?;
                     }
 
                     Ok(())
@@ -221,7 +223,7 @@ impl SysUserService {
                         .one(txn)
                         .await
                         .context("查询用户失败")
-                        .map_err(|e| ApiErrors::Internal(e))?
+                        .map_err(ApiErrors::Internal)?
                         .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
                     let previous_status = user.status;
                     let current_status = dto.status.unwrap_or(previous_status);
@@ -233,7 +235,7 @@ impl SysUserService {
                         .update(txn)
                         .await
                         .context("更新用户失败")
-                        .map_err(|e| ApiErrors::Internal(e))?;
+                        .map_err(ApiErrors::Internal)?;
 
                     // 更新角色
                     if let Some(role_ids) = role_ids {
@@ -243,7 +245,7 @@ impl SysUserService {
                             .exec(txn)
                             .await
                             .context("删除用户角色关联失败")
-                            .map_err(|e| ApiErrors::Internal(e))?;
+                            .map_err(ApiErrors::Internal)?;
 
                         // 批量插入新角色
                         if !role_ids.is_empty() {
@@ -260,7 +262,7 @@ impl SysUserService {
                                 .exec(txn)
                                 .await
                                 .context("分配角色失败")
-                                .map_err(|e| ApiErrors::Internal(e))?;
+                                .map_err(ApiErrors::Internal)?;
                         }
                     }
 
@@ -294,7 +296,7 @@ impl SysUserService {
                         .one(txn)
                         .await
                         .context("查询用户失败")
-                        .map_err(|e| ApiErrors::Internal(e))?
+                        .map_err(ApiErrors::Internal)?
                         .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
 
                     if user.status != sys_user::UserStatus::Disabled {
@@ -424,18 +426,18 @@ impl SysUserService {
             .ok_or_else(|| ApiErrors::NotFound("用户不存在".to_string()))?;
 
         // 检查邮箱是否被其他用户使用
-        if let Some(ref email) = dto.email {
-            if !email.is_empty() {
-                let existing = sys_user::Entity::find()
-                    .filter(sys_user::Column::Email.eq(email))
-                    .filter(sys_user::Column::Id.ne(user_id))
-                    .one(&self.db)
-                    .await
-                    .context("检查邮箱失败")?;
+        if let Some(ref email) = dto.email
+            && !email.is_empty()
+        {
+            let existing = sys_user::Entity::find()
+                .filter(sys_user::Column::Email.eq(email))
+                .filter(sys_user::Column::Id.ne(user_id))
+                .one(&self.db)
+                .await
+                .context("检查邮箱失败")?;
 
-                if existing.is_some() {
-                    return Err(ApiErrors::Conflict("该邮箱已被其他用户使用".to_string()));
-                }
+            if existing.is_some() {
+                return Err(ApiErrors::Conflict("该邮箱已被其他用户使用".to_string()));
             }
         }
 
@@ -469,10 +471,7 @@ impl SysUserService {
             .await
             .map_err(map_auth_runtime_error)?;
         self.socket_gateway
-            .notify_and_disconnect(
-                login_id,
-                &KickoutPayload::account_disabled(),
-            )
+            .notify_and_disconnect(login_id, &KickoutPayload::account_disabled())
             .await?;
         Ok(())
     }

@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS sys;
 
 CREATE TABLE sys.passkey_credential (
     id                 BIGSERIAL       PRIMARY KEY,
-    user_id            BIGINT          NOT NULL REFERENCES sys."user"(id) ON DELETE CASCADE,
+    user_id            BIGINT          NOT NULL,
     credential_id      VARCHAR(255)    NOT NULL,
     credential_name    VARCHAR(128)    NOT NULL DEFAULT '',
     public_key         TEXT            NOT NULL DEFAULT '',

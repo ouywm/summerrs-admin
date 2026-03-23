@@ -135,17 +135,17 @@ pub fn validate_file(
         )));
     }
 
-    if !allowed_extensions.is_empty() && !suffix.is_empty() {
-        if !allowed_extensions
+    if !allowed_extensions.is_empty()
+        && !suffix.is_empty()
+        && !allowed_extensions
             .iter()
             .any(|e| e.eq_ignore_ascii_case(suffix))
-        {
-            return Err(ApiErrors::BadRequest(format!(
-                "不允许的文件类型：{}，允许的类型：{}",
-                suffix,
-                allowed_extensions.join(", ")
-            )));
-        }
+    {
+        return Err(ApiErrors::BadRequest(format!(
+            "不允许的文件类型：{}，允许的类型：{}",
+            suffix,
+            allowed_extensions.join(", ")
+        )));
     }
 
     Ok(())

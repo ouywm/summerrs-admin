@@ -1,13 +1,15 @@
 use anyhow::Context;
-use summer_common::error::{ApiErrors, ApiResult};
-use summer_model::dto::sys_role::{CreateRoleDto, RolePermissionDto, RoleQueryDto, UpdateRoleDto};
-use summer_model::entity::sys_role;
-use summer_model::entity::sys_role_menu;
-use summer_model::entity::sys_user_role;
-use summer_model::vo::sys_role::{RolePermissionVo, RoleVo};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use summer::plugin::Service;
 use summer_auth::{LoginId, SessionManager};
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_system_model::dto::sys_role::{
+    CreateRoleDto, RolePermissionDto, RoleQueryDto, UpdateRoleDto,
+};
+use summer_system_model::entity::sys_role;
+use summer_system_model::entity::sys_role_menu;
+use summer_system_model::entity::sys_user_role;
+use summer_system_model::vo::sys_role::{RolePermissionVo, RoleVo};
 
 use summer_sea_orm::DbConn;
 use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
@@ -125,7 +127,7 @@ impl SysRoleService {
         let all_menu_ids: Vec<i64> = role_menus.iter().map(|rm| rm.menu_id).collect();
 
         // 查询所有菜单，找出叶子节点（checked）和中间节点（half-checked）
-        let all_menus = summer_model::entity::sys_menu::Entity::find()
+        let all_menus = summer_system_model::entity::sys_menu::Entity::find()
             .all(&self.db)
             .await
             .context("查询菜单失败")?;

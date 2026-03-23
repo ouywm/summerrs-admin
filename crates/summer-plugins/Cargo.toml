@@ -1,7 +1,7 @@
 [package]
-name = "summer-plugins"
-version = "0.0.1"
 edition = "2024"
+name    = "summer-plugins"
+version = "0.0.1"
 
 [dependencies]
 aws-config = { workspace = true }
@@ -10,17 +10,26 @@ aws-sdk-s3 = { workspace = true }
 aws-smithy-types = { workspace = true }
 flume = { workspace = true }
 ip2region = { workspace = true }
-summer-model = { workspace = true }
 rustc-hash = { workspace = true }
-sea-orm = { workspace = true, features = ["with-chrono", "sqlx-postgres", "runtime-tokio-rustls"] }
+sea-orm = { workspace = true, features = [
+    "with-chrono",
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+] }
 serde = { workspace = true, features = ["derive"] }
 summer = { workspace = true }
-summer-sea-orm = { workspace = true, features = ["postgres", "rustls", "with-web", "with-web-openapi"] }
+summer-sea-orm = { workspace = true, features = [
+    "postgres",
+    "rustls",
+    "with-web",
+    "with-web-openapi",
+] }
+summer-system-model = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-bytes = { workspace = true }
-mime = { workspace = true }
+bytes   = { workspace = true }
+mime    = { workspace = true }
 reqwest = { workspace = true }

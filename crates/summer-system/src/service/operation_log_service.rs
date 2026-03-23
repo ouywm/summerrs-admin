@@ -1,16 +1,16 @@
-use summer_plugins::background_task::BackgroundTaskQueue;
-use summer_plugins::ip2region::Ip2RegionSearcher;
-use summer_plugins::log_batch_collector::OperationLogCollector;
 use anyhow::Context;
-use summer_common::error::ApiResult;
-use summer_model::dto::operation_log::{CreateOperationLogDto, OperationLogQueryDto};
-use summer_model::entity::sys_operation_log;
-use summer_model::vo::operation_log::{OperationLogDetailVo, OperationLogVo};
 use sea_orm::{EntityTrait, QueryFilter, QueryOrder};
 use std::net::IpAddr;
 use summer::plugin::Service;
+use summer_common::error::ApiResult;
+use summer_plugins::background_task::BackgroundTaskQueue;
+use summer_plugins::ip2region::Ip2RegionSearcher;
+use summer_plugins::log_batch_collector::OperationLogCollector;
 use summer_sea_orm::DbConn;
 use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
+use summer_system_model::dto::operation_log::{CreateOperationLogDto, OperationLogQueryDto};
+use summer_system_model::entity::sys_operation_log;
+use summer_system_model::vo::operation_log::{OperationLogDetailVo, OperationLogVo};
 use summer_web::axum::extract::FromRequestParts;
 use summer_web::axum::http::request::Parts;
 use summer_web::extractor::RequestPartsExt;
@@ -124,7 +124,9 @@ impl OperationLogService {
             .one(&self.db)
             .await
             .context("查询操作日志详情失败")?
-            .ok_or_else(|| summer_common::error::ApiErrors::NotFound("操作日志不存在".to_string()))?;
+            .ok_or_else(|| {
+                summer_common::error::ApiErrors::NotFound("操作日志不存在".to_string())
+            })?;
 
         Ok(OperationLogDetailVo::from_model(model))
     }

@@ -24,8 +24,7 @@ pub trait ProviderAdapter: Send + Sync {
     ) -> Result<reqwest::RequestBuilder>;
 
     /// 将后端非流式响应转为 OpenAI 格式
-    fn parse_response(&self, body: bytes::Bytes, model: &str)
-        -> Result<ChatCompletionResponse>;
+    fn parse_response(&self, body: bytes::Bytes, model: &str) -> Result<ChatCompletionResponse>;
 
     /// 将后端流式 SSE 转为 OpenAI chunk 流
     fn parse_stream(

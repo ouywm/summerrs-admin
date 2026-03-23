@@ -1,8 +1,4 @@
 use anyhow::Context;
-use summer_common::error::{ApiErrors, ApiResult};
-use summer_model::dto::sys_notice::{UserNoticeLatestQueryDto, UserNoticeQueryDto};
-use summer_model::entity::{sys_notice, sys_notice_user};
-use summer_model::vo::sys_notice::{NoticeUnreadCountVo, UserNoticeDetailVo, UserNoticeVo};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, JoinType, PaginatorTrait, QueryFilter, QueryOrder,
     QuerySelect, RelationTrait, Set,
@@ -10,8 +6,12 @@ use sea_orm::{
 use std::collections::HashMap;
 use summer::plugin::Service;
 use summer_auth::LoginId;
+use summer_common::error::{ApiErrors, ApiResult};
 use summer_sea_orm::DbConn;
 use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
+use summer_system_model::dto::sys_notice::{UserNoticeLatestQueryDto, UserNoticeQueryDto};
+use summer_system_model::entity::{sys_notice, sys_notice_user};
+use summer_system_model::vo::sys_notice::{NoticeUnreadCountVo, UserNoticeDetailVo, UserNoticeVo};
 
 #[derive(Clone, Service)]
 pub struct UserNoticeService {

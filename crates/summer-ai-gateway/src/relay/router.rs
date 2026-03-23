@@ -9,12 +9,7 @@
 pub struct ChannelRouter;
 
 impl ChannelRouter {
-    pub async fn select_channel(
-        &self,
-        _group: &str,
-        _model: &str,
-        _exclude: &[i64],
-    ) -> Option<()> {
+    pub async fn select_channel(&self, _group: &str, _model: &str, _exclude: &[i64]) -> Option<()> {
         // TODO: 返回 ChannelWithMapping
         todo!()
     }

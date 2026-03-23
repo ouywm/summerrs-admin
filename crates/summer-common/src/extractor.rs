@@ -115,10 +115,10 @@ impl<T> std::ops::DerefMut for ValidatedJson<T> {
 /// 提取验证错误的第一条消息（去掉字段名前缀）
 fn extract_first_error_message(errors: &validator::ValidationErrors) -> String {
     for (_, field_errors) in errors.field_errors() {
-        if let Some(first_error) = field_errors.first() {
-            if let Some(msg) = &first_error.message {
-                return msg.to_string();
-            }
+        if let Some(first_error) = field_errors.first()
+            && let Some(msg) = &first_error.message
+        {
+            return msg.to_string();
         }
     }
     "验证失败".to_string()

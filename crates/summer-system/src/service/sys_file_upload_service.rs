@@ -5,21 +5,21 @@ use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_smithy_types::byte_stream::ByteStream;
 use bytes::Bytes;
-use summer_common::error::{ApiErrors, ApiResult};
-use summer_common::file_util;
-use summer_model::dto::sys_file::{
-    MultipartAbortDto, MultipartCompleteDto, MultipartInitDto, MultipartListPartsDto,
-    PresignUploadCallbackDto, PresignUploadDto,
-};
-use summer_model::entity::sys_file;
-use summer_model::vo::sys_file::{
-    BatchUploadVo, FileUploadVo, MultipartInitVo, MultipartListPartsVo, PartPresignedUrl,
-    PresignedDownloadVo, PresignedUploadVo, UploadFailureVo, UploadedPartVo,
-};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::time::Duration;
 use summer::plugin::Service;
 use summer_auth::LoginId;
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_common::file_util;
+use summer_system_model::dto::sys_file::{
+    MultipartAbortDto, MultipartCompleteDto, MultipartInitDto, MultipartListPartsDto,
+    PresignUploadCallbackDto, PresignUploadDto,
+};
+use summer_system_model::entity::sys_file;
+use summer_system_model::vo::sys_file::{
+    BatchUploadVo, FileUploadVo, MultipartInitVo, MultipartListPartsVo, PartPresignedUrl,
+    PresignedDownloadVo, PresignedUploadVo, UploadFailureVo, UploadedPartVo,
+};
 
 use summer_plugins::s3::config::S3Config;
 use summer_sea_orm::DbConn;
@@ -375,19 +375,18 @@ impl SysFileUploadService {
         self.validate_file(dto.file_size, &suffix)?;
 
         // 秒传检查（前端传入 file_md5 时触发）
-        if let Some(ref file_md5) = dto.file_md5 {
-            if let Some(vo) = self
+        if let Some(ref file_md5) = dto.file_md5
+            && let Some(vo) = self
                 .try_fast_upload(file_md5, &dto.file_name, &suffix, login_id, operator)
                 .await?
-            {
-                return Ok(PresignedUploadVo {
-                    fast_uploaded: true,
-                    file: Some(vo),
-                    upload_url: None,
-                    file_path: None,
-                    expires_in: None,
-                });
-            }
+        {
+            return Ok(PresignedUploadVo {
+                fast_uploaded: true,
+                file: Some(vo),
+                upload_url: None,
+                file_path: None,
+                expires_in: None,
+            });
         }
 
         let bucket_name = self.bucket();
@@ -570,7 +569,7 @@ impl SysFileUploadService {
             .to_string();
 
         let chunk_size = self.s3_config.multipart_chunk_size;
-        let total_parts = ((dto.file_size as u64 + chunk_size - 1) / chunk_size) as i32;
+        let total_parts = (dto.file_size as u64).div_ceil(chunk_size) as i32;
         let expiry = self.s3_config.presign_expiry;
 
         let mut part_urls = Vec::with_capacity(total_parts as usize);
@@ -613,7 +612,7 @@ impl SysFileUploadService {
     ) -> ApiResult<MultipartListPartsVo> {
         let bucket_name = self.bucket();
         let chunk_size = self.s3_config.multipart_chunk_size;
-        let total_parts = ((dto.file_size as u64 + chunk_size - 1) / chunk_size) as i32;
+        let total_parts = (dto.file_size as u64).div_ceil(chunk_size) as i32;
 
         let parts = self
             .fetch_all_parts(bucket_name, &dto.file_path, &dto.upload_id)
@@ -686,7 +685,7 @@ impl SysFileUploadService {
 
         // 校验分片完整性
         let chunk_size = self.s3_config.multipart_chunk_size;
-        let expected_parts = ((dto.file_size as u64 + chunk_size - 1) / chunk_size) as i32;
+        let expected_parts = (dto.file_size as u64).div_ceil(chunk_size) as i32;
         let uploaded_set: std::collections::HashSet<i32> =
             parts.iter().map(|p| p.part_number).collect();
 

@@ -29,12 +29,12 @@ pub use config::LogBatchConfig;
 use std::time::Duration;
 
 use config::{default_batch_size, default_capacity, default_flush_interval_ms};
-use summer_model::entity::{sys_login_log, sys_operation_log};
 use sea_orm::{ActiveModelTrait, EntityTrait};
 use summer::app::AppBuilder;
 use summer::async_trait;
 use summer::config::ConfigRegistry;
 use summer::plugin::{ComponentRegistry, MutableComponentRegistry, Plugin};
+use summer_system_model::entity::{sys_login_log, sys_operation_log};
 
 use summer_sea_orm::DbConn;
 
@@ -119,7 +119,7 @@ async fn flush_batch<A>(db: &DbConn, buffer: &mut Vec<A>, entity_name: &str)
 where
     A: ActiveModelTrait + Send,
 {
-    let batch: Vec<A> = buffer.drain(..).collect();
+    let batch = std::mem::take(buffer);
     let count = batch.len();
 
     match <A::Entity as EntityTrait>::insert_many(batch)

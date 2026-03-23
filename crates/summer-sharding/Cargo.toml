@@ -1,0 +1,8 @@
+[package]
+edition = "2024"
+name    = "summer-sharding"
+version = "0.0.1"
+
+[dependencies]
+sea-orm   = { workspace = true }
+sqlparser = { workspace = true }

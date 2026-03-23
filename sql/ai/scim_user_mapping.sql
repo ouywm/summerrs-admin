@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.scim_user_mapping (
     id                  BIGSERIAL       PRIMARY KEY,
-    scim_config_id      BIGINT          NOT NULL REFERENCES ai.org_scim_config(id) ON DELETE CASCADE,
+    scim_config_id      BIGINT          NOT NULL,
     organization_id     BIGINT          NOT NULL DEFAULT 0,
     user_id             BIGINT          NOT NULL DEFAULT 0,
     external_user_id    VARCHAR(128)    NOT NULL,

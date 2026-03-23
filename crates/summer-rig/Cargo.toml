@@ -1,16 +1,16 @@
 [package]
-name = "summer-rig"
-version = "0.0.1"
 edition = "2024"
+name    = "summer-rig"
+version = "0.0.1"
 
 [dependencies]
-anyhow = { workspace = true }
-futures = { workspace = true }
+anyhow   = { workspace = true }
+futures  = { workspace = true }
 rig-core = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-summer = { workspace = true }
-tracing = { workspace = true }
+serde    = { workspace = true, features = ["derive"] }
+summer   = { workspace = true }
+tracing  = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-toml = "0.9"
+toml  = "0.9"

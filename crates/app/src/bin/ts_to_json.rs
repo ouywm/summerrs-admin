@@ -89,10 +89,10 @@ fn extract_route_object(content: &str) -> Result<String, String> {
     // 匹配 变量名 = { ... } 或 变量名 = [ ... ]
     let re = Regex::new(r"(\w+)\s*=\s*(\{[\s\S]*\}|\[[\s\S]*\])\s*;?\s*$").unwrap();
 
-    if let Some(caps) = re.captures(content) {
-        if let Some(obj) = caps.get(2) {
-            return Ok(obj.as_str().to_string());
-        }
+    if let Some(caps) = re.captures(content)
+        && let Some(obj) = caps.get(2)
+    {
+        return Ok(obj.as_str().to_string());
     }
 
     Err("无法找到路由对象".to_string())

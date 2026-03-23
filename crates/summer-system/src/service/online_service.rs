@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use summer_common::error::{ApiErrors, ApiResult};
-use summer_model::entity::sys_user;
-use summer_model::vo::online::OnlineUserVo;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use summer::plugin::Service;
 use summer_auth::{LoginId, OnlineUserQuery, SessionManager, UserType};
+use summer_common::error::{ApiErrors, ApiResult};
+use summer_system_model::entity::sys_user;
+use summer_system_model::vo::online::OnlineUserVo;
 
-use summer_plugins::ip2region::Ip2RegionSearcher;
 use crate::socketio::service::{KickoutPayload, SocketGatewayService};
+use summer_plugins::ip2region::Ip2RegionSearcher;
 use summer_sea_orm::DbConn;
 use summer_sea_orm::pagination::{Page, Pagination};
 
@@ -97,10 +97,7 @@ impl OnlineUserService {
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
         self.socket_gateway
-            .notify_and_disconnect(
-                &login_id,
-                &KickoutPayload::admin_kickout(),
-            )
+            .notify_and_disconnect(&login_id, &KickoutPayload::admin_kickout())
             .await?;
         Ok(())
     }
@@ -115,11 +112,7 @@ impl OnlineUserService {
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
         self.socket_gateway
-            .notify_and_disconnect_device(
-                &login_id,
-                device_str,
-                &KickoutPayload::admin_kickout(),
-            )
+            .notify_and_disconnect_device(&login_id, device_str, &KickoutPayload::admin_kickout())
             .await?;
         Ok(())
     }

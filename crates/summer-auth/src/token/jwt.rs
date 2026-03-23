@@ -421,8 +421,8 @@ mod tests {
             .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
 
-        assert_ne!(t256.split('.').nth(0), t384.split('.').nth(0));
-        assert_ne!(t384.split('.').nth(0), t512.split('.').nth(0));
+        assert_ne!(t256.split('.').next(), t384.split('.').next());
+        assert_ne!(t384.split('.').next(), t512.split('.').next());
     }
 
     #[test]

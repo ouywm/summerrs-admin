@@ -7,7 +7,7 @@ use std::{
 
 use rmcp::{
     ClientHandler, ServiceExt,
-    summer_model::{CallToolRequestParams, ClientInfo},
+    model::{CallToolRequestParams, ClientInfo},
     transport::TokioChildProcess,
 };
 use serde_json::{Value, json};

@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.message (
     id                  BIGSERIAL       PRIMARY KEY,
-    conversation_id     BIGINT          NOT NULL REFERENCES ai.conversation(id) ON DELETE CASCADE,
+    conversation_id     BIGINT          NOT NULL,
     organization_id     BIGINT          NOT NULL DEFAULT 0,
     project_id          BIGINT          NOT NULL DEFAULT 0,
     user_id             BIGINT          NOT NULL DEFAULT 0,

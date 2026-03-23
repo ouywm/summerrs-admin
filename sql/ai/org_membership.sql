@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.org_membership (
     id                  BIGSERIAL       PRIMARY KEY,
-    organization_id     BIGINT          NOT NULL REFERENCES ai.organization(id) ON DELETE CASCADE,
+    organization_id     BIGINT          NOT NULL,
     user_id             BIGINT          NOT NULL,
     role_code           VARCHAR(32)     NOT NULL DEFAULT 'member',
     status              SMALLINT        NOT NULL DEFAULT 1,

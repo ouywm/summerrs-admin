@@ -28,7 +28,10 @@ impl ProviderAdapter for OpenAiAdapter {
         _stream: reqwest::Response,
         _model: &str,
     ) -> anyhow::Result<
-        futures::stream::BoxStream<'static, anyhow::Result<crate::types::chat::ChatCompletionChunk>>,
+        futures::stream::BoxStream<
+            'static,
+            anyhow::Result<crate::types::chat::ChatCompletionChunk>,
+        >,
     > {
         todo!()
     }

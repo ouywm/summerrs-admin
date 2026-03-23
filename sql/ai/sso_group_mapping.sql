@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.sso_group_mapping (
     id                  BIGSERIAL       PRIMARY KEY,
-    sso_config_id       BIGINT          NOT NULL REFERENCES ai.org_sso_config(id) ON DELETE CASCADE,
+    sso_config_id       BIGINT          NOT NULL,
     organization_id     BIGINT          NOT NULL DEFAULT 0,
     external_group_key  VARCHAR(255)    NOT NULL,
     external_group_name VARCHAR(255)    NOT NULL DEFAULT '',

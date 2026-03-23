@@ -682,13 +682,13 @@ impl Drop for TempDirGuard {
         if let Some(path) = self.path.take() {
             // Move the synchronous remove_dir_all off the tokio executor thread.
             std::thread::spawn(move || {
-                if let Err(error) = std::fs::remove_dir_all(&path) {
-                    if error.kind() != std::io::ErrorKind::NotFound {
-                        tracing::warn!(
-                            "failed to remove temporary entity generation directory `{}`: {error}",
-                            path.display()
-                        );
-                    }
+                if let Err(error) = std::fs::remove_dir_all(&path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(
+                        "failed to remove temporary entity generation directory `{}`: {error}",
+                        path.display()
+                    );
                 }
             });
         }

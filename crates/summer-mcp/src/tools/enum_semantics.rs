@@ -85,6 +85,7 @@ pub(crate) fn resolve_field_enum(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_enum_draft(
     table: &TableGenerationContext,
     names: &CrudNamingContext,
@@ -240,8 +241,8 @@ fn option_from_value_and_label(
 fn trim_enum_label(value: &str) -> String {
     value
         .trim()
-        .trim_start_matches(|ch| matches!(ch, '(' | '（' | '[' | '【'))
-        .trim_end_matches(|ch| matches!(ch, ',' | '，' | ';' | '；' | ')' | '）' | ']' | '】'))
+        .trim_start_matches(['(', '（', '[', '【'])
+        .trim_end_matches([',', '，', ';', '；', ')', '）', ']', '】'])
         .trim()
         .to_string()
 }

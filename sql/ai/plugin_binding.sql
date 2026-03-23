@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.plugin_binding (
     id                  BIGSERIAL       PRIMARY KEY,
-    plugin_id           BIGINT          NOT NULL REFERENCES ai.plugin(id) ON DELETE CASCADE,
+    plugin_id           BIGINT          NOT NULL,
     organization_id     BIGINT          NOT NULL DEFAULT 0,
     project_id          BIGINT          NOT NULL DEFAULT 0,
     routing_rule_id     BIGINT          NOT NULL DEFAULT 0,

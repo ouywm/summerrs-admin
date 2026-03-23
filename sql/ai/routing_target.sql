@@ -7,7 +7,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.routing_target (
     id                  BIGSERIAL       PRIMARY KEY,
-    routing_rule_id     BIGINT          NOT NULL REFERENCES ai.routing_rule(id) ON DELETE CASCADE,
+    routing_rule_id     BIGINT          NOT NULL,
     target_type         VARCHAR(32)     NOT NULL DEFAULT 'channel',
     channel_id          BIGINT          NOT NULL DEFAULT 0,
     account_id          BIGINT          NOT NULL DEFAULT 0,

@@ -1,7 +1,7 @@
 use chrono::Utc;
-use summer_common::error::ApiResult;
 use summer::plugin::Service;
 use summer_auth::{LoginId, SessionManager};
+use summer_common::error::ApiResult;
 
 use super::super::core::{emitter::SocketEmitter, event, model::SocketSessionState};
 use super::session::SocketSessionStore;
@@ -128,22 +128,25 @@ impl SocketGatewayService {
                 continue;
             };
 
-            if let Some(device) = device_filter {
-                if session.device != device {
-                    continue;
-                }
+            if let Some(device) = device_filter
+                && session.device != device
+            {
+                continue;
             }
 
-            if let Some(socket) = self.emitter.get_socket(&session.namespace, &session.socket_id) {
-                if let Some(payload) = notify {
-                    if let Err(err) = socket.emit(event::SESSION_KICKOUT, payload) {
-                        tracing::warn!(
-                            socket_id = %session.socket_id,
-                            event = event::SESSION_KICKOUT,
-                            error = %err,
-                            "Socket emit before disconnect failed"
-                        );
-                    }
+            if let Some(socket) = self
+                .emitter
+                .get_socket(&session.namespace, &session.socket_id)
+            {
+                if let Some(payload) = notify
+                    && let Err(err) = socket.emit(event::SESSION_KICKOUT, payload)
+                {
+                    tracing::warn!(
+                        socket_id = %session.socket_id,
+                        event = event::SESSION_KICKOUT,
+                        error = %err,
+                        "Socket emit before disconnect failed"
+                    );
                 }
 
                 match socket.disconnect() {

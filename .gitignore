@@ -9,6 +9,10 @@ rust-project.json
 .idea/
 *.iml
 docs/public
+docs/relay/
+docs/research/
+docs/summer-ai-gateway-impl.md
+docs/summer-ai-gateway-plan.md
 perf*
 flamegraph.svg
 logs/

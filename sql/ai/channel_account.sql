@@ -8,7 +8,7 @@ CREATE SCHEMA IF NOT EXISTS ai;
 
 CREATE TABLE ai.channel_account (
     id                  BIGSERIAL       PRIMARY KEY,
-    channel_id          BIGINT          NOT NULL REFERENCES ai.channel(id) ON DELETE CASCADE,
+    channel_id          BIGINT          NOT NULL,
     name                VARCHAR(128)    NOT NULL DEFAULT '',
     credential_type     VARCHAR(32)     NOT NULL DEFAULT 'api_key',
     credentials         JSONB           NOT NULL DEFAULT '{}'::jsonb,

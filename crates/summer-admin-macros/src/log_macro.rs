@@ -54,7 +54,9 @@ impl quote::ToTokens for BusinessType {
             Self::Import => quote! { Import },
             Self::Auth => quote! { Auth },
         };
-        tokens.extend(quote! { summer_model::entity::sys_operation_log::BusinessType::#variant });
+        tokens.extend(
+            quote! { summer_system_model::entity::sys_operation_log::BusinessType::#variant },
+        );
     }
 }
 
@@ -314,7 +316,7 @@ fn infer_log_status_code_strategy(output: &syn::ReturnType) -> (bool, bool) {
 
     let err_is_api_errors = match seg.ident.to_string().as_str() {
         "Result" => types.get(1).is_some_and(|ty| is_api_errors_ty(ty)),
-        "ApiResult" => types.get(1).map_or(true, |ty| is_api_errors_ty(ty)),
+        "ApiResult" => types.get(1).is_none_or(|ty| is_api_errors_ty(ty)),
         _ => false,
     };
 
@@ -474,7 +476,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     let ok_status_arm = if ok_is_response {
         quote! {
             Ok(Ok(resp)) => (
-                summer_model::entity::sys_operation_log::OperationStatus::Success,
+                summer_system_model::entity::sys_operation_log::OperationStatus::Success,
                 None::<String>,
                 resp.status().as_u16() as i16,
             ),
@@ -482,7 +484,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     } else {
         quote! {
             Ok(Ok(_)) => (
-                summer_model::entity::sys_operation_log::OperationStatus::Success,
+                summer_system_model::entity::sys_operation_log::OperationStatus::Success,
                 None::<String>,
                 200i16,
             ),
@@ -505,7 +507,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                     summer_common::error::ApiErrors::ServiceUnavailable(_) => 503i16,
                 };
                 (
-                    summer_model::entity::sys_operation_log::OperationStatus::Failed,
+                    summer_system_model::entity::sys_operation_log::OperationStatus::Failed,
                     Some(format!("{:#}", e)),
                     __log_response_code,
                 )
@@ -514,7 +516,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     } else {
         quote! {
             Ok(Err(e)) => (
-                summer_model::entity::sys_operation_log::OperationStatus::Failed,
+                summer_system_model::entity::sys_operation_log::OperationStatus::Failed,
                 Some(format!("{:#}", e)),
                 500i16,
             ),
@@ -565,14 +567,14 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                     } else {
                         "unknown panic".to_string()
                     };
-                    (summer_model::entity::sys_operation_log::OperationStatus::Exception, Some(__log_panic_msg), 500i16)
+                    (summer_system_model::entity::sys_operation_log::OperationStatus::Exception, Some(__log_panic_msg), 500i16)
                 }
             };
 
             #response_capture
 
             // 异步记录操作日志（不阻塞响应）
-            __log_op_svc.record_async(summer_model::dto::operation_log::CreateOperationLogDto {
+            __log_op_svc.record_async(summer_system_model::dto::operation_log::CreateOperationLogDto {
                 user_id: __log_user_id,
                 module: #module.to_string(),
                 action: #action.to_string(),
