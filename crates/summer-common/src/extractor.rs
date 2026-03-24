@@ -160,7 +160,6 @@ impl<T: schemars::JsonSchema> summer_web::aide::OperationInput for ValidatedJson
 /// 客户端 IP 提取器（包装 axum_client_ip::ClientIp）
 ///
 /// 因 axum_client_ip::ClientIp 来自外部 crate，无法为其实现 OperationInput
-/// 此包装类型委托提取逻辑给原版，同时实现 OperationInput 使其对 OpenAPI 文档透明。
 pub struct ClientIp(pub std::net::IpAddr);
 
 impl<S: Send + Sync> FromRequestParts<S> for ClientIp {

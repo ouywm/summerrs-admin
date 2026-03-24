@@ -2,7 +2,7 @@
 
 更新时间：2026-03-21
 
-这里是 `summer-ai-gateway` 的 SQL source of truth。
+这里是 `summer-ai-hub` 的 SQL source of truth。
 
 命名规则：
 

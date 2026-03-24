@@ -20,6 +20,7 @@ use summer_common::response::Json;
 
 /// POST /v1/chat/completions
 #[post_api("/v1/chat/completions")]
+#[allow(clippy::too_many_arguments)]
 pub async fn chat_completions(
     AiToken(token_info): AiToken,
     Component(router_svc): Component<ChannelRouter>,

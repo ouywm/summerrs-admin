@@ -28,7 +28,7 @@ description: >
 - `crates/summer-system`：system 的 `router/service/plugins/socketio/job`
 - `crates/summer-system-model`：system 的 `dto/vo/entity`，其中 `entity_gen` 是可覆盖生成层，`entity` 是稳定扩展层
 - `crates/summer-ai-model`：AI 领域的表结构与共享契约
-- `crates/summer-ai-gateway`：AI 网关运行时与业务实现
+- `crates/summer-ai-hub`：AI 网关运行时与业务实现
 - `crates/summer-mcp`：schema 工具、生成器、菜单/字典业务工具
 - `crates/summer-auth`：token、session、登录态、在线用户基础能力
 - `crates/summer-plugins`：通用插件（S3、任务、日志采集等）

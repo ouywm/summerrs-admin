@@ -11,8 +11,8 @@ rust-project.json
 docs/public
 docs/relay/
 docs/research/
-docs/summer-ai-gateway-impl.md
-docs/summer-ai-gateway-plan.md
+docs/summer-ai-hub-impl.md
+docs/summer-ai-hub-plan.md
 perf*
 flamegraph.svg
 logs/

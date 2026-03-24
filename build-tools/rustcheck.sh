@@ -19,7 +19,7 @@ run_clippy() {
     summer-rig
     summer-system-model
     summer-ai-model
-    summer-ai-gateway
+    summer-ai-hub
     summer-domain
     summer-system
   )
