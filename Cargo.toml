@@ -2,7 +2,10 @@
 members = [
     "crates/app",
     "crates/summer-system-model",
-    "crates/summer-ai-model",
+    "crates/summer-ai",
+    "crates/summer-ai/model",
+    "crates/summer-ai/core",
+    "crates/summer-ai/hub",
     "crates/summer-model",
     "crates/summer-common",
     "crates/summer-admin-macros",
@@ -11,7 +14,6 @@ members = [
     "crates/summer-domain",
     "crates/summer-auth",
     "crates/summer-mcp",
-    "crates/summer-ai-gateway",
     "crates/summer-system",
     "crates/summer-plugins",
 ]
@@ -20,6 +22,8 @@ resolver = "2"
 [workspace.dependencies]
 anyhow = "1.0.102"
 argon2 = "0.5"
+async-stream = "0.3"
+async-trait = "0.1"
 aws-config = "1.8.14"
 aws-credential-types = "1.2.13"
 aws-sdk-s3 = "1.124.0"
@@ -34,6 +38,8 @@ criterion = "0.5"
 flume = "0.12"
 futures = "0.3.32"
 garde = "0.22.1"
+hex = "0.4"
+http = "1"
 ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master" }
 ipnetwork = "0.20.0"
 kanal = "0.1"
@@ -55,10 +61,13 @@ sea-orm = "2.0.0-rc.37"
 serde = "1.0.228"
 serde_json = "1.0.149"
 serde_repr = "0.1"
+sha2 = "0.10"
 sqlparser = "0.54.0"
 summer = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6eee7309c8b0c4052c2990565f2c9b0a03e" }
 summer-admin-macros = { path = "crates/summer-admin-macros" }
-summer-ai-model = { path = "crates/summer-ai-model" }
+summer-ai = { path = "crates/summer-ai" }
+summer-ai-core = { path = "crates/summer-ai/core" }
+summer-ai-model = { path = "crates/summer-ai/model" }
 summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
@@ -88,7 +97,7 @@ indexmap = "2.13.0"
 jsonwebtoken = "9"
 reqwest-eventsource = "0.6"
 rmcp = "1.2.0"
-summer-ai-gateway = { path = "crates/summer-ai-gateway" }
+summer-ai-hub = { path = "crates/summer-ai/hub" }
 summer-plugins = { path = "crates/summer-plugins" }
 summer-system = { path = "crates/summer-system" }
 tokio-stream = "0.1"

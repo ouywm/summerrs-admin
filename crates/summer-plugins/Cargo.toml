@@ -15,9 +15,12 @@ sea-orm = { workspace = true, features = [
     "with-chrono",
     "sqlx-postgres",
     "runtime-tokio-rustls",
+    "entity-registry",
+    "schema-sync",
 ] }
 serde = { workspace = true, features = ["derive"] }
 summer = { workspace = true }
+summer-ai-model = { workspace = true }
 summer-sea-orm = { workspace = true, features = [
     "postgres",
     "rustls",
