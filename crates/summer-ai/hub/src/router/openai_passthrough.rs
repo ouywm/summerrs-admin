@@ -23,7 +23,10 @@ use summer_web::{delete_api, get_api, post_api};
 
 use crate::auth::extractor::AiToken;
 use crate::relay::billing::{BillingEngine, ModelConfigInfo};
-use crate::relay::channel_router::{ChannelRouter, RouteSelectionExclusions, SelectedChannel};
+use crate::relay::channel_router::{
+    ChannelRouter, RouteSelectionExclusions, RouteSelectionPlan, RouteSelectionState,
+    SelectedChannel,
+};
 use crate::relay::http_client::UpstreamHttpClient;
 use crate::relay::rate_limit::RateLimitEngine;
 use crate::router::openai::{
@@ -59,6 +62,101 @@ struct ResourceRequestSpec {
     bind_resource_kind: Option<&'static str>,
     #[allow(dead_code)]
     delete_resource_kind: Option<&'static str>,
+}
+
+struct ResourceRouteState {
+    exclusions: RouteSelectionExclusions,
+    model_plan: Option<RouteSelectionPlan>,
+    default_plan: RouteSelectionPlan,
+}
+
+impl ResourceRouteState {
+    async fn new(
+        token_info: &TokenInfo,
+        router_svc: &ChannelRouter,
+        endpoint_scope: &'static str,
+        requested_model: Option<&str>,
+    ) -> OpenAiApiResult<Self> {
+        let exclusions = RouteSelectionExclusions::default();
+        let model_plan = if let Some(model) = requested_model {
+            Some(
+                router_svc
+                    .build_channel_plan_with_exclusions(
+                        &token_info.group,
+                        model,
+                        endpoint_scope,
+                        &exclusions,
+                    )
+                    .await
+                    .map_err(|error| {
+                        OpenAiErrorResponse::internal_with("failed to build channel plan", error)
+                    })?,
+            )
+        } else {
+            None
+        };
+        let default_plan = router_svc
+            .build_default_channel_plan_with_exclusions(
+                &token_info.group,
+                endpoint_scope,
+                &exclusions,
+            )
+            .await
+            .map_err(|error| {
+                OpenAiErrorResponse::internal_with("failed to build default channel plan", error)
+            })?;
+
+        Ok(Self {
+            exclusions,
+            model_plan,
+            default_plan,
+        })
+    }
+
+    async fn select(
+        &mut self,
+        token_info: &TokenInfo,
+        resource_affinity: &ResourceAffinityService,
+        affinity_keys: &[(&'static str, String)],
+        json_body: Option<&Value>,
+    ) -> OpenAiApiResult<Option<SelectedChannel>> {
+        for (kind, id) in resource_affinity_lookup_keys(affinity_keys, json_body) {
+            if let Some(channel) = resource_affinity
+                .resolve(token_info, kind, &id)
+                .await
+                .map_err(OpenAiErrorResponse::from)?
+                && !self.exclusions.selected_is_excluded(&channel)
+            {
+                return Ok(Some(channel));
+            }
+        }
+
+        if let Some(model_plan) = self.model_plan.as_mut()
+            && let Some(channel) = model_plan.next()
+        {
+            return Ok(Some(channel));
+        }
+
+        Ok(self.default_plan.next())
+    }
+}
+
+impl RouteSelectionState for ResourceRouteState {
+    fn exclude_selected_channel(&mut self, channel: &SelectedChannel) {
+        self.exclusions.exclude_selected_channel(channel);
+        if let Some(model_plan) = self.model_plan.as_mut() {
+            model_plan.exclude_selected_channel(channel);
+        }
+        self.default_plan.exclude_selected_channel(channel);
+    }
+
+    fn exclude_selected_account(&mut self, channel: &SelectedChannel) {
+        self.exclusions.exclude_selected_account(channel);
+        if let Some(model_plan) = self.model_plan.as_mut() {
+            model_plan.exclude_selected_account(channel);
+        }
+        self.default_plan.exclude_selected_account(channel);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3334,22 +3432,20 @@ async fn relay_usage_resource_json_post(
         .await
         .map_err(|error| OpenAiErrorResponse::from_quota_error(&error))?;
 
-    let mut exclude = RouteSelectionExclusions::default();
+    let mut route_state = ResourceRouteState::new(
+        &token_info,
+        &router_svc,
+        spec.endpoint_scope,
+        requested_model.as_deref(),
+    )
+    .await?;
     let max_retries = 3;
     let start = std::time::Instant::now();
 
     for attempt in 0..max_retries {
-        let Some(channel) = resolve_resource_channel(
-            &token_info,
-            &router_svc,
-            &resource_affinity,
-            spec.endpoint_scope,
-            &affinity_keys,
-            Some(&body),
-            None,
-            &exclude,
-        )
-        .await?
+        let Some(channel) = route_state
+            .select(&token_info, &resource_affinity, &affinity_keys, Some(&body))
+            .await?
         else {
             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
             return Err(OpenAiErrorResponse::no_available_channel(if attempt == 0 {
@@ -3441,7 +3537,7 @@ async fn relay_usage_resource_json_post(
                             0,
                             format!("failed to read upstream response: {error}"),
                         );
-                        exclude.exclude_selected_account(&channel);
+                        route_state.exclude_selected_account(&channel);
                         if attempt == max_retries - 1 {
                             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                             return Err(OpenAiErrorResponse::internal_with(
@@ -3466,7 +3562,7 @@ async fn relay_usage_resource_json_post(
                         status.as_u16() as i32,
                         message.clone(),
                     );
-                    exclude.exclude_selected_channel(&channel);
+                    route_state.exclude_selected_channel(&channel);
                     if attempt == max_retries - 1 {
                         let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                         return Err(OpenAiErrorResponse::unsupported_endpoint(message));
@@ -3555,7 +3651,7 @@ async fn relay_usage_resource_json_post(
                     status_code,
                     failure.message.clone(),
                 );
-                apply_upstream_failure_scope(&mut exclude, &channel, failure.scope);
+                apply_upstream_failure_scope(&mut route_state, &channel, failure.scope);
                 if attempt == max_retries - 1 {
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(failure.error);
@@ -3573,7 +3669,7 @@ async fn relay_usage_resource_json_post(
                     0,
                     error.to_string(),
                 );
-                exclude.exclude_selected_account(&channel);
+                route_state.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(OpenAiErrorResponse::internal_with(
@@ -3668,22 +3764,28 @@ async fn relay_resource_request(
         .map_err(|error| OpenAiErrorResponse::internal_with("invalid request method", error))?;
     let max_retries = 3;
     let start = std::time::Instant::now();
-    let mut exclude = RouteSelectionExclusions::default();
+    let requested_model_from_multipart = multipart_body
+        .as_ref()
+        .and_then(|payload| payload.model.as_deref());
+    let mut route_state = ResourceRouteState::new(
+        &token_info,
+        &router_svc,
+        spec.endpoint_scope,
+        requested_model
+            .as_deref()
+            .or(requested_model_from_multipart),
+    )
+    .await?;
 
     for attempt in 0..max_retries {
-        let Some(channel) = resolve_resource_channel(
-            &token_info,
-            &router_svc,
-            &resource_affinity,
-            spec.endpoint_scope,
-            &affinity_keys,
-            json_body.as_deref(),
-            multipart_body
-                .as_ref()
-                .and_then(|payload| payload.model.clone()),
-            &exclude,
-        )
-        .await?
+        let Some(channel) = route_state
+            .select(
+                &token_info,
+                &resource_affinity,
+                &affinity_keys,
+                json_body.as_deref(),
+            )
+            .await?
         else {
             return Err(OpenAiErrorResponse::no_available_channel(if attempt == 0 {
                 "no available channel"
@@ -3725,7 +3827,7 @@ async fn relay_resource_request(
                     0,
                     error.to_string(),
                 );
-                exclude.exclude_selected_account(&channel);
+                route_state.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream request",
@@ -3761,7 +3863,7 @@ async fn relay_resource_request(
                     0,
                     format!("failed to read upstream response: {error}"),
                 );
-                exclude.exclude_selected_account(&channel);
+                route_state.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to read upstream response",
@@ -3786,7 +3888,7 @@ async fn relay_resource_request(
                     status.as_u16() as i32,
                     message.clone(),
                 );
-                exclude.exclude_selected_channel(&channel);
+                route_state.exclude_selected_channel(&channel);
                 if attempt == max_retries - 1 {
                     return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                 }
@@ -3842,7 +3944,7 @@ async fn relay_resource_request(
             status.as_u16() as i32,
             failure.message.clone(),
         );
-        apply_upstream_failure_scope(&mut exclude, &channel, failure.scope);
+        apply_upstream_failure_scope(&mut route_state, &channel, failure.scope);
         if attempt == max_retries - 1 {
             return Err(failure.error);
         }
@@ -3851,58 +3953,6 @@ async fn relay_resource_request(
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))
-}
-
-async fn resolve_resource_channel(
-    token_info: &TokenInfo,
-    router_svc: &ChannelRouter,
-    resource_affinity: &ResourceAffinityService,
-    endpoint_scope: &str,
-    affinity_keys: &[(&'static str, String)],
-    json_body: Option<&Value>,
-    multipart_model: Option<String>,
-    exclusions: &RouteSelectionExclusions,
-) -> OpenAiApiResult<Option<SelectedChannel>> {
-    for (kind, id) in resource_affinity_lookup_keys(affinity_keys, json_body) {
-        if let Some(channel) = resource_affinity
-            .resolve(token_info, kind, &id)
-            .await
-            .map_err(OpenAiErrorResponse::from)?
-            && !exclusions.selected_is_excluded(&channel)
-        {
-            return Ok(Some(channel));
-        }
-    }
-
-    if let Some(body) = json_body
-        && let Some(model) = model_from_json_body(body, None)
-        && let Some(channel) = router_svc
-            .select_channel_with_exclusions(&token_info.group, &model, endpoint_scope, exclusions)
-            .await
-            .map_err(|error| {
-                OpenAiErrorResponse::internal_with("failed to select channel", error)
-            })?
-    {
-        return Ok(Some(channel));
-    }
-
-    if let Some(model) = multipart_model
-        && let Some(channel) = router_svc
-            .select_channel_with_exclusions(&token_info.group, &model, endpoint_scope, exclusions)
-            .await
-            .map_err(|error| {
-                OpenAiErrorResponse::internal_with("failed to select channel", error)
-            })?
-    {
-        return Ok(Some(channel));
-    }
-
-    router_svc
-        .select_default_channel_with_exclusions(&token_info.group, endpoint_scope, exclusions)
-        .await
-        .map_err(|error| {
-            OpenAiErrorResponse::internal_with("failed to select default channel", error)
-        })
 }
 
 fn resource_affinity_lookup_keys(
