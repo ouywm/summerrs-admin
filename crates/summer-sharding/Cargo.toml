@@ -3,6 +3,37 @@ edition = "2024"
 name = "summer-sharding"
 version = "0.0.1"
 
+[features]
+default = []
+web = ["summer-auth", "summer-web", "summer-web/openapi", "tower-layer", "tower-service"]
+web-probes = ["web"]
+
 [dependencies]
-sea-orm = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+pgwire-replication = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+ring = { workspace = true }
+schemars = { workspace = true }
+sea-orm = { workspace = true, features = ["sqlx-postgres", "runtime-tokio-rustls", "with-chrono", "with-json", "mock", "proxy"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 sqlparser = { workspace = true }
+summer = { workspace = true }
+summer-auth = { workspace = true, optional = true, features = ["web"] }
+summer-web = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+tower-layer = { workspace = true, optional = true }
+tower-service = { workspace = true, optional = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }

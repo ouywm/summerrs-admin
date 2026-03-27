@@ -3,6 +3,9 @@ use sea_orm::Set;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+use crate::dto::endpoint_scope::{
+    default_endpoint_scope_array, normalize_endpoint_scope_list, normalize_endpoint_scope_value,
+};
 use crate::entity::channel::{self, ChannelStatus, ChannelType};
 
 /// 创建渠道
@@ -21,7 +24,7 @@ pub struct CreateChannelDto {
     pub model_mapping: serde_json::Value,
     #[validate(length(min = 1, max = 64))]
     pub channel_group: String,
-    #[serde(default)]
+    #[serde(default = "default_endpoint_scope_array")]
     pub endpoint_scopes: serde_json::Value,
     #[serde(default)]
     pub capabilities: serde_json::Value,
@@ -47,9 +50,18 @@ fn default_true() -> bool {
 }
 
 impl CreateChannelDto {
-    pub fn into_active_model(self, operator: &str) -> channel::ActiveModel {
+    pub fn normalized_endpoint_scopes(&self) -> Result<Vec<String>, String> {
+        normalize_endpoint_scope_list(&self.endpoint_scopes, "endpointScopes")
+    }
+
+    pub fn into_active_model(self, operator: &str) -> Result<channel::ActiveModel, String> {
+        use sea_orm::prelude::BigDecimal;
+
         let now = chrono::Utc::now().fixed_offset();
-        channel::ActiveModel {
+        let endpoint_scopes =
+            normalize_endpoint_scope_value(self.endpoint_scopes, "endpointScopes")?;
+
+        Ok(channel::ActiveModel {
             name: Set(self.name),
             channel_type: Set(self.channel_type),
             vendor_code: Set(self.vendor_code),
@@ -58,20 +70,32 @@ impl CreateChannelDto {
             models: Set(self.models),
             model_mapping: Set(self.model_mapping),
             channel_group: Set(self.channel_group),
-            endpoint_scopes: Set(self.endpoint_scopes),
+            endpoint_scopes: Set(endpoint_scopes),
             capabilities: Set(self.capabilities),
             weight: Set(self.weight),
             priority: Set(self.priority),
             config: Set(self.config),
             auto_ban: Set(self.auto_ban),
             test_model: Set(self.test_model),
+            used_quota: Set(0),
+            balance: Set(BigDecimal::from(0)),
+            balance_updated_at: Set(None),
+            response_time: Set(0),
+            success_rate: Set(BigDecimal::from(0)),
+            failure_streak: Set(0),
+            last_used_at: Set(None),
+            last_error_at: Set(None),
+            last_error_code: Set(String::new()),
+            last_error_message: Set(String::new()),
+            last_health_status: Set(0),
+            deleted_at: Set(None),
             remark: Set(self.remark),
             create_by: Set(operator.to_string()),
             update_by: Set(operator.to_string()),
             create_time: Set(now),
             update_time: Set(now),
             ..Default::default()
-        }
+        })
     }
 }
 
@@ -99,7 +123,7 @@ pub struct UpdateChannelDto {
 }
 
 impl UpdateChannelDto {
-    pub fn apply_to(self, active: &mut channel::ActiveModel, operator: &str) {
+    pub fn apply_to(self, active: &mut channel::ActiveModel, operator: &str) -> Result<(), String> {
         if let Some(v) = self.name {
             active.name = Set(v);
         }
@@ -125,7 +149,7 @@ impl UpdateChannelDto {
             active.channel_group = Set(v);
         }
         if let Some(v) = self.endpoint_scopes {
-            active.endpoint_scopes = Set(v);
+            active.endpoint_scopes = Set(normalize_endpoint_scope_value(v, "endpointScopes")?);
         }
         if let Some(v) = self.capabilities {
             active.capabilities = Set(v);
@@ -149,6 +173,7 @@ impl UpdateChannelDto {
             active.remark = Set(v);
         }
         active.update_by = Set(operator.to_string());
+        Ok(())
     }
 }
 
@@ -180,4 +205,10 @@ impl From<QueryChannelDto> for sea_orm::Condition {
         }
         cond
     }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct TestChannelDto {
+    pub endpoint_scope: Option<String>,
 }

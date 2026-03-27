@@ -1,54 +1,56 @@
 # Auth And Realtime Patterns
 
-这一部分完全是仓库特有知识。登录态、在线用户、踢下线、Socket.IO 不是单点功能，而是跨 crate 联动。
+This reference covers repo-specific auth, online-user, kick-out, and Socket.IO
+patterns. These flows are cross-crate by design.
 
-## Canonical examples
+## Canonical Examples
 
-- 认证 route：`crates/summer-system/src/router/auth.rs`
-- 认证 service：`crates/summer-system/src/service/auth_service.rs`
-- 在线用户与踢下线：`crates/summer-system/src/service/online_service.rs`
-- Socket 网关插件：`crates/summer-system/src/plugins/socket_gateway.rs`
-- 事件常量：`crates/summer-system/src/socketio/core/event.rs`
-- Room 规则：`crates/summer-system/src/socketio/core/room.rs`
+- Auth route: `crates/summer-system/src/router/auth.rs`
+- Auth service: `crates/summer-system/src/service/auth_service.rs`
+- Online user service: `crates/summer-system/src/service/online_service.rs`
+- Socket gateway plugin: `crates/summer-system/src/plugins/socket_gateway.rs`
+- Socket event constants: `crates/summer-system/src/socketio/core/event.rs`
+- Socket room rules: `crates/summer-system/src/socketio/core/room.rs`
+- Socket connection service: `crates/summer-system/src/socketio/connection/service.rs`
 
-## 认证主线
+## Auth Responsibility Split
 
-### 基础能力在 `summer-auth`
+### Foundation Lives In `summer-auth`
 
-`crates/summer-auth` 负责：
+`crates/summer-auth` provides:
 
-- access / refresh token
-- session 管理
-- online user 追踪
-- extractor 与 middleware
-- path auth
-- user type / device type
+- access and refresh token handling
+- session management
+- online user tracking primitives
+- extractors and middleware
+- path-based auth helpers
+- user type and device type support
 
-### 应用层封装在 `AuthService`
+### App-Facing Auth Behavior Lives In `summer-system`
 
-`crates/summer-system/src/service/auth_service.rs` 负责：
+`crates/summer-system/src/service/auth_service.rs` owns:
 
-- 管理员登录
-- refresh token
-- 登录设备列表
-- 踢单设备
-- 角色和权限装配
+- admin login
+- refresh token handling
+- device/session views
+- single-device kick-out
+- role and permission assembly
 
-所以登录需求不要只改 router，通常会落到：
+So login work usually spans:
 
 - `summer-auth`
 - `AuthService`
-- 相关 DTO / VO
-- 登录日志 service
+- related DTOs and VOs
+- login-log handling
 
-## Route 层登录态提取
+## Route-Level Session Extraction
 
-本仓库常用：
+Common patterns in this repo:
 
 - `AdminUser`
 - `LoginUser`
 
-例如：
+Example:
 
 ```rust
 pub async fn get_user_info(
@@ -59,62 +61,63 @@ pub async fn get_user_info(
 }
 ```
 
-## 在线用户与踢下线
+## Online Users And Kick-Out
 
-主流程在：
+Main entry points:
 
 - `crates/summer-system/src/service/online_service.rs`
 - `crates/summer-system/src/service/sys_user_service.rs`
 - `crates/summer-system/src/socketio/connection/service.rs`
 
-### 关键规则
+### Important Rule
 
-“踢下线”不是只做 token/session 失效。
+"Kick out" is not just session invalidation.
 
-标准流程通常是：
+The standard flow is usually:
 
-1. `SessionManager` 执行 `kick_out` / `logout` / `force_refresh`
-2. `SocketGatewayService` 推送事件并断开 socket
-3. `SocketSessionStore` 清理 Redis 索引与会话
+1. `SessionManager` performs `kick_out`, `logout`, or `force_refresh`
+2. `SocketGatewayService` pushes the disconnect or severs sockets
+3. socket session storage clears Redis indexes and session state
 
-## Socket.IO 结构
+## Socket.IO Structure
 
-### 入口
+### Entry Points
 
-- 插件：`crates/summer-system/src/plugins/socket_gateway.rs`
-- 连接处理：`crates/summer-system/src/socketio/connection/*`
-- 核心定义：`crates/summer-system/src/socketio/core/*`
+- plugin: `crates/summer-system/src/plugins/socket_gateway.rs`
+- connection handling: `crates/summer-system/src/socketio/connection/*`
+- shared socket definitions: `crates/summer-system/src/socketio/core/*`
 
-### 核心职责
+### Core Responsibilities
 
-- `core/event.rs`：事件名常量
-- `core/model.rs`：payload 和 socket state
-- `core/room.rs`：room 命名规则
-- `core/emitter.rs`：统一推送服务
-- `connection/service.rs`：连接认证、断开、按用户断开
-- `connection/session.rs`：Redis 中的 socket session 存储
+- `core/event.rs`: event constants
+- `core/model.rs`: payloads and socket state
+- `core/room.rs`: room naming rules
+- `core/emitter.rs`: shared outbound messaging
+- `connection/service.rs`: auth, disconnect, disconnect-by-user
+- `connection/session.rs`: Redis-backed socket session storage
 
-## Room 规则
+## Room Rules
 
-当前约定：
+Current conventions:
 
 - `user:{user_id}`
 - `role:{role}`
 - `all-{user_type}`
 
-如果新增推送能力，优先复用这些 room 规则，不要在业务代码里随手拼新字符串。
+If you add realtime push behavior, prefer reusing these room rules instead of
+inventing ad hoc room names in business code.
 
-## 新增 Socket 事件怎么做
+## Adding A New Socket Event
 
-推荐步骤：
+Recommended flow:
 
-1. 在 `core/event.rs` 新增事件常量
-2. 在 `core/model.rs` 定义 payload
-3. 如需统一发消息，补 `core/emitter.rs`
-4. 在业务 service 中调用 emitter 或 socket gateway
+1. Add the event constant in `core/event.rs`
+2. Add the payload shape in `core/model.rs`
+3. Extend `core/emitter.rs` if the event should have a shared send path
+4. Call the emitter or gateway from the relevant business service
 
-## 验证建议
+## Verification
 
-- 改 token / session：`cargo test -p summer-auth`
-- 改 system 联动：`cargo test -p summer-system`
-- 如果是 socket 行为，至少手工走一遍登录、连接、踢下线链路
+- Token or session changes: `cargo test -p summer-auth`
+- System-level auth/realtime changes: `cargo test -p summer-system`
+- For socket behavior, also run at least one manual login/connect/kick-out flow

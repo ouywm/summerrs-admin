@@ -90,15 +90,7 @@ where
 }
 
 fn requires_ai_auth(path: &str) -> bool {
-    matches!(
-        path,
-        "/v1/models"
-            | "/v1/chat/completions"
-            | "/v1/responses"
-            | "/api/v1/models"
-            | "/api/v1/chat/completions"
-            | "/api/v1/responses"
-    )
+    path.starts_with("/v1/") || path.starts_with("/api/v1/")
 }
 
 fn extract_bearer_token(parts: &Parts) -> Option<String> {
@@ -116,4 +108,30 @@ fn extract_bearer_token(parts: &Parts) -> Option<String> {
 
 fn invalid_api_key_response(message: &str) -> Response<Body> {
     OpenAiErrorResponse::invalid_api_key(message).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requires_ai_auth;
+
+    #[test]
+    fn requires_auth_for_v1_openai_endpoints() {
+        assert!(requires_ai_auth("/v1/chat/completions"));
+        assert!(requires_ai_auth("/v1/files"));
+        assert!(requires_ai_auth("/v1/threads/runs"));
+    }
+
+    #[test]
+    fn requires_auth_for_api_v1_openai_endpoints() {
+        assert!(requires_ai_auth("/api/v1/models"));
+        assert!(requires_ai_auth("/api/v1/rerank"));
+        assert!(requires_ai_auth("/api/v1/vector_stores"));
+    }
+
+    #[test]
+    fn ignores_non_openai_control_plane_routes() {
+        assert!(!requires_ai_auth("/ai/token"));
+        assert!(!requires_ai_auth("/system/menu/list"));
+        assert!(!requires_ai_auth("/health"));
+    }
 }

@@ -48,11 +48,13 @@ md-5 = "0.10"
 mime = "0.3.17"
 mime_guess = "2"
 parking_lot = "0.12.5"
+pgwire-replication = "0.2.0"
 password-hash = "0.5"
 rand = "0.10.0"
 regex = "1.12.3"
 reqwest = "0.13.2"
 rig-core = "0.33.0"
+ring = "0.17.14"
 rust_xlsxwriter = "0.91.0"
 rustc-hash = "2"
 schema = "0.1.0"
@@ -87,6 +89,8 @@ tokio = "1.49.0"
 tokio-util = "0.7"
 tower = "0.5.3"
 tower-http = "0.6.8"
+tower-layer = "0.3"
+tower-service = "0.3"
 tracing = "0.1.41"
 url = "2.5.8"
 uuid = "1.21.0"
@@ -101,6 +105,3 @@ summer-ai-hub = { path = "crates/summer-ai/hub" }
 summer-plugins = { path = "crates/summer-plugins" }
 summer-system = { path = "crates/summer-system" }
 tokio-stream = "0.1"
-
-[patch.crates-io]
-sea-orm = { git = "https://github.com/ouywm/sea-orm.git", rev = "1e278de9ad16c5d130cae00598a1d71ff736e48f" }

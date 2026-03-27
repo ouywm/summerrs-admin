@@ -41,6 +41,23 @@ session_ttl_seconds = 86400
 enable_logging = true
 uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai}"
 
+[summer-sharding]
+enabled = true
+
+[summer-sharding.datasources.ds_test]
+uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai}"
+schema = "test"
+role = "primary"
+
+[summer-sharding.tenant]
+enabled = true
+tenant_id_source = "request_extension"
+default_isolation = "shared_row"
+
+[summer-sharding.tenant.row_level]
+column_name = "tenant_id"
+strategy = "sql_rewrite"
+
 [sea-orm-web]
 default_page_size = 20
 max_page_size = 2000

@@ -39,12 +39,13 @@ impl TokenGenerator {
         &self,
         login_id: &LoginId,
         device: &DeviceType,
+        tenant_id: Option<&str>,
         profile: &UserProfile,
         pb: Option<&str>,
         ttl_seconds: i64,
     ) -> AuthResult<(String, AccessClaims)> {
         self.jwt_handler
-            .encode_access(login_id, device, profile, pb, ttl_seconds)
+            .encode_access(login_id, device, tenant_id, profile, pb, ttl_seconds)
     }
 
     /// 生成 Refresh JWT — 包裹 UUID
@@ -181,7 +182,7 @@ mod tests {
         let profile = test_profile();
 
         let (token, claims) = generator
-            .generate_access(&login_id, &DeviceType::Web, &profile, None, 3600)
+            .generate_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
             .unwrap();
 
         assert_eq!(token.split('.').count(), 3);

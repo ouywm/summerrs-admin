@@ -101,10 +101,13 @@ where
 
                         // 从 ValidatedAccess 构造 UserSession 并注入 extensions
                         let login_id = validated.login_id.clone();
+                        let device = validated.device.clone();
+                        let tenant_id = validated.tenant_id.clone();
                         let profile = build_profile_from_validated(&validated);
                         let session = UserSession {
-                            login_id: validated.login_id,
-                            device: validated.device,
+                            login_id: validated.login_id.clone(),
+                            device,
+                            tenant_id,
                             profile,
                         };
 

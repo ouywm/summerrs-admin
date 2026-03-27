@@ -40,6 +40,20 @@ impl AiLogBatchQueue {
         Self(queue)
     }
 
+    #[cfg(test)]
+    pub(crate) fn noop() -> Self {
+        Self(
+            TypedBatchQueueBuilder::new()
+                .register_batch::<log::ActiveModel, _, _>(
+                    1,
+                    Duration::from_secs(3600),
+                    16,
+                    |_batch| async move {},
+                )
+                .build(),
+        )
+    }
+
     pub fn push(&self, model: log::ActiveModel) {
         self.0.push(model);
     }

@@ -1,5 +1,7 @@
 use anyhow::Context;
-use sea_orm::{ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
+use sea_orm::{
+    ColumnTrait, EntityTrait, JoinType, QueryFilter, QueryOrder, QuerySelect, RelationTrait,
+};
 use std::net::IpAddr;
 use summer::plugin::Service;
 use summer_auth::{
@@ -12,6 +14,7 @@ use summer_system_model::dto::auth::LoginDto;
 use summer_system_model::entity::sys_login_log;
 use summer_system_model::entity::sys_menu;
 use summer_system_model::entity::sys_role;
+use summer_system_model::entity::sys_tenant_membership;
 use summer_system_model::entity::sys_user;
 use summer_system_model::entity::sys_user_role;
 use summer_system_model::vo::auth::{DeviceSessionVo, LoginVo};
@@ -100,6 +103,7 @@ impl AuthService {
 
         // 查询用户权限（按钮权限标识）
         let permissions: Vec<String> = self.get_user_permissions(user.id).await?;
+        let tenant_id = self.load_default_tenant_id(user.id).await?;
 
         // 登录并获取 TokenPair
         let login_id = LoginId::admin(user.id);
@@ -110,6 +114,7 @@ impl AuthService {
                 device: DeviceType::Web,
                 login_ip: client_ip.to_string(),
                 user_agent: ua_info.raw.clone(),
+                tenant_id,
                 profile: UserProfile::Admin(AdminProfile {
                     user_name: user.user_name.clone(),
                     nick_name: user.nick_name.clone(),
@@ -156,11 +161,12 @@ impl AuthService {
 
         // 2. 根据用户类型从 DB 查询最新 profile
         let profile = self.load_user_profile(&login_id).await?;
+        let tenant_id = self.load_default_tenant_id(login_id.user_id).await?;
 
         // 3. 调用 refresh（会验证 Redis 中 refresh key + deny check + 轮转）
         let pair = self
             .auth
-            .refresh(refresh_token, &profile)
+            .refresh(refresh_token, &profile, tenant_id.as_deref())
             .await
             .map_err(|e| ApiErrors::Unauthorized(e.to_string()))?;
 
@@ -278,5 +284,18 @@ impl AuthService {
                 "当前仅支持管理员会话刷新".to_string(),
             )),
         }
+    }
+
+    async fn load_default_tenant_id(&self, user_id: i64) -> ApiResult<Option<String>> {
+        let membership = sys_tenant_membership::Entity::find()
+            .filter(sys_tenant_membership::Column::UserId.eq(user_id))
+            .filter(sys_tenant_membership::Column::Status.eq(1_i16))
+            .order_by_desc(sys_tenant_membership::Column::IsDefault)
+            .order_by_asc(sys_tenant_membership::Column::Id)
+            .one(&self.db)
+            .await
+            .context("查询用户默认租户失败")?;
+
+        Ok(membership.map(|value| value.tenant_id))
     }
 }

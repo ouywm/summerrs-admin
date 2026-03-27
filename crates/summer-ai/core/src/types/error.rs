@@ -138,6 +138,21 @@ impl OpenAiError {
         )
     }
 
+    /// 构造 502 unsupported_endpoint
+    pub fn unsupported_endpoint(msg: impl Into<String>) -> (StatusCode, Self) {
+        (
+            StatusCode::BAD_GATEWAY,
+            Self {
+                error: OpenAiErrorBody {
+                    message: msg.into(),
+                    r#type: "upstream_error".into(),
+                    param: None,
+                    code: Some("unsupported_endpoint".into()),
+                },
+            },
+        )
+    }
+
     /// 构造 429 rate_limit_exceeded
     pub fn rate_limit_exceeded(msg: impl Into<String>) -> (StatusCode, Self) {
         (
@@ -214,6 +229,10 @@ impl OpenAiErrorResponse {
 
     pub fn upstream_timeout(msg: impl Into<String>) -> Self {
         OpenAiError::into_response_with_status(OpenAiError::upstream_timeout(msg))
+    }
+
+    pub fn unsupported_endpoint(msg: impl Into<String>) -> Self {
+        OpenAiError::into_response_with_status(OpenAiError::unsupported_endpoint(msg))
     }
 
     pub fn rate_limit_exceeded(msg: impl Into<String>) -> Self {
@@ -303,6 +322,18 @@ impl summer_web::aide::OperationOutput for OpenAiErrorResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_endpoint_error_uses_bad_gateway_contract() {
+        let error = OpenAiErrorResponse::unsupported_endpoint("endpoint disabled");
+        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(error.error.error.r#type, "upstream_error");
+        assert_eq!(
+            error.error.error.code.as_deref(),
+            Some("unsupported_endpoint")
+        );
+        assert_eq!(error.error.error.message, "endpoint disabled");
+    }
 
     #[test]
     fn invalid_api_key_error() {

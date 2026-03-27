@@ -67,6 +67,11 @@ impl LogVo {
     }
 }
 
+/// 日志列表 VO 别名。
+///
+/// 当前列表项直接复用 `LogVo`，同时补上文档中的 `LogListVo` 命名。
+pub type LogListVo = LogVo;
+
 /// 日志统计 VO
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
