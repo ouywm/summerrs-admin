@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::chat::{ChatCompletionRequest, ChatCompletionResponse};
-use super::common::{FinishReason, FunctionDef, Message, Tool, ToolCall, Usage};
+use super::common::{FinishReason, FunctionDef, Message, StreamOptions, Tool, ToolCall, Usage};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ResponsesRequest {
@@ -180,7 +180,9 @@ impl ResponsesRequest {
             tools,
             tool_choice: self.tool_choice.clone(),
             response_format: self.text.as_ref().and_then(|text| text.format.clone()),
-            stream_options: None,
+            stream_options: self.stream.then_some(StreamOptions {
+                include_usage: Some(true),
+            }),
             extra: self.extra.clone(),
         })
     }
@@ -547,6 +549,26 @@ mod tests {
         assert_eq!(chat.messages[0].role, "user");
         assert_eq!(chat.messages[1].role, "tool");
         assert_eq!(chat.tools.unwrap()[0].function.name, "get_weather");
+    }
+
+    #[test]
+    fn responses_stream_request_enables_usage_chunks() {
+        let request: ResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5.4",
+            "stream": true,
+            "input": "hello"
+        }))
+        .unwrap();
+
+        let chat = request.to_chat_completion_request().unwrap();
+
+        assert!(chat.stream);
+        assert_eq!(
+            chat.stream_options
+                .as_ref()
+                .and_then(|options| options.include_usage),
+            Some(true)
+        );
     }
 
     #[test]

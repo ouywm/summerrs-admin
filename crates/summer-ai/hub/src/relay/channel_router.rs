@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use rand::RngExt;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, Set,
+};
 use summer::plugin::Service;
 use summer_sea_orm::DbConn;
 
@@ -48,10 +50,17 @@ impl ChannelRouter {
         // 查询匹配的 ability 记录
         let mut query = ability::Entity::find()
             .filter(ability::Column::ChannelGroup.eq(group))
-            .filter(ability::Column::Model.eq(model))
             .filter(ability::Column::Enabled.eq(true))
             .filter(ability::Column::EndpointScope.eq(endpoint_scope))
             .order_by_desc(ability::Column::Priority);
+
+        if !model.is_empty() {
+            query = query.filter(
+                Condition::any()
+                    .add(ability::Column::Model.eq(model))
+                    .add(ability::Column::Model.eq("*")),
+            );
+        }
 
         // 排除渠道
         if !exclude.is_empty() {

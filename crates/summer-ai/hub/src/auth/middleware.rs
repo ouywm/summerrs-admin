@@ -90,27 +90,7 @@ where
 }
 
 fn requires_ai_auth(path: &str) -> bool {
-    matches!(
-        path,
-        "/v1/models"
-            | "/v1/chat/completions"
-            | "/v1/embeddings"
-            | "/v1/images/generations"
-            | "/v1/images/edits"
-            | "/v1/audio/speech"
-            | "/v1/audio/transcriptions"
-            | "/v1/audio/translations"
-            | "/v1/responses"
-            | "/api/v1/models"
-            | "/api/v1/chat/completions"
-            | "/api/v1/embeddings"
-            | "/api/v1/images/generations"
-            | "/api/v1/images/edits"
-            | "/api/v1/audio/speech"
-            | "/api/v1/audio/transcriptions"
-            | "/api/v1/audio/translations"
-            | "/api/v1/responses"
-    )
+    path.starts_with("/v1/") || path.starts_with("/api/v1/")
 }
 
 fn extract_bearer_token(parts: &Parts) -> Option<String> {
@@ -128,4 +108,17 @@ fn extract_bearer_token(parts: &Parts) -> Option<String> {
 
 fn invalid_api_key_response(message: &str) -> Response<Body> {
     OpenAiErrorResponse::invalid_api_key(message).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requires_ai_auth;
+
+    #[test]
+    fn requires_ai_auth_matches_public_ai_routes_by_prefix() {
+        assert!(requires_ai_auth("/v1/images/variations"));
+        assert!(requires_ai_auth("/api/v1/files"));
+        assert!(requires_ai_auth("/v1/responses/resp_123/input_items"));
+        assert!(!requires_ai_auth("/api/ai/channel"));
+    }
 }

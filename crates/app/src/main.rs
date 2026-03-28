@@ -49,12 +49,8 @@ async fn main() {
                 .include("/**")
                 .exclude_all(UserType::all_login_paths())
                 .exclude("/auth/refresh")
-                .exclude("/api/v1/models")
-                .exclude("/api/v1/chat/completions")
-                .exclude("/api/v1/responses")
-                .exclude("/v1/models")
-                .exclude("/v1/chat/completions")
-                .exclude("/v1/responses"),
+                .exclude("/api/v1/**")
+                .exclude("/v1/**"),
         )
         .add_router_layer(|router| {
             router
