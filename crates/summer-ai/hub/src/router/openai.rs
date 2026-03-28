@@ -10,6 +10,7 @@ use summer_ai_core::provider::get_adapter;
 use summer_ai_core::types::audio::AudioSpeechRequest;
 use summer_ai_core::types::chat::ChatCompletionRequest;
 use summer_ai_core::types::common::Usage;
+use summer_ai_core::types::completion::{CompletionChunk, CompletionRequest, CompletionResponse};
 use summer_ai_core::types::embedding::{EmbeddingsRequest, EmbeddingsResponse};
 use summer_ai_core::types::error::{OpenAiApiResult, OpenAiErrorResponse};
 use summer_ai_core::types::file::{FileDeleteResponse, FileListResponse, FileObject};
@@ -22,7 +23,9 @@ use crate::auth::extractor::AiToken;
 use crate::relay::billing::{BillingEngine, estimate_prompt_tokens};
 use crate::relay::channel_router::ChannelRouter;
 use crate::relay::http_client::UpstreamHttpClient;
-use crate::relay::stream::{build_responses_sse_response, build_sse_response};
+use crate::relay::stream::{
+    build_completion_sse_response, build_responses_sse_response, build_sse_response,
+};
 use crate::service::log::{
     ChatCompletionLogRecord, EmbeddingLogRecord, EndpointUsageLogRecord, LogService,
 };
@@ -304,6 +307,258 @@ pub async fn list_models(
     Ok(Json(models))
 }
 
+/// POST /v1/completions
+#[post_api("/v1/completions")]
+#[allow(clippy::too_many_arguments)]
+pub async fn completions(
+    AiToken(token_info): AiToken,
+    Component(router_svc): Component<ChannelRouter>,
+    Component(billing): Component<BillingEngine>,
+    Component(http_client): Component<UpstreamHttpClient>,
+    Component(log_svc): Component<LogService>,
+    Component(token_svc): Component<TokenService>,
+    ClientIp(client_ip): ClientIp,
+    Json(req): Json<CompletionRequest>,
+) -> OpenAiApiResult<Response> {
+    token_info
+        .ensure_model_allowed(&req.model)
+        .map_err(|e| OpenAiErrorResponse::from_api_error(&e))?;
+    let client_ip = client_ip.to_string();
+    token_svc.update_last_used_ip_async(token_info.token_id, client_ip.clone());
+
+    let model_config = billing
+        .get_model_config(&req.model)
+        .await
+        .map_err(|e| OpenAiErrorResponse::internal_with("failed to load model pricing", e))?;
+    let group_ratio = billing
+        .get_group_ratio(&token_info.group)
+        .await
+        .map_err(|e| OpenAiErrorResponse::internal_with("failed to load group pricing", e))?;
+
+    let mut exclude: Vec<i64> = Vec::new();
+    let max_retries = 3;
+    let start = std::time::Instant::now();
+    let requested_model = req.model.clone();
+    let estimated_tokens = req.estimate_prompt_tokens();
+
+    for attempt in 0..max_retries {
+        let channel = select_channel_by_scopes(
+            &router_svc,
+            &token_info.group,
+            &req.model,
+            &["completion", "completions", "chat"],
+            &exclude,
+        )
+        .await?
+        .ok_or_else(|| OpenAiErrorResponse::no_available_channel("no available channel"))?;
+
+        let actual_model = channel
+            .model_mapping
+            .get(&req.model)
+            .and_then(|value| value.as_str())
+            .unwrap_or(&req.model)
+            .to_string();
+
+        let pre_consumed = billing
+            .pre_consume(
+                token_info.token_id,
+                estimated_tokens,
+                model_config.input_ratio,
+                group_ratio,
+            )
+            .await
+            .map_err(|e| OpenAiErrorResponse::from_quota_error(&e))?;
+
+        let request_builder = match build_completion_request(
+            http_client.client(),
+            &channel.base_url,
+            &channel.api_key,
+            &req,
+            &actual_model,
+        ) {
+            Ok(builder) => builder,
+            Err(error) => {
+                let _ = billing.refund(token_info.token_id, pre_consumed).await;
+                router_svc.record_failure_async(
+                    &channel,
+                    "build_request_error",
+                    format!("failed to build completion request: {error}"),
+                );
+                exclude.push(channel.channel_id);
+                if attempt == max_retries - 1 {
+                    return Err(OpenAiErrorResponse::internal_with(
+                        "failed to build completion request",
+                        error,
+                    ));
+                }
+                continue;
+            }
+        };
+
+        match request_builder.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let elapsed = start.elapsed().as_millis() as i64;
+                if req.stream {
+                    let stream = match parse_completion_stream(resp) {
+                        Ok(stream) => stream,
+                        Err(error) => {
+                            let _ = billing.refund(token_info.token_id, pre_consumed).await;
+                            router_svc.record_failure_async(
+                                &channel,
+                                "parse_stream_error",
+                                format!("failed to parse completion stream: {error}"),
+                            );
+                            exclude.push(channel.channel_id);
+                            if attempt == max_retries - 1 {
+                                return Err(OpenAiErrorResponse::internal_with(
+                                    "failed to parse completion stream",
+                                    error,
+                                ));
+                            }
+                            continue;
+                        }
+                    };
+
+                    return Ok(build_completion_sse_response(
+                        stream,
+                        token_info.clone(),
+                        pre_consumed,
+                        model_config.clone(),
+                        group_ratio,
+                        channel,
+                        requested_model,
+                        elapsed,
+                        client_ip.clone(),
+                        log_svc.clone(),
+                        billing.clone(),
+                    ));
+                }
+
+                let body = match resp.bytes().await {
+                    Ok(body) => body,
+                    Err(error) => {
+                        let _ = billing.refund(token_info.token_id, pre_consumed).await;
+                        router_svc.record_failure_async(
+                            &channel,
+                            "read_response_error",
+                            format!("failed to read completion response: {error}"),
+                        );
+                        exclude.push(channel.channel_id);
+                        if attempt == max_retries - 1 {
+                            return Err(OpenAiErrorResponse::internal_with(
+                                "failed to read completion response",
+                                error,
+                            ));
+                        }
+                        continue;
+                    }
+                };
+
+                let parsed = match serde_json::from_slice::<CompletionResponse>(&body) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        let _ = billing.refund(token_info.token_id, pre_consumed).await;
+                        router_svc.record_failure_async(
+                            &channel,
+                            "parse_response_error",
+                            format!("failed to parse completion response: {error}"),
+                        );
+                        exclude.push(channel.channel_id);
+                        if attempt == max_retries - 1 {
+                            return Err(OpenAiErrorResponse::internal_with(
+                                "failed to parse completion response",
+                                error,
+                            ));
+                        }
+                        continue;
+                    }
+                };
+                router_svc.record_success_async(&channel, elapsed as i32);
+
+                let usage = parsed.usage.clone().unwrap_or(Usage {
+                    prompt_tokens: estimated_tokens,
+                    completion_tokens: 0,
+                    total_tokens: estimated_tokens,
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                });
+                let actual_quota = if parsed.usage.is_some() {
+                    billing
+                        .post_consume(
+                            &token_info,
+                            pre_consumed,
+                            &usage,
+                            &model_config,
+                            group_ratio,
+                        )
+                        .await
+                        .map_err(|e| OpenAiErrorResponse::from_quota_error(&e))?
+                } else {
+                    billing
+                        .commit_reserved_quota(&token_info, pre_consumed)
+                        .await
+                        .map_err(|e| {
+                            OpenAiErrorResponse::internal_with("failed to commit reserved quota", e)
+                        })?
+                };
+
+                log_svc.record_endpoint_usage_async(
+                    &token_info,
+                    &channel,
+                    &usage,
+                    EndpointUsageLogRecord {
+                        endpoint: "completions".into(),
+                        requested_model,
+                        upstream_model: actual_model,
+                        model_name: model_config.model_name,
+                        quota: actual_quota,
+                        elapsed_time: elapsed as i32,
+                        first_token_time: 0,
+                        is_stream: false,
+                        client_ip: client_ip.clone(),
+                    },
+                );
+
+                return Ok(Json(parsed).into_response());
+            }
+            Ok(resp) => {
+                let _ = billing.refund(token_info.token_id, pre_consumed).await;
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                router_svc.record_failure_async(
+                    &channel,
+                    status.as_u16().to_string(),
+                    format!("upstream HTTP {} {}", status.as_u16(), body),
+                );
+                exclude.push(channel.channel_id);
+                if attempt == max_retries - 1 {
+                    return Err(OpenAiErrorResponse::no_available_channel(
+                        "all channels failed",
+                    ));
+                }
+            }
+            Err(error) => {
+                let _ = billing.refund(token_info.token_id, pre_consumed).await;
+                router_svc.record_failure_async(
+                    &channel,
+                    "request_error",
+                    format!("failed to send completion request: {error}"),
+                );
+                exclude.push(channel.channel_id);
+                if attempt == max_retries - 1 {
+                    return Err(OpenAiErrorResponse::no_available_channel(
+                        "all channels failed",
+                    ));
+                }
+            }
+        }
+    }
+
+    Err(OpenAiErrorResponse::no_available_channel(
+        "all channels failed",
+    ))
+}
+
 /// POST /v1/responses
 #[post_api("/v1/responses")]
 #[allow(clippy::too_many_arguments)]
@@ -560,6 +815,118 @@ pub async fn responses(
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))
+}
+
+/// GET /v1/responses/{response_id}
+#[get_api("/v1/responses/{response_id}")]
+#[allow(clippy::too_many_arguments)]
+pub async fn responses_get(
+    AiToken(token_info): AiToken,
+    Component(router_svc): Component<ChannelRouter>,
+    Component(http_client): Component<UpstreamHttpClient>,
+    Component(token_svc): Component<TokenService>,
+    ClientIp(client_ip): ClientIp,
+    Path(response_id): Path<String>,
+) -> OpenAiApiResult<Json<serde_json::Value>> {
+    let client_ip = client_ip.to_string();
+    token_svc.update_last_used_ip_async(token_info.token_id, client_ip);
+
+    let path = format!("/v1/responses/{response_id}");
+    forward_json_scope_request(
+        &router_svc,
+        http_client.client(),
+        &token_info.group,
+        &["responses", "chat"],
+        http::Method::GET,
+        &path,
+        None,
+        "responses/get",
+    )
+    .await
+}
+
+/// DELETE /v1/responses/{response_id}
+#[delete_api("/v1/responses/{response_id}")]
+#[allow(clippy::too_many_arguments)]
+pub async fn responses_delete(
+    AiToken(token_info): AiToken,
+    Component(router_svc): Component<ChannelRouter>,
+    Component(http_client): Component<UpstreamHttpClient>,
+    Component(token_svc): Component<TokenService>,
+    ClientIp(client_ip): ClientIp,
+    Path(response_id): Path<String>,
+) -> OpenAiApiResult<Json<serde_json::Value>> {
+    let client_ip = client_ip.to_string();
+    token_svc.update_last_used_ip_async(token_info.token_id, client_ip);
+
+    let path = format!("/v1/responses/{response_id}");
+    forward_json_scope_request(
+        &router_svc,
+        http_client.client(),
+        &token_info.group,
+        &["responses", "chat"],
+        http::Method::DELETE,
+        &path,
+        None,
+        "responses/delete",
+    )
+    .await
+}
+
+/// GET /v1/responses/{response_id}/input_items
+#[get_api("/v1/responses/{response_id}/input_items")]
+#[allow(clippy::too_many_arguments)]
+pub async fn responses_input_items(
+    AiToken(token_info): AiToken,
+    Component(router_svc): Component<ChannelRouter>,
+    Component(http_client): Component<UpstreamHttpClient>,
+    Component(token_svc): Component<TokenService>,
+    ClientIp(client_ip): ClientIp,
+    Path(response_id): Path<String>,
+) -> OpenAiApiResult<Json<serde_json::Value>> {
+    let client_ip = client_ip.to_string();
+    token_svc.update_last_used_ip_async(token_info.token_id, client_ip);
+
+    let path = format!("/v1/responses/{response_id}/input_items");
+    forward_json_scope_request(
+        &router_svc,
+        http_client.client(),
+        &token_info.group,
+        &["responses", "chat"],
+        http::Method::GET,
+        &path,
+        None,
+        "responses/input_items",
+    )
+    .await
+}
+
+/// POST /v1/responses/{response_id}/cancel
+#[post_api("/v1/responses/{response_id}/cancel")]
+#[allow(clippy::too_many_arguments)]
+pub async fn responses_cancel(
+    AiToken(token_info): AiToken,
+    Component(router_svc): Component<ChannelRouter>,
+    Component(http_client): Component<UpstreamHttpClient>,
+    Component(token_svc): Component<TokenService>,
+    ClientIp(client_ip): ClientIp,
+    Path(response_id): Path<String>,
+) -> OpenAiApiResult<Json<serde_json::Value>> {
+    let client_ip = client_ip.to_string();
+    token_svc.update_last_used_ip_async(token_info.token_id, client_ip);
+
+    let path = format!("/v1/responses/{response_id}/cancel");
+    forward_json_scope_request(
+        &router_svc,
+        http_client.client(),
+        &token_info.group,
+        &["responses", "chat"],
+        http::Method::POST,
+        &path,
+        None,
+        "responses/cancel",
+    )
+    .await
 }
 
 /// POST /v1/embeddings
@@ -2457,6 +2824,23 @@ fn build_moderation_request(
     Ok(client.post(url).bearer_auth(api_key).json(&body))
 }
 
+fn build_completion_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    req: &CompletionRequest,
+    actual_model: &str,
+) -> anyhow::Result<reqwest::RequestBuilder> {
+    let mut body = serde_json::to_value(req)?;
+    body["model"] = serde_json::Value::String(actual_model.to_string());
+    if req.stream && body.get("stream_options").is_none() {
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+    }
+
+    let url = format!("{}/v1/completions", base_url.trim_end_matches('/'));
+    Ok(client.post(url).bearer_auth(api_key).json(&body))
+}
+
 fn build_file_upload_form(
     fields: &[BufferedMultipartField],
 ) -> anyhow::Result<reqwest::multipart::Form> {
@@ -2794,6 +3178,60 @@ fn default_transcription_content_type(response_format: Option<&str>) -> &'static
     }
 }
 
+fn join_upstream_url(base_url: &str, path: &str) -> anyhow::Result<reqwest::Url> {
+    reqwest::Url::parse(&format!("{}{}", base_url.trim_end_matches('/'), path))
+        .map_err(anyhow::Error::from)
+}
+
+fn parse_completion_stream(
+    response: reqwest::Response,
+) -> anyhow::Result<futures::stream::BoxStream<'static, anyhow::Result<CompletionChunk>>> {
+    let stream = async_stream::stream! {
+        use futures::StreamExt;
+
+        let mut byte_stream = response.bytes_stream();
+        let mut buffer = String::new();
+
+        while let Some(chunk_result) = byte_stream.next().await {
+            let chunk = match chunk_result {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    yield Err(anyhow::anyhow!("Stream read error: {error}"));
+                    break;
+                }
+            };
+
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(pos) = buffer.find("\n\n") {
+                let event_text = buffer[..pos].to_string();
+                buffer = buffer[pos + 2..].to_string();
+
+                for line in event_text.lines() {
+                    let line = line.trim();
+                    if let Some(data) = line.strip_prefix("data:") {
+                        let data = data.trim();
+                        if data == "[DONE]" {
+                            return;
+                        }
+                        if data.is_empty() {
+                            continue;
+                        }
+                        match serde_json::from_str::<CompletionChunk>(data) {
+                            Ok(parsed) => yield Ok(parsed),
+                            Err(error) => {
+                                tracing::warn!("Failed to parse completion SSE chunk: {error}, data: {data}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    Ok(Box::pin(stream))
+}
+
 async fn select_channel_by_scopes(
     router_svc: &ChannelRouter,
     group: &str,
@@ -2812,6 +3250,86 @@ async fn select_channel_by_scopes(
     }
 
     Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn forward_json_scope_request(
+    router_svc: &ChannelRouter,
+    client: &reqwest::Client,
+    group: &str,
+    scopes: &[&str],
+    method: http::Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+    operation: &str,
+) -> OpenAiApiResult<Json<serde_json::Value>> {
+    let mut exclude: Vec<i64> = Vec::new();
+    let max_retries = 3;
+    let start = std::time::Instant::now();
+
+    for attempt in 0..max_retries {
+        let channel = select_channel_by_scopes(router_svc, group, "", scopes, &exclude)
+            .await?
+            .ok_or_else(|| OpenAiErrorResponse::no_available_channel("no available channel"))?;
+        let url = join_upstream_url(&channel.base_url, path)
+            .map_err(|e| OpenAiErrorResponse::internal_with("failed to build upstream url", e))?;
+        let mut request = client
+            .request(method.clone(), url)
+            .bearer_auth(&channel.api_key);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+
+        match request.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let elapsed = start.elapsed().as_millis() as i64;
+                let body = resp.bytes().await.map_err(|e| {
+                    OpenAiErrorResponse::internal_error(format!(
+                        "failed to read {operation} response: {e}"
+                    ))
+                })?;
+                let parsed = serde_json::from_slice::<serde_json::Value>(&body).map_err(|e| {
+                    OpenAiErrorResponse::internal_error(format!(
+                        "failed to parse {operation} response: {e}"
+                    ))
+                })?;
+                router_svc.record_success_async(&channel, elapsed as i32);
+                return Ok(Json(parsed));
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                router_svc.record_failure_async(
+                    &channel,
+                    status.as_u16().to_string(),
+                    format!("upstream HTTP {} {}", status.as_u16(), body),
+                );
+                exclude.push(channel.channel_id);
+                if attempt == max_retries - 1 {
+                    return Err(OpenAiErrorResponse::no_available_channel(
+                        "all channels failed",
+                    ));
+                }
+            }
+            Err(error) => {
+                router_svc.record_failure_async(
+                    &channel,
+                    "request_error",
+                    format!("failed to send {operation} request: {error}"),
+                );
+                exclude.push(channel.channel_id);
+                if attempt == max_retries - 1 {
+                    return Err(OpenAiErrorResponse::no_available_channel(
+                        "all channels failed",
+                    ));
+                }
+            }
+        }
+    }
+
+    Err(OpenAiErrorResponse::no_available_channel(
+        "all channels failed",
+    ))
 }
 
 async fn forward_file_json_request<T>(
@@ -2908,6 +3426,7 @@ where
 mod tests {
     use super::*;
     use summer_ai_core::types::audio::AudioSpeechRequest;
+    use summer_ai_core::types::completion::CompletionRequest;
     use summer_ai_core::types::file::FileObject;
     use summer_ai_core::types::image::ImageGenerationRequest;
     use summer_ai_core::types::moderation::ModerationRequest;
@@ -3139,6 +3658,75 @@ mod tests {
                 .unwrap();
 
         assert_eq!(built.url().as_str(), "https://api.example.com/v1/files");
+    }
+
+    #[test]
+    fn build_completion_request_targets_openai_completions_endpoint() {
+        let client = reqwest::Client::new();
+        let req: CompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-3.5-turbo-instruct",
+            "prompt": "hello"
+        }))
+        .unwrap();
+
+        let built = build_completion_request(
+            &client,
+            "https://api.example.com/",
+            "sk-test",
+            &req,
+            "mapped-completion-model",
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        assert_eq!(
+            built.url().as_str(),
+            "https://api.example.com/v1/completions"
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(built.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["model"], "mapped-completion-model");
+    }
+
+    #[test]
+    fn build_completion_request_enables_usage_chunks_for_stream() {
+        let client = reqwest::Client::new();
+        let req: CompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-3.5-turbo-instruct",
+            "prompt": "hello",
+            "stream": true
+        }))
+        .unwrap();
+
+        let built = build_completion_request(
+            &client,
+            "https://api.example.com/",
+            "sk-test",
+            &req,
+            "mapped-completion-model",
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        let body: serde_json::Value =
+            serde_json::from_slice(built.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn join_upstream_url_preserves_response_subresource_path() {
+        let url = join_upstream_url(
+            "https://api.example.com/",
+            "/v1/responses/resp_123/input_items",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://api.example.com/v1/responses/resp_123/input_items"
+        );
     }
 
     #[test]

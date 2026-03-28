@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod chat;
 pub mod common;
+pub mod completion;
 pub mod embedding;
 pub mod error;
 pub mod file;
