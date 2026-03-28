@@ -87,7 +87,7 @@ pub enum PublishStatus {
 // TODO oy: 不会自动创建schema 不确定是否为bug，表确实是会自动创建
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(schema_name = "sys132", table_name = "notice1")]
+#[sea_orm(schema_name = "sys", table_name = "notice")]
 pub struct Model {
     /// 公告ID
     #[sea_orm(primary_key)]

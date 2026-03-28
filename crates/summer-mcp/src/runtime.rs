@@ -50,24 +50,23 @@ fn build_http_service_components(
     config: &McpConfig,
     cancellation_token: tokio_util::sync::CancellationToken,
 ) -> HttpServiceComponents {
-    let session_manager = Arc::new(
-        rmcp::transport::streamable_http_server::session::local::LocalSessionManager {
-            session_config:
-                rmcp::transport::streamable_http_server::session::local::SessionConfig {
-                    channel_capacity: config.session_channel_capacity,
-                    keep_alive: config.session_keep_alive.map(Duration::from_secs),
-                },
-            ..Default::default()
-        },
-    );
+    let mut session_config =
+        rmcp::transport::streamable_http_server::session::local::SessionConfig::default();
+    session_config.channel_capacity = config.session_channel_capacity;
+    session_config.keep_alive = config.session_keep_alive.map(Duration::from_secs);
 
-    let server_config = rmcp::transport::streamable_http_server::StreamableHttpServerConfig {
-        sse_keep_alive: Some(Duration::from_secs(config.sse_keep_alive)),
-        sse_retry: Some(Duration::from_secs(config.sse_retry)),
-        stateful_mode: config.stateful_mode,
-        json_response: config.json_response,
-        cancellation_token,
-    };
+    let mut session_manager =
+        rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default();
+    session_manager.session_config = session_config;
+    let session_manager = Arc::new(session_manager);
+
+    let mut server_config =
+        rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default();
+    server_config.sse_keep_alive = Some(Duration::from_secs(config.sse_keep_alive));
+    server_config.sse_retry = Some(Duration::from_secs(config.sse_retry));
+    server_config.stateful_mode = config.stateful_mode;
+    server_config.json_response = config.json_response;
+    server_config.cancellation_token = cancellation_token;
 
     HttpServiceComponents {
         session_manager,
