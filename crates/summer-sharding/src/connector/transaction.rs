@@ -14,7 +14,8 @@ use crate::{
 pub struct ShardingTransaction {
     pub(crate) inner: std::sync::Arc<ShardingConnectionInner>,
     pub(crate) options: TransactionOptions,
-    pub(crate) transactions: tokio::sync::Mutex<BTreeMap<String, DatabaseTransaction>>,
+    pub(crate) transactions: Arc<tokio::sync::Mutex<BTreeMap<String, DatabaseTransaction>>>,
+    pub(crate) tenant_override: Option<crate::tenant::TenantContext>,
 }
 
 pub struct TwoPhaseShardingTransaction {
@@ -75,7 +76,8 @@ impl ShardingTransaction {
         Ok(Self {
             inner: connection.inner.clone(),
             options,
-            transactions: tokio::sync::Mutex::new(BTreeMap::new()),
+            transactions: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+            tenant_override: connection.tenant_override.clone(),
         })
     }
 
@@ -91,15 +93,18 @@ impl ShardingTransaction {
         Ok(Self {
             inner: self.inner.clone(),
             options,
-            transactions: tokio::sync::Mutex::new(transactions),
+            transactions: Arc::new(tokio::sync::Mutex::new(transactions)),
+            tenant_override: self.tenant_override.clone(),
         })
     }
 
     async fn transaction_for(
         &self,
         datasource: &str,
-    ) -> std::result::Result<tokio::sync::MutexGuard<'_, BTreeMap<String, DatabaseTransaction>>, DbErr>
-    {
+    ) -> std::result::Result<
+        tokio::sync::MutexGuard<'_, BTreeMap<String, DatabaseTransaction>>,
+        DbErr,
+    > {
         let mut guard = self.transactions.lock().await;
         if guard.contains_key(datasource) {
             return Ok(guard);
@@ -121,6 +126,17 @@ impl ShardingTransaction {
     }
 }
 
+impl ShardingTransaction {
+    pub fn with_tenant_context(&self, tenant: crate::tenant::TenantContext) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            options: self.options,
+            transactions: self.transactions.clone(),
+            tenant_override: Some(self.inner.tenant_router.resolve_context(tenant)),
+        }
+    }
+}
+
 impl ShardingConnection {
     pub async fn two_phase_transaction<F, T, E>(
         &self,
@@ -135,12 +151,10 @@ impl ShardingConnection {
         T: Send,
         E: std::fmt::Display + std::fmt::Debug + Send,
     {
-        let transaction = TwoPhaseShardingTransaction::begin_from_connection(
-            self,
-            TransactionOptions::default(),
-        )
-        .await
-        .map_err(|error| TwoPhaseTransactionError::Begin(error.into()))?;
+        let transaction =
+            TwoPhaseShardingTransaction::begin_from_connection(self, TransactionOptions::default())
+                .await
+                .map_err(|error| TwoPhaseTransactionError::Begin(error.into()))?;
         let result = callback(&transaction).await;
         match result {
             Ok(value) => {
@@ -182,7 +196,11 @@ impl TwoPhaseShardingTransaction {
                 .await?;
             branch_ids.insert(
                 datasource.clone(),
-                format!("{}::{}", global_id, sanitize_branch_name(datasource.as_str())),
+                format!(
+                    "{}::{}",
+                    global_id,
+                    sanitize_branch_name(datasource.as_str())
+                ),
             );
             transactions.insert(datasource, transaction);
         }
@@ -201,7 +219,9 @@ impl TwoPhaseShardingTransaction {
         self.transactions
             .get(datasource)
             .ok_or_else(|| {
-                DbErr::Custom(format!("two-phase transaction datasource `{datasource}` not found"))
+                DbErr::Custom(format!(
+                    "two-phase transaction datasource `{datasource}` not found"
+                ))
             })?
             .execute_unprepared(sql)
             .await
@@ -238,8 +258,7 @@ impl TwoPhaseShardingTransaction {
                     let _ = remaining.rollback().await;
                 }
                 for (prepared_datasource, prepared_branch_id) in &prepared {
-                    if let Ok(connection) =
-                        self.inner.pool.connection(prepared_datasource.as_str())
+                    if let Ok(connection) = self.inner.pool.connection(prepared_datasource.as_str())
                     {
                         let _ = connection
                             .execute_unprepared(
@@ -271,11 +290,7 @@ impl PreparedTwoPhaseTransaction {
             let connection = self.inner.pool.connection(datasource.as_str())?;
             if let Err(error) = connection
                 .execute_unprepared(
-                    format!(
-                        "COMMIT PREPARED '{}'",
-                        escape_literal(branch_id.as_str())
-                    )
-                    .as_str(),
+                    format!("COMMIT PREPARED '{}'", escape_literal(branch_id.as_str())).as_str(),
                 )
                 .await
             {
@@ -361,7 +376,9 @@ impl ConnectionTrait for ShardingTransaction {
         &self,
         stmt: sea_orm::Statement,
     ) -> std::result::Result<ExecResult, DbErr> {
-        self.inner.execute_with_raw(self, stmt, true, None).await
+        self.inner
+            .execute_with_raw(self, stmt, true, None, self.tenant_override.clone())
+            .await
     }
 
     async fn execute_unprepared(&self, sql: &str) -> std::result::Result<ExecResult, DbErr> {
@@ -373,14 +390,18 @@ impl ConnectionTrait for ShardingTransaction {
         &self,
         stmt: sea_orm::Statement,
     ) -> std::result::Result<Option<QueryResult>, DbErr> {
-        self.inner.query_one_with_raw(self, stmt, true, None).await
+        self.inner
+            .query_one_with_raw(self, stmt, true, None, self.tenant_override.clone())
+            .await
     }
 
     async fn query_all_raw(
         &self,
         stmt: sea_orm::Statement,
     ) -> std::result::Result<Vec<QueryResult>, DbErr> {
-        self.inner.query_all_with_raw(self, stmt, true, None).await
+        self.inner
+            .query_all_with_raw(self, stmt, true, None, self.tenant_override.clone())
+            .await
     }
 }
 
@@ -553,14 +574,20 @@ impl TransactionTrait for ShardingTransaction {
 #[async_trait::async_trait]
 impl TransactionSession for ShardingTransaction {
     async fn commit(self) -> std::result::Result<(), DbErr> {
-        for (_, transaction) in self.transactions.into_inner() {
+        let mut guard = self.transactions.lock().await;
+        let transactions = std::mem::take(&mut *guard);
+        drop(guard);
+        for (_, transaction) in transactions {
             transaction.commit().await?;
         }
         Ok(())
     }
 
     async fn rollback(self) -> std::result::Result<(), DbErr> {
-        for (_, transaction) in self.transactions.into_inner() {
+        let mut guard = self.transactions.lock().await;
+        let transactions = std::mem::take(&mut *guard);
+        drop(guard);
+        for (_, transaction) in transactions {
             transaction.rollback().await?;
         }
         Ok(())
@@ -578,7 +605,8 @@ fn build_two_phase_global_id() -> String {
 }
 
 fn sanitize_branch_name(value: &str) -> String {
-    value.chars()
+    value
+        .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '_' {
                 ch
@@ -613,7 +641,7 @@ mod saga_tests {
         connector::ShardingConnection,
         datasource::DataSourcePool,
         error::ShardingError,
-        tenant::{TenantContext, with_tenant},
+        tenant::TenantContext,
     };
 
     struct DummyContext {
@@ -775,9 +803,11 @@ mod saga_tests {
         .await
         .expect_err("second datasource should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("would span multiple datasources"));
+        assert!(
+            error
+                .to_string()
+                .contains("would span multiple datasources")
+        );
     }
 
     #[tokio::test]
@@ -853,14 +883,18 @@ mod saga_tests {
         let (first, second) = tokio::join!(primary_task, secondary_task);
         let (errors, oks) = match (first, second) {
             (Ok(left), Err(right)) | (Err(right), Ok(left)) => (vec![right], vec![left]),
-            (left, right) => panic!("expected one success and one failure, got {left:?} and {right:?}"),
+            (left, right) => {
+                panic!("expected one success and one failure, got {left:?} and {right:?}")
+            }
         };
 
         assert_eq!(oks.len(), 1);
         assert_eq!(errors.len(), 1);
-        assert!(errors[0]
-            .to_string()
-            .contains("would span multiple datasources"));
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("would span multiple datasources")
+        );
         assert_eq!(transaction.transactions.lock().await.len(), 1);
     }
 
@@ -885,7 +919,9 @@ mod saga_tests {
         tenant_url: &str,
         table: &str,
     ) {
-        let primary = Database::connect(primary_url).await.expect("connect primary");
+        let primary = Database::connect(primary_url)
+            .await
+            .expect("connect primary");
         let tenant = Database::connect(tenant_url).await.expect("connect tenant");
         primary
             .execute_unprepared("CREATE SCHEMA IF NOT EXISTS test;")
@@ -919,7 +955,9 @@ mod saga_tests {
         primary_id: i64,
         tenant_id: i64,
     ) {
-        let primary = Database::connect(primary_url).await.expect("connect primary");
+        let primary = Database::connect(primary_url)
+            .await
+            .expect("connect primary");
         let tenant = Database::connect(tenant_url).await.expect("connect tenant");
         primary
             .execute_unprepared(
@@ -938,7 +976,9 @@ mod saga_tests {
     }
 
     async fn count_probe_rows(database_url: &str, table: &str, row_id: i64) -> i64 {
-        let connection = Database::connect(database_url).await.expect("connect count db");
+        let connection = Database::connect(database_url)
+            .await
+            .expect("connect count db");
         let row = connection
             .query_one_raw(Statement::from_string(
                 DbBackend::Postgres,
@@ -952,10 +992,11 @@ mod saga_tests {
 
     #[tokio::test]
     #[ignore = "requires local PostgreSQL separate-database tenant metadata data"]
-    async fn sharding_transaction_commits_across_primary_and_tenant_database() {
+    async fn sharding_transaction_rejects_cross_database_work_in_standard_transaction() {
         let primary_url = e2e_database_url();
         let tenant_url = e2e_replica_database_url();
-        let suffix = Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
+        let suffix =
+            Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
         let table = format!("dist_tx_probe_{suffix}");
         let primary_id = suffix as i64;
         let tenant_id = primary_id + 1;
@@ -1011,23 +1052,36 @@ mod saga_tests {
         )
         .await
         .expect("insert primary");
-        with_tenant(
-            TenantContext::new("T-SEED-DB", TenantIsolationLevel::SharedRow),
-            tx.execute_unprepared(
+        let error = tx
+            .with_tenant_context(TenantContext::new(
+                "T-SEED-DB",
+                TenantIsolationLevel::SharedRow,
+            ))
+            .execute_unprepared(
                 format!(
                     "INSERT INTO test.{table}(id, payload) VALUES ({tenant_id}, 'tenant-commit')"
                 )
                 .as_str(),
-            ),
-        )
-        .await
-        .expect("insert tenant");
-        sea_orm::TransactionSession::commit(tx)
+            )
             .await
-            .expect("commit");
+            .expect_err("standard transaction should reject cross-database enlistment");
+        assert!(
+            error
+                .to_string()
+                .contains("would span multiple datasources")
+        );
+        sea_orm::TransactionSession::rollback(tx)
+            .await
+            .expect("rollback");
 
-        assert_eq!(count_probe_rows(&primary_url, table.as_str(), primary_id).await, 1);
-        assert_eq!(count_probe_rows(&tenant_url, table.as_str(), tenant_id).await, 1);
+        assert_eq!(
+            count_probe_rows(&primary_url, table.as_str(), primary_id).await,
+            0
+        );
+        assert_eq!(
+            count_probe_rows(&tenant_url, table.as_str(), tenant_id).await,
+            0
+        );
 
         cleanup_real_transaction_probe_rows(
             &primary_url,
@@ -1041,10 +1095,11 @@ mod saga_tests {
 
     #[tokio::test]
     #[ignore = "requires local PostgreSQL separate-database tenant metadata data"]
-    async fn sharding_transaction_rolls_back_across_primary_and_tenant_database() {
+    async fn sharding_transaction_rolls_back_when_cross_database_enlistment_fails() {
         let primary_url = e2e_database_url();
         let tenant_url = e2e_replica_database_url();
-        let suffix = Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
+        let suffix =
+            Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
         let table = format!("dist_tx_probe_{suffix}");
         let primary_id = suffix as i64;
         let tenant_id = primary_id + 1;
@@ -1091,22 +1146,25 @@ mod saga_tests {
             .await
             .expect("reload tenant metadata");
 
-        let primary_insert_sql =
-            format!("INSERT INTO test.{table}(id, payload) VALUES ({primary_id}, 'primary-rollback')");
-        let tenant_insert_sql =
-            format!("INSERT INTO test.{table}(id, payload) VALUES ({tenant_id}, 'tenant-rollback')");
+        let primary_insert_sql = format!(
+            "INSERT INTO test.{table}(id, payload) VALUES ({primary_id}, 'primary-rollback')"
+        );
+        let tenant_insert_sql = format!(
+            "INSERT INTO test.{table}(id, payload) VALUES ({tenant_id}, 'tenant-rollback')"
+        );
         let err = sharding
             .transaction::<_, (), String>(|tx| {
                 let primary_insert_sql = primary_insert_sql.clone();
                 let tenant_insert_sql = tenant_insert_sql.clone();
                 Box::pin(async move {
                     tx.execute_unprepared(primary_insert_sql.as_str())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                    with_tenant(
-                        TenantContext::new("T-SEED-DB", TenantIsolationLevel::SharedRow),
-                        tx.execute_unprepared(tenant_insert_sql.as_str()),
-                    )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    tx.with_tenant_context(TenantContext::new(
+                        "T-SEED-DB",
+                        TenantIsolationLevel::SharedRow,
+                    ))
+                    .execute_unprepared(tenant_insert_sql.as_str())
                     .await
                     .map_err(|error| error.to_string())?;
                     Err("force rollback".to_string())
@@ -1115,9 +1173,26 @@ mod saga_tests {
             .await
             .expect_err("transaction must roll back");
 
-        assert!(matches!(err, TransactionError::Transaction(message) if message == "force rollback"));
-        assert_eq!(count_probe_rows(&primary_url, table.as_str(), primary_id).await, 0);
-        assert_eq!(count_probe_rows(&tenant_url, table.as_str(), tenant_id).await, 0);
+        assert!(
+            matches!(err, TransactionError::Transaction(message) if message.contains("would span multiple datasources"))
+        );
+        assert_eq!(
+            count_probe_rows(&primary_url, table.as_str(), primary_id).await,
+            0
+        );
+        assert_eq!(
+            count_probe_rows(&tenant_url, table.as_str(), tenant_id).await,
+            0
+        );
+
+        cleanup_real_transaction_probe_rows(
+            &primary_url,
+            &tenant_url,
+            table.as_str(),
+            primary_id,
+            tenant_id,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1128,7 +1203,8 @@ mod saga_tests {
             .expect("start prepared transaction test databases");
         let primary_url = test_dbs.primary_database_url().to_string();
         let secondary_url = test_dbs.secondary_database_url().to_string();
-        let suffix = Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
+        let suffix =
+            Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
         let table = format!("two_phase_probe_{suffix}");
         let primary_id = suffix as i64;
         let secondary_id = primary_id + 1;
@@ -1185,8 +1261,14 @@ mod saga_tests {
             .await
             .expect("two phase commit");
 
-        assert_eq!(count_probe_rows(&primary_url, table.as_str(), primary_id).await, 1);
-        assert_eq!(count_probe_rows(&secondary_url, table.as_str(), secondary_id).await, 1);
+        assert_eq!(
+            count_probe_rows(&primary_url, table.as_str(), primary_id).await,
+            1
+        );
+        assert_eq!(
+            count_probe_rows(&secondary_url, table.as_str(), secondary_id).await,
+            1
+        );
     }
 
     #[tokio::test]
@@ -1197,7 +1279,8 @@ mod saga_tests {
             .expect("start prepared transaction test databases");
         let primary_url = test_dbs.primary_database_url().to_string();
         let secondary_url = test_dbs.secondary_database_url().to_string();
-        let suffix = Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
+        let suffix =
+            Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
         let table = format!("two_phase_probe_{suffix}");
         let primary_id = suffix as i64;
         let secondary_id = primary_id + 1;
@@ -1254,9 +1337,17 @@ mod saga_tests {
             .await
             .expect_err("two phase transaction must roll back");
 
-        assert!(matches!(err, crate::connector::TwoPhaseTransactionError::Transaction(message) if message == "force two phase rollback"));
-        assert_eq!(count_probe_rows(&primary_url, table.as_str(), primary_id).await, 0);
-        assert_eq!(count_probe_rows(&secondary_url, table.as_str(), secondary_id).await, 0);
+        assert!(
+            matches!(err, crate::connector::TwoPhaseTransactionError::Transaction(message) if message == "force two phase rollback")
+        );
+        assert_eq!(
+            count_probe_rows(&primary_url, table.as_str(), primary_id).await,
+            0
+        );
+        assert_eq!(
+            count_probe_rows(&secondary_url, table.as_str(), secondary_id).await,
+            0
+        );
     }
 }
 

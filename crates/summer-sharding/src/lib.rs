@@ -85,7 +85,6 @@ pub use router::{
 pub use tenant::{
     TenantContext, TenantLifecycleManager, TenantMetadataApplyOutcome, TenantMetadataEvent,
     TenantMetadataEventKind, TenantMetadataRecord, TenantMetadataStore, TenantRouter,
-    current_tenant, with_tenant,
 };
 #[cfg(feature = "web")]
-pub use web::{CurrentTenant, OptionalCurrentTenant, TenantContextLayer};
+pub use web::{CurrentTenant, OptionalCurrentTenant, TenantContextLayer, TenantShardingConnection};

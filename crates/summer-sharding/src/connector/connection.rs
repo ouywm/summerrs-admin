@@ -31,6 +31,7 @@ use crate::{
 pub struct ShardingConnection {
     pub(crate) inner: Arc<ShardingConnectionInner>,
     pub(crate) hint_override: Option<ShardingHint>,
+    pub(crate) tenant_override: Option<crate::tenant::TenantContext>,
 }
 
 pub(crate) struct ShardingConnectionInner {
@@ -100,6 +101,7 @@ impl ShardingConnection {
         Ok(Self {
             inner: Arc::new(inner),
             hint_override: None,
+            tenant_override: None,
         })
     }
 
@@ -111,6 +113,15 @@ impl ShardingConnection {
         Self {
             inner: self.inner.clone(),
             hint_override: Some(hint),
+            tenant_override: self.tenant_override.clone(),
+        }
+    }
+
+    pub fn with_tenant_context(&self, tenant: crate::tenant::TenantContext) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            hint_override: self.hint_override.clone(),
+            tenant_override: Some(self.resolve_tenant_context(tenant)),
         }
     }
 
@@ -197,6 +208,7 @@ impl ShardingConnection {
                 stmt,
                 force_primary,
                 self.hint_override.clone(),
+                self.tenant_override.clone(),
             )
             .await
     }
@@ -208,7 +220,13 @@ impl ShardingConnection {
         force_primary: bool,
     ) -> std::result::Result<ExecResult, DbErr> {
         self.inner
-            .execute_with_raw(raw, stmt, force_primary, self.hint_override.clone())
+            .execute_with_raw(
+                raw,
+                stmt,
+                force_primary,
+                self.hint_override.clone(),
+                self.tenant_override.clone(),
+            )
             .await
     }
 
@@ -219,7 +237,13 @@ impl ShardingConnection {
         force_primary: bool,
     ) -> std::result::Result<Option<QueryResult>, DbErr> {
         self.inner
-            .query_one_with_raw(raw, stmt, force_primary, self.hint_override.clone())
+            .query_one_with_raw(
+                raw,
+                stmt,
+                force_primary,
+                self.hint_override.clone(),
+                self.tenant_override.clone(),
+            )
             .await
     }
 
@@ -230,7 +254,13 @@ impl ShardingConnection {
         force_primary: bool,
     ) -> std::result::Result<Vec<QueryResult>, DbErr> {
         self.inner
-            .query_all_with_raw(raw, stmt, force_primary, self.hint_override.clone())
+            .query_all_with_raw(
+                raw,
+                stmt,
+                force_primary,
+                self.hint_override.clone(),
+                self.tenant_override.clone(),
+            )
             .await
     }
 }
@@ -242,16 +272,17 @@ impl ShardingConnectionInner {
         stmt: &Statement,
         force_primary: bool,
         hint_override: Option<ShardingHint>,
+        tenant_override: Option<crate::tenant::TenantContext>,
     ) -> Result<(StatementContext, RoutePlan, Vec<ExecutionUnit>)> {
         let mut analysis = analyze_statement(stmt)?;
         analysis.hint = hint_override.or_else(crate::connector::hint::current_hint);
-        analysis.tenant = self.tenant_router.current_context();
+        analysis.tenant = tenant_override;
         self.resolve_lookup_sharding_conditions(raw, &mut analysis)
             .await?;
         self.reject_sharding_key_update(&analysis, stmt.values.as_ref())?;
         self.reject_ambiguous_lookup_mutation(&analysis)?;
         let mut plan = self.router.route(&analysis, force_primary)?;
-        self.apply_tenant_route(&mut plan);
+        self.apply_tenant_route(&mut plan, analysis.tenant.as_ref());
         self.shadow_router.apply(&mut plan, &analysis);
         let statements = self.rewriter.rewrite(stmt, &analysis, &plan)?;
         if statements.len() != plan.targets.len() {
@@ -332,13 +363,18 @@ impl ShardingConnectionInner {
         Ok(())
     }
 
-    fn apply_tenant_route(&self, plan: &mut RoutePlan) {
+    fn apply_tenant_route(
+        &self,
+        plan: &mut RoutePlan,
+        tenant: Option<&crate::tenant::TenantContext>,
+    ) {
         for target in &mut plan.targets {
             for rewrite in &mut target.table_rewrites {
-                if let Some(adjustment) = self
-                    .tenant_router
-                    .route(target.datasource.clone(), rewrite.actual_table.clone())
-                {
+                if let Some(adjustment) = self.tenant_router.route(
+                    target.datasource.clone(),
+                    rewrite.actual_table.clone(),
+                    tenant,
+                ) {
                     target.datasource = adjustment.datasource;
                     rewrite.actual_table = adjustment.actual_table;
                 }
@@ -352,10 +388,11 @@ impl ShardingConnectionInner {
         stmt: Statement,
         force_primary: bool,
         hint_override: Option<ShardingHint>,
+        tenant_override: Option<crate::tenant::TenantContext>,
     ) -> std::result::Result<ExecResult, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(raw, &stmt, force_primary, hint_override)
+            .prepare_statement(raw, &stmt, force_primary, hint_override, tenant_override)
             .await?;
         let result = self.executor.execute(raw, units).await.map_err(DbErr::from);
         if result.is_ok() {
@@ -372,10 +409,11 @@ impl ShardingConnectionInner {
         stmt: Statement,
         force_primary: bool,
         hint_override: Option<ShardingHint>,
+        tenant_override: Option<crate::tenant::TenantContext>,
     ) -> std::result::Result<Option<QueryResult>, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(raw, &stmt, force_primary, hint_override)
+            .prepare_statement(raw, &stmt, force_primary, hint_override, tenant_override)
             .await?;
         let result = self
             .executor
@@ -392,10 +430,11 @@ impl ShardingConnectionInner {
         stmt: Statement,
         force_primary: bool,
         hint_override: Option<ShardingHint>,
+        tenant_override: Option<crate::tenant::TenantContext>,
     ) -> std::result::Result<Vec<QueryResult>, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(raw, &stmt, force_primary, hint_override)
+            .prepare_statement(raw, &stmt, force_primary, hint_override, tenant_override)
             .await?;
         let result = self
             .executor
@@ -784,7 +823,7 @@ mod tests {
             DataSourcePool, InMemoryRuntimeRecorder, reset_runtime_recorder, set_runtime_recorder,
         },
         encrypt::{AesGcmEncryptor, EncryptAlgorithm},
-        tenant::{TenantContext, with_tenant},
+        tenant::TenantContext,
     };
 
     use super::ShardingConnection;
@@ -945,13 +984,14 @@ mod tests {
         .expect("pool");
         let sharding = ShardingConnection::with_pool(config, pool).expect("connection");
 
-        block_on(with_tenant(
-            TenantContext::new("T-001", TenantIsolationLevel::SharedRow),
-            sharding.query_all_raw(Statement::from_string(
-                DbBackend::Postgres,
-                "SELECT id FROM ai.log WHERE status = 1",
-            )),
-        ))
+        block_on(
+            sharding
+                .with_tenant_context(TenantContext::new("T-001", TenantIsolationLevel::SharedRow))
+                .query_all_raw(Statement::from_string(
+                    DbBackend::Postgres,
+                    "SELECT id FROM ai.log WHERE status = 1",
+                )),
+        )
         .expect("query");
 
         let logs = log_connection.into_transaction_log();
@@ -1002,13 +1042,17 @@ mod tests {
                 db_max_conns: None,
             });
 
-        block_on(with_tenant(
-            TenantContext::new("T-ENT-01", TenantIsolationLevel::SharedRow),
-            sharding.query_all_raw(Statement::from_string(
-                DbBackend::Postgres,
-                "SELECT id FROM ai.log WHERE status = 1",
-            )),
-        ))
+        block_on(
+            sharding
+                .with_tenant_context(TenantContext::new(
+                    "T-ENT-01",
+                    TenantIsolationLevel::SharedRow,
+                ))
+                .query_all_raw(Statement::from_string(
+                    DbBackend::Postgres,
+                    "SELECT id FROM ai.log WHERE status = 1",
+                )),
+        )
         .expect("query");
 
         let logs = log_connection.into_transaction_log();
@@ -1055,15 +1099,17 @@ mod tests {
             .await
             .expect("reload tenant metadata");
 
-        let rows = with_tenant(
-            TenantContext::new("T-SEED-SCHEMA", TenantIsolationLevel::SharedRow),
-            sharding.query_all_raw(Statement::from_string(
+        let rows = sharding
+            .with_tenant_context(TenantContext::new(
+                "T-SEED-SCHEMA",
+                TenantIsolationLevel::SharedRow,
+            ))
+            .query_all_raw(Statement::from_string(
                 DbBackend::Postgres,
                 "SELECT id, payload FROM test.tenant_probe_isolated ORDER BY id",
-            )),
-        )
-        .await
-        .expect("query");
+            ))
+            .await
+            .expect("query");
 
         assert_eq!(rows.len(), 1);
         let payload: String = rows[0].try_get("", "payload").expect("payload");
@@ -1107,15 +1153,17 @@ mod tests {
             .await
             .expect("reload tenant metadata");
 
-        let rows = with_tenant(
-            TenantContext::new("T-SEED-SCHEMA", TenantIsolationLevel::SharedRow),
-            sharding.query_all_raw(Statement::from_string(
+        let rows = sharding
+            .with_tenant_context(TenantContext::new(
+                "T-SEED-SCHEMA",
+                TenantIsolationLevel::SharedRow,
+            ))
+            .query_all_raw(Statement::from_string(
                 DbBackend::Postgres,
                 "SELECT id, payload FROM test.tenant_probe_isolated ORDER BY id",
-            )),
-        )
-        .await
-        .expect("query");
+            ))
+            .await
+            .expect("query");
 
         assert_eq!(rows.len(), 1);
         let payload: String = rows[0].try_get("", "payload").expect("payload");
@@ -1159,15 +1207,17 @@ mod tests {
             .await
             .expect("reload tenant metadata");
 
-        let rows = with_tenant(
-            TenantContext::new("T-SEED-TABLE", TenantIsolationLevel::SharedRow),
-            sharding.query_all_raw(Statement::from_string(
+        let rows = sharding
+            .with_tenant_context(TenantContext::new(
+                "T-SEED-TABLE",
+                TenantIsolationLevel::SharedRow,
+            ))
+            .query_all_raw(Statement::from_string(
                 DbBackend::Postgres,
                 "SELECT id, payload FROM test.tenant_probe_isolated ORDER BY id",
-            )),
-        )
-        .await
-        .expect("query");
+            ))
+            .await
+            .expect("query");
 
         assert_eq!(rows.len(), 1);
         let payload: String = rows[0].try_get("", "payload").expect("payload");
@@ -1211,15 +1261,17 @@ mod tests {
             .await
             .expect("reload tenant metadata");
 
-        let rows = with_tenant(
-            TenantContext::new("T-SEED-DB", TenantIsolationLevel::SharedRow),
-            sharding.query_all_raw(Statement::from_string(
+        let rows = sharding
+            .with_tenant_context(TenantContext::new(
+                "T-SEED-DB",
+                TenantIsolationLevel::SharedRow,
+            ))
+            .query_all_raw(Statement::from_string(
                 DbBackend::Postgres,
                 "SELECT id, payload FROM test.tenant_probe_isolated ORDER BY id",
-            )),
-        )
-        .await
-        .expect("query");
+            ))
+            .await
+            .expect("query");
 
         assert_eq!(rows.len(), 1);
         let payload: String = rows[0].try_get("", "payload").expect("payload");

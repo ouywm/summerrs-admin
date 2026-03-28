@@ -117,7 +117,11 @@ impl PostgresTableSink {
             .map(|column| json_value_to_sql_value(payload.remove(column).expect("column payload")))
             .collect::<Vec<_>>();
 
-        let pk_set = metadata.primary_keys.iter().cloned().collect::<BTreeSet<_>>();
+        let pk_set = metadata
+            .primary_keys
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let update_columns = columns
             .iter()
             .filter(|column| !pk_set.contains(column.as_str()))
@@ -130,7 +134,10 @@ impl PostgresTableSink {
                 "DO UPDATE SET {}",
                 update_columns
                     .iter()
-                    .map(|column| format!("{quoted} = EXCLUDED.{quoted}", quoted = quote_ident(column)))
+                    .map(|column| format!(
+                        "{quoted} = EXCLUDED.{quoted}",
+                        quoted = quote_ident(column)
+                    ))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -153,7 +160,11 @@ impl PostgresTableSink {
                 .join(", "),
         );
         self.connection
-            .execute_raw(Statement::from_sql_and_values(DbBackend::Postgres, sql, params))
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                params,
+            ))
             .await?;
         Ok(())
     }
@@ -189,7 +200,11 @@ impl PostgresTableSink {
             predicates.join(" AND ")
         );
         self.connection
-            .execute_raw(Statement::from_sql_and_values(DbBackend::Postgres, sql, params))
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                sql,
+                params,
+            ))
             .await?;
         Ok(())
     }
@@ -246,7 +261,9 @@ impl CdcSink for PostgresHashShardSink {
     async fn write_batch(&self, records: &[CdcRecord]) -> Result<usize> {
         for record in records {
             let target_table = self.target_table_for(record)?;
-            self.table_sink.upsert_into(record, target_table.as_str()).await?;
+            self.table_sink
+                .upsert_into(record, target_table.as_str())
+                .await?;
         }
         Ok(records.len())
     }
@@ -283,7 +300,10 @@ fn object_payload(record: &CdcRecord, primary_keys: &[String]) -> Result<Map<Str
                 )));
             }
             let mut object = Map::new();
-            object.insert(primary_keys[0].clone(), parse_key_value(record.key.as_str()));
+            object.insert(
+                primary_keys[0].clone(),
+                parse_key_value(record.key.as_str()),
+            );
             object.insert("payload".to_string(), value.clone());
             Ok(object)
         }
@@ -351,7 +371,11 @@ fn split_qualified_table(table: &str) -> Result<(String, String)> {
 
 fn quote_qualified_table(table: &str) -> Result<String> {
     let (schema, relation) = split_qualified_table(table)?;
-    Ok(format!("{}.{}", quote_ident(&schema), quote_ident(&relation)))
+    Ok(format!(
+        "{}.{}",
+        quote_ident(&schema),
+        quote_ident(&relation)
+    ))
 }
 
 fn quote_ident(value: &str) -> String {

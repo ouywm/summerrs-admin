@@ -136,7 +136,11 @@ impl DataSourcePool {
                     Some(rule.primary.as_str()),
                     Some(&candidates),
                 )
-                .into_route_state(rule.name.as_str(), rule.primary.as_str(), &rule.replicas);
+                .into_route_state(
+                    rule.name.as_str(),
+                    rule.primary.as_str(),
+                    &rule.replicas,
+                );
                 set_route_state(rule.primary.as_str(), state.clone());
                 state
             })

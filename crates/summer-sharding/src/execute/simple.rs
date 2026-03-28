@@ -223,7 +223,10 @@ mod tests {
                 &raw,
                 vec![ExecutionUnit {
                     datasource: "ds_ai".to_string(),
-                    statement: Statement::from_string(DbBackend::Postgres, "UPDATE ai.log SET ok = 1"),
+                    statement: Statement::from_string(
+                        DbBackend::Postgres,
+                        "UPDATE ai.log SET ok = 1",
+                    ),
                 }],
             )
             .await
@@ -259,7 +262,10 @@ mod tests {
             .expect("query");
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].try_get::<Option<i32>>("", "id").expect("id"), Some(7));
+        assert_eq!(
+            rows[0].try_get::<Option<i32>>("", "id").expect("id"),
+            Some(7)
+        );
         assert_eq!(raw.calls.lock().as_slice(), ["all:ds_ai"]);
     }
 }

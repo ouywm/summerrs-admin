@@ -211,7 +211,10 @@ impl CdcSubscription for SqlPollingSubscription {
         }
 
         let drain_count = requested.min(self.pending_records.len());
-        let records = self.pending_records.drain(..drain_count).collect::<Vec<_>>();
+        let records = self
+            .pending_records
+            .drain(..drain_count)
+            .collect::<Vec<_>>();
         Ok(CdcBatch {
             next_position: self.position(),
             records,
@@ -543,5 +546,4 @@ mod tests {
         let logs = conn.as_ref().clone().into_transaction_log();
         assert_eq!(logs.len(), 1);
     }
-
 }

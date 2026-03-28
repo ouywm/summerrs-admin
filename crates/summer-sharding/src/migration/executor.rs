@@ -305,7 +305,8 @@ fn validate_transformer(
 }
 
 fn normalize_descriptor(value: &str) -> String {
-    value.chars()
+    value
+        .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
         .flat_map(|ch| ch.to_lowercase())
         .collect()

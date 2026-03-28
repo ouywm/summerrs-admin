@@ -1,8 +1,4 @@
-use std::{
-    net::TcpListener,
-    process::Command,
-    time::Duration,
-};
+use std::{net::TcpListener, process::Command, time::Duration};
 
 use rand::random;
 use reqwest::Client;
@@ -40,9 +36,8 @@ impl LogicalReplicationTestDatabase {
             std::process::id(),
             random::<u32>()
         );
-        let database_url = format!(
-            "postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{TEST_DB_NAME}"
-        );
+        let database_url =
+            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{TEST_DB_NAME}");
 
         run_docker(["rm", "-f", container_name.as_str()]).ok();
         run_docker([
@@ -181,12 +176,10 @@ impl PreparedTransactionTestDatabases {
         );
         let primary_db = "summer_sharding_2pc_a";
         let secondary_db = "summer_sharding_2pc_b";
-        let primary_database_url = format!(
-            "postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{primary_db}"
-        );
-        let secondary_database_url = format!(
-            "postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{secondary_db}"
-        );
+        let primary_database_url =
+            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{primary_db}");
+        let secondary_database_url =
+            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{secondary_db}");
 
         run_docker(["rm", "-f", container_name.as_str()]).ok();
         run_docker([
@@ -386,7 +379,8 @@ impl PrimaryReplicaTestCluster {
                 "#,
             )
             .await?;
-        self.wait_for_replica_row_count("test.rw_failover_probe", 1).await
+        self.wait_for_replica_row_count("test.rw_failover_probe", 1)
+            .await
     }
 
     pub(crate) async fn promote_replica_and_stop_primary(&self) -> Result<()> {

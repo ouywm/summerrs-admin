@@ -1,12 +1,6 @@
-use std::future::Future;
-
 use serde::{Deserialize, Serialize};
 
 use crate::config::TenantIsolationLevel;
-
-tokio::task_local! {
-    pub static CURRENT_TENANT: TenantContext;
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TenantContext {
@@ -25,15 +19,4 @@ impl TenantContext {
             schema_override: None,
         }
     }
-}
-
-pub async fn with_tenant<F, T>(tenant: TenantContext, future: F) -> T
-where
-    F: Future<Output = T>,
-{
-    CURRENT_TENANT.scope(tenant, future).await
-}
-
-pub fn current_tenant() -> Option<TenantContext> {
-    CURRENT_TENANT.try_with(Clone::clone).ok()
 }

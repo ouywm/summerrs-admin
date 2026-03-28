@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -13,9 +13,7 @@ use serde_json::Value as JsonValue;
 use url::Url;
 
 use crate::{
-    cdc::{
-        CdcBatch, CdcRecord, CdcSource, CdcSubscribeRequest, CdcSubscription, PgOutputDecoder,
-    },
+    cdc::{CdcBatch, CdcRecord, CdcSource, CdcSubscribeRequest, CdcSubscription, PgOutputDecoder},
     error::{Result, ShardingError},
 };
 
@@ -46,6 +44,12 @@ struct ReplicationEndpoint {
 struct SnapshotKeyColumn {
     name: String,
     data_type: String,
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotKeyInfo {
+    canonical_table: String,
+    columns: Vec<SnapshotKeyColumn>,
 }
 
 impl ReplicationEndpoint {
@@ -81,7 +85,12 @@ impl ReplicationEndpoint {
         })
     }
 
-    fn to_replication_config(&self, slot: &str, publication: &str, start_lsn: Lsn) -> ReplicationConfig {
+    fn to_replication_config(
+        &self,
+        slot: &str,
+        publication: &str,
+        start_lsn: Lsn,
+    ) -> ReplicationConfig {
         ReplicationConfig {
             host: self.host.clone(),
             port: self.port,
@@ -105,11 +114,14 @@ pub struct PgCdcSource {
     snapshot_connection: Arc<DatabaseConnection>,
     endpoint: ReplicationEndpoint,
     position: Arc<RwLock<PgSourcePosition>>,
-    snapshot_keys: Mutex<std::collections::BTreeMap<String, Vec<SnapshotKeyColumn>>>,
+    snapshot_keys: Mutex<std::collections::BTreeMap<String, SnapshotKeyInfo>>,
 }
 
 impl PgCdcSource {
-    pub fn new(snapshot_connection: Arc<DatabaseConnection>, replication_database_url: &str) -> Result<Self> {
+    pub fn new(
+        snapshot_connection: Arc<DatabaseConnection>,
+        replication_database_url: &str,
+    ) -> Result<Self> {
         Ok(Self {
             snapshot_connection,
             endpoint: ReplicationEndpoint::parse(replication_database_url)?,
@@ -215,17 +227,33 @@ impl PgCdcSource {
     }
 
     async fn primary_key_columns(&self, table: &str) -> Result<Vec<SnapshotKeyColumn>> {
-        if let Some(columns) = self.snapshot_keys.lock().get(table).cloned() {
-            return Ok(columns);
-        }
+        Ok(self.primary_key_info(table).await?.columns.clone())
+    }
 
+    async fn primary_key_info(&self, table: &str) -> Result<SnapshotKeyInfo> {
+        {
+            let guard = self.snapshot_keys.lock();
+            if let Some(info) = guard.get(table).cloned() {
+                return Ok(info);
+            }
+        }
+        let info = self.load_primary_key_info(table).await?;
+        self.snapshot_keys
+            .lock()
+            .insert(table.to_string(), info.clone());
+        Ok(info)
+    }
+
+    async fn load_primary_key_info(&self, table: &str) -> Result<SnapshotKeyInfo> {
         let (schema, relation) = split_qualified_table(table)?;
         let rows = self
             .snapshot_connection
             .query_all_raw(Statement::from_sql_and_values(
                 DbBackend::Postgres,
                 r#"
-                SELECT a.attname
+                SELECT n.nspname AS schema
+                     , c.relname AS relation
+                     , a.attname
                      , pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type
                 FROM pg_index i
                 JOIN pg_class c ON c.oid = i.indrelid
@@ -240,24 +268,42 @@ impl PgCdcSource {
                 [schema.into(), relation.into()],
             ))
             .await?;
-        let columns = rows
-            .into_iter()
-            .map(|row| -> std::result::Result<SnapshotKeyColumn, sea_orm::DbErr> {
-                Ok(SnapshotKeyColumn {
-                    name: row.try_get::<String>("", "attname")?,
-                    data_type: row.try_get::<String>("", "data_type")?,
-                })
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut columns = Vec::new();
+        let mut canonical_schema = None;
+        let mut canonical_relation = None;
+        for row in rows {
+            if canonical_schema.is_none() {
+                canonical_schema = Some(row.try_get::<String>("", "schema")?);
+                canonical_relation = Some(row.try_get::<String>("", "relation")?);
+            }
+            columns.push(SnapshotKeyColumn {
+                name: row.try_get::<String>("", "attname")?,
+                data_type: row.try_get::<String>("", "data_type")?,
+            });
+        }
         if columns.is_empty() {
             return Err(ShardingError::Config(format!(
                 "cdc snapshot requires primary key columns for `{table}`"
             )));
         }
-        self.snapshot_keys
-            .lock()
-            .insert(table.to_string(), columns.clone());
-        Ok(columns)
+        let canonical_schema = canonical_schema.expect("primary key should produce schema");
+        let canonical_relation = canonical_relation.expect("primary key should produce relation");
+        Ok(SnapshotKeyInfo {
+            canonical_table: format!("{canonical_schema}.{canonical_relation}"),
+            columns,
+        })
+    }
+
+    async fn primary_key_map(&self, tables: &[String]) -> Result<BTreeMap<String, Vec<String>>> {
+        let mut primary_keys = BTreeMap::new();
+        for table in tables {
+            let info = self.primary_key_info(table).await?;
+            primary_keys.insert(
+                info.canonical_table.clone(),
+                info.columns.into_iter().map(|column| column.name).collect(),
+            );
+        }
+        Ok(primary_keys)
     }
 }
 
@@ -322,6 +368,7 @@ impl CdcSource for PgCdcSource {
         self.ensure_replication_slot(request.slot.as_str()).await?;
         self.ensure_publication(request.publication.as_str(), &request.source_tables)
             .await?;
+        let primary_keys = self.primary_key_map(&request.source_tables).await?;
 
         let start_lsn = if let Some(position) = request.from_position.as_deref() {
             position
@@ -331,16 +378,17 @@ impl CdcSource for PgCdcSource {
             Lsn::ZERO
         };
 
-        let client = ReplicationClient::connect(
-            self.endpoint
-                .to_replication_config(request.slot.as_str(), request.publication.as_str(), start_lsn),
-        )
+        let client = ReplicationClient::connect(self.endpoint.to_replication_config(
+            request.slot.as_str(),
+            request.publication.as_str(),
+            start_lsn,
+        ))
         .await
         .map_err(pgwire_error)?;
 
         Ok(Box::new(PgReplicationSubscription {
             client,
-            decoder: PgOutputDecoder::new(&request.source_tables),
+            decoder: PgOutputDecoder::with_primary_keys(&request.source_tables, primary_keys),
             pending_records: VecDeque::new(),
             position: new_subscription_position(start_lsn),
         }))
@@ -372,11 +420,8 @@ impl CdcSubscription for PgReplicationSubscription {
         let requested = limit.max(1);
 
         while self.pending_records.len() < requested {
-            let recv_result = tokio::time::timeout(
-                Duration::from_millis(500),
-                self.client.recv(),
-            )
-            .await;
+            let recv_result =
+                tokio::time::timeout(Duration::from_millis(500), self.client.recv()).await;
             let event = match recv_result {
                 Ok(result) => match result.map_err(pgwire_error)? {
                     Some(event) => event,
@@ -404,7 +449,10 @@ impl CdcSubscription for PgReplicationSubscription {
         }
 
         let drain_count = requested.min(self.pending_records.len());
-        let records = self.pending_records.drain(..drain_count).collect::<Vec<_>>();
+        let records = self
+            .pending_records
+            .drain(..drain_count)
+            .collect::<Vec<_>>();
         if let Some(last_lsn) = records
             .last()
             .and_then(|record| record.source_lsn.as_deref())
@@ -463,8 +511,9 @@ fn snapshot_cursor_predicate(
     let Some(cursor) = cursor else {
         return Ok(None);
     };
-    let values = serde_json::from_str::<Vec<JsonValue>>(cursor)
-        .map_err(|err| ShardingError::Parse(format!("invalid snapshot cursor `{cursor}`: {err}")))?;
+    let values = serde_json::from_str::<Vec<JsonValue>>(cursor).map_err(|err| {
+        ShardingError::Parse(format!("invalid snapshot cursor `{cursor}`: {err}"))
+    })?;
     if values.len() != columns.len() {
         return Err(ShardingError::Parse(format!(
             "snapshot cursor column count mismatch for `{cursor}`"
@@ -538,14 +587,21 @@ fn parse_tls_config(url: &Url) -> Result<TlsConfig> {
 }
 
 fn split_qualified_table(table: &str) -> Result<(String, String)> {
-    table.split_once('.')
+    table
+        .split_once('.')
         .map(|(schema, relation)| (schema.to_string(), relation.to_string()))
-        .ok_or_else(|| ShardingError::Config(format!("qualified table name required, got `{table}`")))
+        .ok_or_else(|| {
+            ShardingError::Config(format!("qualified table name required, got `{table}`"))
+        })
 }
 
 fn quote_qualified_table(table: &str) -> Result<String> {
     let (schema, relation) = split_qualified_table(table)?;
-    Ok(format!("{}.{}", quote_ident(schema.as_str()), quote_ident(relation.as_str())))
+    Ok(format!(
+        "{}.{}",
+        quote_ident(schema.as_str()),
+        quote_ident(relation.as_str())
+    ))
 }
 
 fn quote_ident(value: &str) -> String {
@@ -620,8 +676,8 @@ mod tests {
             .await
             .expect("create source table");
 
-        let source = PgCdcSource::new(connection.clone(), test_db.database_url())
-            .expect("build pg source");
+        let source =
+            PgCdcSource::new(connection.clone(), test_db.database_url()).expect("build pg source");
 
         connection
             .execute_unprepared(

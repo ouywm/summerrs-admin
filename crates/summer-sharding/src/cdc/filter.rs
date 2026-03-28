@@ -1,8 +1,6 @@
 use serde_json::Value as JsonValue;
 use sqlparser::{
-    ast::{
-        BinaryOperator, Expr, Query, SetExpr, Statement as AstStatement, Value as SqlValue,
-    },
+    ast::{BinaryOperator, Expr, Query, SetExpr, Statement as AstStatement, Value as SqlValue},
     dialect::PostgreSqlDialect,
     parser::Parser,
 };
@@ -27,14 +25,18 @@ impl RowFilter {
             .next()
             .ok_or_else(|| ShardingError::Parse("row filter is empty".to_string()))?;
         let AstStatement::Query(query) = statement else {
-            return Err(ShardingError::Parse("row filter must parse as query".to_string()));
+            return Err(ShardingError::Parse(
+                "row filter must parse as query".to_string(),
+            ));
         };
         let Some(selection) = extract_selection(&query) else {
             return Err(ShardingError::Parse(
                 "row filter does not contain a WHERE clause".to_string(),
             ));
         };
-        Ok(Self { expression: selection })
+        Ok(Self {
+            expression: selection,
+        })
     }
 
     pub(crate) fn matches(&self, record: &CdcRecord) -> Result<bool> {
@@ -58,26 +60,31 @@ fn extract_selection(query: &Query) -> Option<Expr> {
     select.selection.clone()
 }
 
-fn eval_bool(
-    expression: &Expr,
-    row: &serde_json::Map<String, JsonValue>,
-) -> Result<bool> {
+fn eval_bool(expression: &Expr, row: &serde_json::Map<String, JsonValue>) -> Result<bool> {
     match expression {
         Expr::BinaryOp { left, op, right } => match op {
             BinaryOperator::And => Ok(eval_bool(left, row)? && eval_bool(right, row)?),
             BinaryOperator::Or => Ok(eval_bool(left, row)? || eval_bool(right, row)?),
-            BinaryOperator::Eq => Ok(compare_json(&eval_value(left, row)?, &eval_value(right, row)?)?
-                == std::cmp::Ordering::Equal),
-            BinaryOperator::NotEq => Ok(compare_json(&eval_value(left, row)?, &eval_value(right, row)?)?
-                != std::cmp::Ordering::Equal),
-            BinaryOperator::Gt => Ok(compare_json(&eval_value(left, row)?, &eval_value(right, row)?)?
-                == std::cmp::Ordering::Greater),
+            BinaryOperator::Eq => Ok(compare_json(
+                &eval_value(left, row)?,
+                &eval_value(right, row)?,
+            )? == std::cmp::Ordering::Equal),
+            BinaryOperator::NotEq => Ok(compare_json(
+                &eval_value(left, row)?,
+                &eval_value(right, row)?,
+            )? != std::cmp::Ordering::Equal),
+            BinaryOperator::Gt => Ok(compare_json(
+                &eval_value(left, row)?,
+                &eval_value(right, row)?,
+            )? == std::cmp::Ordering::Greater),
             BinaryOperator::GtEq => Ok(matches!(
                 compare_json(&eval_value(left, row)?, &eval_value(right, row)?)?,
                 std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
             )),
-            BinaryOperator::Lt => Ok(compare_json(&eval_value(left, row)?, &eval_value(right, row)?)?
-                == std::cmp::Ordering::Less),
+            BinaryOperator::Lt => Ok(compare_json(
+                &eval_value(left, row)?,
+                &eval_value(right, row)?,
+            )? == std::cmp::Ordering::Less),
             BinaryOperator::LtEq => Ok(matches!(
                 compare_json(&eval_value(left, row)?, &eval_value(right, row)?)?,
                 std::cmp::Ordering::Less | std::cmp::Ordering::Equal
@@ -97,8 +104,7 @@ fn eval_bool(
             let value = eval_value(expr, row)?;
             let mut matched = false;
             for candidate in list {
-                if compare_json(&value, &eval_value(candidate, row)?)?
-                    == std::cmp::Ordering::Equal
+                if compare_json(&value, &eval_value(candidate, row)?)? == std::cmp::Ordering::Equal
                 {
                     matched = true;
                     break;
@@ -114,7 +120,10 @@ fn eval_bool(
 
 fn eval_value(expression: &Expr, row: &serde_json::Map<String, JsonValue>) -> Result<JsonValue> {
     match expression {
-        Expr::Identifier(ident) => Ok(row.get(ident.value.as_str()).cloned().unwrap_or(JsonValue::Null)),
+        Expr::Identifier(ident) => Ok(row
+            .get(ident.value.as_str())
+            .cloned()
+            .unwrap_or(JsonValue::Null)),
         Expr::CompoundIdentifier(parts) => Ok(parts
             .last()
             .and_then(|ident| row.get(ident.value.as_str()))
@@ -217,7 +226,9 @@ fn compare_numbers(
         .as_f64()
         .ok_or_else(|| ShardingError::Parse(format!("invalid numeric value `{right}`")))?;
     left.partial_cmp(&right).ok_or_else(|| {
-        ShardingError::Parse(format!("cannot compare numeric values `{left}` and `{right}`"))
+        ShardingError::Parse(format!(
+            "cannot compare numeric values `{left}` and `{right}`"
+        ))
     })
 }
 
@@ -238,23 +249,31 @@ mod tests {
     #[test]
     fn row_filter_matches_exact_string_column() {
         let filter = RowFilter::parse("tenant_id = 'T-001'").expect("parse");
-        assert!(filter
-            .matches(&record(serde_json::json!({"tenant_id":"T-001","id":1})))
-            .expect("match"));
-        assert!(!filter
-            .matches(&record(serde_json::json!({"tenant_id":"T-002","id":1})))
-            .expect("mismatch"));
+        assert!(
+            filter
+                .matches(&record(serde_json::json!({"tenant_id":"T-001","id":1})))
+                .expect("match")
+        );
+        assert!(
+            !filter
+                .matches(&record(serde_json::json!({"tenant_id":"T-002","id":1})))
+                .expect("mismatch")
+        );
     }
 
     #[test]
     fn row_filter_supports_boolean_composition() {
         let filter = RowFilter::parse("tenant_id = 'T-001' AND id >= 2").expect("parse");
-        assert!(filter
-            .matches(&record(serde_json::json!({"tenant_id":"T-001","id":2})))
-            .expect("match"));
-        assert!(!filter
-            .matches(&record(serde_json::json!({"tenant_id":"T-001","id":1})))
-            .expect("mismatch"));
+        assert!(
+            filter
+                .matches(&record(serde_json::json!({"tenant_id":"T-001","id":2})))
+                .expect("match")
+        );
+        assert!(
+            !filter
+                .matches(&record(serde_json::json!({"tenant_id":"T-001","id":1})))
+                .expect("mismatch")
+        );
     }
 
     #[test]
@@ -262,11 +281,15 @@ mod tests {
         let large = 9_007_199_254_740_993_u64;
         let filter = RowFilter::parse(format!("id = {large}").as_str()).expect("parse");
 
-        assert!(filter
-            .matches(&record(serde_json::json!({"id": large})))
-            .expect("match"));
-        assert!(!filter
-            .matches(&record(serde_json::json!({"id": large + 1})))
-            .expect("mismatch"));
+        assert!(
+            filter
+                .matches(&record(serde_json::json!({"id": large})))
+                .expect("match")
+        );
+        assert!(
+            !filter
+                .matches(&record(serde_json::json!({"id": large + 1})))
+                .expect("mismatch")
+        );
     }
 }

@@ -405,11 +405,10 @@ mod tests {
 
     use crate::{
         CdcOperation, CdcRecord, ClickHouseHttpSink, InMemoryCdcSource, PgCdcSource,
-        PostgresHashShardSink,
-        RowTransformer, SqlMigrationCleanup, TableSink,
+        PostgresHashShardSink, RowTransformer, SqlMigrationCleanup, TableSink,
+        cdc::test_support::{ClickHouseTestServer, LogicalReplicationTestDatabase},
         config::{CdcTaskConfig, ShardingConfig},
         migration::{MigrationExecutor, MigrationOrchestrator, MigrationTaskKind},
-        cdc::test_support::{ClickHouseTestServer, LogicalReplicationTestDatabase},
     };
     use sea_orm::{ConnectionTrait, Database, DbBackend, MockDatabase, MockExecResult, Statement};
 
@@ -653,9 +652,11 @@ mod tests {
             .await
             .expect_err("transformer mismatch should fail");
 
-        assert!(error
-            .to_string()
-            .contains("expects a hash-sharded sink for transformer `rehash`"));
+        assert!(
+            error
+                .to_string()
+                .contains("expects a hash-sharded sink for transformer `rehash`")
+        );
     }
 
     #[tokio::test]
@@ -669,8 +670,10 @@ mod tests {
         let plan = MigrationOrchestrator::new()
             .plan_cdc_task(&task)
             .expect("tenant upgrade plan");
-        let source = InMemoryCdcSource::new()
-            .with_replication("tenant_upgrade_mismatch_slot", "tenant_upgrade_mismatch_pub");
+        let source = InMemoryCdcSource::new().with_replication(
+            "tenant_upgrade_mismatch_slot",
+            "tenant_upgrade_mismatch_pub",
+        );
         let sink = PostgresHashShardSink::new(
             Arc::new(MockDatabase::new(DbBackend::Postgres).into_connection()),
             vec![
@@ -684,9 +687,11 @@ mod tests {
             .await
             .expect_err("schema plan with hash sink should fail");
 
-        assert!(error
-            .to_string()
-            .contains("expects a direct relational sink"));
+        assert!(
+            error
+                .to_string()
+                .contains("expects a direct relational sink")
+        );
     }
 
     #[tokio::test]
@@ -832,7 +837,11 @@ mod tests {
             let plan = plan.clone();
             let source = source;
             let sink = sink;
-            async move { executor.execute(&plan, &source, &RowTransformer, &sink, None, None).await }
+            async move {
+                executor
+                    .execute(&plan, &source, &RowTransformer, &sink, None, None)
+                    .await
+            }
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1004,7 +1013,11 @@ mod tests {
             let plan = plan.clone();
             let source = source;
             let sink = sink;
-            async move { executor.execute(&plan, &source, &RowTransformer, &sink, None, None).await }
+            async move {
+                executor
+                    .execute(&plan, &source, &RowTransformer, &sink, None, None)
+                    .await
+            }
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1037,8 +1050,10 @@ mod tests {
         assert_eq!(json_i64(&rows[1]["id"]), 2);
         assert_eq!(json_i64(&rows[2]["id"]), 3);
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(rows[1]["body"].as_str().expect("body string"))
-                .expect("body json")["name"],
+            serde_json::from_str::<serde_json::Value>(
+                rows[1]["body"].as_str().expect("body string")
+            )
+            .expect("body json")["name"],
             "beta-2"
         );
     }
@@ -1081,7 +1096,11 @@ mod tests {
         connection: &sea_orm::DatabaseConnection,
         sql: &str,
     ) -> crate::Result<()> {
-        for statement in sql.split(';').map(str::trim).filter(|stmt| !stmt.is_empty()) {
+        for statement in sql
+            .split(';')
+            .map(str::trim)
+            .filter(|stmt| !stmt.is_empty())
+        {
             connection.execute_unprepared(statement).await?;
         }
         Ok(())

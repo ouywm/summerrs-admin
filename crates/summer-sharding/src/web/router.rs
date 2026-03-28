@@ -1,9 +1,9 @@
 #[cfg(any(test, feature = "web-probes"))]
 use schemars::JsonSchema;
 #[cfg(any(test, feature = "web-probes"))]
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
-#[cfg(any(test, feature = "web-probes"))]
 use sea_orm::QueryResult;
+#[cfg(any(test, feature = "web-probes"))]
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
 #[cfg(any(test, feature = "web-probes"))]
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "web-probes"))]
@@ -11,12 +11,10 @@ use summer_web::axum::Json;
 #[cfg(any(test, feature = "web-probes"))]
 use summer_web::error::{KnownWebError, WebError};
 #[cfg(any(test, feature = "web-probes"))]
-use summer_web::extractor::Component;
-#[cfg(any(test, feature = "web-probes"))]
 use summer_web::get_api;
 
 #[cfg(any(test, feature = "web-probes"))]
-use crate::{ShardingConnection, web::CurrentTenant};
+use crate::web::{CurrentTenant, TenantShardingConnection};
 
 #[cfg(any(test, feature = "web-probes"))]
 const SHARED_TENANT_PROBE_SQL: &str =
@@ -111,7 +109,7 @@ pub async fn tenant_context(CurrentTenant(tenant): CurrentTenant) -> Json<Tenant
 #[get_api("/internal/sharding/probe/rows")]
 pub async fn tenant_probe_rows(
     CurrentTenant(tenant): CurrentTenant,
-    Component(sharding): Component<ShardingConnection>,
+    TenantShardingConnection(sharding): TenantShardingConnection,
 ) -> Result<Json<TenantProbeRowsVo>, WebError> {
     let rows = sharding
         .query_all_raw(Statement::from_string(
@@ -138,7 +136,7 @@ pub async fn tenant_probe_rows(
 #[get_api("/internal/sharding/probe/isolated-rows")]
 pub async fn isolated_tenant_probe_rows(
     CurrentTenant(tenant): CurrentTenant,
-    Component(sharding): Component<ShardingConnection>,
+    TenantShardingConnection(sharding): TenantShardingConnection,
 ) -> Result<Json<IsolatedTenantProbeRowsVo>, WebError> {
     let rows = sharding
         .query_all_raw(Statement::from_string(
@@ -272,12 +270,12 @@ mod tests {
             .reload_tenant_metadata(&metadata_connection)
             .await
             .expect("reload tenant metadata");
-        builder.add_component(sharding);
+        builder.add_component(sharding.clone());
         let app: Arc<summer::app::App> = builder.build().await.expect("build test app");
 
         auto_router()
             .layer(Extension(AppState { app }))
-            .layer(TenantContextLayer::from_source(tenant_id_source))
+            .layer(TenantContextLayer::from_source(tenant_id_source).with_sharding(sharding))
             .into()
     }
 

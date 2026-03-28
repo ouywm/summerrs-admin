@@ -35,13 +35,18 @@ enum TupleValue {
 pub struct PgOutputDecoder {
     relations: BTreeMap<u32, RelationMetadata>,
     source_tables: BTreeSet<String>,
+    primary_keys: BTreeMap<String, Vec<String>>,
 }
 
 impl PgOutputDecoder {
-    pub fn new(source_tables: &[String]) -> Self {
+    pub fn with_primary_keys(
+        source_tables: &[String],
+        primary_keys: BTreeMap<String, Vec<String>>,
+    ) -> Self {
         Self {
             relations: BTreeMap::new(),
             source_tables: source_tables.iter().cloned().collect(),
+            primary_keys,
         }
     }
 
@@ -212,12 +217,21 @@ impl PgOutputDecoder {
                 "missing relation metadata for relation id {relation_id}"
             )));
         };
-        if !self.source_tables.contains(relation.full_table_name.as_str()) {
+        if !self
+            .source_tables
+            .contains(relation.full_table_name.as_str())
+        {
             return Ok(None);
         }
 
         let row_payload = tuple_to_json(&relation.columns, tuple, fallback)?;
-        let key = record_key(&relation.columns, &row_payload)?;
+        let key = record_key(
+            &relation.columns,
+            &row_payload,
+            self.primary_keys
+                .get(relation.full_table_name.as_str())
+                .map(Vec::as_slice),
+        )?;
         Ok(Some(CdcRecord {
             table: relation.full_table_name.clone(),
             key,
@@ -258,12 +272,21 @@ fn tuple_to_json(
     Ok(map)
 }
 
-fn record_key(columns: &[RelationColumn], payload: &Map<String, JsonValue>) -> Result<String> {
-    let key_columns = columns
-        .iter()
-        .filter(|column| column.is_key)
-        .map(|column| column.name.as_str())
-        .collect::<Vec<_>>();
+fn record_key(
+    columns: &[RelationColumn],
+    payload: &Map<String, JsonValue>,
+    primary_keys: Option<&[String]>,
+) -> Result<String> {
+    let key_columns = primary_keys
+        .filter(|columns| !columns.is_empty())
+        .map(|columns| columns.iter().map(String::as_str).collect::<Vec<_>>())
+        .unwrap_or_else(|| {
+            columns
+                .iter()
+                .filter(|column| column.is_key)
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>()
+        });
     let key_columns = if key_columns.is_empty() {
         if payload.contains_key("id") {
             vec!["id"]
@@ -289,7 +312,9 @@ fn json_key_part(value: &JsonValue) -> String {
         JsonValue::Bool(value) => value.to_string(),
         JsonValue::Number(value) => value.to_string(),
         JsonValue::String(value) => value.clone(),
-        JsonValue::Array(_) | JsonValue::Object(_) => serde_json::to_string(value).unwrap_or_default(),
+        JsonValue::Array(_) | JsonValue::Object(_) => {
+            serde_json::to_string(value).unwrap_or_default()
+        }
     }
 }
 
@@ -308,7 +333,10 @@ fn decode_value(type_oid: u32, value: TupleValue) -> Result<JsonValue> {
 
 fn decode_text_value(type_oid: u32, text: String) -> Result<JsonValue> {
     match type_oid {
-        16 => Ok(JsonValue::Bool(matches!(text.as_str(), "t" | "true" | "TRUE"))),
+        16 => Ok(JsonValue::Bool(matches!(
+            text.as_str(),
+            "t" | "true" | "TRUE"
+        ))),
         20 | 21 | 23 => text
             .parse::<i64>()
             .ok()
@@ -321,8 +349,9 @@ fn decode_text_value(type_oid: u32, text: String) -> Result<JsonValue> {
         )
         .map(JsonValue::Number)
         .ok_or_else(|| ShardingError::Parse(format!("invalid float value `{text}`"))),
-        114 | 3802 => serde_json::from_str(text.as_str())
-            .map_err(|err| ShardingError::Parse(err.to_string())),
+        114 | 3802 => {
+            serde_json::from_str(text.as_str()).map_err(|err| ShardingError::Parse(err.to_string()))
+        }
         _ => Ok(JsonValue::String(text)),
     }
 }
@@ -372,7 +401,9 @@ impl<'a> Input<'a> {
         let end = remaining
             .iter()
             .position(|byte| *byte == 0)
-            .ok_or_else(|| ShardingError::Parse("unterminated cstring in pgoutput message".to_string()))?;
+            .ok_or_else(|| {
+                ShardingError::Parse("unterminated cstring in pgoutput message".to_string())
+            })?;
         let value = std::str::from_utf8(&remaining[..end])
             .map_err(|err| ShardingError::Parse(err.to_string()))?
             .to_string();
@@ -414,7 +445,9 @@ impl<'a> Input<'a> {
 
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8]> {
         if self.offset + len > self.bytes.len() {
-            return Err(ShardingError::Parse("truncated pgoutput message".to_string()));
+            return Err(ShardingError::Parse(
+                "truncated pgoutput message".to_string(),
+            ));
         }
         let slice = &self.bytes[self.offset..self.offset + len];
         self.offset += len;
@@ -426,7 +459,7 @@ impl<'a> Input<'a> {
 mod tests {
     use serde_json::json;
 
-    use super::{RelationColumn, TupleValue, tuple_to_json};
+    use super::{RelationColumn, TupleValue, record_key, tuple_to_json};
 
     #[test]
     fn tuple_to_json_rejects_unchanged_toast_without_previous_row_image() {
@@ -438,9 +471,7 @@ mod tests {
         let error = tuple_to_json(&columns, Some(&[TupleValue::UnchangedToast]), None)
             .expect_err("missing previous row image should fail");
 
-        assert!(error
-            .to_string()
-            .contains("enable REPLICA IDENTITY FULL"));
+        assert!(error.to_string().contains("enable REPLICA IDENTITY FULL"));
     }
 
     #[test]
@@ -458,5 +489,38 @@ mod tests {
         .expect("row");
 
         assert_eq!(row.get("payload"), Some(&json!({"name":"alpha"})));
+    }
+
+    #[test]
+    fn record_key_prefers_configured_primary_key_over_replica_identity_columns() {
+        let columns = vec![
+            RelationColumn {
+                name: "id".to_string(),
+                type_oid: 20,
+                is_key: true,
+            },
+            RelationColumn {
+                name: "tenant_id".to_string(),
+                type_oid: 1043,
+                is_key: true,
+            },
+            RelationColumn {
+                name: "payload".to_string(),
+                type_oid: 3802,
+                is_key: true,
+            },
+        ];
+        let payload = json!({
+            "id": 42,
+            "tenant_id": "T-001",
+            "payload": { "name": "alpha" }
+        })
+        .as_object()
+        .expect("object")
+        .clone();
+
+        let key = record_key(&columns, &payload, Some(&["id".to_string()])).expect("key");
+
+        assert_eq!(key, "42");
     }
 }

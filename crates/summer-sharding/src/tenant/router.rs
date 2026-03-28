@@ -4,7 +4,7 @@ use crate::{
     algorithm::normalize_tenant_suffix,
     config::{ShardingConfig, TenantIsolationLevel},
     router::QualifiedTableName,
-    tenant::{TenantContext, TenantMetadataStore, current_tenant},
+    tenant::{TenantContext, TenantMetadataStore},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,16 +40,13 @@ impl TenantRouter {
         context
     }
 
-    pub fn current_context(&self) -> Option<TenantContext> {
-        current_tenant().map(|context| self.resolve_context(context))
-    }
-
     pub fn route(
         &self,
         datasource: String,
         actual_table: QualifiedTableName,
+        tenant: Option<&TenantContext>,
     ) -> Option<TenantRouteAdjustment> {
-        let context = self.current_context()?;
+        let context = tenant.cloned()?;
         if self
             .config
             .is_tenant_shared_table(actual_table.full_name().as_str())

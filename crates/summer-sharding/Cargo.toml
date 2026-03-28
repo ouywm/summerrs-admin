@@ -5,7 +5,13 @@ version = "0.0.1"
 
 [features]
 default = []
-web = ["summer-auth", "summer-web", "summer-web/openapi", "tower-layer", "tower-service"]
+web = [
+    "summer-auth",
+    "summer-web",
+    "summer-web/openapi",
+    "tower-layer",
+    "tower-service",
+]
 web-probes = ["web"]
 
 [dependencies]
@@ -21,7 +27,14 @@ regex = { workspace = true }
 reqwest = { workspace = true }
 ring = { workspace = true }
 schemars = { workspace = true }
-sea-orm = { workspace = true, features = ["sqlx-postgres", "runtime-tokio-rustls", "with-chrono", "with-json", "mock", "proxy"] }
+sea-orm = { workspace = true, features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "with-chrono",
+    "with-json",
+    "mock",
+    "proxy",
+] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sqlparser = { workspace = true }
@@ -36,4 +49,9 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
 tower = { workspace = true }
+
+[[bench]]
+harness = false
+name = "sea_orm_overhead"

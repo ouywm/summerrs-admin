@@ -28,7 +28,12 @@ mod tests {
     #[test]
     fn limit_apply_respects_offset_and_limit() {
         let rows = (1..=5)
-            .map(|value| from_values(BTreeMap::from([("id".to_string(), Value::Int(Some(value)))])))
+            .map(|value| {
+                from_values(BTreeMap::from([(
+                    "id".to_string(),
+                    Value::Int(Some(value)),
+                )]))
+            })
             .collect::<Vec<_>>();
 
         let sliced = apply(rows, Some(2), Some(1));

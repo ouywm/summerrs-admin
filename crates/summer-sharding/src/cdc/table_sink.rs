@@ -55,9 +55,13 @@ mod tests {
     async fn table_sink_write_batch_and_apply_change_keep_latest_state() {
         let sink = TableSink::default();
 
-        sink.write_batch(&[record("1", serde_json::json!({"v":1}), CdcOperation::Snapshot)])
-            .await
-            .expect("write batch");
+        sink.write_batch(&[record(
+            "1",
+            serde_json::json!({"v":1}),
+            CdcOperation::Snapshot,
+        )])
+        .await
+        .expect("write batch");
         sink.apply_change(&record(
             "1",
             serde_json::json!({"v":2}),
@@ -65,9 +69,13 @@ mod tests {
         ))
         .await
         .expect("update");
-        sink.apply_change(&record("2", serde_json::json!({"v":3}), CdcOperation::Insert))
-            .await
-            .expect("insert");
+        sink.apply_change(&record(
+            "2",
+            serde_json::json!({"v":3}),
+            CdcOperation::Insert,
+        ))
+        .await
+        .expect("insert");
         sink.apply_change(&record("1", serde_json::json!({}), CdcOperation::Delete))
             .await
             .expect("delete");

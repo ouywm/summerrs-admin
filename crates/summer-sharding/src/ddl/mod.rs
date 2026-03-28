@@ -379,7 +379,7 @@ impl InMemoryOnlineDdlEngine {
         _publication: &str,
     ) -> Result<()> {
         self.execute_internal(connection, id, Some((source, transformer, sink)))
-        .await
+            .await
     }
 
     async fn execute_internal(
@@ -393,7 +393,8 @@ impl InMemoryOnlineDdlEngine {
 
         self.update_status(id, DdlTaskStatus::Snapshot)?;
         for batch in &scheduled_batches {
-            self.execute_replication_setup_batch(connection, batch).await?;
+            self.execute_replication_setup_batch(connection, batch)
+                .await?;
             self.execute_snapshot_batch(connection, batch, progress.batch_size)
                 .await?;
         }
@@ -509,7 +510,10 @@ fn split_cutover_statements(statements: &[String]) -> (Option<String>, Vec<Strin
         .to_ascii_uppercase()
         .starts_with("LOCK TABLE ")
     {
-        return (Some(first.clone()), statements.iter().skip(1).cloned().collect());
+        return (
+            Some(first.clone()),
+            statements.iter().skip(1).cloned().collect(),
+        );
     }
     (None, statements.to_vec())
 }
@@ -519,12 +523,15 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    use async_trait::async_trait;
     use crate::ddl::{DdlTaskStatus, InMemoryOnlineDdlEngine, OnlineDdlEngine, OnlineDdlTask};
     use crate::{
         CdcOperation, CdcRecord, InMemoryCdcSource, PgCdcSource, PostgresTableSink, TableSink,
-        cdc::{CdcBatch, CdcSource, CdcSubscribeRequest, CdcSubscription, RowTransformer, test_support::LogicalReplicationTestDatabase},
+        cdc::{
+            CdcBatch, CdcSource, CdcSubscribeRequest, CdcSubscription, RowTransformer,
+            test_support::LogicalReplicationTestDatabase,
+        },
     };
+    use async_trait::async_trait;
     use sea_orm::{
         ConnectionTrait, Database, DbBackend, MockDatabase, MockExecResult, QueryResult, Statement,
     };
@@ -662,7 +669,10 @@ mod tests {
         engine.execute_task(&connection, id).await.expect("execute");
 
         let logs = log_connection.into_transaction_log();
-        let logged_statements = logs.iter().map(|item| item.statements().len()).sum::<usize>();
+        let logged_statements = logs
+            .iter()
+            .map(|item| item.statements().len())
+            .sum::<usize>();
         assert!(logged_statements >= statement_count);
     }
 
@@ -871,8 +881,14 @@ mod tests {
         let sink = PostgresTableSink::with_table_map(
             std::sync::Arc::new(connection.clone()),
             [
-                ("public.ddl_probe_0".to_string(), "public.ddl_probe_0__ghost".to_string()),
-                ("public.ddl_probe_1".to_string(), "public.ddl_probe_1__ghost".to_string()),
+                (
+                    "public.ddl_probe_0".to_string(),
+                    "public.ddl_probe_0__ghost".to_string(),
+                ),
+                (
+                    "public.ddl_probe_1".to_string(),
+                    "public.ddl_probe_1__ghost".to_string(),
+                ),
             ],
         );
         let engine = std::sync::Arc::new(InMemoryOnlineDdlEngine::new());
@@ -950,21 +966,23 @@ mod tests {
         assert_eq!(probe_0_rows.len(), 2);
         assert_eq!(probe_1_rows.len(), 2);
         assert_eq!(
-            probe_0_rows
-                .iter()
-                .map(row_body_name)
-                .collect::<Vec<_>>(),
+            probe_0_rows.iter().map(row_body_name).collect::<Vec<_>>(),
             vec!["beta".to_string(), "gamma".to_string()]
         );
         assert_eq!(
-            probe_1_rows
-                .iter()
-                .map(row_body_name)
-                .collect::<Vec<_>>(),
+            probe_1_rows.iter().map(row_body_name).collect::<Vec<_>>(),
             vec!["delta".to_string(), "echo-2".to_string()]
         );
-        assert!(probe_0_rows.iter().all(|row| row_text(row, "extra").is_empty()));
-        assert!(probe_1_rows.iter().all(|row| row_text(row, "extra").is_empty()));
+        assert!(
+            probe_0_rows
+                .iter()
+                .all(|row| row_text(row, "extra").is_empty())
+        );
+        assert!(
+            probe_1_rows
+                .iter()
+                .all(|row| row_text(row, "extra").is_empty())
+        );
 
         let ghost_count = scalar_i64(
             &connection,
@@ -989,8 +1007,7 @@ mod tests {
 
     fn row_body_name(row: &QueryResult) -> String {
         let body = row_text(row, "body");
-        serde_json::from_str::<serde_json::Value>(&body)
-            .expect("body json")["name"]
+        serde_json::from_str::<serde_json::Value>(&body).expect("body json")["name"]
             .as_str()
             .expect("body name")
             .to_string()

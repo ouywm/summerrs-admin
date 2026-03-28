@@ -73,10 +73,18 @@ impl ClickHouseHttpSink {
 
         let body = records
             .iter()
-            .map(|record| record_to_clickhouse_row(record, self.next_version(), self.version_column.as_deref()))
+            .map(|record| {
+                record_to_clickhouse_row(
+                    record,
+                    self.next_version(),
+                    self.version_column.as_deref(),
+                )
+            })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .map(|row| serde_json::to_string(&row).map_err(|err| ShardingError::Parse(err.to_string())))
+            .map(|row| {
+                serde_json::to_string(&row).map_err(|err| ShardingError::Parse(err.to_string()))
+            })
             .collect::<Result<Vec<_>>>()?
             .join("\n");
         let sql = format!("INSERT INTO {table} FORMAT JSONEachRow\n{body}");
@@ -94,12 +102,7 @@ impl ClickHouseHttpSink {
         let key_values = delete_key_values(record, key_columns.as_slice())?;
         let predicates = key_values
             .into_iter()
-            .map(|(column, value)| {
-                Ok(format!(
-                    "{column} = {}",
-                    clickhouse_literal(&value)?
-                ))
-            })
+            .map(|(column, value)| Ok(format!("{column} = {}", clickhouse_literal(&value)?)))
             .collect::<Result<Vec<_>>>()?;
         Ok(format!(
             "ALTER TABLE {table} DELETE WHERE {}",
@@ -156,11 +159,10 @@ impl CdcSink for ClickHouseHttpSink {
         let target_table = self.target_table(record.table.as_str());
         match record.operation {
             CdcOperation::Delete => self.delete_row(target_table.as_str(), record).await,
-            CdcOperation::Insert | CdcOperation::Snapshot => {
-                self.insert_rows(target_table.as_str(), std::slice::from_ref(record))
-                    .await
-                    .map(|_| ())
-            }
+            CdcOperation::Insert | CdcOperation::Snapshot => self
+                .insert_rows(target_table.as_str(), std::slice::from_ref(record))
+                .await
+                .map(|_| ()),
             CdcOperation::Update => {
                 self.delete_row(target_table.as_str(), record).await?;
                 self.insert_rows(target_table.as_str(), std::slice::from_ref(record))
@@ -211,7 +213,10 @@ fn normalize_clickhouse_value(value: JsonValue) -> JsonValue {
     }
 }
 
-fn delete_key_values(record: &CdcRecord, key_columns: &[String]) -> Result<Vec<(String, JsonValue)>> {
+fn delete_key_values(
+    record: &CdcRecord,
+    key_columns: &[String],
+) -> Result<Vec<(String, JsonValue)>> {
     match &record.payload {
         JsonValue::Object(object) => key_columns
             .iter()
@@ -258,7 +263,7 @@ fn clickhouse_literal(value: &JsonValue) -> Result<String> {
         JsonValue::Array(_) | JsonValue::Object(_) => {
             return Err(ShardingError::Unsupported(
                 "clickhouse delete predicate does not support composite literal values".to_string(),
-            ))
+            ));
         }
     })
 }

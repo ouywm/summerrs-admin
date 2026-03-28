@@ -76,10 +76,7 @@ mod tests {
     fn config() -> KeyGeneratorConfig {
         KeyGeneratorConfig {
             kind: "tsid".to_string(),
-            props: BTreeMap::from([(
-                "epoch_millis".to_string(),
-                json!(1_700_000_000_000_i64),
-            )]),
+            props: BTreeMap::from([("epoch_millis".to_string(), json!(1_700_000_000_000_i64))]),
         }
     }
 

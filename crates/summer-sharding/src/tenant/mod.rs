@@ -6,7 +6,7 @@ mod rewrite;
 mod rls;
 mod router;
 
-pub use context::{CURRENT_TENANT, TenantContext, current_tenant, with_tenant};
+pub use context::TenantContext;
 pub use lifecycle::TenantLifecycleManager;
 pub use listener::{
     PgTenantMetadataListener, TENANT_METADATA_CHANNEL, TenantMetadataListener,

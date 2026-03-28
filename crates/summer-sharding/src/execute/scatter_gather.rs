@@ -210,11 +210,17 @@ mod tests {
                 vec![
                     ExecutionUnit {
                         datasource: "ds_a".to_string(),
-                        statement: Statement::from_string(DbBackend::Postgres, "SELECT id FROM ai.log"),
+                        statement: Statement::from_string(
+                            DbBackend::Postgres,
+                            "SELECT id FROM ai.log",
+                        ),
                     },
                     ExecutionUnit {
                         datasource: "ds_b".to_string(),
-                        statement: Statement::from_string(DbBackend::Postgres, "SELECT id FROM ai.log"),
+                        statement: Statement::from_string(
+                            DbBackend::Postgres,
+                            "SELECT id FROM ai.log",
+                        ),
                     },
                 ],
                 &analysis(),
@@ -259,7 +265,10 @@ mod tests {
             .expect("query");
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].try_get::<Option<i32>>("", "id").expect("id"), Some(9));
+        assert_eq!(
+            rows[0].try_get::<Option<i32>>("", "id").expect("id"),
+            Some(9)
+        );
         assert_eq!(shard_count.lock().as_slice(), [1]);
     }
 }

@@ -27,7 +27,7 @@ mod tests {
 
     use sea_orm::Value;
 
-    use crate::merge::{row::from_values, MergedRowStream};
+    use crate::merge::{MergedRowStream, row::from_values};
 
     #[test]
     fn merged_row_stream_yields_rows_in_fifo_order() {

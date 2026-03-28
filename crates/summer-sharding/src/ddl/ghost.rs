@@ -37,7 +37,10 @@ impl GhostTablePlanner {
 
         GhostTablePlan {
             snapshot_statements: vec![
-                format!("CREATE TABLE {} (LIKE {table} INCLUDING ALL)", names.ghost_table),
+                format!(
+                    "CREATE TABLE {} (LIKE {table} INCLUDING ALL)",
+                    names.ghost_table
+                ),
                 rewrite_alter_table_target(alter_sql, names.ghost_table.as_str()),
                 format!(
                     "INSERT INTO {} SELECT * FROM {table} WHERE id BETWEEN :start AND :end /* batch_size={batch_size} */",

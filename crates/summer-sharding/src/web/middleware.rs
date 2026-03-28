@@ -8,7 +8,7 @@ use url::form_urlencoded;
 use crate::{
     config::{TenantIdSource, TenantIsolationLevel},
     connector::ShardingConnection,
-    tenant::{TenantContext, with_tenant},
+    tenant::TenantContext,
 };
 
 const TENANT_ID_HEADER: &str = "x-tenant-id";
@@ -121,12 +121,20 @@ where
             self.default_isolation,
             self.sharding.as_ref(),
         );
+        let request_scoped_sharding = tenant.as_ref().and_then(|tenant| {
+            self.sharding
+                .as_ref()
+                .map(|sharding| sharding.with_tenant_context(tenant.clone()))
+        });
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
             if let Some(tenant) = tenant {
-                req.extensions_mut().insert(tenant.clone());
-                with_tenant(tenant, async move { inner.call(req).await }).await
+                req.extensions_mut().insert(tenant);
+                if let Some(sharding) = request_scoped_sharding {
+                    req.extensions_mut().insert(sharding);
+                }
+                inner.call(req).await
             } else {
                 inner.call(req).await
             }
@@ -227,14 +235,14 @@ mod tests {
         config::{ShardingConfig, TenantIdSource},
         connector::ShardingConnection,
         datasource::DataSourcePool,
-        tenant::{TenantContext, current_tenant},
+        tenant::TenantContext,
         web::TenantContextLayer,
     };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct CapturedTenantState {
         extension_tenant: Option<TenantContext>,
-        task_local_tenant: Option<TenantContext>,
+        extension_sharding: bool,
     }
 
     #[derive(Clone)]
@@ -262,7 +270,7 @@ mod tests {
             Box::pin(async move {
                 captured.lock().push(CapturedTenantState {
                     extension_tenant: req.extensions().get::<TenantContext>().cloned(),
-                    task_local_tenant: current_tenant(),
+                    extension_sharding: req.extensions().get::<ShardingConnection>().is_some(),
                 });
                 Ok(HttpResponse::new(Body::empty()))
             })
@@ -270,9 +278,7 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct ShardingProbeService {
-        sharding: ShardingConnection,
-    }
+    struct ShardingProbeService;
 
     impl tower_service::Service<Request> for ShardingProbeService {
         type Response = Response<Body>;
@@ -283,9 +289,13 @@ mod tests {
             Poll::Ready(Ok(()))
         }
 
-        fn call(&mut self, _req: Request) -> Self::Future {
-            let sharding = self.sharding.clone();
+        fn call(&mut self, req: Request) -> Self::Future {
             Box::pin(async move {
+                let sharding = req
+                    .extensions()
+                    .get::<ShardingConnection>()
+                    .cloned()
+                    .expect("request scoped sharding connection");
                 sharding
                     .query_all_raw(Statement::from_string(
                         DbBackend::Postgres,
@@ -330,6 +340,7 @@ mod tests {
         let records = captured.lock();
         assert_eq!(records.len(), 1);
         assert!(records[0].extension_tenant.is_none());
+        assert!(!records[0].extension_sharding);
     }
 
     #[test]
@@ -349,6 +360,7 @@ mod tests {
                 .tenant_id,
             "T-REQ-001"
         );
+        assert!(!records[0].extension_sharding);
     }
 
     #[test]
@@ -373,14 +385,7 @@ mod tests {
                 .tenant_id,
             "T-EXT-001"
         );
-        assert_eq!(
-            records[0]
-                .task_local_tenant
-                .clone()
-                .expect("tenant in task local")
-                .tenant_id,
-            "T-EXT-001"
-        );
+        assert!(!records[0].extension_sharding);
     }
 
     #[test]
@@ -412,14 +417,7 @@ mod tests {
                 .tenant_id,
             "T-AUTH-001"
         );
-        assert_eq!(
-            records[0]
-                .task_local_tenant
-                .clone()
-                .expect("tenant in task local")
-                .tenant_id,
-            "T-AUTH-001"
-        );
+        assert!(!records[0].extension_sharding);
     }
 
     #[test]
@@ -445,12 +443,13 @@ mod tests {
         let records = captured.lock();
         assert_eq!(
             records[0]
-                .task_local_tenant
+                .extension_tenant
                 .clone()
-                .expect("tenant in task local")
+                .expect("tenant in extensions")
                 .tenant_id,
             "T-CLAIM-001"
         );
+        assert!(!records[0].extension_sharding);
     }
 
     #[test]
@@ -463,28 +462,7 @@ mod tests {
 
         let records = captured.lock();
         assert!(records[0].extension_tenant.is_none());
-        assert!(records[0].task_local_tenant.is_none());
-    }
-
-    #[test]
-    fn tenant_context_layer_scopes_task_local_context_for_downstream_service() {
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let mut service =
-            TenantContextLayer::from_header().layer(CaptureTenantService::new(captured.clone()));
-
-        assert!(current_tenant().is_none());
-        block_on(service.call(request_with_tenant_header("T-REQ-TASK"))).expect("call");
-        assert!(current_tenant().is_none());
-
-        let records = captured.lock();
-        assert_eq!(
-            records[0]
-                .task_local_tenant
-                .clone()
-                .expect("tenant in task local")
-                .tenant_id,
-            "T-REQ-TASK"
-        );
+        assert!(!records[0].extension_sharding);
     }
 
     #[test]
@@ -503,6 +481,7 @@ mod tests {
                 .iter()
                 .all(|record| record.extension_tenant.is_none())
         );
+        assert!(records.iter().all(|record| !record.extension_sharding));
     }
 
     #[test]
@@ -517,12 +496,13 @@ mod tests {
         let records = captured.lock();
         assert_eq!(
             records[0]
-                .task_local_tenant
+                .extension_tenant
                 .clone()
-                .expect("tenant in task local")
+                .expect("tenant in extensions")
                 .tenant_id,
             "T-QUERY-001"
         );
+        assert!(!records[0].extension_sharding);
     }
 
     #[test]
@@ -580,6 +560,7 @@ mod tests {
         assert_eq!(tenant.isolation_level, TenantIsolationLevel::SeparateSchema);
         assert_eq!(tenant.schema_override.as_deref(), Some("tenant_schema_001"));
         assert_eq!(tenant.datasource_override.as_deref(), Some("ds_schema_001"));
+        assert!(records[0].extension_sharding);
     }
 
     #[test]
@@ -615,8 +596,9 @@ mod tests {
         .expect("pool");
         let sharding = ShardingConnection::with_pool(config, pool).expect("connection");
 
-        let mut service =
-            TenantContextLayer::from_header().layer(ShardingProbeService { sharding });
+        let mut service = TenantContextLayer::from_header()
+            .with_sharding(sharding)
+            .layer(ShardingProbeService);
 
         block_on(service.call(request_with_tenant_header("T-SQL-001"))).expect("call");
 

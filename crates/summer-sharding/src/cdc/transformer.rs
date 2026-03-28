@@ -51,7 +51,9 @@ mod tests {
         let transformer = RowTransformer;
         let input = record();
 
-        let output = transformer.map(&input, |payload| payload["tenant"] = serde_json::json!("T-002"));
+        let output = transformer.map(&input, |payload| {
+            payload["tenant"] = serde_json::json!("T-002")
+        });
 
         assert_eq!(output.key, input.key);
         assert_eq!(output.source_lsn, input.source_lsn);

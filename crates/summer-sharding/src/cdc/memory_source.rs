@@ -35,7 +35,10 @@ impl InMemoryCdcSource {
         Self {
             snapshots: RwLock::new(BTreeMap::new()),
             changes: Mutex::new(Vec::new()),
-            replication: RwLock::new(ReplicationIdentity::new("summer_cdc_slot", "summer_cdc_pub")),
+            replication: RwLock::new(ReplicationIdentity::new(
+                "summer_cdc_slot",
+                "summer_cdc_pub",
+            )),
         }
     }
 
@@ -125,10 +128,7 @@ impl CdcSource for InMemoryCdcSource {
                 rows.iter()
                     .position(|record| record.key == value)
                     .map(|index| index + 1)
-                    .or_else(|| {
-                        rows.iter()
-                            .position(|record| record.key.as_str() > value)
-                    })
+                    .or_else(|| rows.iter().position(|record| record.key.as_str() > value))
                     .unwrap_or(rows.len())
             })
             .unwrap_or_default();
@@ -176,9 +176,7 @@ impl CdcSource for InMemoryCdcSource {
 
 #[cfg(test)]
 mod tests {
-    use crate::cdc::{
-        CdcOperation, CdcRecord, CdcSource, CdcSubscribeRequest, InMemoryCdcSource,
-    };
+    use crate::cdc::{CdcOperation, CdcRecord, CdcSource, CdcSubscribeRequest, InMemoryCdcSource};
 
     #[tokio::test]
     async fn in_memory_source_subscribe_honors_slot_publication_and_position() {
