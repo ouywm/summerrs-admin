@@ -1,9 +1,14 @@
 use anyhow::Context;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use summer::plugin::Service;
 use summer_sea_orm::DbConn;
+use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
 
+use summer_ai_model::dto::token::{
+    CreateTokenDto, QueryTokenDto, RechargeTokenDto, UpdateTokenDto,
+};
 use summer_ai_model::entity::token::{self, TokenStatus};
+use summer_ai_model::vo::token::{TokenCreatedVo, TokenVo};
 use summer_common::error::{ApiErrors, ApiResult};
 
 /// Token 验证后的信息
@@ -29,6 +34,127 @@ pub struct TokenService {
 impl TokenService {
     pub fn new(db: DbConn) -> Self {
         Self { db }
+    }
+
+    pub async fn list_tokens(
+        &self,
+        query: QueryTokenDto,
+        pagination: Pagination,
+    ) -> ApiResult<Page<TokenVo>> {
+        let page = token::Entity::find()
+            .filter(query)
+            .order_by_desc(token::Column::Id)
+            .page(&self.db, &pagination)
+            .await
+            .context("failed to list tokens")
+            .map_err(ApiErrors::Internal)?;
+
+        Ok(page.map(TokenVo::from_model))
+    }
+
+    pub async fn get_token(&self, id: i64) -> ApiResult<TokenVo> {
+        let model = token::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("failed to query token")
+            .map_err(ApiErrors::Internal)?
+            .ok_or_else(|| ApiErrors::NotFound("token not found".into()))?;
+        Ok(TokenVo::from_model(model))
+    }
+
+    pub async fn create_token(
+        &self,
+        dto: CreateTokenDto,
+        operator: &str,
+    ) -> ApiResult<TokenCreatedVo> {
+        let (key, key_prefix, key_hash) = Self::generate_api_key();
+        let model = dto
+            .into_active_model(key_hash, key_prefix, operator)
+            .insert(&self.db)
+            .await
+            .context("failed to create token")
+            .map_err(ApiErrors::Internal)?;
+
+        Ok(TokenCreatedVo {
+            key,
+            token: TokenVo::from_model(model),
+        })
+    }
+
+    pub async fn update_token(
+        &self,
+        id: i64,
+        dto: UpdateTokenDto,
+        operator: &str,
+    ) -> ApiResult<()> {
+        let mut active: token::ActiveModel = token::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("failed to query token")
+            .map_err(ApiErrors::Internal)?
+            .ok_or_else(|| ApiErrors::NotFound("token not found".into()))?
+            .into();
+
+        dto.apply_to(&mut active, operator);
+        active
+            .update(&self.db)
+            .await
+            .context("failed to update token")
+            .map_err(ApiErrors::Internal)?;
+        Ok(())
+    }
+
+    pub async fn disable_token(&self, id: i64, operator: &str) -> ApiResult<()> {
+        let mut active: token::ActiveModel = token::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("failed to query token")
+            .map_err(ApiErrors::Internal)?
+            .ok_or_else(|| ApiErrors::NotFound("token not found".into()))?
+            .into();
+
+        active.status = Set(TokenStatus::Disabled);
+        active.update_by = Set(operator.to_string());
+        active
+            .update(&self.db)
+            .await
+            .context("failed to disable token")
+            .map_err(ApiErrors::Internal)?;
+        Ok(())
+    }
+
+    pub async fn recharge_token(
+        &self,
+        id: i64,
+        dto: RechargeTokenDto,
+        operator: &str,
+    ) -> ApiResult<()> {
+        let mut active: token::ActiveModel = token::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .context("failed to query token")
+            .map_err(ApiErrors::Internal)?
+            .ok_or_else(|| ApiErrors::NotFound("token not found".into()))?
+            .into();
+
+        let current_quota = active.remain_quota.clone().take().unwrap_or_default();
+        active.remain_quota = Set(current_quota.saturating_add(dto.quota));
+        if !dto.remark.trim().is_empty() {
+            active.remark = Set(dto.remark);
+        }
+        if matches!(
+            active.status.clone().take().unwrap_or(TokenStatus::Enabled),
+            TokenStatus::Exhausted
+        ) {
+            active.status = Set(TokenStatus::Enabled);
+        }
+        active.update_by = Set(operator.to_string());
+        active
+            .update(&self.db)
+            .await
+            .context("failed to recharge token")
+            .map_err(ApiErrors::Internal)?;
+        Ok(())
     }
 
     /// 验证 Bearer token，返回 TokenInfo

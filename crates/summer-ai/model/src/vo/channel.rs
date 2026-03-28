@@ -127,3 +127,14 @@ impl ChannelDetailVo {
         }
     }
 }
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelTestVo {
+    pub channel_id: i64,
+    pub success: bool,
+    pub status_code: u16,
+    pub response_time: i32,
+    pub model: String,
+    pub message: String,
+}

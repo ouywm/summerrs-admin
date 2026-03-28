@@ -6,7 +6,7 @@ use validator::Validate;
 use crate::entity::model_config::{self, ModelType};
 
 /// 创建/更新模型配置
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateModelConfigDto {
     #[validate(length(min = 1, max = 128, message = "模型名称长度 1-128"))]
@@ -84,7 +84,7 @@ impl CreateModelConfigDto {
 }
 
 /// 更新模型配置
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateModelConfigDto {
     pub display_name: Option<String>,
@@ -157,7 +157,7 @@ impl UpdateModelConfigDto {
 }
 
 /// 查询模型配置
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryModelConfigDto {
     pub model_name: Option<String>,

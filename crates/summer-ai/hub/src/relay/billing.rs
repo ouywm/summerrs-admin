@@ -126,6 +126,31 @@ impl BillingEngine {
         Ok(actual_quota)
     }
 
+    /// Finalize a pre-reserved quota when the endpoint does not return usage details.
+    pub async fn commit_reserved_quota(
+        &self,
+        token_info: &TokenInfo,
+        reserved_quota: i64,
+    ) -> ApiResult<i64> {
+        if reserved_quota <= 0 {
+            return Ok(0);
+        }
+
+        use sea_orm::sea_query::Expr;
+        token::Entity::update_many()
+            .col_expr(
+                token::Column::UsedQuota,
+                Expr::col(token::Column::UsedQuota).add(reserved_quota),
+            )
+            .filter(token::Column::Id.eq(token_info.token_id))
+            .exec(&self.db)
+            .await
+            .context("failed to commit reserved quota")
+            .map_err(ApiErrors::Internal)?;
+
+        Ok(reserved_quota)
+    }
+
     /// Schedule a refund after a terminal failure.
     pub fn refund_later(&self, token_id: i64, pre_consumed: i64) {
         if pre_consumed <= 0 {

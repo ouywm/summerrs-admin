@@ -6,7 +6,7 @@ use validator::Validate;
 use crate::entity::channel::{self, ChannelStatus, ChannelType};
 
 /// 创建渠道
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateChannelDto {
     #[validate(length(min = 1, max = 128, message = "渠道名称长度 1-128"))]
@@ -76,7 +76,7 @@ impl CreateChannelDto {
 }
 
 /// 更新渠道
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateChannelDto {
     #[validate(length(min = 1, max = 128))]
@@ -153,7 +153,7 @@ impl UpdateChannelDto {
 }
 
 /// 查询渠道
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryChannelDto {
     pub name: Option<String>,

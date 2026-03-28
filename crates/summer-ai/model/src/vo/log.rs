@@ -77,3 +77,13 @@ pub struct LogStatsVo {
     pub total_quota: i64,
     pub avg_elapsed_time: f64,
 }
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardOverviewVo {
+    pub today_request_count: i64,
+    pub today_total_tokens: i64,
+    pub today_total_quota: i64,
+    pub active_user_count: i64,
+    pub active_token_count: i64,
+}

@@ -94,9 +94,21 @@ fn requires_ai_auth(path: &str) -> bool {
         path,
         "/v1/models"
             | "/v1/chat/completions"
+            | "/v1/embeddings"
+            | "/v1/images/generations"
+            | "/v1/images/edits"
+            | "/v1/audio/speech"
+            | "/v1/audio/transcriptions"
+            | "/v1/audio/translations"
             | "/v1/responses"
             | "/api/v1/models"
             | "/api/v1/chat/completions"
+            | "/api/v1/embeddings"
+            | "/api/v1/images/generations"
+            | "/api/v1/images/edits"
+            | "/api/v1/audio/speech"
+            | "/api/v1/audio/transcriptions"
+            | "/api/v1/audio/translations"
             | "/api/v1/responses"
     )
 }
