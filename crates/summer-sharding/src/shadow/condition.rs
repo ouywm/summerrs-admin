@@ -4,7 +4,6 @@ use crate::{
     config::{ShadowConditionKind, ShardingConfig},
     connector::{ShardingHint, statement::StatementContext},
     router::{QualifiedTableName, RoutePlan},
-    shadow::context::current_headers,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,8 +30,7 @@ impl ShadowRouter {
     }
 
     pub fn should_route(&self, analysis: &StatementContext) -> bool {
-        let headers = current_headers();
-        self.should_route_with_headers(analysis, &headers)
+        self.should_route_with_headers(analysis, &analysis.shadow_headers)
     }
 
     pub fn should_route_with_headers(
@@ -56,7 +54,7 @@ impl ShadowRouter {
                 ShadowConditionKind::Header => condition
                     .key
                     .as_ref()
-                    .and_then(|key| headers.get(key))
+                    .and_then(|key| header_value(headers, key))
                     .is_some_and(|actual| {
                         condition
                             .value
@@ -90,7 +88,7 @@ impl ShadowRouter {
     }
 
     pub fn apply(&self, plan: &mut RoutePlan, analysis: &StatementContext) {
-        if !self.should_route(analysis) {
+        if !self.should_route_with_headers(analysis, &analysis.shadow_headers) {
             return;
         }
 
@@ -125,6 +123,12 @@ impl ShadowRouter {
     }
 }
 
+fn header_value<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a String> {
+    headers
+        .get(key)
+        .or_else(|| headers.get(&key.to_ascii_lowercase()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, sync::Arc};
@@ -134,7 +138,7 @@ mod tests {
     use crate::{
         config::ShardingConfig,
         connector::{ShardingHint, analyze_statement},
-        shadow::{ShadowRouter, context::with_shadow_headers},
+        shadow::ShadowRouter,
     };
 
     #[test]
@@ -200,7 +204,7 @@ mod tests {
         );
         let router = ShadowRouter::new(config);
 
-        let analysis = analyze_statement(&Statement::from_string(
+        let mut analysis = analyze_statement(&Statement::from_string(
             DbBackend::Postgres,
             "SELECT * FROM ai.log",
         ))
@@ -208,8 +212,7 @@ mod tests {
 
         assert!(!router.should_route(&analysis));
 
-        let headers = BTreeMap::from([("X-Shadow".to_string(), "true".to_string())]);
-        let routed = with_shadow_headers(headers, async { router.should_route(&analysis) }).await;
-        assert!(routed);
+        analysis.shadow_headers = BTreeMap::from([("X-Shadow".to_string(), "true".to_string())]);
+        assert!(router.should_route(&analysis));
     }
 }

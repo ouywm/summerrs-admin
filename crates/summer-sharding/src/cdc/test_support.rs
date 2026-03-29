@@ -1,4 +1,4 @@
-use std::{net::TcpListener, process::Command, time::Duration};
+use std::{process::Command, time::Duration};
 
 use rand::random;
 use reqwest::Client;
@@ -30,14 +30,11 @@ impl LogicalReplicationTestDatabase {
             });
         }
 
-        let port = reserve_port()?;
         let container_name = format!(
             "summer-sharding-cdc-e2e-{}-{}",
             std::process::id(),
             random::<u32>()
         );
-        let database_url =
-            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{TEST_DB_NAME}");
 
         run_docker(["rm", "-f", container_name.as_str()]).ok();
         run_docker([
@@ -52,7 +49,7 @@ impl LogicalReplicationTestDatabase {
             "-e",
             "POSTGRES_DB=summer_sharding_cdc_e2e",
             "-p",
-            format!("{port}:5432").as_str(),
+            "127.0.0.1::5432",
             TEST_IMAGE,
             "postgres",
             "-c",
@@ -62,6 +59,9 @@ impl LogicalReplicationTestDatabase {
             "-c",
             "max_wal_senders=10",
         ])?;
+        let port = docker_host_port(container_name.as_str(), "5432/tcp")?;
+        let database_url =
+            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{TEST_DB_NAME}");
 
         wait_until_database_ready(database_url.as_str()).await?;
 
@@ -100,13 +100,11 @@ impl ClickHouseTestServer {
             });
         }
 
-        let port = reserve_port()?;
         let container_name = format!(
             "summer-sharding-clickhouse-e2e-{}-{}",
             std::process::id(),
             random::<u32>()
         );
-        let http_url = format!("http://{CLICKHOUSE_USER}:{CLICKHOUSE_PASSWORD}@127.0.0.1:{port}");
 
         run_docker(["rm", "-f", container_name.as_str()]).ok();
         run_docker([
@@ -121,9 +119,11 @@ impl ClickHouseTestServer {
             "-e",
             "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1",
             "-p",
-            format!("{port}:8123").as_str(),
+            "127.0.0.1::8123",
             CLICKHOUSE_IMAGE,
         ])?;
+        let port = docker_host_port(container_name.as_str(), "8123/tcp")?;
+        let http_url = format!("http://{CLICKHOUSE_USER}:{CLICKHOUSE_PASSWORD}@127.0.0.1:{port}");
 
         wait_until_clickhouse_ready(http_url.as_str()).await?;
 
@@ -168,7 +168,6 @@ impl PreparedTransactionTestDatabases {
             });
         }
 
-        let port = reserve_port()?;
         let container_name = format!(
             "summer-sharding-2pc-e2e-{}-{}",
             std::process::id(),
@@ -176,10 +175,6 @@ impl PreparedTransactionTestDatabases {
         );
         let primary_db = "summer_sharding_2pc_a";
         let secondary_db = "summer_sharding_2pc_b";
-        let primary_database_url =
-            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{primary_db}");
-        let secondary_database_url =
-            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{secondary_db}");
 
         run_docker(["rm", "-f", container_name.as_str()]).ok();
         run_docker([
@@ -194,12 +189,17 @@ impl PreparedTransactionTestDatabases {
             "-e",
             "POSTGRES_DB=summer_sharding_2pc_a",
             "-p",
-            format!("{port}:5432").as_str(),
+            "127.0.0.1::5432",
             TEST_IMAGE,
             "postgres",
             "-c",
             "max_prepared_transactions=32",
         ])?;
+        let port = docker_host_port(container_name.as_str(), "5432/tcp")?;
+        let primary_database_url =
+            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{primary_db}");
+        let secondary_database_url =
+            format!("postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{port}/{secondary_db}");
 
         wait_until_database_ready(primary_database_url.as_str()).await?;
         let primary = Database::connect(primary_database_url.as_str()).await?;
@@ -244,20 +244,12 @@ pub(crate) struct PrimaryReplicaTestCluster {
 
 impl PrimaryReplicaTestCluster {
     pub(crate) async fn start() -> Result<Self> {
-        let primary_port = reserve_port()?;
-        let replica_port = reserve_port()?;
         let suffix = format!("{}-{}", std::process::id(), random::<u32>());
         let network_name = format!("summer-sharding-rw-net-{suffix}");
         let primary_container_name = format!("summer-sharding-rw-primary-{suffix}");
         let replica_container_name = format!("summer-sharding-rw-replica-{suffix}");
         let replica_volume_name = format!("summer-sharding-rw-replica-data-{suffix}");
         let database_name = "summer_sharding_rw_e2e";
-        let primary_database_url = format!(
-            "postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{primary_port}/{database_name}"
-        );
-        let replica_database_url = format!(
-            "postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{replica_port}/{database_name}"
-        );
 
         run_docker(["rm", "-f", primary_container_name.as_str()]).ok();
         run_docker(["rm", "-f", replica_container_name.as_str()]).ok();
@@ -280,7 +272,7 @@ impl PrimaryReplicaTestCluster {
             "-e",
             "POSTGRES_DB=summer_sharding_rw_e2e",
             "-p",
-            format!("{primary_port}:5432").as_str(),
+            "127.0.0.1::5432",
             TEST_IMAGE,
             "postgres",
             "-c",
@@ -292,6 +284,10 @@ impl PrimaryReplicaTestCluster {
             "-c",
             "hot_standby=on",
         ])?;
+        let primary_port = docker_host_port(primary_container_name.as_str(), "5432/tcp")?;
+        let primary_database_url = format!(
+            "postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{primary_port}/{database_name}"
+        );
         wait_until_database_ready(primary_database_url.as_str()).await?;
 
         let replication_setup = format!(
@@ -338,12 +334,16 @@ impl PrimaryReplicaTestCluster {
             "-v",
             replica_mount.as_str(),
             "-p",
-            format!("{replica_port}:5432").as_str(),
+            "127.0.0.1::5432",
             TEST_IMAGE,
             "postgres",
             "-c",
             "hot_standby=on",
         ])?;
+        let replica_port = docker_host_port(replica_container_name.as_str(), "5432/tcp")?;
+        let replica_database_url = format!(
+            "postgres://{TEST_DB_USER}:{TEST_DB_PASSWORD}@127.0.0.1:{replica_port}/{database_name}"
+        );
         wait_until_database_ready(replica_database_url.as_str()).await?;
 
         Ok(Self {
@@ -452,11 +452,6 @@ impl Drop for PrimaryReplicaTestCluster {
     }
 }
 
-fn reserve_port() -> Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
-}
-
 async fn wait_until_database_ready(database_url: &str) -> Result<()> {
     for _ in 0..60 {
         if Database::connect(database_url).await.is_ok() {
@@ -492,13 +487,37 @@ fn run_docker<'a, I>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = &'a str>,
 {
+    run_docker_output(args).map(|_| ())
+}
+
+fn run_docker_output<'a, I>(args: I) -> Result<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
     let output = Command::new("docker").args(args).output()?;
     if output.status.success() {
-        Ok(())
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         Err(ShardingError::Route(format!(
             "docker command failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )))
     }
+}
+
+fn docker_host_port(container_name: &str, container_port: &str) -> Result<u16> {
+    for _ in 0..30 {
+        if let Ok(output) = run_docker_output(["port", container_name, container_port])
+            && let Some(port) = output
+                .rsplit(':')
+                .next()
+                .and_then(|value| value.parse().ok())
+        {
+            return Ok(port);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(ShardingError::Route(format!(
+        "docker port mapping for `{container_name}` `{container_port}` was not visible"
+    )))
 }

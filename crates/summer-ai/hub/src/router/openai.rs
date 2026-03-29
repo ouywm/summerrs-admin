@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use summer_web::axum::body::Body;
 use summer_web::axum::http::{
     HeaderMap, HeaderValue, StatusCode,
@@ -10,36 +11,58 @@ use summer_web::extractor::Component;
 use summer_web::{get_api, post_api};
 use uuid::Uuid;
 
-use summer_ai_core::provider::{ProviderErrorInfo, ProviderErrorKind, get_adapter};
-use summer_ai_core::types::chat::ChatCompletionRequest;
-use summer_ai_core::types::common::Usage;
+use summer_ai_core::provider::{
+    ProviderErrorInfo, ProviderErrorKind, ResponsesRuntimeMode, get_adapter,
+};
+use summer_ai_core::types::chat::{
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse,
+};
+use summer_ai_core::types::common::{Message, Usage};
 use summer_ai_core::types::embedding::{EmbeddingRequest, EmbeddingResponse};
 use summer_ai_core::types::error::{
     OpenAiApiResult, OpenAiError, OpenAiErrorBody, OpenAiErrorResponse,
 };
 use summer_ai_core::types::model::ModelListResponse;
 use summer_ai_core::types::responses::{
-    ResponsesRequest, ResponsesResponse, estimate_input_tokens as estimate_response_input_tokens,
+    ResponseInputTokensDetails, ResponseOutputTokensDetails, ResponseUsage, ResponsesRequest,
+    ResponsesResponse, estimate_input_tokens as estimate_response_input_tokens,
     estimate_total_tokens_for_rate_limit as estimate_response_total_tokens_for_rate_limit,
     extract_response_model, extract_response_usage, is_output_text_delta_event,
 };
+use summer_ai_model::entity::log::LogStatus;
 
 use crate::auth::extractor::AiToken;
 use crate::relay::billing::{
     BillingEngine, ModelConfigInfo, estimate_prompt_tokens, estimate_total_tokens_for_rate_limit,
 };
-use crate::relay::channel_router::{ChannelRouter, RouteSelectionExclusions, RouteSelectionState};
+use crate::relay::channel_router::{
+    ChannelRouter, RouteSelectionExclusions, RouteSelectionState, SelectedChannel,
+};
 use crate::relay::http_client::UpstreamHttpClient;
 use crate::relay::rate_limit::RateLimitEngine;
 use crate::relay::stream::build_sse_response;
 use crate::router::openai_passthrough::unusable_success_response_message;
 use crate::service::channel::ChannelService;
-use crate::service::log::{AiUsageLogRecord, ChatCompletionLogRecord, LogService};
+use crate::service::log::{
+    AiFailureLogRecord, AiUsageLogRecord, ChatCompletionLogRecord, LogService,
+};
 use crate::service::model::ModelService;
 use crate::service::resource_affinity::ResourceAffinityService;
-use crate::service::token::TokenService;
+use crate::service::response_bridge::ResponseBridgeService;
+use crate::service::token::{TokenInfo, TokenService};
 use summer_common::extractor::ClientIp;
 use summer_common::response::Json;
+
+mod files;
+mod media;
+mod support;
+#[cfg(test)]
+mod tests;
+
+pub use files::*;
+pub use media::*;
+#[allow(unused_imports)]
+pub(crate) use support::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpstreamFailureScope {
@@ -61,6 +84,46 @@ fn map_adapter_build_error(context: &str, error: anyhow::Error) -> OpenAiErrorRe
         return OpenAiErrorResponse::unsupported_endpoint(message);
     }
     OpenAiErrorResponse::internal_with(context, error)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_terminal_failure(
+    log_svc: &LogService,
+    token_info: &TokenInfo,
+    channel: &SelectedChannel,
+    endpoint: &str,
+    request_format: &str,
+    requested_model: &str,
+    upstream_model: &str,
+    model_name: &str,
+    request_id: &str,
+    upstream_request_id: &str,
+    elapsed_ms: i64,
+    is_stream: bool,
+    client_ip: &str,
+    user_agent: &str,
+    status_code: i32,
+    message: impl Into<String>,
+) {
+    log_svc.record_failure_async(
+        token_info,
+        channel,
+        AiFailureLogRecord {
+            endpoint: endpoint.to_string(),
+            request_format: request_format.to_string(),
+            request_id: request_id.to_string(),
+            upstream_request_id: upstream_request_id.to_string(),
+            requested_model: requested_model.to_string(),
+            upstream_model: upstream_model.to_string(),
+            model_name: model_name.to_string(),
+            elapsed_time: elapsed_ms as i32,
+            is_stream,
+            client_ip: client_ip.to_string(),
+            user_agent: user_agent.to_string(),
+            status_code,
+            content: message.into(),
+        },
+    );
 }
 
 /// POST /v1/chat/completions
@@ -181,6 +244,24 @@ pub async fn chat_completions(
                     channel.channel_id
                 );
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "chat/completions",
+                        "openai/chat_completions",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        start.elapsed().as_millis() as i64,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        format!("failed to build upstream request: {e}"),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to build upstream request",
@@ -213,6 +294,24 @@ pub async fn chat_completions(
                             );
                             route_plan.exclude_selected_channel(&channel);
                             if attempt == max_retries - 1 {
+                                record_terminal_failure(
+                                    &log_svc,
+                                    &token_info,
+                                    &channel,
+                                    "chat/completions",
+                                    "openai/chat_completions",
+                                    &requested_model,
+                                    &actual_model,
+                                    &model_config.model_name,
+                                    &request_id,
+                                    &upstream_request_id,
+                                    elapsed,
+                                    true,
+                                    &client_ip,
+                                    &user_agent,
+                                    0,
+                                    format!("failed to parse upstream stream: {error}"),
+                                );
                                 let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                                 return Err(OpenAiErrorResponse::internal_with(
                                     "failed to parse upstream stream",
@@ -256,6 +355,24 @@ pub async fn chat_completions(
                             );
                             route_plan.exclude_selected_channel(&channel);
                             if attempt == max_retries - 1 {
+                                record_terminal_failure(
+                                    &log_svc,
+                                    &token_info,
+                                    &channel,
+                                    "chat/completions",
+                                    "openai/chat_completions",
+                                    &requested_model,
+                                    &actual_model,
+                                    &model_config.model_name,
+                                    &request_id,
+                                    &upstream_request_id,
+                                    elapsed,
+                                    false,
+                                    &client_ip,
+                                    &user_agent,
+                                    0,
+                                    format!("failed to read upstream response: {error}"),
+                                );
                                 let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                                 return Err(OpenAiErrorResponse::internal_with(
                                     "failed to read upstream response",
@@ -280,6 +397,24 @@ pub async fn chat_completions(
                         );
                         route_plan.exclude_selected_channel(&channel);
                         if attempt == max_retries - 1 {
+                            record_terminal_failure(
+                                &log_svc,
+                                &token_info,
+                                &channel,
+                                "chat/completions",
+                                "openai/chat_completions",
+                                &requested_model,
+                                &actual_model,
+                                &model_config.model_name,
+                                &request_id,
+                                &upstream_request_id,
+                                elapsed,
+                                false,
+                                &client_ip,
+                                &user_agent,
+                                status.as_u16() as i32,
+                                message.clone(),
+                            );
                             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                             return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                         }
@@ -300,6 +435,24 @@ pub async fn chat_completions(
                             );
                             route_plan.exclude_selected_account(&channel);
                             if attempt == max_retries - 1 {
+                                record_terminal_failure(
+                                    &log_svc,
+                                    &token_info,
+                                    &channel,
+                                    "chat/completions",
+                                    "openai/chat_completions",
+                                    &requested_model,
+                                    &actual_model,
+                                    &model_config.model_name,
+                                    &request_id,
+                                    &upstream_request_id,
+                                    elapsed,
+                                    false,
+                                    &client_ip,
+                                    &user_agent,
+                                    0,
+                                    format!("failed to parse upstream response: {error}"),
+                                );
                                 let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                                 return Err(OpenAiErrorResponse::internal_with(
                                     "failed to parse upstream response",
@@ -386,6 +539,7 @@ pub async fn chat_completions(
 
                     let mut response = Json(parsed).into_response();
                     insert_request_id_header(&mut response, &request_id);
+                    insert_upstream_request_id_header(&mut response, &upstream_request_id);
                     return Ok(response);
                 }
             }
@@ -413,6 +567,24 @@ pub async fn chat_completions(
                 );
                 apply_upstream_failure_scope(&mut route_plan, &channel, failure.scope);
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "chat/completions",
+                        "openai/chat_completions",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        &extract_upstream_request_id(&headers),
+                        elapsed,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        status_code,
+                        failure.message.clone(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(failure.error);
                 }
@@ -431,6 +603,24 @@ pub async fn chat_completions(
                 );
                 route_plan.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "chat/completions",
+                        "openai/chat_completions",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        elapsed,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        error.to_string(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream request",
@@ -572,6 +762,9 @@ pub(crate) fn spawn_usage_accounting_task(
                 is_stream,
                 client_ip,
                 user_agent,
+                status_code: 200,
+                content: String::new(),
+                status: LogStatus::Success,
             },
         );
 
@@ -618,6 +811,59 @@ pub(crate) fn build_json_bytes_response(
     response
 }
 
+fn response_usage_from_usage(usage: &Usage) -> ResponseUsage {
+    ResponseUsage {
+        input_tokens: usage.prompt_tokens,
+        output_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+        input_tokens_details: (usage.cached_tokens > 0).then_some(ResponseInputTokensDetails {
+            cached_tokens: usage.cached_tokens,
+        }),
+        output_tokens_details: (usage.reasoning_tokens > 0).then_some(
+            ResponseOutputTokensDetails {
+                reasoning_tokens: usage.reasoning_tokens,
+            },
+        ),
+    }
+}
+
+fn response_output_text_from_message(message: &Message) -> Option<String> {
+    match &message.content {
+        serde_json::Value::String(text) if !text.is_empty() => Some(text.clone()),
+        serde_json::Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
+                .collect::<Vec<_>>()
+                .join("");
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+fn bridge_chat_completion_to_response(response: ChatCompletionResponse) -> ResponsesResponse {
+    let choice = response.choices.into_iter().next();
+    let output_text = choice
+        .as_ref()
+        .and_then(|choice| response_output_text_from_message(&choice.message));
+
+    ResponsesResponse {
+        id: response.id,
+        object: "response".into(),
+        created_at: response.created,
+        model: response.model,
+        status: "completed".into(),
+        usage: Some(response_usage_from_usage(&response.usage)),
+        output_text,
+        extra: serde_json::Map::new(),
+    }
+}
+
+fn responses_sse_bytes(payload: &serde_json::Value) -> Bytes {
+    Bytes::from(format!("data: {payload}\n\n"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_responses_stream_response(
     upstream: reqwest::Response,
@@ -642,6 +888,7 @@ fn build_responses_stream_response(
     let status = upstream.status();
     let content_type = upstream.headers().get(CONTENT_TYPE).cloned();
     let response_request_id = request_id.clone();
+    let response_upstream_request_id = upstream_request_id.clone();
 
     let stream = async_stream::stream! {
         let start = std::time::Instant::now();
@@ -739,6 +986,193 @@ fn build_responses_stream_response(
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     insert_request_id_header(&mut response, &response_request_id);
+    insert_upstream_request_id_header(&mut response, &response_upstream_request_id);
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_chat_bridged_responses_stream_response(
+    upstream: BoxStream<'static, anyhow::Result<ChatCompletionChunk>>,
+    token_info: crate::service::token::TokenInfo,
+    pre_consumed: i64,
+    model_config: ModelConfigInfo,
+    group_ratio: f64,
+    channel: crate::relay::channel_router::SelectedChannel,
+    requested_model: String,
+    estimated_prompt_tokens: i32,
+    start_elapsed: i64,
+    client_ip: String,
+    log_svc: LogService,
+    channel_svc: ChannelService,
+    rate_limiter: RateLimitEngine,
+    billing: BillingEngine,
+    request_id: String,
+    upstream_request_id: String,
+    user_agent: String,
+    response_bridge: ResponseBridgeService,
+    input_snapshot: serde_json::Value,
+) -> Response {
+    let response_request_id = request_id.clone();
+    let response_upstream_request_id = upstream_request_id.clone();
+
+    let stream = async_stream::stream! {
+        let start = std::time::Instant::now();
+        let mut upstream = upstream;
+        let mut first_token_time = None;
+        let mut usage = None;
+        let mut response_id = String::new();
+        let mut upstream_model = String::new();
+        let mut created_at = 0_i64;
+        let mut output_text = String::new();
+        let mut stream_error = None;
+        let mut emitted_created = false;
+
+        while let Some(item) = upstream.next().await {
+            match item {
+                Ok(chunk) => {
+                    if response_id.is_empty() {
+                        response_id = chunk.id.clone();
+                        created_at = chunk.created;
+                    }
+                    if upstream_model.is_empty() && !chunk.model.is_empty() {
+                        upstream_model = chunk.model.clone();
+                    }
+
+                    if !emitted_created {
+                        emitted_created = true;
+                        yield Ok::<Bytes, std::convert::Infallible>(responses_sse_bytes(&serde_json::json!({
+                            "type": "response.created",
+                            "response": {
+                                "id": response_id,
+                                "object": "response",
+                                "created_at": created_at,
+                                "model": if upstream_model.is_empty() { requested_model.clone() } else { upstream_model.clone() },
+                                "status": "in_progress"
+                            }
+                        })));
+                    }
+
+                    for choice in &chunk.choices {
+                        if let Some(text) = choice.delta.content.as_ref()
+                            && !text.is_empty()
+                        {
+                            if first_token_time.is_none() {
+                                first_token_time = Some(start.elapsed().as_millis() as i64);
+                            }
+                            output_text.push_str(text);
+                            yield Ok(responses_sse_bytes(&serde_json::json!({
+                                "type": "response.output_text.delta",
+                                "delta": text,
+                            })));
+                        }
+                    }
+
+                    if let Some(chunk_usage) = chunk.usage {
+                        usage = Some(chunk_usage);
+                    }
+                }
+                Err(error) => {
+                    tracing::error!("responses bridge stream read error: {error}");
+                    stream_error = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+
+        let total_elapsed = start_elapsed + start.elapsed().as_millis() as i64;
+        let completed_model = if upstream_model.is_empty() {
+            requested_model.clone()
+        } else {
+            upstream_model.clone()
+        };
+
+        if let Some(usage) = usage {
+            let bridged_response = ResponsesResponse {
+                id: response_id.clone(),
+                object: "response".into(),
+                created_at,
+                model: completed_model.clone(),
+                status: "completed".into(),
+                usage: Some(response_usage_from_usage(&usage)),
+                output_text: (!output_text.is_empty()).then_some(output_text.clone()),
+                extra: serde_json::Map::new(),
+            };
+            if let Err(error) = response_bridge
+                .store(
+                    &token_info,
+                    bridged_response.clone(),
+                    &input_snapshot,
+                    &upstream_request_id,
+                )
+                .await
+            {
+                tracing::warn!("failed to store bridged response snapshot: {error}");
+            }
+            yield Ok(responses_sse_bytes(&serde_json::json!({
+                "type": "response.completed",
+                "response": bridged_response
+            })));
+            yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+
+            spawn_usage_accounting_task(
+                billing,
+                rate_limiter,
+                log_svc,
+                channel_svc,
+                token_info,
+                channel,
+                model_config,
+                group_ratio,
+                pre_consumed,
+                usage,
+                request_id,
+                upstream_request_id,
+                requested_model,
+                completed_model,
+                client_ip,
+                user_agent,
+                "responses",
+                "openai/responses",
+                total_elapsed,
+                first_token_time.unwrap_or(0) as i32,
+                true,
+            );
+        } else {
+            let fallback_reason = stream_error.unwrap_or_else(|| "response bridge stream ended without usage".into());
+            billing.refund_later(request_id.clone(), token_info.token_id, pre_consumed);
+            let rl = rate_limiter.clone();
+            let request_id_for_task = request_id.clone();
+            tokio::spawn(async move {
+                if let Err(error) = rl.finalize_failure_with_retry(&request_id_for_task).await {
+                    tracing::warn!("failed to finalize bridged responses rate limit failure: {error}");
+                }
+            });
+            channel_svc.record_relay_failure_async(
+                channel.channel_id,
+                channel.account_id,
+                total_elapsed,
+                0,
+                if estimated_prompt_tokens > 0 {
+                    format!("{fallback_reason}; estimated_prompt_tokens={estimated_prompt_tokens}")
+                } else {
+                    fallback_reason
+                },
+            );
+        }
+    };
+
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::from_stream(stream))
+        .unwrap();
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    insert_request_id_header(&mut response, &response_request_id);
+    insert_upstream_request_id_header(&mut response, &response_upstream_request_id);
     response
 }
 
@@ -754,6 +1188,7 @@ pub async fn responses(
     Component(log_svc): Component<LogService>,
     Component(channel_svc): Component<ChannelService>,
     Component(token_svc): Component<TokenService>,
+    Component(response_bridge): Component<ResponseBridgeService>,
     Component(resource_affinity): Component<ResourceAffinityService>,
     ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
@@ -793,6 +1228,7 @@ pub async fn responses(
     let start = std::time::Instant::now();
     let is_stream = req.stream;
     let requested_model = req.model.clone();
+    let input_snapshot = req.input.clone();
     let estimated_tokens = estimate_response_input_tokens(&req.input);
     let estimated_total_tokens =
         estimate_response_total_tokens_for_rate_limit(&req.input, req.max_output_tokens);
@@ -838,6 +1274,7 @@ pub async fn responses(
         };
 
         let adapter = get_adapter(channel.channel_type);
+        let responses_mode = adapter.responses_runtime_mode();
         let request_builder = match adapter.build_responses_request(
             http_client.client(),
             &channel.base_url,
@@ -859,6 +1296,24 @@ pub async fn responses(
                 );
                 route_plan.exclude_selected_channel(&channel);
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "responses",
+                        "openai/responses",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        start.elapsed().as_millis() as i64,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        format!("failed to build upstream responses request: {error}"),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(map_adapter_build_error(
                         "failed to build upstream responses request",
@@ -876,6 +1331,80 @@ pub async fn responses(
                 let upstream_request_id = extract_upstream_request_id(resp.headers());
 
                 if is_stream {
+                    if responses_mode == ResponsesRuntimeMode::ChatBridge {
+                        let stream = match adapter.parse_stream(resp, &actual_model) {
+                            Ok(stream) => stream,
+                            Err(error) => {
+                                let _ = billing
+                                    .refund_with_retry(
+                                        &request_id,
+                                        token_info.token_id,
+                                        pre_consumed,
+                                    )
+                                    .await;
+                                channel_svc.record_relay_failure_async(
+                                    channel.channel_id,
+                                    channel.account_id,
+                                    elapsed,
+                                    0,
+                                    format!(
+                                        "failed to parse upstream bridged responses stream: {error}"
+                                    ),
+                                );
+                                route_plan.exclude_selected_channel(&channel);
+                                if attempt == max_retries - 1 {
+                                    record_terminal_failure(
+                                        &log_svc,
+                                        &token_info,
+                                        &channel,
+                                        "responses",
+                                        "openai/responses",
+                                        &requested_model,
+                                        &actual_model,
+                                        &model_config.model_name,
+                                        &request_id,
+                                        &upstream_request_id,
+                                        elapsed,
+                                        true,
+                                        &client_ip,
+                                        &user_agent,
+                                        0,
+                                        format!(
+                                            "failed to parse upstream bridged responses stream: {error}"
+                                        ),
+                                    );
+                                    let _ =
+                                        rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                    return Err(OpenAiErrorResponse::internal_with(
+                                        "failed to parse upstream bridged responses stream",
+                                        error,
+                                    ));
+                                }
+                                continue;
+                            }
+                        };
+                        return Ok(build_chat_bridged_responses_stream_response(
+                            stream,
+                            token_info,
+                            pre_consumed,
+                            model_config,
+                            group_ratio,
+                            channel,
+                            requested_model,
+                            estimated_tokens,
+                            elapsed,
+                            client_ip,
+                            log_svc,
+                            channel_svc,
+                            rate_limiter,
+                            billing,
+                            request_id,
+                            upstream_request_id,
+                            user_agent,
+                            response_bridge,
+                            input_snapshot.clone(),
+                        ));
+                    }
                     return Ok(build_responses_stream_response(
                         resp,
                         token_info,
@@ -914,6 +1443,24 @@ pub async fn responses(
                         );
                         route_plan.exclude_selected_account(&channel);
                         if attempt == max_retries - 1 {
+                            record_terminal_failure(
+                                &log_svc,
+                                &token_info,
+                                &channel,
+                                "responses",
+                                "openai/responses",
+                                &requested_model,
+                                &actual_model,
+                                &model_config.model_name,
+                                &request_id,
+                                &upstream_request_id,
+                                elapsed,
+                                false,
+                                &client_ip,
+                                &user_agent,
+                                0,
+                                format!("failed to read upstream responses response: {error}"),
+                            );
                             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to read upstream responses response",
@@ -938,34 +1485,116 @@ pub async fn responses(
                     );
                     route_plan.exclude_selected_channel(&channel);
                     if attempt == max_retries - 1 {
+                        record_terminal_failure(
+                            &log_svc,
+                            &token_info,
+                            &channel,
+                            "responses",
+                            "openai/responses",
+                            &requested_model,
+                            &actual_model,
+                            &model_config.model_name,
+                            &request_id,
+                            &upstream_request_id,
+                            elapsed,
+                            false,
+                            &client_ip,
+                            &user_agent,
+                            status.as_u16() as i32,
+                            message.clone(),
+                        );
                         let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                         return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                     }
                     continue;
                 }
-                let parsed: ResponsesResponse = match serde_json::from_slice(&body) {
-                    Ok(parsed) => parsed,
-                    Err(error) => {
-                        let _ = billing
-                            .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                            .await;
-                        channel_svc.record_relay_failure_async(
-                            channel.channel_id,
-                            channel.account_id,
-                            elapsed,
-                            0,
-                            format!("failed to parse upstream responses response: {error}"),
-                        );
-                        route_plan.exclude_selected_account(&channel);
-                        if attempt == max_retries - 1 {
-                            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-                            return Err(OpenAiErrorResponse::internal_with(
-                                "failed to parse upstream responses response",
-                                error,
-                            ));
+                let parsed: ResponsesResponse = match responses_mode {
+                    ResponsesRuntimeMode::Native => match serde_json::from_slice(&body) {
+                        Ok(parsed) => parsed,
+                        Err(error) => {
+                            let _ = billing
+                                .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
+                                .await;
+                            channel_svc.record_relay_failure_async(
+                                channel.channel_id,
+                                channel.account_id,
+                                elapsed,
+                                0,
+                                format!("failed to parse upstream responses response: {error}"),
+                            );
+                            route_plan.exclude_selected_account(&channel);
+                            if attempt == max_retries - 1 {
+                                record_terminal_failure(
+                                    &log_svc,
+                                    &token_info,
+                                    &channel,
+                                    "responses",
+                                    "openai/responses",
+                                    &requested_model,
+                                    &actual_model,
+                                    &model_config.model_name,
+                                    &request_id,
+                                    &upstream_request_id,
+                                    elapsed,
+                                    false,
+                                    &client_ip,
+                                    &user_agent,
+                                    0,
+                                    format!("failed to parse upstream responses response: {error}"),
+                                );
+                                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                return Err(OpenAiErrorResponse::internal_with(
+                                    "failed to parse upstream responses response",
+                                    error,
+                                ));
+                            }
+                            continue;
                         }
-                        continue;
-                    }
+                    },
+                    ResponsesRuntimeMode::ChatBridge => match adapter
+                        .parse_response(body.clone(), &actual_model)
+                    {
+                        Ok(parsed) => bridge_chat_completion_to_response(parsed),
+                        Err(error) => {
+                            let _ = billing
+                                .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
+                                .await;
+                            channel_svc.record_relay_failure_async(
+                                channel.channel_id,
+                                channel.account_id,
+                                elapsed,
+                                0,
+                                format!("failed to parse bridged responses response: {error}"),
+                            );
+                            route_plan.exclude_selected_account(&channel);
+                            if attempt == max_retries - 1 {
+                                record_terminal_failure(
+                                    &log_svc,
+                                    &token_info,
+                                    &channel,
+                                    "responses",
+                                    "openai/responses",
+                                    &requested_model,
+                                    &actual_model,
+                                    &model_config.model_name,
+                                    &request_id,
+                                    &upstream_request_id,
+                                    elapsed,
+                                    false,
+                                    &client_ip,
+                                    &user_agent,
+                                    0,
+                                    format!("failed to parse bridged responses response: {error}"),
+                                );
+                                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                return Err(OpenAiErrorResponse::internal_with(
+                                    "failed to parse bridged responses response",
+                                    error,
+                                ));
+                            }
+                            continue;
+                        }
+                    },
                 };
 
                 let usage = parsed
@@ -973,9 +1602,22 @@ pub async fn responses(
                     .as_ref()
                     .map(|usage| usage.to_usage())
                     .unwrap_or_else(|| fallback_usage(estimated_tokens));
-                if let Err(error) = resource_affinity
-                    .bind(&token_info, "response", &parsed.id, &channel)
-                    .await
+                if responses_mode == ResponsesRuntimeMode::ChatBridge
+                    && let Err(error) = response_bridge
+                        .store(
+                            &token_info,
+                            parsed.clone(),
+                            &input_snapshot,
+                            &upstream_request_id,
+                        )
+                        .await
+                {
+                    tracing::warn!("failed to store bridged response snapshot: {error}");
+                }
+                if responses_mode == ResponsesRuntimeMode::Native
+                    && let Err(error) = resource_affinity
+                        .bind(&token_info, "response", &parsed.id, &channel)
+                        .await
                 {
                     tracing::warn!("failed to bind response affinity: {error}");
                 }
@@ -997,7 +1639,7 @@ pub async fn responses(
                     pre_consumed,
                     usage,
                     request_id.clone(),
-                    upstream_request_id,
+                    upstream_request_id.clone(),
                     requested_model,
                     upstream_model,
                     client_ip,
@@ -1009,7 +1651,16 @@ pub async fn responses(
                     false,
                 );
 
-                return Ok(build_json_bytes_response(body, content_type, &request_id));
+                if responses_mode == ResponsesRuntimeMode::Native {
+                    let mut response = build_json_bytes_response(body, content_type, &request_id);
+                    insert_upstream_request_id_header(&mut response, &upstream_request_id);
+                    return Ok(response);
+                }
+
+                let mut response = Json(parsed).into_response();
+                insert_request_id_header(&mut response, &request_id);
+                insert_upstream_request_id_header(&mut response, &upstream_request_id);
+                return Ok(response);
             }
             Ok(resp) => {
                 let elapsed = start.elapsed().as_millis() as i64;
@@ -1035,6 +1686,24 @@ pub async fn responses(
                 );
                 apply_upstream_failure_scope(&mut route_plan, &channel, failure.scope);
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "responses",
+                        "openai/responses",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        &extract_upstream_request_id(&headers),
+                        elapsed,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        status_code,
+                        failure.message.clone(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(failure.error);
                 }
@@ -1053,6 +1722,24 @@ pub async fn responses(
                 );
                 route_plan.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "responses",
+                        "openai/responses",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        elapsed,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        error.to_string(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream responses request",
@@ -1182,6 +1869,24 @@ pub async fn embeddings(
                 );
                 route_plan.exclude_selected_channel(&channel);
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "embeddings",
+                        "openai/embeddings",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        start.elapsed().as_millis() as i64,
+                        false,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        format!("failed to build upstream embeddings request: {error}"),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(map_adapter_build_error(
                         "failed to build upstream embeddings request",
@@ -1197,7 +1902,6 @@ pub async fn embeddings(
                 let status = resp.status();
                 let elapsed = start.elapsed().as_millis() as i64;
                 let upstream_request_id = extract_upstream_request_id(resp.headers());
-                let content_type = resp.headers().get(CONTENT_TYPE).cloned();
                 let body = match resp.bytes().await {
                     Ok(body) => body,
                     Err(error) => {
@@ -1213,6 +1917,24 @@ pub async fn embeddings(
                         );
                         route_plan.exclude_selected_account(&channel);
                         if attempt == max_retries - 1 {
+                            record_terminal_failure(
+                                &log_svc,
+                                &token_info,
+                                &channel,
+                                "embeddings",
+                                "openai/embeddings",
+                                &requested_model,
+                                &actual_model,
+                                &model_config.model_name,
+                                &request_id,
+                                &upstream_request_id,
+                                elapsed,
+                                false,
+                                &client_ip,
+                                &user_agent,
+                                0,
+                                format!("failed to read upstream embeddings response: {error}"),
+                            );
                             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to read upstream embeddings response",
@@ -1237,12 +1959,34 @@ pub async fn embeddings(
                     );
                     route_plan.exclude_selected_channel(&channel);
                     if attempt == max_retries - 1 {
+                        record_terminal_failure(
+                            &log_svc,
+                            &token_info,
+                            &channel,
+                            "embeddings",
+                            "openai/embeddings",
+                            &requested_model,
+                            &actual_model,
+                            &model_config.model_name,
+                            &request_id,
+                            &upstream_request_id,
+                            elapsed,
+                            false,
+                            &client_ip,
+                            &user_agent,
+                            status.as_u16() as i32,
+                            message.clone(),
+                        );
                         let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                         return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                     }
                     continue;
                 }
-                let parsed: EmbeddingResponse = match serde_json::from_slice(&body) {
+                let parsed: EmbeddingResponse = match adapter.parse_embeddings_response(
+                    body.clone(),
+                    &actual_model,
+                    estimated_tokens,
+                ) {
                     Ok(parsed) => parsed,
                     Err(error) => {
                         let _ = billing
@@ -1257,6 +2001,24 @@ pub async fn embeddings(
                         );
                         route_plan.exclude_selected_account(&channel);
                         if attempt == max_retries - 1 {
+                            record_terminal_failure(
+                                &log_svc,
+                                &token_info,
+                                &channel,
+                                "embeddings",
+                                "openai/embeddings",
+                                &requested_model,
+                                &actual_model,
+                                &model_config.model_name,
+                                &request_id,
+                                &upstream_request_id,
+                                elapsed,
+                                false,
+                                &client_ip,
+                                &user_agent,
+                                0,
+                                format!("failed to parse upstream embeddings response: {error}"),
+                            );
                             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to parse upstream embeddings response",
@@ -1284,7 +2046,7 @@ pub async fn embeddings(
                     pre_consumed,
                     usage,
                     request_id.clone(),
-                    upstream_request_id,
+                    upstream_request_id.clone(),
                     requested_model,
                     actual_model,
                     client_ip,
@@ -1296,7 +2058,10 @@ pub async fn embeddings(
                     false,
                 );
 
-                return Ok(build_json_bytes_response(body, content_type, &request_id));
+                let mut response = Json(parsed).into_response();
+                insert_request_id_header(&mut response, &request_id);
+                insert_upstream_request_id_header(&mut response, &upstream_request_id);
+                return Ok(response);
             }
             Ok(resp) => {
                 let elapsed = start.elapsed().as_millis() as i64;
@@ -1322,6 +2087,24 @@ pub async fn embeddings(
                 );
                 apply_upstream_failure_scope(&mut route_plan, &channel, failure.scope);
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "embeddings",
+                        "openai/embeddings",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        &extract_upstream_request_id(&headers),
+                        elapsed,
+                        false,
+                        &client_ip,
+                        &user_agent,
+                        status_code,
+                        failure.message.clone(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(failure.error);
                 }
@@ -1340,6 +2123,24 @@ pub async fn embeddings(
                 );
                 route_plan.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "embeddings",
+                        "openai/embeddings",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        elapsed,
+                        false,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        error.to_string(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream embeddings request",
@@ -1390,6 +2191,21 @@ pub(crate) fn request_header_value(headers: &HeaderMap, names: &[&str]) -> Optio
 pub(crate) fn insert_request_id_header(response: &mut Response, request_id: &str) {
     if let Ok(value) = HeaderValue::from_str(request_id) {
         response.headers_mut().insert("x-request-id", value);
+    }
+}
+
+pub(crate) fn insert_upstream_request_id_header(
+    response: &mut Response,
+    upstream_request_id: &str,
+) {
+    if upstream_request_id.is_empty() {
+        return;
+    }
+
+    if let Ok(value) = HeaderValue::from_str(upstream_request_id) {
+        response
+            .headers_mut()
+            .insert("x-upstream-request-id", value);
     }
 }
 
@@ -1527,915 +2343,4 @@ pub async fn retrieve_model(
         .ok_or_else(|| OpenAiErrorResponse::not_found("model not found"))?;
 
     Ok(Json(model))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-    use crate::router::test_support::TestHarness;
-    use summer_web::axum::{
-        Router,
-        body::{Body, to_bytes},
-        extract::{Request, State},
-        http::Method,
-        http::header::CONTENT_TYPE,
-        response::IntoResponse,
-    };
-    use tokio::sync::oneshot;
-
-    #[derive(Clone)]
-    struct MockUpstreamSpec {
-        expected_path_and_query: String,
-        expected_header_name: String,
-        expected_header_value: String,
-        expected_body_substring: Option<String>,
-        response_status: StatusCode,
-        response_content_type: String,
-        response_body: String,
-    }
-
-    struct MockUpstreamServer {
-        base_url: String,
-        shutdown_tx: Option<oneshot::Sender<()>>,
-        _task: tokio::task::JoinHandle<()>,
-    }
-
-    impl Drop for MockUpstreamServer {
-        fn drop(&mut self) {
-            if let Some(shutdown_tx) = self.shutdown_tx.take() {
-                let _ = shutdown_tx.send(());
-            }
-        }
-    }
-
-    async fn mock_upstream_handler(
-        State(spec): State<Arc<MockUpstreamSpec>>,
-        req: Request,
-    ) -> summer_web::axum::response::Response {
-        let path_and_query = req
-            .uri()
-            .path_and_query()
-            .map(|value| value.as_str().to_string())
-            .unwrap_or_else(|| req.uri().path().to_string());
-        if path_and_query != spec.expected_path_and_query {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("unexpected path: {path_and_query}"),
-            )
-                .into_response();
-        }
-
-        let header_value = req
-            .headers()
-            .get(&spec.expected_header_name)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        if header_value != spec.expected_header_value {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "unexpected header {}: {}",
-                    spec.expected_header_name, header_value
-                ),
-            )
-                .into_response();
-        }
-
-        if let Some(expected_body_substring) = spec.expected_body_substring.as_ref() {
-            let body = to_bytes(req.into_body(), usize::MAX)
-                .await
-                .expect("request body");
-            let body = String::from_utf8_lossy(&body);
-            if !body.contains(expected_body_substring) {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("unexpected body: {body}"),
-                )
-                    .into_response();
-            }
-        }
-
-        summer_web::axum::http::Response::builder()
-            .status(spec.response_status)
-            .header(CONTENT_TYPE, spec.response_content_type.as_str())
-            .body(Body::from(spec.response_body.clone()))
-            .expect("mock upstream response")
-    }
-
-    async fn spawn_mock_upstream(spec: MockUpstreamSpec) -> MockUpstreamServer {
-        let spec = Arc::new(spec);
-        let router = Router::new()
-            .fallback(mock_upstream_handler)
-            .with_state(spec);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind mock upstream");
-        let addr = listener.local_addr().expect("local addr");
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            let _ = summer_web::axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_rx.await;
-                })
-                .await;
-        });
-
-        MockUpstreamServer {
-            base_url: format!("http://{addr}"),
-            shutdown_tx: Some(shutdown_tx),
-            _task: task,
-        }
-    }
-
-    fn sample_mock_chat_request(stream: bool) -> ChatCompletionRequest {
-        serde_json::from_value(serde_json::json!({
-            "model": "gpt-5.4 xhigh",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "stream": stream
-        }))
-        .expect("sample chat request")
-    }
-
-    fn sample_mock_responses_request(stream: bool) -> ResponsesRequest {
-        serde_json::from_value(serde_json::json!({
-            "model": "gpt-5.4 xhigh",
-            "input": "Hello",
-            "stream": stream
-        }))
-        .expect("sample responses request")
-    }
-
-    fn sample_mock_embeddings_request() -> EmbeddingRequest {
-        serde_json::from_value(serde_json::json!({
-            "model": "text-embedding-3-large",
-            "input": "hello"
-        }))
-        .expect("sample embeddings request")
-    }
-
-    async fn send_mock_chat_request(
-        channel_type: i16,
-        api_key: &str,
-        req: &ChatCompletionRequest,
-        actual_model: &str,
-        spec: MockUpstreamSpec,
-    ) -> (MockUpstreamServer, reqwest::Response) {
-        let server = spawn_mock_upstream(spec).await;
-        let client = reqwest::Client::new();
-        let request_builder = get_adapter(channel_type)
-            .build_request(&client, &server.base_url, api_key, req, actual_model)
-            .expect("build request");
-        let response = request_builder.send().await.expect("send request");
-        (server, response)
-    }
-
-    async fn send_mock_responses_request(
-        channel_type: i16,
-        api_key: &str,
-        req: &ResponsesRequest,
-        actual_model: &str,
-        spec: MockUpstreamSpec,
-    ) -> (MockUpstreamServer, reqwest::Response) {
-        let server = spawn_mock_upstream(spec).await;
-        let client = reqwest::Client::new();
-        let raw_request = serde_json::to_value(req).expect("responses request json");
-        let request_builder = get_adapter(channel_type)
-            .build_responses_request(
-                &client,
-                &server.base_url,
-                api_key,
-                &raw_request,
-                actual_model,
-            )
-            .expect("build responses request");
-        let response = request_builder
-            .send()
-            .await
-            .expect("send responses request");
-        (server, response)
-    }
-
-    async fn send_mock_embeddings_request(
-        channel_type: i16,
-        api_key: &str,
-        req: &EmbeddingRequest,
-        actual_model: &str,
-        spec: MockUpstreamSpec,
-    ) -> (MockUpstreamServer, reqwest::Response) {
-        let server = spawn_mock_upstream(spec).await;
-        let client = reqwest::Client::new();
-        let raw_request = serde_json::to_value(req).expect("embeddings request json");
-        let request_builder = get_adapter(channel_type)
-            .build_embeddings_request(
-                &client,
-                &server.base_url,
-                api_key,
-                &raw_request,
-                actual_model,
-            )
-            .expect("build embeddings request");
-        let response = request_builder
-            .send()
-            .await
-            .expect("send embeddings request");
-        (server, response)
-    }
-
-    #[tokio::test]
-    async fn anthropic_chat_non_stream_mock_upstream_success() {
-        let req = sample_mock_chat_request(false);
-        let actual_model = "claude-3-5-sonnet-20241022";
-        let (_server, response) = send_mock_chat_request(
-            3,
-            "sk-ant-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/messages".into(),
-                expected_header_name: "x-api-key".into(),
-                expected_header_value: "sk-ant-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::OK,
-                response_content_type: "application/json".into(),
-                response_body: serde_json::json!({
-                    "id": "msg_123",
-                    "model": actual_model,
-                    "content": [{"type": "text", "text": "Hello from Claude"}],
-                    "stop_reason": "end_turn",
-                    "usage": {
-                        "input_tokens": 12,
-                        "output_tokens": 7
-                    }
-                })
-                .to_string(),
-            },
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let parsed = get_adapter(3)
-            .parse_response(response.bytes().await.expect("body"), actual_model)
-            .expect("parse anthropic response");
-        assert_eq!(parsed.model, actual_model);
-        assert_eq!(
-            parsed.choices[0].message.content,
-            serde_json::json!("Hello from Claude")
-        );
-        assert_eq!(parsed.usage.total_tokens, 19);
-    }
-
-    #[tokio::test]
-    async fn anthropic_chat_stream_mock_upstream_success() {
-        let req = sample_mock_chat_request(true);
-        let actual_model = "claude-3-5-sonnet-20241022";
-        let (_server, response) = send_mock_chat_request(
-            3,
-            "sk-ant-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/messages".into(),
-                expected_header_name: "x-api-key".into(),
-                expected_header_value: "sk-ant-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::OK,
-                response_content_type: "text/event-stream".into(),
-                response_body: concat!(
-                    "event: message_start\n",
-                    "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"model\":\"claude-3-5-sonnet-20241022\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0}}}\n\n",
-                    "event: content_block_delta\n",
-                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
-                    "event: message_delta\n",
-                    "data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
-                    "event: message_stop\n",
-                    "data: {\"type\":\"message_stop\"}\n\n"
-                )
-                .into(),
-            },
-        )
-        .await;
-
-        let chunks: Vec<_> = get_adapter(3)
-            .parse_stream(response, actual_model)
-            .expect("parse stream")
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .filter_map(Result::ok)
-            .collect();
-
-        assert!(
-            chunks
-                .iter()
-                .any(|chunk| { chunk.choices[0].delta.content.as_deref() == Some("Hello") })
-        );
-        let final_chunk = chunks
-            .iter()
-            .rfind(|chunk| chunk.choices[0].finish_reason.is_some())
-            .expect("final chunk");
-        assert!(matches!(
-            final_chunk.choices[0].finish_reason,
-            Some(summer_ai_core::types::common::FinishReason::Stop)
-        ));
-    }
-
-    #[tokio::test]
-    async fn anthropic_chat_mock_upstream_provider_failure() {
-        let req = sample_mock_chat_request(false);
-        let actual_model = "claude-3-5-sonnet-20241022";
-        let (_server, response) = send_mock_chat_request(
-            3,
-            "sk-ant-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/messages".into(),
-                expected_header_name: "x-api-key".into(),
-                expected_header_value: "sk-ant-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::TOO_MANY_REQUESTS,
-                response_content_type: "application/json".into(),
-                response_body:
-                    r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#
-                        .to_string(),
-            },
-        )
-        .await;
-
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = response.bytes().await.expect("body");
-        let failure = classify_upstream_provider_failure(3, status, &headers, &body);
-        assert_eq!(failure.scope, UpstreamFailureScope::Account);
-        assert_eq!(failure.error.status, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(failure.error.error.error.r#type, "rate_limit_error");
-        assert_eq!(failure.error.error.error.message, "slow down");
-    }
-
-    #[tokio::test]
-    async fn anthropic_chat_stream_mock_upstream_provider_failure_event() {
-        let req = sample_mock_chat_request(true);
-        let actual_model = "claude-3-5-sonnet-20241022";
-        let (_server, response) = send_mock_chat_request(
-            3,
-            "sk-ant-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/messages".into(),
-                expected_header_name: "x-api-key".into(),
-                expected_header_value: "sk-ant-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::OK,
-                response_content_type: "text/event-stream".into(),
-                response_body: concat!(
-                    "event: error\n",
-                    "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"upstream overloaded\"}}\n\n"
-                )
-                .into(),
-            },
-        )
-        .await;
-
-        let results = get_adapter(3)
-            .parse_stream(response, actual_model)
-            .expect("parse stream")
-            .collect::<Vec<_>>()
-            .await;
-
-        let error = results
-            .into_iter()
-            .find_map(Result::err)
-            .expect("expected anthropic stream error");
-        let stream_error = error
-            .downcast_ref::<summer_ai_core::provider::ProviderStreamError>()
-            .expect("expected provider stream error");
-        assert_eq!(stream_error.info.kind, ProviderErrorKind::Server);
-        assert_eq!(stream_error.info.code, "overloaded_error");
-        assert_eq!(stream_error.info.message, "upstream overloaded");
-    }
-
-    #[tokio::test]
-    async fn gemini_chat_non_stream_mock_upstream_success() {
-        let req = sample_mock_chat_request(false);
-        let actual_model = "gemini-2.5-pro";
-        let (_server, response) = send_mock_chat_request(
-            24,
-            "gem-key",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: format!("/v1beta/models/{actual_model}:generateContent"),
-                expected_header_name: "x-goog-api-key".into(),
-                expected_header_value: "gem-key".into(),
-                expected_body_substring: Some("\"contents\"".into()),
-                response_status: StatusCode::OK,
-                response_content_type: "application/json".into(),
-                response_body: serde_json::json!({
-                    "candidates": [{
-                        "content": {
-                            "parts": [{"text": "Hello from Gemini"}]
-                        },
-                        "finishReason": "STOP"
-                    }],
-                    "usageMetadata": {
-                        "promptTokenCount": 4,
-                        "candidatesTokenCount": 6,
-                        "totalTokenCount": 10
-                    }
-                })
-                .to_string(),
-            },
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let parsed = get_adapter(24)
-            .parse_response(response.bytes().await.expect("body"), actual_model)
-            .expect("parse gemini response");
-        assert_eq!(parsed.model, actual_model);
-        assert_eq!(
-            parsed.choices[0].message.content,
-            serde_json::json!("Hello from Gemini")
-        );
-        assert_eq!(parsed.usage.total_tokens, 10);
-    }
-
-    #[tokio::test]
-    async fn gemini_chat_stream_mock_upstream_success() {
-        let req = sample_mock_chat_request(true);
-        let actual_model = "gemini-2.5-pro";
-        let (_server, response) = send_mock_chat_request(
-            24,
-            "gem-key",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: format!(
-                    "/v1beta/models/{actual_model}:streamGenerateContent?alt=sse"
-                ),
-                expected_header_name: "x-goog-api-key".into(),
-                expected_header_value: "gem-key".into(),
-                expected_body_substring: Some("\"contents\"".into()),
-                response_status: StatusCode::OK,
-                response_content_type: "text/event-stream".into(),
-                response_body:
-                    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\n\
-                     data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" Gemini\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":6,\"totalTokenCount\":10}}\n\n"
-                        .into(),
-            },
-        )
-        .await;
-
-        let chunks: Vec<_> = get_adapter(24)
-            .parse_stream(response, actual_model)
-            .expect("parse stream")
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .filter_map(Result::ok)
-            .collect();
-
-        assert!(
-            chunks
-                .iter()
-                .any(|chunk| { chunk.choices[0].delta.content.as_deref() == Some("Hello") })
-        );
-        let final_chunk = chunks
-            .iter()
-            .rfind(|chunk| chunk.choices[0].finish_reason.is_some())
-            .expect("final chunk");
-        assert!(matches!(
-            final_chunk.choices[0].finish_reason,
-            Some(summer_ai_core::types::common::FinishReason::Stop)
-        ));
-        assert_eq!(
-            final_chunk.usage.as_ref().map(|usage| usage.total_tokens),
-            Some(10)
-        );
-    }
-
-    #[tokio::test]
-    async fn gemini_chat_mock_upstream_provider_failure() {
-        let req = sample_mock_chat_request(false);
-        let actual_model = "gemini-2.5-pro";
-        let (_server, response) = send_mock_chat_request(
-            24,
-            "gem-key",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: format!("/v1beta/models/{actual_model}:generateContent"),
-                expected_header_name: "x-goog-api-key".into(),
-                expected_header_value: "gem-key".into(),
-                expected_body_substring: Some("\"contents\"".into()),
-                response_status: StatusCode::BAD_REQUEST,
-                response_content_type: "application/json".into(),
-                response_body:
-                    r#"{"error":{"status":"INVALID_ARGUMENT","message":"bad tool schema"}}"#
-                        .to_string(),
-            },
-        )
-        .await;
-
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = response.bytes().await.expect("body");
-        let failure = classify_upstream_provider_failure(24, status, &headers, &body);
-        assert_eq!(failure.scope, UpstreamFailureScope::Channel);
-        assert_eq!(failure.error.status, StatusCode::BAD_REQUEST);
-        assert_eq!(failure.error.error.error.r#type, "invalid_request_error");
-        assert_eq!(failure.error.error.error.message, "bad tool schema");
-    }
-
-    #[tokio::test]
-    async fn gemini_chat_stream_mock_upstream_provider_failure_event() {
-        let req = sample_mock_chat_request(true);
-        let actual_model = "gemini-2.5-pro";
-        let (_server, response) = send_mock_chat_request(
-            24,
-            "gem-key",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: format!(
-                    "/v1beta/models/{actual_model}:streamGenerateContent?alt=sse"
-                ),
-                expected_header_name: "x-goog-api-key".into(),
-                expected_header_value: "gem-key".into(),
-                expected_body_substring: Some("\"contents\"".into()),
-                response_status: StatusCode::OK,
-                response_content_type: "text/event-stream".into(),
-                response_body: concat!(
-                    "event: error\n",
-                    "data: {\"error\":{\"status\":\"INVALID_ARGUMENT\",\"message\":\"bad tool schema\"}}\n\n"
-                )
-                .into(),
-            },
-        )
-        .await;
-
-        let results = get_adapter(24)
-            .parse_stream(response, actual_model)
-            .expect("parse stream")
-            .collect::<Vec<_>>()
-            .await;
-
-        let error = results
-            .into_iter()
-            .find_map(Result::err)
-            .expect("expected gemini stream error");
-        let stream_error = error
-            .downcast_ref::<summer_ai_core::provider::ProviderStreamError>()
-            .expect("expected provider stream error");
-        assert_eq!(stream_error.info.kind, ProviderErrorKind::InvalidRequest);
-        assert_eq!(stream_error.info.code, "INVALID_ARGUMENT");
-        assert_eq!(stream_error.info.message, "bad tool schema");
-    }
-
-    #[tokio::test]
-    async fn responses_non_stream_mock_upstream_success() {
-        let req = sample_mock_responses_request(false);
-        let actual_model = "gpt-5.4-mini";
-        let (_server, response) = send_mock_responses_request(
-            1,
-            "sk-openai-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/responses".into(),
-                expected_header_name: "authorization".into(),
-                expected_header_value: "Bearer sk-openai-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::OK,
-                response_content_type: "application/json".into(),
-                response_body: serde_json::json!({
-                    "id": "resp_123",
-                    "object": "response",
-                    "model": actual_model,
-                    "status": "completed",
-                    "usage": {
-                        "input_tokens": 12,
-                        "output_tokens": 7,
-                        "total_tokens": 19
-                    },
-                    "output_text": "hello"
-                })
-                .to_string(),
-            },
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let parsed: ResponsesResponse =
-            serde_json::from_slice(&response.bytes().await.expect("body")).expect("responses json");
-        assert_eq!(parsed.id, "resp_123");
-        assert_eq!(parsed.model, actual_model);
-        assert_eq!(
-            parsed.usage.as_ref().map(|usage| usage.total_tokens),
-            Some(19)
-        );
-    }
-
-    #[tokio::test]
-    async fn responses_stream_tracker_parses_completed_event_from_mock_upstream() {
-        let req = sample_mock_responses_request(true);
-        let actual_model = "gpt-5.4-mini";
-        let (_server, response) = send_mock_responses_request(
-            1,
-            "sk-openai-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/responses".into(),
-                expected_header_name: "authorization".into(),
-                expected_header_value: "Bearer sk-openai-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::OK,
-                response_content_type: "text/event-stream".into(),
-                response_body: concat!(
-                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-5.4-mini\"}}\n\n",
-                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n",
-                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-5.4-mini\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
-                    "data: [DONE]\n\n"
-                )
-                .into(),
-            },
-        )
-        .await;
-
-        let body = response.bytes().await.expect("body");
-        let mut tracker = ResponsesStreamTracker::default();
-        let start = std::time::Instant::now();
-        let mut first_token_time = None;
-        tracker.ingest(&body, &start, &mut first_token_time);
-
-        assert_eq!(tracker.response_id, "resp_123");
-        assert_eq!(tracker.upstream_model, actual_model);
-        assert_eq!(
-            tracker.usage.as_ref().map(|usage| usage.total_tokens),
-            Some(19)
-        );
-        assert!(first_token_time.is_some());
-    }
-
-    #[tokio::test]
-    async fn responses_mock_upstream_provider_failure() {
-        let req = sample_mock_responses_request(false);
-        let actual_model = "gpt-5.4-mini";
-        let (_server, response) = send_mock_responses_request(
-            1,
-            "sk-openai-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/responses".into(),
-                expected_header_name: "authorization".into(),
-                expected_header_value: "Bearer sk-openai-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::TOO_MANY_REQUESTS,
-                response_content_type: "application/json".into(),
-                response_body: r#"{"error":{"message":"slow down","type":"rate_limit_error","code":"rate_limit_error"}}"#
-                    .to_string(),
-            },
-        )
-        .await;
-
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = response.bytes().await.expect("body");
-        let failure = classify_upstream_provider_failure(1, status, &headers, &body);
-        assert_eq!(failure.scope, UpstreamFailureScope::Account);
-        assert_eq!(failure.error.status, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(failure.error.error.error.r#type, "rate_limit_error");
-    }
-
-    #[tokio::test]
-    async fn embeddings_non_stream_mock_upstream_success() {
-        let req = sample_mock_embeddings_request();
-        let actual_model = "text-embedding-3-small";
-        let (_server, response) = send_mock_embeddings_request(
-            1,
-            "sk-openai-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/embeddings".into(),
-                expected_header_name: "authorization".into(),
-                expected_header_value: "Bearer sk-openai-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::OK,
-                response_content_type: "application/json".into(),
-                response_body: serde_json::json!({
-                    "object": "list",
-                    "data": [{
-                        "object": "embedding",
-                        "index": 0,
-                        "embedding": [0.1, 0.2]
-                    }],
-                    "usage": {
-                        "prompt_tokens": 8,
-                        "completion_tokens": 0,
-                        "total_tokens": 8
-                    }
-                })
-                .to_string(),
-            },
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let parsed: EmbeddingResponse =
-            serde_json::from_slice(&response.bytes().await.expect("body"))
-                .expect("embeddings json");
-        assert_eq!(parsed.data.len(), 1);
-        assert_eq!(parsed.usage.total_tokens, 8);
-    }
-
-    #[tokio::test]
-    async fn embeddings_mock_upstream_provider_failure() {
-        let req = sample_mock_embeddings_request();
-        let actual_model = "text-embedding-3-small";
-        let (_server, response) = send_mock_embeddings_request(
-            1,
-            "sk-openai-test",
-            &req,
-            actual_model,
-            MockUpstreamSpec {
-                expected_path_and_query: "/v1/embeddings".into(),
-                expected_header_name: "authorization".into(),
-                expected_header_value: "Bearer sk-openai-test".into(),
-                expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
-                response_status: StatusCode::BAD_REQUEST,
-                response_content_type: "application/json".into(),
-                response_body: r#"{"error":{"message":"bad embedding input","type":"invalid_request_error","code":"invalid_request_error"}}"#
-                    .to_string(),
-            },
-        )
-        .await;
-
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = response.bytes().await.expect("body");
-        let failure = classify_upstream_provider_failure(1, status, &headers, &body);
-        assert_eq!(failure.scope, UpstreamFailureScope::Channel);
-        assert_eq!(failure.error.status, StatusCode::BAD_REQUEST);
-        assert_eq!(failure.error.error.error.r#type, "invalid_request_error");
-        assert_eq!(failure.error.error.error.message, "bad embedding input");
-    }
-
-    #[test]
-    fn classify_anthropic_rate_limit_as_account_failure() {
-        let failure = classify_upstream_provider_failure(
-            3,
-            StatusCode::TOO_MANY_REQUESTS,
-            &HeaderMap::new(),
-            br#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#,
-        );
-
-        assert_eq!(failure.scope, UpstreamFailureScope::Account);
-        assert_eq!(failure.error.status, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(failure.error.error.error.r#type, "rate_limit_error");
-        assert_eq!(
-            failure.error.error.error.code.as_deref(),
-            Some("rate_limit_error")
-        );
-        assert_eq!(failure.error.error.error.message, "slow down");
-    }
-
-    #[test]
-    fn classify_anthropic_new_api_error_as_account_failure() {
-        let failure = classify_upstream_provider_failure(
-            3,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &HeaderMap::new(),
-            br#"{"error":{"type":"new_api_error","message":"invalid claude code request"},"type":"error"}"#,
-        );
-
-        assert_eq!(failure.scope, UpstreamFailureScope::Account);
-        assert_eq!(failure.error.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(failure.error.error.error.r#type, "server_error");
-        assert_eq!(
-            failure.error.error.error.code.as_deref(),
-            Some("new_api_error")
-        );
-        assert_eq!(
-            failure.error.error.error.message,
-            "invalid claude code request"
-        );
-    }
-
-    #[test]
-    fn classify_gemini_invalid_argument_as_channel_failure() {
-        let failure = classify_upstream_provider_failure(
-            24,
-            StatusCode::BAD_REQUEST,
-            &HeaderMap::new(),
-            br#"{"error":{"status":"INVALID_ARGUMENT","message":"bad tool schema"}}"#,
-        );
-
-        assert_eq!(failure.scope, UpstreamFailureScope::Channel);
-        assert_eq!(failure.error.status, StatusCode::BAD_REQUEST);
-        assert_eq!(failure.error.error.error.r#type, "invalid_request_error");
-        assert_eq!(
-            failure.error.error.error.code.as_deref(),
-            Some("invalid_argument")
-        );
-        assert_eq!(failure.error.error.error.message, "bad tool schema");
-    }
-
-    #[test]
-    fn map_adapter_build_error_uses_unsupported_endpoint_contract() {
-        let error = map_adapter_build_error(
-            "failed to build upstream responses request",
-            anyhow::anyhow!("responses endpoint is not supported"),
-        );
-
-        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
-        assert_eq!(error.error.error.r#type, "upstream_error");
-        assert_eq!(
-            error.error.error.code.as_deref(),
-            Some("unsupported_endpoint")
-        );
-        assert_eq!(
-            error.error.error.message,
-            "responses endpoint is not supported"
-        );
-    }
-
-    #[test]
-    fn map_adapter_build_error_keeps_internal_errors_internal() {
-        let error = map_adapter_build_error(
-            "failed to build upstream embeddings request",
-            anyhow::anyhow!("failed to sign request"),
-        );
-
-        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(error.error.error.r#type, "server_error");
-        assert!(
-            error
-                .error
-                .error
-                .message
-                .contains("failed to build upstream embeddings request")
-        );
-    }
-
-    #[test]
-    fn extract_upstream_request_id_supports_oneapi_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-oneapi-request-id",
-            HeaderValue::from_static("2026032622051868099140Z3FLl6h8"),
-        );
-
-        assert_eq!(
-            extract_upstream_request_id(&headers),
-            "2026032622051868099140Z3FLl6h8"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires local postgres and redis"]
-    async fn list_models_returns_fixture_models_for_token_group() {
-        let harness =
-            TestHarness::responses_affinity_fixture("http://127.0.0.1:9", "http://127.0.0.1:10")
-                .await;
-
-        let response = harness
-            .empty_request(Method::GET, "/v1/models", "list-models")
-            .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let payload = crate::router::test_support::response_json(response).await;
-
-        assert_eq!(payload["object"], "list");
-        assert_eq!(payload["data"].as_array().map(Vec::len), Some(1));
-        assert_eq!(payload["data"][0]["id"], harness.model_name);
-
-        harness.cleanup().await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires local postgres and redis"]
-    async fn retrieve_model_returns_not_found_for_unknown_fixture_model() {
-        let harness =
-            TestHarness::responses_affinity_fixture("http://127.0.0.1:9", "http://127.0.0.1:10")
-                .await;
-
-        let response = harness
-            .empty_request(
-                Method::GET,
-                "/v1/models/missing-test-model",
-                "retrieve-model-missing",
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let payload = crate::router::test_support::response_json(response).await;
-        assert_eq!(payload["error"]["code"], "not_found");
-
-        harness.cleanup().await;
-    }
 }

@@ -33,7 +33,8 @@ impl ResourceAffinityRecord {
     }
 
     fn matches_channel_snapshot(&self, channel_type: i16, base_url: &str) -> bool {
-        self.channel_type == channel_type && normalize_base_url(&self.base_url) == normalize_base_url(base_url)
+        self.channel_type == channel_type
+            && normalize_base_url(&self.base_url) == normalize_base_url(base_url)
     }
 }
 
@@ -110,7 +111,8 @@ impl ResourceAffinityService {
             let _ = self.cache.delete(&cache_key).await;
             return Ok(None);
         }
-        if !record.matches_channel_snapshot(channel_model.channel_type as i16, &channel_model.base_url)
+        if !record
+            .matches_channel_snapshot(channel_model.channel_type as i16, &channel_model.base_url)
         {
             let _ = self.cache.delete(&cache_key).await;
             return Ok(None);

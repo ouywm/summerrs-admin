@@ -25,6 +25,8 @@ pub struct ModelService {
     db: DbConn,
     #[inject(component)]
     cache: RuntimeCacheService,
+    #[inject(component)]
+    channel_svc: ChannelService,
 }
 
 impl ModelService {
@@ -162,12 +164,16 @@ impl ModelService {
         }
 
         let cache_key = model_config_cache_key(&dto.model_name);
+        let model_name = dto.model_name.clone();
         dto.into_active_model(operator)
             .map_err(ApiErrors::BadRequest)?
             .insert(&self.db)
             .await
             .context("创建模型配置失败")?;
         let _ = self.cache.delete(&cache_key).await;
+        self.channel_svc
+            .resync_abilities_for_model_name(&model_name)
+            .await?;
         Ok(())
     }
 
@@ -179,11 +185,15 @@ impl ModelService {
     ) -> ApiResult<()> {
         let model = self.find_config_model(id).await?;
         let cache_key = model_config_cache_key(&model.model_name);
+        let model_name = model.model_name.clone();
         let mut active: model_config::ActiveModel = model.into();
         dto.apply_to(&mut active, operator)
             .map_err(ApiErrors::BadRequest)?;
         active.update(&self.db).await.context("更新模型配置失败")?;
         let _ = self.cache.delete(&cache_key).await;
+        self.channel_svc
+            .resync_abilities_for_model_name(&model_name)
+            .await?;
         Ok(())
     }
 
@@ -242,7 +252,10 @@ mod tests {
             &HashSet::from([11]),
         );
 
-        assert_eq!(names, vec!["gpt-5.4".to_string(), "gpt-5.4-mini".to_string()]);
+        assert_eq!(
+            names,
+            vec!["gpt-5.4".to_string(), "gpt-5.4-mini".to_string()]
+        );
     }
 
     #[test]

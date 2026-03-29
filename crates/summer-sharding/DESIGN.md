@@ -626,10 +626,13 @@ pub enum TenantIsolationLevel {
 }
 
 /// ShardingConnection 在执行时获取当前租户上下文
-/// 通过 task-local 或显式参数传递
-tokio::task_local! {
-    pub static CURRENT_TENANT: TenantContext;
-}
+/// 当前实现推荐显式绑定，而不是隐式 task-local
+let tenant_bound = sharding.with_tenant_context(TenantContext {
+    tenant_id: "T-001".to_string(),
+    isolation_level: TenantIsolationLevel::SharedRow,
+    datasource_override: None,
+    schema_override: None,
+});
 ```
 
 #### 租户 + 时间复合分片

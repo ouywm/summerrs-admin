@@ -1,16 +1,6 @@
-use std::future::Future;
-
 use serde::{Deserialize, Serialize};
 
 use crate::algorithm::ShardingValue;
-
-tokio::task_local! {
-    pub static CURRENT_HINT: ShardingHint;
-}
-
-tokio::task_local! {
-    pub static CURRENT_ACCESS_CONTEXT: ShardingAccessContext;
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ShardingHint {
@@ -64,49 +54,40 @@ impl ShardingAccessContext {
     }
 }
 
-pub async fn with_hint<F, T>(hint: ShardingHint, future: F) -> T
-where
-    F: Future<Output = T>,
-{
-    CURRENT_HINT.scope(hint, future).await
+pub fn with_hint(
+    connection: &crate::ShardingConnection,
+    hint: ShardingHint,
+) -> crate::ShardingConnection {
+    connection.with_hint(hint)
 }
 
-pub async fn with_access_context<F, T>(context: ShardingAccessContext, future: F) -> T
-where
-    F: Future<Output = T>,
-{
-    CURRENT_ACCESS_CONTEXT.scope(context, future).await
+pub fn with_access_context(
+    connection: &crate::ShardingConnection,
+    context: ShardingAccessContext,
+) -> crate::ShardingConnection {
+    connection.with_access_context(context)
 }
 
-pub fn current_hint() -> Option<ShardingHint> {
-    CURRENT_HINT.try_with(Clone::clone).ok()
-}
-
-pub fn current_access_context() -> Option<ShardingAccessContext> {
-    CURRENT_ACCESS_CONTEXT.try_with(Clone::clone).ok()
-}
-
-pub fn should_skip_masking(hint: Option<&ShardingHint>) -> bool {
+pub fn should_skip_masking(
+    hint: Option<&ShardingHint>,
+    access_context: Option<&ShardingAccessContext>,
+) -> bool {
     matches!(hint, Some(ShardingHint::SkipMasking))
-        || current_access_context().is_some_and(|context| context.can_skip_masking())
+        || access_context.is_some_and(ShardingAccessContext::can_skip_masking)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::connector::hint::{ShardingAccessContext, should_skip_masking, with_access_context};
+    use crate::connector::hint::{ShardingAccessContext, should_skip_masking};
 
     #[test]
     fn skip_masking_is_disabled_by_default() {
-        assert!(!should_skip_masking(None));
+        assert!(!should_skip_masking(None, None));
     }
 
-    #[tokio::test]
-    async fn access_context_can_enable_skip_masking() {
-        let allowed =
-            with_access_context(ShardingAccessContext::default().with_role("admin"), async {
-                should_skip_masking(None)
-            })
-            .await;
-        assert!(allowed);
+    #[test]
+    fn access_context_can_enable_skip_masking() {
+        let context = ShardingAccessContext::default().with_role("admin");
+        assert!(should_skip_masking(None, Some(&context)));
     }
 }

@@ -3,9 +3,7 @@ use sea_orm::Set;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
-use crate::dto::endpoint_scope::{
-    default_endpoint_scope_array, normalize_endpoint_scope_value,
-};
+use crate::dto::endpoint_scope::{default_endpoint_scope_array, normalize_endpoint_scope_value};
 use crate::entity::model_config::{self, ModelType};
 
 /// 创建/更新模型配置

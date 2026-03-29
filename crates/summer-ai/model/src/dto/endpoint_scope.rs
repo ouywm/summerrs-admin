@@ -75,8 +75,7 @@ pub fn normalize_endpoint_scope_value(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_endpoint_scope_array, normalize_endpoint_scope_list,
-        normalize_endpoint_scope_value,
+        default_endpoint_scope_array, normalize_endpoint_scope_list, normalize_endpoint_scope_value,
     };
 
     #[test]
@@ -110,9 +109,8 @@ mod tests {
 
     #[test]
     fn normalize_endpoint_scope_list_rejects_non_array_values() {
-        let error =
-            normalize_endpoint_scope_list(&serde_json::json!("chat"), "endpointScopes")
-                .unwrap_err();
+        let error = normalize_endpoint_scope_list(&serde_json::json!("chat"), "endpointScopes")
+            .unwrap_err();
         assert_eq!(error, "endpointScopes must be an array of strings");
     }
 

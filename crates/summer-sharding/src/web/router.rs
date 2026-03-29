@@ -3,11 +3,13 @@ use schemars::JsonSchema;
 #[cfg(any(test, feature = "web-probes"))]
 use sea_orm::QueryResult;
 #[cfg(any(test, feature = "web-probes"))]
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, Statement};
 #[cfg(any(test, feature = "web-probes"))]
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "web-probes"))]
 use summer_web::axum::Json;
+#[cfg(any(test, feature = "web-probes"))]
+use summer_web::axum::extract::Path;
 #[cfg(any(test, feature = "web-probes"))]
 use summer_web::error::{KnownWebError, WebError};
 #[cfg(any(test, feature = "web-probes"))]
@@ -15,6 +17,26 @@ use summer_web::get_api;
 
 #[cfg(any(test, feature = "web-probes"))]
 use crate::web::{CurrentTenant, TenantShardingConnection};
+
+#[cfg(any(test, feature = "web-probes"))]
+mod tenant_probe_entity {
+    use sea_orm::entity::prelude::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+    #[sea_orm(schema_name = "test", table_name = "tenant_probe")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i64,
+        pub tenant_id: String,
+        pub payload: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
 
 #[cfg(any(test, feature = "web-probes"))]
 const SHARED_TENANT_PROBE_SQL: &str =
@@ -133,6 +155,25 @@ pub async fn tenant_probe_rows(
 }
 
 #[cfg(any(test, feature = "web-probes"))]
+#[get_api("/internal/sharding/probe/business-row/{id}")]
+pub async fn tenant_business_probe_row(
+    Path(id): Path<i64>,
+    TenantShardingConnection(sharding): TenantShardingConnection,
+) -> Result<Json<TenantProbeRowVo>, WebError> {
+    let row = tenant_probe_entity::Entity::find_by_id(id)
+        .one(&sharding)
+        .await
+        .map_err(internal_server_error)?
+        .ok_or_else(|| KnownWebError::not_found(format!("tenant probe row not found: {id}")))?;
+
+    Ok(Json(TenantProbeRowVo {
+        id: row.id,
+        tenant_id: row.tenant_id,
+        payload: row.payload,
+    }))
+}
+
+#[cfg(any(test, feature = "web-probes"))]
 #[get_api("/internal/sharding/probe/isolated-rows")]
 pub async fn isolated_tenant_probe_rows(
     CurrentTenant(tenant): CurrentTenant,
@@ -182,9 +223,12 @@ mod tests {
     use summer_web::handler::auto_router;
     use tower::util::ServiceExt;
 
-    use super::{IsolatedTenantProbeRowsVo, TenantContextProbeVo, TenantProbeRowsVo};
+    use super::{
+        IsolatedTenantProbeRowsVo, TenantContextProbeVo, TenantProbeRowVo, TenantProbeRowsVo,
+    };
     use crate::{
         ShardingConnection, SummerShardingConfig,
+        tenant::test_support,
         web::{CurrentTenant, TenantContextLayer},
     };
 
@@ -218,17 +262,12 @@ mod tests {
         assert_eq!(payload["isolation_level"], "shared_row");
     }
 
-    fn e2e_database_url() -> String {
-        std::env::var("SUMMER_SHARDING_E2E_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| {
-                "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai"
-                    .to_string()
-            })
-    }
-
     async fn build_real_probe_router() -> Router {
-        let database_url = e2e_database_url();
+        let database_url = test_support::e2e_database_url();
+        let replica_url = test_support::e2e_replica_database_url();
+        test_support::prepare_probe_e2e_environment(&database_url, &replica_url)
+            .await
+            .expect("prepare probe environment");
         let config = format!(
             r#"
             [summer-sharding]
@@ -339,6 +378,46 @@ mod tests {
         assert_eq!(payload.row_count, 1);
         assert_eq!(payload.rows[0].tenant_id, "T-E2E-B");
         assert_eq!(payload.rows[0].payload, "beta-1");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local PostgreSQL test schema data"]
+    async fn tenant_business_route_filters_real_pg_rows_by_header() {
+        let app = build_real_probe_router().await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/sharding/probe/business-row/1")
+                    .header("x-tenant-id", "T-E2E-A")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let payload: TenantProbeRowVo = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload.id, 1);
+        assert_eq!(payload.tenant_id, "T-E2E-A");
+        assert_eq!(payload.payload, "alpha-1");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/sharding/probe/business-row/3")
+                    .header("x-tenant-id", "T-E2E-A")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

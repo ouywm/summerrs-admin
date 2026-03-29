@@ -289,7 +289,10 @@ impl AuthService {
     async fn load_default_tenant_id(&self, user_id: i64) -> ApiResult<Option<String>> {
         let membership = sys_tenant_membership::Entity::find()
             .filter(sys_tenant_membership::Column::UserId.eq(user_id))
-            .filter(sys_tenant_membership::Column::Status.eq(1_i16))
+            .filter(
+                sys_tenant_membership::Column::Status
+                    .eq(sys_tenant_membership::TenantMembershipStatus::Enabled),
+            )
             .order_by_desc(sys_tenant_membership::Column::IsDefault)
             .order_by_asc(sys_tenant_membership::Column::Id)
             .one(&self.db)

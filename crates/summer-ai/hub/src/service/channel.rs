@@ -13,7 +13,6 @@ use summer_web::axum::http::HeaderMap;
 use summer_ai_core::provider::{get_adapter, provider_scope_allowlist};
 use summer_ai_core::types::chat::ChatCompletionRequest;
 use summer_ai_core::types::common::Message;
-use summer_ai_core::types::embedding::EmbeddingResponse;
 use summer_ai_core::types::responses::ResponsesResponse;
 use summer_ai_model::dto::channel::{CreateChannelDto, QueryChannelDto, UpdateChannelDto};
 use summer_ai_model::dto::channel_account::{
@@ -23,6 +22,7 @@ use summer_ai_model::dto::endpoint_scope::normalize_endpoint_scope_list;
 use summer_ai_model::entity::ability;
 use summer_ai_model::entity::channel::{self, ChannelStatus};
 use summer_ai_model::entity::channel_account::{self, AccountStatus};
+use summer_ai_model::entity::model_config;
 use summer_ai_model::vo::channel::{ChannelDetailVo, ChannelListVo, ChannelTestVo};
 use summer_ai_model::vo::channel_account::ChannelAccountVo;
 
@@ -233,15 +233,19 @@ impl ChannelService {
             ));
         }
 
-        let test_model = self
-            .pick_test_model(&channel)
-            .ok_or_else(|| ApiErrors::BadRequest("渠道未配置 test_model 或 models".to_string()))?;
-        let actual_model = resolve_probe_model(&test_model, &channel.model_mapping);
         let probe_scope = resolve_probe_endpoint_scope(
             channel.channel_type as i16,
             &channel.endpoint_scopes,
             endpoint_scope,
         )?;
+        let configured_models = self.json_string_list(&channel.models);
+        let model_supported_endpoints = self
+            .load_model_supported_endpoints(&configured_models)
+            .await?;
+        let test_model = self
+            .pick_test_model(&channel, Some(probe_scope), &model_supported_endpoints)
+            .ok_or_else(|| ApiErrors::BadRequest("渠道未配置 test_model 或 models".to_string()))?;
+        let actual_model = resolve_probe_model(&test_model, &channel.model_mapping);
 
         let adapter = get_adapter(channel.channel_type as i16);
         let request_builder = match probe_scope {
@@ -620,7 +624,11 @@ impl ChannelService {
             return Ok(());
         }
 
-        let abilities = self.build_abilities(model);
+        let configured_models = self.json_string_list(&model.models);
+        let model_supported_endpoints = self
+            .load_model_supported_endpoints(&configured_models)
+            .await?;
+        let abilities = self.build_abilities(model, &model_supported_endpoints);
         if !abilities.is_empty() {
             ability::Entity::insert_many(abilities)
                 .exec(&self.db)
@@ -631,30 +639,60 @@ impl ChannelService {
         Ok(())
     }
 
-    fn build_abilities(&self, model: &channel::Model) -> Vec<ability::ActiveModel> {
+    pub async fn resync_abilities_for_model_name(&self, model_name: &str) -> ApiResult<()> {
+        if model_name.trim().is_empty() {
+            return Ok(());
+        }
+
+        let channels = channel::Entity::find()
+            .filter(channel::Column::DeletedAt.is_null())
+            .all(&self.db)
+            .await
+            .context("查询待同步渠道失败")
+            .map_err(ApiErrors::Internal)?;
+
+        let mut touched = false;
+        for channel_model in channels {
+            let configured_models = self.json_string_list(&channel_model.models);
+            if configured_models
+                .iter()
+                .any(|configured| configured == model_name)
+            {
+                self.sync_abilities(&channel_model).await?;
+                touched = true;
+            }
+        }
+
+        if touched {
+            self.invalidate_route_cache().await?;
+        }
+
+        Ok(())
+    }
+
+    fn build_abilities(
+        &self,
+        model: &channel::Model,
+        model_supported_endpoints: &std::collections::HashMap<String, Vec<String>>,
+    ) -> Vec<ability::ActiveModel> {
         let models = self.json_string_list(&model.models);
         let scopes = effective_channel_endpoint_scopes(
             model.channel_type as i16,
             self.json_string_list(&model.endpoint_scopes),
         );
 
-        models
+        build_model_endpoint_scope_pairs(models, scopes, model_supported_endpoints)
             .into_iter()
-            .flat_map(|item| {
-                scopes
-                    .iter()
-                    .cloned()
-                    .map(move |scope| ability::ActiveModel {
-                        channel_group: Set(model.channel_group.clone()),
-                        endpoint_scope: Set(scope),
-                        model: Set(item.clone()),
-                        channel_id: Set(model.id),
-                        enabled: Set(model.status == ChannelStatus::Enabled),
-                        priority: Set(model.priority),
-                        weight: Set(model.weight),
-                        route_config: Set(serde_json::json!({})),
-                        ..Default::default()
-                    })
+            .map(|(item, scope)| ability::ActiveModel {
+                channel_group: Set(model.channel_group.clone()),
+                endpoint_scope: Set(scope),
+                model: Set(item),
+                channel_id: Set(model.id),
+                enabled: Set(model.status == ChannelStatus::Enabled),
+                priority: Set(model.priority),
+                weight: Set(model.weight),
+                route_config: Set(serde_json::json!({})),
+                ..Default::default()
             })
             .collect()
     }
@@ -671,11 +709,44 @@ impl ChannelService {
             .unwrap_or_default()
     }
 
-    fn pick_test_model(&self, channel: &channel::Model) -> Option<String> {
-        if !channel.test_model.is_empty() {
-            return Some(channel.test_model.clone());
+    async fn load_model_supported_endpoints(
+        &self,
+        models: &[String],
+    ) -> ApiResult<std::collections::HashMap<String, Vec<String>>> {
+        if models.is_empty() {
+            return Ok(std::collections::HashMap::new());
         }
-        self.json_string_list(&channel.models).into_iter().next()
+
+        let configs = model_config::Entity::find()
+            .filter(model_config::Column::ModelName.is_in(models.to_vec()))
+            .all(&self.db)
+            .await
+            .context("查询模型支持端点失败")
+            .map_err(ApiErrors::Internal)?;
+
+        Ok(configs
+            .into_iter()
+            .map(|config| {
+                (
+                    config.model_name,
+                    self.json_string_list(&config.supported_endpoints),
+                )
+            })
+            .collect())
+    }
+
+    fn pick_test_model(
+        &self,
+        channel: &channel::Model,
+        probe_scope: Option<&str>,
+        model_supported_endpoints: &std::collections::HashMap<String, Vec<String>>,
+    ) -> Option<String> {
+        select_probe_model(
+            &channel.test_model,
+            self.json_string_list(&channel.models),
+            probe_scope,
+            model_supported_endpoints,
+        )
     }
 
     async fn find_channel_model(&self, id: i64) -> ApiResult<channel::Model> {
@@ -969,13 +1040,57 @@ fn validate_probe_success_body(
         "responses" => serde_json::from_slice::<ResponsesResponse>(&body)
             .map(|_| ())
             .map_err(|error| ApiErrors::Internal(error.into())),
-        "embeddings" => serde_json::from_slice::<EmbeddingResponse>(&body)
+        "embeddings" => get_adapter(channel_type)
+            .parse_embeddings_response(body, model, 0)
             .map(|_| ())
-            .map_err(|error| ApiErrors::Internal(error.into())),
+            .map_err(ApiErrors::Internal),
         _ => Err(ApiErrors::BadRequest(format!(
             "channel test does not support endpoint scope: {probe_scope}"
         ))),
     }
+}
+
+fn build_model_endpoint_scope_pairs(
+    models: Vec<String>,
+    scopes: Vec<String>,
+    model_supported_endpoints: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<(String, String)> {
+    models
+        .into_iter()
+        .flat_map(|model| {
+            let allowed_scopes = model_supported_endpoints.get(&model);
+            scopes
+                .iter()
+                .filter(move |scope| {
+                    allowed_scopes.is_none_or(|supported| supported.contains(*scope))
+                })
+                .cloned()
+                .map(move |scope| (model.clone(), scope))
+        })
+        .collect()
+}
+
+fn select_probe_model(
+    configured_test_model: &str,
+    models: Vec<String>,
+    probe_scope: Option<&str>,
+    model_supported_endpoints: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<String> {
+    if !configured_test_model.trim().is_empty() {
+        return Some(configured_test_model.to_string());
+    }
+
+    if let Some(probe_scope) = probe_scope
+        && let Some(model) = models.iter().find(|model| {
+            model_supported_endpoints
+                .get(*model)
+                .is_some_and(|supported| supported.iter().any(|scope| scope == probe_scope))
+        })
+    {
+        return Some(model.clone());
+    }
+
+    models.into_iter().next()
 }
 
 fn resolve_probe_model(test_model: &str, model_mapping: &serde_json::Value) -> String {
@@ -1338,15 +1453,17 @@ fn select_schedulable_account(
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_failure_health_update, compute_relay_success_health_update,
-        compute_test_success_health_update, effective_channel_endpoint_scopes,
-        failure_cooldown_window, pick_probe_endpoint_scope, provider_probe_failure_message,
-        relay_health_update_is_stale, relay_request_started_at, resolve_probe_endpoint_scope,
-        resolve_probe_model, select_schedulable_account, should_penalize_upstream_health_failure,
+        build_model_endpoint_scope_pairs, compute_failure_health_update,
+        compute_relay_success_health_update, compute_test_success_health_update,
+        effective_channel_endpoint_scopes, failure_cooldown_window, pick_probe_endpoint_scope,
+        provider_probe_failure_message, relay_health_update_is_stale, relay_request_started_at,
+        resolve_probe_endpoint_scope, resolve_probe_model, select_probe_model,
+        select_schedulable_account, should_penalize_upstream_health_failure,
         should_quarantine_account_on_auth_failure, validate_probe_success_body,
         validate_provider_endpoint_scopes,
     };
     use bytes::Bytes;
+    use std::collections::HashMap;
     use summer_ai_model::entity::channel::ChannelStatus;
     use summer_ai_model::entity::channel_account;
     use summer_common::error::ApiErrors;
@@ -1361,13 +1478,13 @@ mod tests {
     }
 
     #[test]
-    fn effective_channel_endpoint_scopes_restricts_anthropic_to_chat() {
+    fn effective_channel_endpoint_scopes_keeps_bridged_anthropic_responses() {
         assert_eq!(
             effective_channel_endpoint_scopes(
                 3,
                 vec!["chat".into(), "responses".into(), "embeddings".into()]
             ),
-            vec!["chat".to_string()]
+            vec!["chat".to_string(), "responses".to_string()]
         );
     }
 
@@ -1380,18 +1497,97 @@ mod tests {
     }
 
     #[test]
-    fn validate_provider_endpoint_scopes_rejects_unsupported_scope() {
-        let error =
-            validate_provider_endpoint_scopes(3, &["chat".into(), "responses".into()]).unwrap_err();
+    fn effective_channel_endpoint_scopes_keeps_azure_configured_scopes() {
+        assert_eq!(
+            effective_channel_endpoint_scopes(14, vec!["chat".into(), "embeddings".into()]),
+            vec!["chat".to_string(), "embeddings".to_string()]
+        );
+    }
+
+    #[test]
+    fn effective_channel_endpoint_scopes_keeps_gemini_embeddings() {
+        assert_eq!(
+            effective_channel_endpoint_scopes(24, vec!["chat".into(), "embeddings".into()]),
+            vec!["chat".to_string(), "embeddings".to_string()]
+        );
+    }
+
+    #[test]
+    fn validate_provider_endpoint_scopes_rejects_anthropic_embeddings_scope() {
+        let error = validate_provider_endpoint_scopes(3, &["chat".into(), "embeddings".into()])
+            .unwrap_err();
         assert_eq!(
             error,
-            "channel type 3 does not support endpoint scopes: responses"
+            "channel type 3 does not support endpoint scopes: embeddings"
         );
     }
 
     #[test]
     fn validate_provider_endpoint_scopes_allows_empty_scope_list() {
         assert!(validate_provider_endpoint_scopes(3, &[]).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_endpoint_scopes_allows_azure_openai_scopes() {
+        assert!(
+            validate_provider_endpoint_scopes(
+                14,
+                &["chat".into(), "responses".into(), "embeddings".into()]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_provider_endpoint_scopes_allows_gemini_embeddings() {
+        assert!(
+            validate_provider_endpoint_scopes(24, &["chat".into(), "embeddings".into()]).is_ok()
+        );
+    }
+
+    #[test]
+    fn build_model_endpoint_scope_pairs_intersects_supported_endpoints_per_model() {
+        let supported = HashMap::from([
+            ("gemini-2.5-pro".to_string(), vec!["chat".to_string()]),
+            (
+                "text-embedding-004".to_string(),
+                vec!["embeddings".to_string()],
+            ),
+        ]);
+
+        let pairs = build_model_endpoint_scope_pairs(
+            vec!["gemini-2.5-pro".into(), "text-embedding-004".into()],
+            vec!["chat".into(), "embeddings".into()],
+            &supported,
+        );
+
+        assert_eq!(
+            pairs,
+            vec![
+                ("gemini-2.5-pro".to_string(), "chat".to_string()),
+                ("text-embedding-004".to_string(), "embeddings".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn select_probe_model_prefers_model_matching_requested_scope() {
+        let supported = HashMap::from([
+            ("gemini-2.5-pro".to_string(), vec!["chat".to_string()]),
+            (
+                "text-embedding-004".to_string(),
+                vec!["embeddings".to_string()],
+            ),
+        ]);
+
+        let picked = select_probe_model(
+            "",
+            vec!["gemini-2.5-pro".into(), "text-embedding-004".into()],
+            Some("embeddings"),
+            &supported,
+        );
+
+        assert_eq!(picked.as_deref(), Some("text-embedding-004"));
     }
 
     #[test]
@@ -1543,6 +1739,37 @@ mod tests {
     }
 
     #[test]
+    fn provider_probe_failure_message_uses_gemini_specific_payload() {
+        let message = provider_probe_failure_message(
+            24,
+            summer_web::axum::http::StatusCode::BAD_REQUEST,
+            &HeaderMap::new(),
+            br#"{"error":{"status":"INVALID_ARGUMENT","message":"bad gemini request"}}"#,
+        );
+
+        assert_eq!(message, "bad gemini request");
+    }
+
+    #[test]
+    fn validate_probe_success_body_accepts_anthropic_chat_payload() {
+        let body = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "id": "msg_123",
+                "model": "claude-3-5-sonnet-20241022",
+                "content": [{"type": "text", "text": "Hello from Claude"}],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 7
+                }
+            }))
+            .unwrap(),
+        );
+
+        assert!(validate_probe_success_body(3, "chat", "claude-3-5-sonnet-20241022", body).is_ok());
+    }
+
+    #[test]
     fn validate_probe_success_body_accepts_gemini_chat_payload() {
         let body = Bytes::from(
             serde_json::to_vec(&serde_json::json!({
@@ -1583,6 +1810,20 @@ mod tests {
         );
 
         assert!(validate_probe_success_body(1, "responses", "gpt-5.4", body).is_ok());
+    }
+
+    #[test]
+    fn validate_probe_success_body_accepts_gemini_embeddings_payload() {
+        let body = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "embedding": {
+                    "values": [1.0, 2.0]
+                }
+            }))
+            .unwrap(),
+        );
+
+        assert!(validate_probe_success_body(24, "embeddings", "text-embedding-004", body).is_ok());
     }
 
     #[test]

@@ -873,4 +873,33 @@ mod tests {
         assert_eq!(config.online_ddl.batch_size, 2000);
         assert_eq!(config.cdc.tasks.len(), 1);
     }
+
+    #[test]
+    fn config_parses_datasource_pool_settings() {
+        let config = ShardingConfig::from_test_str(
+            r#"
+            [datasources.ds_default]
+            uri = "mock://db"
+            schema = "ai"
+            role = "primary"
+            enable_logging = true
+            min_connections = 4
+            max_connections = 32
+            connect_timeout = 1000
+            idle_timeout = 2000
+            acquire_timeout = 3000
+            test_before_acquire = false
+            "#,
+        )
+        .expect("config should parse");
+
+        let datasource = &config.datasources["ds_default"];
+        assert!(datasource.enable_logging);
+        assert_eq!(datasource.min_connections, 4);
+        assert_eq!(datasource.max_connections, 32);
+        assert_eq!(datasource.connect_timeout, Some(1000));
+        assert_eq!(datasource.idle_timeout, Some(2000));
+        assert_eq!(datasource.acquire_timeout, Some(3000));
+        assert!(!datasource.test_before_acquire);
+    }
 }

@@ -18,6 +18,7 @@ use crate::types::common::{
 
 use super::{
     ProviderAdapter, ProviderErrorInfo, ProviderErrorKind, ProviderStreamError,
+    ResponsesRuntimeMode, merge_extra_body_fields, responses_request_to_chat_request,
     status_to_provider_error_kind,
 };
 
@@ -176,7 +177,8 @@ impl ProviderAdapter for AnthropicAdapter {
         req: &ChatCompletionRequest,
         actual_model: &str,
     ) -> Result<reqwest::RequestBuilder> {
-        let body = AnthropicRequest {
+        let omit_tools_for_none = tool_choice_is_none(req.tool_choice.as_ref());
+        let mut body = serde_json::to_value(AnthropicRequest {
             model: actual_model.to_string(),
             messages: convert_messages(&req.messages),
             system: collect_system_prompt(&req.messages),
@@ -184,10 +186,16 @@ impl ProviderAdapter for AnthropicAdapter {
             temperature: req.temperature,
             top_p: req.top_p,
             stop_sequences: convert_stop_sequences(req.stop.as_ref()),
-            tools: convert_tools(req.tools.as_ref()),
-            tool_choice: convert_tool_choice(req.tool_choice.as_ref()),
+            tools: (!omit_tools_for_none)
+                .then(|| convert_tools(req.tools.as_ref()))
+                .flatten(),
+            tool_choice: (!omit_tools_for_none)
+                .then(|| convert_tool_choice(req.tool_choice.as_ref()))
+                .flatten(),
             stream: req.stream,
-        };
+        })
+        .context("failed to serialize anthropic request")?;
+        merge_extra_body_fields(&mut body, &req.extra);
 
         Ok(client
             .post(build_anthropic_url(base_url))
@@ -295,7 +303,7 @@ impl ProviderAdapter for AnthropicAdapter {
                             if let Some(message) = envelope.message {
                                 state.id = message.id;
                                 state.model = message.model;
-                                state.usage = usage_from_anthropic(message.usage);
+                                merge_anthropic_usage(&mut state.usage, message.usage);
                                 if !state.role_emitted {
                                     state.role_emitted = true;
                                     yield Ok(chunk_with_delta(
@@ -402,7 +410,7 @@ impl ProviderAdapter for AnthropicAdapter {
                         }
                         "message_delta" => {
                             if let Some(usage) = envelope.usage {
-                                state.usage = usage_from_anthropic(usage);
+                                merge_anthropic_usage(&mut state.usage, usage);
                             }
 
                             let finish_reason = envelope.delta.and_then(|delta| {
@@ -453,6 +461,24 @@ impl ProviderAdapter for AnthropicAdapter {
         Ok(Box::pin(stream))
     }
 
+    fn build_responses_request(
+        &self,
+        client: &reqwest::Client,
+        base_url: &str,
+        api_key: &str,
+        req: &serde_json::Value,
+        actual_model: &str,
+    ) -> Result<reqwest::RequestBuilder> {
+        let req: crate::types::responses::ResponsesRequest = serde_json::from_value(req.clone())
+            .context("failed to deserialize responses request")?;
+        let chat_req = responses_request_to_chat_request(&req);
+        self.build_request(client, base_url, api_key, &chat_req, actual_model)
+    }
+
+    fn responses_runtime_mode(&self) -> ResponsesRuntimeMode {
+        ResponsesRuntimeMode::ChatBridge
+    }
+
     fn parse_error(
         &self,
         status: StatusCode,
@@ -473,7 +499,8 @@ impl ProviderAdapter for AnthropicAdapter {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| String::from_utf8_lossy(body).trim().to_string());
 
-        let kind = anthropic_error_kind(error_type).unwrap_or_else(|| status_to_provider_error_kind(status));
+        let kind = anthropic_error_kind(error_type)
+            .unwrap_or_else(|| status_to_provider_error_kind(status));
 
         ProviderErrorInfo::new(kind, message, error_type)
     }
@@ -518,17 +545,23 @@ fn convert_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
             "system" => {}
             "tool" => {
                 let mut content = Vec::new();
-                let tool_result = extract_tool_result_content(&message.content);
-                if let Some(tool_use_id) = message.tool_call_id.clone() {
+                let tool_result = convert_tool_result_content(&message.content);
+                if let Some(tool_use_id) = message.tool_call_id.clone()
+                    && let Some(tool_result) = tool_result
+                {
                     content.push(serde_json::json!({
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
                         "content": tool_result,
                     }));
-                } else if !tool_result.is_empty() {
+                } else if let Some(tool_result) = tool_result {
+                    let text = match tool_result {
+                        serde_json::Value::String(text) => text,
+                        other => other.to_string(),
+                    };
                     content.push(serde_json::json!({
                         "type": "text",
-                        "text": tool_result,
+                        "text": text,
                     }));
                 }
 
@@ -597,7 +630,7 @@ fn convert_tool_choice(tool_choice: Option<&serde_json::Value>) -> Option<serde_
         return match choice {
             "auto" => Some(serde_json::json!({"type": "auto"})),
             "required" => Some(serde_json::json!({"type": "any"})),
-            "none" => None,
+            "none" => Some(serde_json::json!({"type": "none"})),
             _ => None,
         };
     }
@@ -607,6 +640,10 @@ fn convert_tool_choice(tool_choice: Option<&serde_json::Value>) -> Option<serde_
         .and_then(|function| function.get("name"))
         .and_then(|name| name.as_str())
         .map(|name| serde_json::json!({"type": "tool", "name": name}))
+}
+
+fn tool_choice_is_none(tool_choice: Option<&serde_json::Value>) -> bool {
+    tool_choice.and_then(serde_json::Value::as_str) == Some("none")
 }
 
 fn convert_stop_sequences(stop: Option<&serde_json::Value>) -> Option<Vec<String>> {
@@ -668,15 +705,7 @@ fn content_block_from_openai_part(part: &serde_json::Value) -> Option<serde_json
                     .and_then(|value| value.as_str())
                     .or_else(|| map.get("image_url").and_then(|value| value.as_str()));
 
-                url.map(|url| {
-                    serde_json::json!({
-                        "type": "image",
-                        "source": {
-                            "type": "url",
-                            "url": url,
-                        },
-                    })
-                })
+                url.and_then(anthropic_image_block_from_url)
             }
             _ => map
                 .get("text")
@@ -690,6 +719,34 @@ fn content_block_from_openai_part(part: &serde_json::Value) -> Option<serde_json
         },
         _ => None,
     }
+}
+
+fn anthropic_image_block_from_url(url: &str) -> Option<serde_json::Value> {
+    if let Some((media_type, data)) = parse_data_url(url) {
+        return Some(serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }));
+    }
+
+    Some(serde_json::json!({
+        "type": "image",
+        "source": {
+            "type": "url",
+            "url": url,
+        },
+    }))
+}
+
+fn parse_data_url(url: &str) -> Option<(&str, &str)> {
+    let data = url.strip_prefix("data:")?;
+    let (meta, payload) = data.split_once(',')?;
+    let media_type = meta.strip_suffix(";base64")?;
+    Some((media_type, payload))
 }
 
 fn extract_text_segments(content: &serde_json::Value) -> Option<String> {
@@ -711,11 +768,19 @@ fn extract_text_segments(content: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn extract_tool_result_content(content: &serde_json::Value) -> String {
+fn convert_tool_result_content(content: &serde_json::Value) -> Option<serde_json::Value> {
     match content {
-        serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
+        serde_json::Value::String(text) if !text.is_empty() => {
+            Some(serde_json::Value::String(text.clone()))
+        }
+        serde_json::Value::Array(items) if !items.is_empty() => {
+            Some(serde_json::Value::Array(items.clone()))
+        }
+        serde_json::Value::Object(map) if map.get("type").is_some() => Some(
+            serde_json::Value::Array(vec![serde_json::Value::Object(map.clone())]),
+        ),
+        serde_json::Value::Null => None,
+        other => Some(serde_json::Value::String(other.to_string())),
     }
 }
 
@@ -741,6 +806,22 @@ fn usage_from_anthropic(usage: AnthropicUsage) -> Usage {
     }
 }
 
+fn merge_anthropic_usage(state: &mut Usage, usage: AnthropicUsage) {
+    if usage.input_tokens > 0 || state.prompt_tokens == 0 {
+        state.prompt_tokens = usage.input_tokens;
+    }
+    if usage.output_tokens > 0 || state.completion_tokens == 0 {
+        state.completion_tokens = usage.output_tokens;
+    }
+
+    let cached_tokens = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+    if cached_tokens > 0 || state.cached_tokens == 0 {
+        state.cached_tokens = cached_tokens;
+    }
+
+    state.total_tokens = state.prompt_tokens + state.completion_tokens;
+}
+
 fn joined_text_value(texts: Vec<String>) -> serde_json::Value {
     if texts.is_empty() {
         serde_json::Value::Null
@@ -760,7 +841,7 @@ fn map_anthropic_finish_reason(
     match finish_reason {
         Some("max_tokens") => Some(FinishReason::Length),
         Some("tool_use") => Some(FinishReason::ToolCalls),
-        Some("content_filter") => Some(FinishReason::ContentFilter),
+        Some("content_filter" | "refusal") => Some(FinishReason::ContentFilter),
         Some("end_turn" | "stop_sequence") => Some(FinishReason::Stop),
         Some(_) | None => Some(FinishReason::Stop),
     }
@@ -884,6 +965,250 @@ mod tests {
     }
 
     #[test]
+    fn build_request_omits_tool_choice_and_tools_for_none_and_converts_data_url_image() {
+        let client = reqwest::Client::new();
+        let adapter = AnthropicAdapter;
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-3-5-sonnet",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object"}
+                }
+            }],
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is in this image?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,aGVsbG8="
+                        }
+                    }
+                ]
+            }],
+            "tool_choice": "none"
+        }))
+        .unwrap();
+
+        let request = adapter
+            .build_request(
+                &client,
+                "https://api.anthropic.com",
+                "sk-ant-test",
+                &req,
+                "claude-3-5-sonnet-20241022",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert!(body.get("tool_choice").is_none());
+        assert!(body.get("tools").is_none());
+        assert_eq!(
+            body["messages"][0]["content"][1],
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "aGVsbG8="
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn build_request_preserves_thinking_extra_body_fields() {
+        let client = reqwest::Client::new();
+        let adapter = AnthropicAdapter;
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "solve a hard problem"}],
+            "max_tokens": 4096,
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 2048
+            }
+        }))
+        .unwrap();
+
+        let request = adapter
+            .build_request(
+                &client,
+                "https://api.anthropic.com",
+                "sk-ant-test",
+                &req,
+                "claude-sonnet-4-20250514",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": 2048
+            })
+        );
+    }
+
+    #[test]
+    fn build_request_preserves_tool_result_content_blocks() {
+        let client = reqwest::Client::new();
+        let adapter = AnthropicAdapter;
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-3-5-sonnet",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "toolu_123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\":\"Paris\"}"
+                        }
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "toolu_123",
+                    "content": [{
+                        "type": "text",
+                        "text": "15C and sunny"
+                    }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let request = adapter
+            .build_request(
+                &client,
+                "https://api.anthropic.com",
+                "sk-ant-test",
+                &req,
+                "claude-3-5-sonnet-20241022",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body["messages"][1]["content"][0],
+            serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_123",
+                "content": [{
+                    "type": "text",
+                    "text": "15C and sunny"
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn build_request_converts_system_tool_result_and_named_tool_choice() {
+        let client = reqwest::Client::new();
+        let adapter = AnthropicAdapter;
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-3-5-sonnet",
+            "messages": [
+                {"role": "system", "content": "Be concise."},
+                {"role": "user", "content": "What's the weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "toolu_123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\":\"Paris\"}"
+                        }
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "toolu_123",
+                    "content": "15C and sunny"
+                }
+            ],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": null
+                }
+            }],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "get_weather"}
+            },
+            "stop": ["END", "HALT"]
+        }))
+        .unwrap();
+
+        let request = adapter
+            .build_request(
+                &client,
+                "https://api.anthropic.com",
+                "sk-ant-test",
+                &req,
+                "claude-3-5-sonnet-20241022",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["system"], serde_json::json!("Be concise."));
+        assert_eq!(
+            body["tool_choice"],
+            serde_json::json!({"type": "tool", "name": "get_weather"})
+        );
+        assert_eq!(body["stop_sequences"], serde_json::json!(["END", "HALT"]));
+        assert_eq!(
+            body["tools"][0],
+            serde_json::json!({
+                "name": "get_weather",
+                "description": "Get weather",
+                "input_schema": {"type": "object"}
+            })
+        );
+        assert_eq!(
+            body["messages"][1]["content"][0],
+            serde_json::json!({
+                "type": "tool_use",
+                "id": "toolu_123",
+                "name": "get_weather",
+                "input": {"city": "Paris"}
+            })
+        );
+        assert_eq!(
+            body["messages"][2]["content"][0],
+            serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_123",
+                "content": "15C and sunny"
+            })
+        );
+    }
+
+    #[test]
     fn parse_response_converts_text_and_usage() {
         let adapter = AnthropicAdapter;
         let body = Bytes::from(
@@ -910,16 +1235,104 @@ mod tests {
         assert_eq!(response.usage.total_tokens, 19);
     }
 
+    #[test]
+    fn parse_response_converts_tool_use_and_cached_usage() {
+        let adapter = AnthropicAdapter;
+        let body = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "id": "msg_456",
+                "model": "claude-3-5-sonnet-20241022",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_123",
+                    "name": "get_weather",
+                    "input": {"city": "Paris"}
+                }],
+                "stop_reason": "tool_use",
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 7,
+                    "cache_read_input_tokens": 5,
+                    "cache_creation_input_tokens": 3
+                }
+            }))
+            .unwrap(),
+        );
+
+        let response = adapter.parse_response(body, "claude").unwrap();
+        let tool_calls = response.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "toolu_123");
+        assert_eq!(tool_calls[0].function.name, "get_weather");
+        assert_eq!(tool_calls[0].function.arguments, "{\"city\":\"Paris\"}");
+        assert!(matches!(
+            response.choices[0].finish_reason,
+            Some(FinishReason::ToolCalls)
+        ));
+        assert_eq!(response.usage.prompt_tokens, 12);
+        assert_eq!(response.usage.completion_tokens, 7);
+        assert_eq!(response.usage.total_tokens, 19);
+        assert_eq!(response.usage.cached_tokens, 8);
+    }
+
+    #[test]
+    fn parse_response_maps_refusal_finish_reason_to_content_filter() {
+        let adapter = AnthropicAdapter;
+        let body = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "id": "msg_refusal",
+                "model": "claude-sonnet-4-20250514",
+                "content": [{"type": "text", "text": "I can’t help with that."}],
+                "stop_reason": "refusal",
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 7
+                }
+            }))
+            .unwrap(),
+        );
+
+        let response = adapter.parse_response(body, "claude").unwrap();
+        assert!(matches!(
+            response.choices[0].finish_reason,
+            Some(FinishReason::ContentFilter)
+        ));
+    }
+
+    #[test]
+    fn parse_response_maps_max_tokens_finish_reason_to_length() {
+        let adapter = AnthropicAdapter;
+        let body = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "id": "msg_length",
+                "model": "claude-sonnet-4-20250514",
+                "content": [{"type": "text", "text": "Partial answer"}],
+                "stop_reason": "max_tokens",
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 7
+                }
+            }))
+            .unwrap(),
+        );
+
+        let response = adapter.parse_response(body, "claude").unwrap();
+        assert!(matches!(
+            response.choices[0].finish_reason,
+            Some(FinishReason::Length)
+        ));
+    }
+
     #[tokio::test]
     async fn parse_stream_emits_text_and_final_usage() {
         let adapter = AnthropicAdapter;
         let sse_body = concat!(
             "event: message_start\n",
-            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"model\":\"claude-3-5-sonnet-20241022\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0}}}\n\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"model\":\"claude-3-5-sonnet-20241022\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":3}}}\n\n",
             "event: content_block_delta\n",
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
             "event: message_delta\n",
-            "data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
             "event: message_stop\n",
             "data: {\"type\":\"message_stop\"}\n\n"
         );
@@ -939,17 +1352,162 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
 
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| { chunk.choices[0].delta.role.as_deref() == Some("assistant") })
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| { chunk.choices[0].delta.content.as_deref() == Some("Hello") })
+        );
+        let final_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.usage.is_some())
+            .expect("expected usage chunk");
+        assert_eq!(
+            final_chunk.usage.as_ref().map(|usage| usage.total_tokens),
+            Some(19)
+        );
+        assert_eq!(
+            final_chunk.usage.as_ref().map(|usage| usage.prompt_tokens),
+            Some(12)
+        );
+        assert_eq!(
+            final_chunk.usage.as_ref().map(|usage| usage.cached_tokens),
+            Some(8)
+        );
+        assert!(matches!(
+            final_chunk.choices[0].finish_reason,
+            Some(FinishReason::Stop)
+        ));
+    }
+
+    #[tokio::test]
+    async fn parse_stream_emits_reasoning_content_for_thinking_delta() {
+        let adapter = AnthropicAdapter;
+        let sse_body = concat!(
+            "event: message_start\n",
+            "data: {\"message\":{\"id\":\"msg_think\",\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think this through.\"}}\n\n",
+            "event: message_delta\n",
+            "data: {\"usage\":{\"input_tokens\":10,\"output_tokens\":4},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+        );
+
+        let mock_response = http::Response::builder()
+            .status(200)
+            .body(sse_body.to_string())
+            .unwrap();
+        let response = reqwest::Response::from(mock_response);
+
+        let chunks: Vec<_> = adapter
+            .parse_stream(response, "claude-sonnet-4-20250514")
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.choices[0].delta.role.as_deref() == Some("assistant"))
+        );
         assert!(chunks.iter().any(|chunk| {
-            chunk.choices[0].delta.role.as_deref() == Some("assistant")
-        }));
-        assert!(chunks.iter().any(|chunk| {
-            chunk.choices[0].delta.content.as_deref() == Some("Hello")
+            chunk.choices[0].delta.reasoning_content.as_deref()
+                == Some("Let me think this through.")
         }));
         let final_chunk = chunks
             .iter()
             .find(|chunk| chunk.usage.is_some())
             .expect("expected usage chunk");
-        assert_eq!(final_chunk.usage.as_ref().map(|usage| usage.total_tokens), Some(19));
+        assert!(matches!(
+            final_chunk.choices[0].finish_reason,
+            Some(FinishReason::Stop)
+        ));
+        assert_eq!(
+            final_chunk.usage.as_ref().map(|usage| usage.total_tokens),
+            Some(14)
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_stream_maps_content_filter_finish_reason() {
+        let adapter = AnthropicAdapter;
+        let sse_body = concat!(
+            "event: message_start\n",
+            "data: {\"message\":{\"id\":\"msg_filter\",\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+            "event: message_delta\n",
+            "data: {\"usage\":{\"input_tokens\":10,\"output_tokens\":4},\"delta\":{\"stop_reason\":\"content_filter\"}}\n\n"
+        );
+
+        let mock_response = http::Response::builder()
+            .status(200)
+            .body(sse_body.to_string())
+            .unwrap();
+        let response = reqwest::Response::from(mock_response);
+
+        let chunks: Vec<_> = adapter
+            .parse_stream(response, "claude-sonnet-4-20250514")
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+
+        let final_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.usage.is_some())
+            .expect("expected usage chunk");
+        assert!(matches!(
+            final_chunk.choices[0].finish_reason,
+            Some(FinishReason::ContentFilter)
+        ));
+    }
+
+    #[tokio::test]
+    async fn parse_stream_uses_event_name_when_type_is_missing() {
+        let adapter = AnthropicAdapter;
+        let sse_body = concat!(
+            "event: message_start\n",
+            "data: {\"message\":{\"id\":\"msg_event_name\",\"model\":\"claude-3-5-sonnet-20241022\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello from fallback\"}}\n\n",
+            "event: message_delta\n",
+            "data: {\"usage\":{\"input_tokens\":12,\"output_tokens\":7},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+        );
+
+        let mock_response = http::Response::builder()
+            .status(200)
+            .body(sse_body.to_string())
+            .unwrap();
+        let response = reqwest::Response::from(mock_response);
+
+        let chunks: Vec<_> = adapter
+            .parse_stream(response, "claude-3-5-sonnet-20241022")
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.choices[0].delta.role.as_deref() == Some("assistant"))
+        );
+        assert!(chunks.iter().any(|chunk| {
+            chunk.choices[0].delta.content.as_deref() == Some("Hello from fallback")
+        }));
+        let final_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.usage.is_some())
+            .expect("expected usage chunk");
         assert!(matches!(
             final_chunk.choices[0].finish_reason,
             Some(FinishReason::Stop)
@@ -1044,8 +1602,16 @@ mod tests {
         assert_eq!(stream_error.info.kind, ProviderErrorKind::Server);
         assert_eq!(stream_error.info.code, "overloaded_error");
         assert_eq!(stream_error.info.message, "upstream overloaded");
-        assert!(error.to_string().contains("anthropic stream error [overloaded_error]"));
-        assert!(error.chain().any(|cause| cause.to_string().contains("upstream overloaded")));
+        assert!(
+            error
+                .to_string()
+                .contains("anthropic stream error [overloaded_error]")
+        );
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.to_string().contains("upstream overloaded"))
+        );
     }
 
     #[tokio::test]
@@ -1093,6 +1659,45 @@ mod tests {
         assert!(matches!(
             final_chunk.choices[0].finish_reason,
             Some(FinishReason::Stop)
+        ));
+    }
+
+    #[tokio::test]
+    async fn parse_stream_maps_refusal_finish_reason_to_content_filter() {
+        let adapter = AnthropicAdapter;
+        let sse_body = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_refusal\",\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":12,\"output_tokens\":0}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I can’t help with that.\"}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7},\"delta\":{\"stop_reason\":\"refusal\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+
+        let mock_response = http::Response::builder()
+            .status(200)
+            .body(sse_body.to_string())
+            .unwrap();
+        let response = reqwest::Response::from(mock_response);
+
+        let chunks: Vec<_> = adapter
+            .parse_stream(response, "claude-sonnet-4-20250514")
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+
+        let final_chunk = chunks
+            .iter()
+            .rfind(|chunk| chunk.choices[0].finish_reason.is_some())
+            .expect("expected terminal chunk");
+        assert!(matches!(
+            final_chunk.choices[0].finish_reason,
+            Some(FinishReason::ContentFilter)
         ));
     }
 }

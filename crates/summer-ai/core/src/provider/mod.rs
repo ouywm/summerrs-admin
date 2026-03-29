@@ -4,16 +4,28 @@ use futures::stream::BoxStream;
 use summer_web::axum::http::{HeaderMap, StatusCode};
 
 use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
+use crate::types::common::{Message, Tool};
+use crate::types::embedding::EmbeddingResponse;
+use crate::types::responses::ResponsesRequest;
 
 mod anthropic;
+mod azure;
 mod gemini;
 mod openai;
 
 pub use anthropic::AnthropicAdapter;
+pub use azure::AzureOpenAiAdapter;
 pub use gemini::GeminiAdapter;
 pub use openai::OpenAiAdapter;
 
-const CHAT_ONLY_PROVIDER_SCOPES: &[&str] = &["chat"];
+const CHAT_ONLY_PROVIDER_SCOPES: &[&str] = &["chat", "responses"];
+const GEMINI_PROVIDER_SCOPES: &[&str] = &["chat", "responses", "embeddings"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponsesRuntimeMode {
+    Native,
+    ChatBridge,
+}
 
 /// Provider 适配器 trait
 ///
@@ -52,6 +64,10 @@ pub trait ProviderAdapter: Send + Sync {
         Err(anyhow::anyhow!("responses endpoint is not supported"))
     }
 
+    fn responses_runtime_mode(&self) -> ResponsesRuntimeMode {
+        ResponsesRuntimeMode::Native
+    }
+
     /// Build an upstream /v1/embeddings request.
     fn build_embeddings_request(
         &self,
@@ -64,6 +80,16 @@ pub trait ProviderAdapter: Send + Sync {
         Err(anyhow::anyhow!("embeddings endpoint is not supported"))
     }
 
+    /// Parse an upstream /v1/embeddings-like response into the OpenAI-compatible shape.
+    fn parse_embeddings_response(
+        &self,
+        body: Bytes,
+        _model: &str,
+        _estimated_prompt_tokens: i32,
+    ) -> Result<EmbeddingResponse> {
+        serde_json::from_slice(&body).map_err(Into::into)
+    }
+
     /// Parse a provider-specific error payload into normalized routing semantics.
     fn parse_error(
         &self,
@@ -72,6 +98,97 @@ pub trait ProviderAdapter: Send + Sync {
         body: &[u8],
     ) -> ProviderErrorInfo {
         parse_openai_compatible_error(status, body)
+    }
+}
+
+pub(crate) fn responses_request_to_chat_request(req: &ResponsesRequest) -> ChatCompletionRequest {
+    let mut messages = Vec::new();
+    if let Some(instructions) = req.instructions.as_ref()
+        && !instructions.is_empty()
+    {
+        messages.push(Message {
+            role: "system".into(),
+            content: serde_json::Value::String(instructions.clone()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+    messages.extend(responses_input_to_messages(&req.input));
+
+    let mut extra = req.extra.clone();
+    if let Some(reasoning) = req.reasoning.as_ref() {
+        extra.insert("reasoning".into(), reasoning.clone());
+    }
+    if let Some(metadata) = req.metadata.as_ref() {
+        extra.insert("metadata".into(), metadata.clone());
+    }
+
+    ChatCompletionRequest {
+        model: req.model.clone(),
+        messages,
+        stream: req.stream,
+        temperature: req.temperature,
+        max_tokens: req.max_output_tokens,
+        top_p: req.top_p,
+        frequency_penalty: None,
+        presence_penalty: None,
+        stop: None,
+        tools: req
+            .tools
+            .as_ref()
+            .and_then(|tools| serde_json::from_value::<Vec<Tool>>(tools.clone()).ok()),
+        tool_choice: req.tool_choice.clone(),
+        response_format: req
+            .text
+            .as_ref()
+            .and_then(|text| text.get("format"))
+            .cloned(),
+        stream_options: None,
+        extra,
+    }
+}
+
+fn responses_input_to_messages(input: &serde_json::Value) -> Vec<Message> {
+    match input {
+        serde_json::Value::Null => Vec::new(),
+        serde_json::Value::String(text) => {
+            vec![user_message(serde_json::Value::String(text.clone()))]
+        }
+        serde_json::Value::Array(items) => {
+            let parsed: Option<Vec<Message>> =
+                items.iter().map(response_input_item_to_message).collect();
+            parsed.unwrap_or_else(|| vec![user_message(input.clone())])
+        }
+        _ => response_input_item_to_message(input)
+            .map(|message| vec![message])
+            .unwrap_or_else(|| vec![user_message(input.clone())]),
+    }
+}
+
+fn response_input_item_to_message(value: &serde_json::Value) -> Option<Message> {
+    if value.get("role").is_some() && value.get("content").is_some() {
+        return serde_json::from_value::<Message>(value.clone()).ok();
+    }
+
+    let role = value.get("role").and_then(serde_json::Value::as_str)?;
+    let content = value.get("content")?.clone();
+    Some(Message {
+        role: role.to_string(),
+        content,
+        name: None,
+        tool_calls: None,
+        tool_call_id: None,
+    })
+}
+
+fn user_message(content: serde_json::Value) -> Message {
+    Message {
+        role: "user".into(),
+        content,
+        name: None,
+        tool_calls: None,
+        tool_call_id: None,
     }
 }
 
@@ -92,7 +209,11 @@ pub struct ProviderErrorInfo {
 }
 
 impl ProviderErrorInfo {
-    pub fn new(kind: ProviderErrorKind, message: impl Into<String>, code: impl Into<String>) -> Self {
+    pub fn new(
+        kind: ProviderErrorKind,
+        message: impl Into<String>,
+        code: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -160,15 +281,30 @@ fn default_error_code(status: StatusCode) -> &'static str {
     }
 }
 
+fn merge_extra_body_fields(
+    body: &mut serde_json::Value,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(body_obj) = body.as_object_mut() else {
+        return;
+    };
+
+    for (key, value) in extra {
+        body_obj.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
 /// 根据渠道类型获取对应适配器（零状态，全局静态实例）
 pub fn get_adapter(channel_type: i16) -> &'static dyn ProviderAdapter {
     static ANTHROPIC: AnthropicAdapter = AnthropicAdapter;
+    static AZURE: AzureOpenAiAdapter = AzureOpenAiAdapter;
     static GEMINI: GeminiAdapter = GeminiAdapter;
     static OPENAI: OpenAiAdapter = OpenAiAdapter;
 
     match channel_type {
         1 => &OPENAI,    // OpenAI / OpenAI 兼容
         3 => &ANTHROPIC, // Anthropic
+        14 => &AZURE,    // Azure OpenAI
         24 => &GEMINI,   // Gemini
         _ => &OPENAI,    // 默认 OpenAI 兼容
     }
@@ -176,7 +312,8 @@ pub fn get_adapter(channel_type: i16) -> &'static dyn ProviderAdapter {
 
 pub fn provider_scope_allowlist(channel_type: i16) -> Option<&'static [&'static str]> {
     match channel_type {
-        3 | 24 => Some(CHAT_ONLY_PROVIDER_SCOPES),
+        3 => Some(CHAT_ONLY_PROVIDER_SCOPES),
+        24 => Some(GEMINI_PROVIDER_SCOPES),
         _ => None,
     }
 }
@@ -216,9 +353,15 @@ mod tests {
     }
 
     #[test]
-    fn provider_scope_allowlist_restricts_anthropic_and_gemini_to_chat() {
-        assert_eq!(provider_scope_allowlist(3), Some(&["chat"][..]));
-        assert_eq!(provider_scope_allowlist(24), Some(&["chat"][..]));
+    fn provider_scope_allowlist_keeps_bridged_responses_for_anthropic_and_gemini() {
+        assert_eq!(
+            provider_scope_allowlist(3),
+            Some(&["chat", "responses"][..])
+        );
+        assert_eq!(
+            provider_scope_allowlist(24),
+            Some(&["chat", "responses", "embeddings"][..])
+        );
     }
 
     #[test]
@@ -228,43 +371,166 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_and_gemini_default_responses_request_to_unsupported() {
+    fn azure_legacy_chat_request_uses_api_key_header_and_deployment_path() {
         let client = reqwest::Client::new();
-        let payload = serde_json::json!({"model": "demo"});
+        let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello"}]
+        }))
+        .unwrap();
 
-        let anthropic_error = get_adapter(3)
-            .build_responses_request(&client, "https://example.com", "sk-demo", &payload, "demo")
-            .unwrap_err();
-        assert!(anthropic_error
-            .to_string()
-            .contains("responses endpoint is not supported"));
+        let built = get_adapter(14)
+            .build_request(
+                &client,
+                "https://example-resource.openai.azure.com",
+                "azure-key",
+                &req,
+                "gpt-4o-deployment",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
 
-        let gemini_error = get_adapter(24)
-            .build_responses_request(&client, "https://example.com", "sk-demo", &payload, "demo")
-            .unwrap_err();
-        assert!(gemini_error
-            .to_string()
-            .contains("responses endpoint is not supported"));
+        assert_eq!(
+            built.url().as_str(),
+            "https://example-resource.openai.azure.com/openai/deployments/gpt-4o-deployment/chat/completions?api-version=2024-10-21"
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("azure-key")
+        );
+        assert!(built.headers().get("authorization").is_none());
     }
 
     #[test]
-    fn anthropic_and_gemini_default_embeddings_request_to_unsupported() {
+    fn azure_v1_responses_request_uses_openai_v1_base_url() {
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "model": "gpt-4.1",
+            "input": "hello"
+        });
+
+        let built = get_adapter(14)
+            .build_responses_request(
+                &client,
+                "https://example-resource.openai.azure.com/openai/v1/",
+                "azure-key",
+                &payload,
+                "gpt-4.1-deployment",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            built.url().as_str(),
+            "https://example-resource.openai.azure.com/openai/v1/responses"
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("azure-key")
+        );
+        assert!(built.headers().get("authorization").is_none());
+
+        let body_bytes = built.body().unwrap().as_bytes().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
+        assert_eq!(body["model"], "gpt-4.1-deployment");
+    }
+
+    #[test]
+    fn azure_legacy_embeddings_request_uses_api_key_header_and_deployment_path() {
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "model": "text-embedding-3-large",
+            "input": "hello"
+        });
+
+        let built = get_adapter(14)
+            .build_embeddings_request(
+                &client,
+                "https://example-resource.openai.azure.com",
+                "azure-key",
+                &payload,
+                "text-embedding-3-large-deployment",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            built.url().as_str(),
+            "https://example-resource.openai.azure.com/openai/deployments/text-embedding-3-large-deployment/embeddings?api-version=2024-10-21"
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("azure-key")
+        );
+        assert!(built.headers().get("authorization").is_none());
+    }
+
+    #[test]
+    fn anthropic_and_gemini_responses_requests_bridge_to_chat_endpoints() {
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "model": "demo",
+            "input": "hello"
+        });
+
+        let anthropic = get_adapter(3)
+            .build_responses_request(
+                &client,
+                "https://api.anthropic.com",
+                "sk-demo",
+                &payload,
+                "claude-sonnet-4",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            anthropic.url().as_str(),
+            "https://api.anthropic.com/v1/messages"
+        );
+
+        let gemini = get_adapter(24)
+            .build_responses_request(
+                &client,
+                "https://generativelanguage.googleapis.com",
+                "sk-demo",
+                &payload,
+                "gemini-2.5-pro",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            gemini.url().as_str(),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+        );
+    }
+
+    #[test]
+    fn anthropic_default_embeddings_request_to_unsupported() {
         let client = reqwest::Client::new();
         let payload = serde_json::json!({"model": "demo"});
 
         let anthropic_error = get_adapter(3)
             .build_embeddings_request(&client, "https://example.com", "sk-demo", &payload, "demo")
             .unwrap_err();
-        assert!(anthropic_error
-            .to_string()
-            .contains("embeddings endpoint is not supported"));
-
-        let gemini_error = get_adapter(24)
-            .build_embeddings_request(&client, "https://example.com", "sk-demo", &payload, "demo")
-            .unwrap_err();
-        assert!(gemini_error
-            .to_string()
-            .contains("embeddings endpoint is not supported"));
+        assert!(
+            anthropic_error
+                .to_string()
+                .contains("embeddings endpoint is not supported")
+        );
     }
 
     #[test]

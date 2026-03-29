@@ -181,11 +181,7 @@ async fn refresh_preserves_tenant_id() {
 
     let pair = mgr.login(params).await.unwrap();
     let refreshed = mgr
-        .refresh(
-            &pair.refresh_token,
-            &admin_profile(),
-            Some("T-REFRESH-001"),
-        )
+        .refresh(&pair.refresh_token, &admin_profile(), Some("T-REFRESH-001"))
         .await
         .unwrap();
     let validated = mgr.validate_token(&refreshed.access_token).await.unwrap();
@@ -381,7 +377,9 @@ async fn refresh_with_updated_profile() {
 #[tokio::test]
 async fn refresh_with_invalid_token_fails() {
     let mgr = make_manager();
-    let result = mgr.refresh("invalid-refresh-token", &admin_profile(), None).await;
+    let result = mgr
+        .refresh("invalid-refresh-token", &admin_profile(), None)
+        .await;
     assert!(matches!(result, Err(AuthError::InvalidRefreshToken)));
 }
 
@@ -400,7 +398,9 @@ async fn refresh_cross_type_rejected() {
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
     // Access token 不能作为 refresh token
-    let result = mgr.refresh(&pair.access_token, &admin_profile(), None).await;
+    let result = mgr
+        .refresh(&pair.access_token, &admin_profile(), None)
+        .await;
     assert!(matches!(result, Err(AuthError::InvalidRefreshToken)));
 
     // Refresh token 不能作为 access token
@@ -422,7 +422,9 @@ async fn ban_user_blocks_access() {
     assert!(matches!(result, Err(AuthError::AccountBanned)));
 
     // Refresh 也失败（rid 被清理 or deny=banned）
-    let result = mgr.refresh(&pair.refresh_token, &admin_profile(), None).await;
+    let result = mgr
+        .refresh(&pair.refresh_token, &admin_profile(), None)
+        .await;
     assert!(result.is_err());
 }
 
@@ -469,7 +471,9 @@ async fn ban_during_refresh_blocked() {
     mgr.ban_user(&LoginId::admin(1)).await.unwrap();
 
     // 封禁后 refresh 也应失败
-    let result = mgr.refresh(&pair.refresh_token, &admin_profile(), None).await;
+    let result = mgr
+        .refresh(&pair.refresh_token, &admin_profile(), None)
+        .await;
     assert!(result.is_err());
 }
 

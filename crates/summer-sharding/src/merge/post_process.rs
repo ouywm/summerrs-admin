@@ -18,7 +18,8 @@ pub fn apply(
 ) -> Result<Vec<QueryResult>> {
     let encrypt_rules = matching_encrypt_rules(config, analysis);
     let masking_rules = matching_masking_rules(config, analysis);
-    let skip_masking = should_skip_masking(analysis.hint.as_ref());
+    let skip_masking =
+        should_skip_masking(analysis.hint.as_ref(), analysis.access_context.as_ref());
 
     if encrypt_rules.is_empty() && (masking_rules.is_empty() || skip_masking) {
         return Ok(rows);
@@ -123,10 +124,7 @@ mod tests {
 
     use crate::{
         config::ShardingConfig,
-        connector::{
-            analyze_statement,
-            hint::{ShardingAccessContext, with_access_context},
-        },
+        connector::{analyze_statement, hint::ShardingAccessContext},
         merge::post_process::apply,
     };
 
@@ -171,17 +169,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn post_process_skips_masking_with_access_context() {
+    #[test]
+    fn post_process_skips_masking_with_access_context() {
         let config = masking_config();
         let stmt = Statement::from_string(DbBackend::Postgres, "SELECT phone FROM sys.user");
-        let analysis = analyze_statement(&stmt).expect("analysis");
+        let mut analysis = analyze_statement(&stmt).expect("analysis");
+        analysis.access_context =
+            Some(ShardingAccessContext::default().with_permission("masking:skip"));
 
-        let rows = with_access_context(
-            ShardingAccessContext::default().with_permission("masking:skip"),
-            async { apply(vec![make_row("13812341234")], &analysis, &config).expect("apply") },
-        )
-        .await;
+        let rows = apply(vec![make_row("13812341234")], &analysis, &config).expect("apply");
 
         assert_eq!(
             rows[0].try_get::<String>("", "phone").expect("phone"),

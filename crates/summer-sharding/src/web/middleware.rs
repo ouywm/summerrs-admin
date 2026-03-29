@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin};
+use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 use summer_auth::UserSession;
 use summer_web::axum::{body::Body, extract::Request, response::Response};
@@ -121,25 +121,38 @@ where
             self.default_isolation,
             self.sharding.as_ref(),
         );
-        let request_scoped_sharding = tenant.as_ref().and_then(|tenant| {
-            self.sharding
+        let shadow_headers = request_headers(req.headers());
+        let request_scoped_sharding = self.sharding.as_ref().map(|sharding| {
+            let sharding = sharding.with_shadow_headers(shadow_headers);
+            tenant
                 .as_ref()
-                .map(|sharding| sharding.with_tenant_context(tenant.clone()))
+                .map(|tenant| sharding.with_tenant_context(tenant.clone()))
+                .unwrap_or(sharding)
         });
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
             if let Some(tenant) = tenant {
                 req.extensions_mut().insert(tenant);
-                if let Some(sharding) = request_scoped_sharding {
-                    req.extensions_mut().insert(sharding);
-                }
-                inner.call(req).await
-            } else {
-                inner.call(req).await
             }
+            if let Some(sharding) = request_scoped_sharding {
+                req.extensions_mut().insert(sharding);
+            }
+            inner.call(req).await
         })
     }
+}
+
+fn request_headers(headers: &summer_web::axum::http::HeaderMap) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(key, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (key.as_str().to_ascii_lowercase(), value.to_string()))
+        })
+        .collect()
 }
 
 fn resolve_tenant_context(
@@ -220,7 +233,13 @@ mod tests {
     use futures::executor::block_on;
     use parking_lot::Mutex;
     use sea_orm::{ConnectionTrait, DbBackend, MockDatabase, Statement};
-    use summer_auth::{AdminProfile, DeviceType, LoginId, UserProfile, UserSession};
+    use std::sync::Arc as StdArc;
+
+    use summer_auth::storage::memory::MemoryStorage;
+    use summer_auth::{
+        AdminProfile, AuthConfig, AuthLayer, DeviceType, LoginId, LoginParams, SessionManager,
+        UserProfile, UserSession,
+    };
     use summer_web::axum::{
         body::Body,
         extract::Request,
@@ -329,6 +348,30 @@ mod tests {
             .expect("request")
     }
 
+    fn request_with_bearer_token(token: &str) -> Request {
+        HttpRequest::builder()
+            .uri("/tenant")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request")
+    }
+
+    fn auth_config() -> AuthConfig {
+        serde_json::from_str(
+            r#"{
+                "token_name": "Authorization",
+                "token_prefix": "Bearer ",
+                "access_timeout": 3600,
+                "refresh_timeout": 86400,
+                "concurrent_login": true,
+                "max_devices": 3,
+                "qr_code_timeout": 300,
+                "jwt_secret": "test-jwt-secret-key-for-middleware-32chars!"
+            }"#,
+        )
+        .expect("auth config")
+    }
+
     #[test]
     fn tenant_context_layer_inserts_tenant_into_request_extensions() {
         let captured = Arc::new(Mutex::new(Vec::new()));
@@ -418,6 +461,41 @@ mod tests {
             "T-AUTH-001"
         );
         assert!(!records[0].extension_sharding);
+    }
+
+    #[test]
+    fn auth_layer_and_tenant_context_layer_propagate_tenant_from_real_token() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let manager = SessionManager::new(StdArc::new(MemoryStorage::new()), auth_config());
+        let token_pair = block_on(manager.login(LoginParams {
+            login_id: LoginId::admin(100),
+            device: DeviceType::Web,
+            login_ip: "127.0.0.1".to_string(),
+            user_agent: "tenant-auth-test".to_string(),
+            tenant_id: Some("T-AUTH-LAYER-001".to_string()),
+            profile: UserProfile::Admin(AdminProfile {
+                user_name: "admin".to_string(),
+                nick_name: "Admin".to_string(),
+                roles: vec!["admin".to_string()],
+                permissions: vec![],
+            }),
+        }))
+        .expect("login");
+        let mut service = AuthLayer::new(manager, None)
+            .layer(TenantContextLayer::new().layer(CaptureTenantService::new(captured.clone())));
+
+        block_on(service.call(request_with_bearer_token(token_pair.access_token.as_str())))
+            .expect("call");
+
+        let records = captured.lock();
+        assert_eq!(
+            records[0]
+                .extension_tenant
+                .clone()
+                .expect("tenant in extensions")
+                .tenant_id,
+            "T-AUTH-LAYER-001"
+        );
     }
 
     #[test]
@@ -542,7 +620,13 @@ mod tests {
                 schema_name: Some("tenant_schema_001".to_string()),
                 datasource_name: Some("ds_schema_001".to_string()),
                 db_uri: None,
+                db_enable_logging: None,
+                db_min_conns: None,
                 db_max_conns: None,
+                db_connect_timeout_ms: None,
+                db_idle_timeout_ms: None,
+                db_acquire_timeout_ms: None,
+                db_test_before_acquire: None,
             });
 
         let mut service = TenantContextLayer::from_header()

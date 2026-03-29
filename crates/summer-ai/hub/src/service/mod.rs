@@ -3,5 +3,6 @@ pub mod log;
 pub mod log_batch;
 pub mod model;
 pub mod resource_affinity;
+pub mod response_bridge;
 pub mod runtime_cache;
 pub mod token;

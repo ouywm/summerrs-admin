@@ -8,35 +8,53 @@ use reqwest::multipart::{Form, Part};
 use serde_json::Value;
 use summer_ai_core::types::common::Usage;
 use summer_ai_core::types::error::{OpenAiApiResult, OpenAiErrorResponse};
+use summer_ai_model::entity::log::LogStatus;
 use summer_common::extractor::{ClientIp, Multipart, Path};
 use summer_common::response::Json;
 use summer_common::user_agent::UserAgentInfo;
 use summer_web::axum::body::Body;
 use summer_web::axum::extract::Request;
 use summer_web::axum::http::{
-    HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
+    HeaderMap, HeaderValue, Method,
     header::{CACHE_CONTROL, CONTENT_TYPE},
 };
-use summer_web::axum::response::Response;
+use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api};
 
 use crate::auth::extractor::AiToken;
 use crate::relay::billing::{BillingEngine, ModelConfigInfo};
 use crate::relay::channel_router::{
-    ChannelRouter, RouteSelectionExclusions, RouteSelectionPlan, RouteSelectionState,
-    SelectedChannel,
+    ChannelRouter, RouteSelectionExclusions, RouteSelectionState, SelectedChannel,
 };
 use crate::relay::http_client::UpstreamHttpClient;
 use crate::relay::rate_limit::RateLimitEngine;
 use crate::router::openai::{
     apply_upstream_failure_scope, classify_upstream_provider_failure, extract_request_id,
     extract_upstream_request_id, fallback_usage, insert_request_id_header,
+    insert_upstream_request_id_header,
 };
 use crate::service::channel::ChannelService;
-use crate::service::log::{AiUsageLogRecord, LogService};
+use crate::service::log::{AiFailureLogRecord, AiUsageLogRecord, LogService};
 use crate::service::resource_affinity::ResourceAffinityService;
+use crate::service::response_bridge::ResponseBridgeService;
 use crate::service::token::{TokenInfo, TokenService};
+
+pub(crate) mod resource;
+pub(crate) mod support;
+#[cfg(test)]
+pub(crate) use self::resource::resource_affinity_lookup_keys;
+pub(crate) use self::resource::{
+    ResourceRequestSpec, ResourceRouteState, extract_generic_resource_id, referenced_resource_ids,
+};
+#[cfg(test)]
+pub(crate) use self::support::detect_unusable_upstream_success_response;
+pub(crate) use self::support::{
+    allow_empty_success_body_for_upstream_path, apply_forward_headers, apply_upstream_auth,
+    build_bytes_response, build_upstream_url, unusable_success_response_message,
+};
+#[cfg(test)]
+use summer_web::axum::http::StatusCode;
 
 #[derive(Clone, Copy)]
 struct JsonModelRelaySpec {
@@ -54,109 +72,6 @@ struct MultipartModelRelaySpec {
     endpoint: &'static str,
     request_format: &'static str,
     default_model: Option<&'static str>,
-}
-
-#[derive(Clone, Copy)]
-struct ResourceRequestSpec {
-    endpoint_scope: &'static str,
-    bind_resource_kind: Option<&'static str>,
-    #[allow(dead_code)]
-    delete_resource_kind: Option<&'static str>,
-}
-
-struct ResourceRouteState {
-    exclusions: RouteSelectionExclusions,
-    model_plan: Option<RouteSelectionPlan>,
-    default_plan: RouteSelectionPlan,
-}
-
-impl ResourceRouteState {
-    async fn new(
-        token_info: &TokenInfo,
-        router_svc: &ChannelRouter,
-        endpoint_scope: &'static str,
-        requested_model: Option<&str>,
-    ) -> OpenAiApiResult<Self> {
-        let exclusions = RouteSelectionExclusions::default();
-        let model_plan = if let Some(model) = requested_model {
-            Some(
-                router_svc
-                    .build_channel_plan_with_exclusions(
-                        &token_info.group,
-                        model,
-                        endpoint_scope,
-                        &exclusions,
-                    )
-                    .await
-                    .map_err(|error| {
-                        OpenAiErrorResponse::internal_with("failed to build channel plan", error)
-                    })?,
-            )
-        } else {
-            None
-        };
-        let default_plan = router_svc
-            .build_default_channel_plan_with_exclusions(
-                &token_info.group,
-                endpoint_scope,
-                &exclusions,
-            )
-            .await
-            .map_err(|error| {
-                OpenAiErrorResponse::internal_with("failed to build default channel plan", error)
-            })?;
-
-        Ok(Self {
-            exclusions,
-            model_plan,
-            default_plan,
-        })
-    }
-
-    async fn select(
-        &mut self,
-        token_info: &TokenInfo,
-        resource_affinity: &ResourceAffinityService,
-        affinity_keys: &[(&'static str, String)],
-        json_body: Option<&Value>,
-    ) -> OpenAiApiResult<Option<SelectedChannel>> {
-        for (kind, id) in resource_affinity_lookup_keys(affinity_keys, json_body) {
-            if let Some(channel) = resource_affinity
-                .resolve(token_info, kind, &id)
-                .await
-                .map_err(OpenAiErrorResponse::from)?
-                && !self.exclusions.selected_is_excluded(&channel)
-            {
-                return Ok(Some(channel));
-            }
-        }
-
-        if let Some(model_plan) = self.model_plan.as_mut()
-            && let Some(channel) = model_plan.next()
-        {
-            return Ok(Some(channel));
-        }
-
-        Ok(self.default_plan.next())
-    }
-}
-
-impl RouteSelectionState for ResourceRouteState {
-    fn exclude_selected_channel(&mut self, channel: &SelectedChannel) {
-        self.exclusions.exclude_selected_channel(channel);
-        if let Some(model_plan) = self.model_plan.as_mut() {
-            model_plan.exclude_selected_channel(channel);
-        }
-        self.default_plan.exclude_selected_channel(channel);
-    }
-
-    fn exclude_selected_account(&mut self, channel: &SelectedChannel) {
-        self.exclusions.exclude_selected_account(channel);
-        if let Some(model_plan) = self.model_plan.as_mut() {
-            model_plan.exclude_selected_account(channel);
-        }
-        self.default_plan.exclude_selected_account(channel);
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +102,46 @@ struct GenericStreamTracker {
     upstream_model: String,
     resource_id: String,
     resource_refs: Vec<(&'static str, String)>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_passthrough_failure(
+    log_svc: &LogService,
+    token_info: &TokenInfo,
+    channel: &SelectedChannel,
+    endpoint: &str,
+    request_format: &str,
+    requested_model: &str,
+    upstream_model: &str,
+    model_name: &str,
+    request_id: &str,
+    upstream_request_id: &str,
+    elapsed_ms: i64,
+    is_stream: bool,
+    client_ip: &str,
+    user_agent: &str,
+    status_code: i32,
+    message: impl Into<String>,
+) {
+    log_svc.record_failure_async(
+        token_info,
+        channel,
+        AiFailureLogRecord {
+            endpoint: endpoint.to_string(),
+            request_format: request_format.to_string(),
+            request_id: request_id.to_string(),
+            upstream_request_id: upstream_request_id.to_string(),
+            requested_model: requested_model.to_string(),
+            upstream_model: upstream_model.to_string(),
+            model_name: model_name.to_string(),
+            elapsed_time: elapsed_ms as i32,
+            is_stream,
+            client_ip: client_ip.to_string(),
+            user_agent: user_agent.to_string(),
+            status_code,
+            content: message.into(),
+        },
+    );
 }
 
 impl GenericStreamTracker {
@@ -253,6 +208,13 @@ impl GenericStreamTracker {
             }
         }
     }
+}
+
+fn map_response_bridge_error(
+    action: &'static str,
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> OpenAiErrorResponse {
+    OpenAiErrorResponse::internal_with(action, error)
 }
 
 /// POST /v1/completions
@@ -619,6 +581,7 @@ pub async fn rerank(
 #[get_api("/v1/responses/{response_id}")]
 pub async fn get_response(
     AiToken(token_info): AiToken,
+    Component(response_bridge): Component<ResponseBridgeService>,
     Component(router_svc): Component<ChannelRouter>,
     Component(http_client): Component<UpstreamHttpClient>,
     Component(channel_svc): Component<ChannelService>,
@@ -628,6 +591,23 @@ pub async fn get_response(
     Path(response_id): Path<String>,
     req: Request,
 ) -> OpenAiApiResult<Response> {
+    let client_ip = client_ip.to_string();
+    if let Some(snapshot) = response_bridge
+        .get_response(&token_info, &response_id)
+        .await
+        .map_err(|error| map_response_bridge_error("failed to load bridged response", error))?
+    {
+        token_info
+            .ensure_endpoint_allowed("responses")
+            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
+        token_svc.update_last_used_ip_async(token_info.token_id, client_ip.clone());
+        let request_id = extract_request_id(req.headers());
+        let mut response = Json(snapshot.payload).into_response();
+        insert_request_id_header(&mut response, &request_id);
+        insert_upstream_request_id_header(&mut response, &snapshot.upstream_request_id);
+        return Ok(response);
+    }
+
     relay_resource_get(
         token_info,
         router_svc,
@@ -635,7 +615,7 @@ pub async fn get_response(
         channel_svc,
         token_svc,
         resource_affinity,
-        client_ip.to_string(),
+        client_ip,
         req,
         format!("/v1/responses/{response_id}"),
         ResourceRequestSpec {
@@ -652,6 +632,7 @@ pub async fn get_response(
 #[get_api("/v1/responses/{response_id}/input_items")]
 pub async fn get_response_input_items(
     AiToken(token_info): AiToken,
+    Component(response_bridge): Component<ResponseBridgeService>,
     Component(router_svc): Component<ChannelRouter>,
     Component(http_client): Component<UpstreamHttpClient>,
     Component(channel_svc): Component<ChannelService>,
@@ -661,6 +642,25 @@ pub async fn get_response_input_items(
     Path(response_id): Path<String>,
     req: Request,
 ) -> OpenAiApiResult<Response> {
+    let client_ip = client_ip.to_string();
+    if let Some(snapshot) = response_bridge
+        .get_input_items(&token_info, &response_id)
+        .await
+        .map_err(|error| {
+            map_response_bridge_error("failed to load bridged response input items", error)
+        })?
+    {
+        token_info
+            .ensure_endpoint_allowed("responses")
+            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
+        token_svc.update_last_used_ip_async(token_info.token_id, client_ip.clone());
+        let request_id = extract_request_id(req.headers());
+        let mut response = Json(snapshot.payload).into_response();
+        insert_request_id_header(&mut response, &request_id);
+        insert_upstream_request_id_header(&mut response, &snapshot.upstream_request_id);
+        return Ok(response);
+    }
+
     relay_resource_get(
         token_info,
         router_svc,
@@ -668,7 +668,7 @@ pub async fn get_response_input_items(
         channel_svc,
         token_svc,
         resource_affinity,
-        client_ip.to_string(),
+        client_ip,
         req,
         format!("/v1/responses/{response_id}/input_items"),
         ResourceRequestSpec {
@@ -685,6 +685,7 @@ pub async fn get_response_input_items(
 #[post_api("/v1/responses/{response_id}/cancel")]
 pub async fn cancel_response(
     AiToken(token_info): AiToken,
+    Component(response_bridge): Component<ResponseBridgeService>,
     Component(router_svc): Component<ChannelRouter>,
     Component(http_client): Component<UpstreamHttpClient>,
     Component(channel_svc): Component<ChannelService>,
@@ -694,6 +695,23 @@ pub async fn cancel_response(
     Path(response_id): Path<String>,
     req: Request,
 ) -> OpenAiApiResult<Response> {
+    let client_ip = client_ip.to_string();
+    if let Some(snapshot) = response_bridge
+        .cancel(&token_info, &response_id)
+        .await
+        .map_err(|error| map_response_bridge_error("failed to cancel bridged response", error))?
+    {
+        token_info
+            .ensure_endpoint_allowed("responses")
+            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
+        token_svc.update_last_used_ip_async(token_info.token_id, client_ip.clone());
+        let request_id = extract_request_id(req.headers());
+        let mut response = Json(snapshot.payload).into_response();
+        insert_request_id_header(&mut response, &request_id);
+        insert_upstream_request_id_header(&mut response, &snapshot.upstream_request_id);
+        return Ok(response);
+    }
+
     relay_resource_bodyless_post(
         token_info,
         router_svc,
@@ -701,7 +719,7 @@ pub async fn cancel_response(
         channel_svc,
         token_svc,
         resource_affinity,
-        client_ip.to_string(),
+        client_ip,
         req,
         format!("/v1/responses/{response_id}/cancel"),
         ResourceRequestSpec {
@@ -2781,8 +2799,9 @@ async fn relay_json_model_request(
                 spec.upstream_path,
                 None,
             ))
-            .bearer_auth(&channel.api_key)
             .json(&body);
+        request_builder =
+            apply_upstream_auth(request_builder, channel.channel_type, &channel.api_key);
         request_builder = apply_forward_headers(request_builder, &headers, false);
 
         match request_builder.send().await {
@@ -2834,6 +2853,24 @@ async fn relay_json_model_request(
                         );
                         route_plan.exclude_selected_account(&channel);
                         if attempt == max_retries - 1 {
+                            record_passthrough_failure(
+                                &log_svc,
+                                &token_info,
+                                &channel,
+                                spec.endpoint,
+                                spec.request_format,
+                                &requested_model,
+                                &actual_model,
+                                &model_config.model_name,
+                                &request_id,
+                                &upstream_request_id,
+                                elapsed,
+                                is_stream,
+                                &client_ip,
+                                &user_agent,
+                                0,
+                                format!("failed to read upstream response: {error}"),
+                            );
                             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to read upstream response",
@@ -2859,6 +2896,24 @@ async fn relay_json_model_request(
                     );
                     route_plan.exclude_selected_channel(&channel);
                     if attempt == max_retries - 1 {
+                        record_passthrough_failure(
+                            &log_svc,
+                            &token_info,
+                            &channel,
+                            spec.endpoint,
+                            spec.request_format,
+                            &requested_model,
+                            &actual_model,
+                            &model_config.model_name,
+                            &request_id,
+                            &upstream_request_id,
+                            elapsed,
+                            is_stream,
+                            &client_ip,
+                            &user_agent,
+                            status.as_u16() as i32,
+                            message.clone(),
+                        );
                         let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                         return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                     }
@@ -2885,7 +2940,7 @@ async fn relay_json_model_request(
                     pre_consumed,
                     usage,
                     request_id.clone(),
-                    upstream_request_id,
+                    upstream_request_id.clone(),
                     Some(requested_model),
                     upstream_model,
                     client_ip,
@@ -2898,12 +2953,10 @@ async fn relay_json_model_request(
                     spec.endpoint_scope,
                 );
 
-                return Ok(build_bytes_response(
-                    status,
-                    body_bytes,
-                    content_type,
-                    &request_id,
-                ));
+                let mut response =
+                    build_bytes_response(status, body_bytes, content_type, &request_id);
+                insert_upstream_request_id_header(&mut response, &upstream_request_id);
+                return Ok(response);
             }
             Ok(resp) => {
                 let elapsed = start.elapsed().as_millis() as i64;
@@ -2929,6 +2982,24 @@ async fn relay_json_model_request(
                 );
                 apply_upstream_failure_scope(&mut route_plan, &channel, failure.scope);
                 if attempt == max_retries - 1 {
+                    record_passthrough_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        spec.endpoint,
+                        spec.request_format,
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        &extract_upstream_request_id(&headers),
+                        elapsed,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        status_code,
+                        failure.message.clone(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(failure.error);
                 }
@@ -2947,6 +3018,24 @@ async fn relay_json_model_request(
                 );
                 route_plan.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
+                    record_passthrough_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        spec.endpoint,
+                        spec.request_format,
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        elapsed,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        error.to_string(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream request",
@@ -3073,8 +3162,9 @@ async fn relay_multipart_model_request(
                 spec.upstream_path,
                 None,
             ))
-            .bearer_auth(&channel.api_key)
             .multipart(form);
+        request_builder =
+            apply_upstream_auth(request_builder, channel.channel_type, &channel.api_key);
         request_builder = apply_forward_headers(request_builder, &headers, false);
 
         match request_builder.send().await {
@@ -3098,6 +3188,24 @@ async fn relay_multipart_model_request(
                         );
                         route_plan.exclude_selected_account(&channel);
                         if attempt == max_retries - 1 {
+                            record_passthrough_failure(
+                                &log_svc,
+                                &token_info,
+                                &channel,
+                                spec.endpoint,
+                                spec.request_format,
+                                &requested_model,
+                                &actual_model,
+                                &model_config.model_name,
+                                &request_id,
+                                &upstream_request_id,
+                                elapsed,
+                                false,
+                                &client_ip,
+                                &user_agent,
+                                0,
+                                format!("failed to read upstream response: {error}"),
+                            );
                             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to read upstream response",
@@ -3123,6 +3231,24 @@ async fn relay_multipart_model_request(
                     );
                     route_plan.exclude_selected_channel(&channel);
                     if attempt == max_retries - 1 {
+                        record_passthrough_failure(
+                            &log_svc,
+                            &token_info,
+                            &channel,
+                            spec.endpoint,
+                            spec.request_format,
+                            &requested_model,
+                            &actual_model,
+                            &model_config.model_name,
+                            &request_id,
+                            &upstream_request_id,
+                            elapsed,
+                            false,
+                            &client_ip,
+                            &user_agent,
+                            status.as_u16() as i32,
+                            message.clone(),
+                        );
                         let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                         return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                     }
@@ -3149,7 +3275,7 @@ async fn relay_multipart_model_request(
                     pre_consumed,
                     usage,
                     request_id.clone(),
-                    upstream_request_id,
+                    upstream_request_id.clone(),
                     Some(requested_model),
                     upstream_model,
                     client_ip,
@@ -3162,12 +3288,10 @@ async fn relay_multipart_model_request(
                     spec.endpoint_scope,
                 );
 
-                return Ok(build_bytes_response(
-                    status,
-                    body_bytes,
-                    content_type,
-                    &request_id,
-                ));
+                let mut response =
+                    build_bytes_response(status, body_bytes, content_type, &request_id);
+                insert_upstream_request_id_header(&mut response, &upstream_request_id);
+                return Ok(response);
             }
             Ok(resp) => {
                 let elapsed = start.elapsed().as_millis() as i64;
@@ -3193,6 +3317,24 @@ async fn relay_multipart_model_request(
                 );
                 apply_upstream_failure_scope(&mut route_plan, &channel, failure.scope);
                 if attempt == max_retries - 1 {
+                    record_passthrough_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        spec.endpoint,
+                        spec.request_format,
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        &extract_upstream_request_id(&headers),
+                        elapsed,
+                        false,
+                        &client_ip,
+                        &user_agent,
+                        status_code,
+                        failure.message.clone(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(failure.error);
                 }
@@ -3211,6 +3353,24 @@ async fn relay_multipart_model_request(
                 );
                 route_plan.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
+                    record_passthrough_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        spec.endpoint,
+                        spec.request_format,
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        elapsed,
+                        false,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        error.to_string(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream request",
@@ -3486,8 +3646,9 @@ async fn relay_usage_resource_json_post(
         let mut request_builder = http_client
             .client()
             .post(build_upstream_url(&channel.base_url, &upstream_path, None))
-            .bearer_auth(&channel.api_key)
             .json(&body);
+        request_builder =
+            apply_upstream_auth(request_builder, channel.channel_type, &channel.api_key);
         request_builder = apply_forward_headers(request_builder, &headers, false);
 
         match request_builder.send().await {
@@ -3539,6 +3700,29 @@ async fn relay_usage_resource_json_post(
                         );
                         route_state.exclude_selected_account(&channel);
                         if attempt == max_retries - 1 {
+                            record_passthrough_failure(
+                                &log_svc,
+                                &token_info,
+                                &channel,
+                                endpoint,
+                                request_format,
+                                requested_model.as_deref().unwrap_or_default(),
+                                actual_model.as_deref().unwrap_or_default(),
+                                model_config
+                                    .as_ref()
+                                    .map(|config| config.model_name.as_str())
+                                    .unwrap_or_else(|| {
+                                        requested_model.as_deref().unwrap_or_default()
+                                    }),
+                                &request_id,
+                                &upstream_request_id,
+                                elapsed,
+                                is_stream,
+                                &client_ip,
+                                &user_agent,
+                                0,
+                                format!("failed to read upstream response: {error}"),
+                            );
                             let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to read upstream response",
@@ -3564,6 +3748,27 @@ async fn relay_usage_resource_json_post(
                     );
                     route_state.exclude_selected_channel(&channel);
                     if attempt == max_retries - 1 {
+                        record_passthrough_failure(
+                            &log_svc,
+                            &token_info,
+                            &channel,
+                            endpoint,
+                            request_format,
+                            requested_model.as_deref().unwrap_or_default(),
+                            actual_model.as_deref().unwrap_or_default(),
+                            model_config
+                                .as_ref()
+                                .map(|config| config.model_name.as_str())
+                                .unwrap_or_else(|| requested_model.as_deref().unwrap_or_default()),
+                            &request_id,
+                            &upstream_request_id,
+                            elapsed,
+                            is_stream,
+                            &client_ip,
+                            &user_agent,
+                            status.as_u16() as i32,
+                            message.clone(),
+                        );
                         let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                         return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                     }
@@ -3609,7 +3814,7 @@ async fn relay_usage_resource_json_post(
                     pre_consumed,
                     usage,
                     request_id.clone(),
-                    upstream_request_id,
+                    upstream_request_id.clone(),
                     requested_model.clone(),
                     upstream_model,
                     client_ip,
@@ -3622,12 +3827,10 @@ async fn relay_usage_resource_json_post(
                     spec.endpoint_scope,
                 );
 
-                return Ok(build_bytes_response(
-                    status,
-                    body_bytes,
-                    content_type,
-                    &request_id,
-                ));
+                let mut response =
+                    build_bytes_response(status, body_bytes, content_type, &request_id);
+                insert_upstream_request_id_header(&mut response, &upstream_request_id);
+                return Ok(response);
             }
             Ok(resp) => {
                 let elapsed = start.elapsed().as_millis() as i64;
@@ -3653,6 +3856,27 @@ async fn relay_usage_resource_json_post(
                 );
                 apply_upstream_failure_scope(&mut route_state, &channel, failure.scope);
                 if attempt == max_retries - 1 {
+                    record_passthrough_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        endpoint,
+                        request_format,
+                        requested_model.as_deref().unwrap_or_default(),
+                        actual_model.as_deref().unwrap_or_default(),
+                        model_config
+                            .as_ref()
+                            .map(|config| config.model_name.as_str())
+                            .unwrap_or_else(|| requested_model.as_deref().unwrap_or_default()),
+                        &request_id,
+                        &extract_upstream_request_id(&response_headers),
+                        elapsed,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        status_code,
+                        failure.message.clone(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(failure.error);
                 }
@@ -3671,6 +3895,27 @@ async fn relay_usage_resource_json_post(
                 );
                 route_state.exclude_selected_account(&channel);
                 if attempt == max_retries - 1 {
+                    record_passthrough_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        endpoint,
+                        request_format,
+                        requested_model.as_deref().unwrap_or_default(),
+                        actual_model.as_deref().unwrap_or_default(),
+                        model_config
+                            .as_ref()
+                            .map(|config| config.model_name.as_str())
+                            .unwrap_or_else(|| requested_model.as_deref().unwrap_or_default()),
+                        &request_id,
+                        "",
+                        elapsed,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        error.to_string(),
+                    );
                     let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream request",
@@ -3794,13 +4039,12 @@ async fn relay_resource_request(
             }));
         };
 
-        let mut request_builder = http_client
-            .client()
-            .request(
-                request_method.clone(),
-                build_upstream_url(&channel.base_url, &upstream_path, query.as_deref()),
-            )
-            .bearer_auth(&channel.api_key);
+        let mut request_builder = http_client.client().request(
+            request_method.clone(),
+            build_upstream_url(&channel.base_url, &upstream_path, query.as_deref()),
+        );
+        request_builder =
+            apply_upstream_auth(request_builder, channel.channel_type, &channel.api_key);
 
         if let Some(body) = json_body.as_deref_mut() {
             if let Some(model) = requested_model.as_deref() {
@@ -3840,6 +4084,7 @@ async fn relay_resource_request(
 
         let status = response.status();
         let response_headers = response.headers().clone();
+        let upstream_request_id = extract_upstream_request_id(&response_headers);
         let content_type = response_headers.get(CONTENT_TYPE).cloned();
         if status.is_success() && is_stream {
             return Ok(build_resource_passthrough_stream_response(
@@ -3847,6 +4092,7 @@ async fn relay_resource_request(
                 token_info,
                 channel,
                 request_id,
+                upstream_request_id,
                 start.elapsed().as_millis() as i64,
                 channel_svc,
                 resource_affinity,
@@ -3923,12 +4169,10 @@ async fn relay_resource_request(
                 tracing::warn!("failed to update relay success health state: {error}");
             }
 
-            return Ok(build_bytes_response(
-                status,
-                upstream_body,
-                content_type,
-                &request_id,
-            ));
+            let mut response =
+                build_bytes_response(status, upstream_body, content_type, &request_id);
+            insert_upstream_request_id_header(&mut response, &upstream_request_id);
+            return Ok(response);
         }
 
         let failure = classify_upstream_provider_failure(
@@ -3953,32 +4197,6 @@ async fn relay_resource_request(
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))
-}
-
-fn resource_affinity_lookup_keys(
-    affinity_keys: &[(&'static str, String)],
-    json_body: Option<&Value>,
-) -> Vec<(&'static str, String)> {
-    let mut keys = Vec::new();
-
-    for (kind, id) in affinity_keys {
-        if !id.trim().is_empty() {
-            keys.push((*kind, id.clone()));
-        }
-    }
-
-    if let Some(body) = json_body {
-        for (kind, id) in referenced_resource_ids(body) {
-            let exists = keys
-                .iter()
-                .any(|(existing_kind, existing_id)| existing_kind == &kind && existing_id == &id);
-            if !exists {
-                keys.push((kind, id));
-            }
-        }
-    }
-
-    keys
 }
 
 fn build_generic_stream_response(
@@ -4008,6 +4226,7 @@ fn build_generic_stream_response(
     let status = upstream.status();
     let content_type = upstream.headers().get(CONTENT_TYPE).cloned();
     let response_request_id = request_id.clone();
+    let response_upstream_request_id = upstream_request_id.clone();
 
     let stream = async_stream::stream! {
         let start = std::time::Instant::now();
@@ -4066,12 +4285,12 @@ fn build_generic_stream_response(
                 token_info,
                 channel,
                 model_config,
-                group_ratio,
-                pre_consumed,
-                usage,
-                request_id,
-                upstream_request_id,
-                requested_model,
+                    group_ratio,
+                    pre_consumed,
+                    usage,
+                    request_id,
+                    upstream_request_id,
+                    requested_model,
                 upstream_model,
                 client_ip,
                 user_agent,
@@ -4115,6 +4334,7 @@ fn build_generic_stream_response(
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     insert_request_id_header(&mut response, &response_request_id);
+    insert_upstream_request_id_header(&mut response, &response_upstream_request_id);
     response
 }
 
@@ -4123,6 +4343,7 @@ fn build_resource_passthrough_stream_response(
     token_info: TokenInfo,
     channel: SelectedChannel,
     request_id: String,
+    upstream_request_id: String,
     start_elapsed: i64,
     channel_svc: ChannelService,
     resource_affinity: ResourceAffinityService,
@@ -4202,23 +4423,7 @@ fn build_resource_passthrough_stream_response(
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     insert_request_id_header(&mut response, &response_request_id);
-    response
-}
-
-fn build_bytes_response(
-    status: StatusCode,
-    body: Bytes,
-    content_type: Option<HeaderValue>,
-    request_id: &str,
-) -> Response {
-    let mut response = Response::builder()
-        .status(status)
-        .body(body.into())
-        .unwrap();
-    if let Some(content_type) = content_type {
-        response.headers_mut().insert(CONTENT_TYPE, content_type);
-    }
-    insert_request_id_header(&mut response, request_id);
+    insert_upstream_request_id_header(&mut response, &upstream_request_id);
     response
 }
 
@@ -4331,6 +4536,9 @@ fn spawn_resource_usage_accounting_task(
                 is_stream,
                 client_ip,
                 user_agent,
+                status_code: 200,
+                content: String::new(),
+                status: LogStatus::Success,
             },
         );
 
@@ -4358,58 +4566,6 @@ fn usage_accounting_model(requested_model: Option<&str>, upstream_model: &str) -
         .or_else(|| {
             let upstream_model = upstream_model.trim();
             (!upstream_model.is_empty()).then(|| upstream_model.to_string())
-        })
-}
-
-pub(crate) fn unusable_success_response_message(
-    status: StatusCode,
-    body: &Bytes,
-    endpoint: &str,
-    allow_empty_body: bool,
-) -> Option<String> {
-    if !status.is_success() {
-        return None;
-    }
-
-    if status != StatusCode::NO_CONTENT
-        && !allow_empty_body
-        && body.iter().all(|byte| byte.is_ascii_whitespace())
-    {
-        return Some(format!(
-            "upstream returned an empty success response for endpoint {endpoint}"
-        ));
-    }
-
-    let payload = serde_json::from_slice::<Value>(body).ok()?;
-    let message = detect_unusable_upstream_success_response(&payload)?;
-    Some(format!(
-        "upstream returned an unusable success response for endpoint {endpoint}: {message}"
-    ))
-}
-
-pub(crate) fn detect_unusable_upstream_success_response(payload: &Value) -> Option<String> {
-    let error = payload.get("error")?;
-    if !error.is_object() {
-        return None;
-    }
-
-    error
-        .get("message")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|message| !message.is_empty())
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            error
-                .get("code")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| {
-            error
-                .get("type")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
         })
 }
 
@@ -4465,48 +4621,6 @@ async fn bind_resource_affinity(
     {
         tracing::warn!("failed to bind resource affinity: {error}");
     }
-}
-
-fn allow_empty_success_body_for_upstream_path(upstream_path: &str) -> bool {
-    upstream_path.starts_with("/v1/files/") && upstream_path.ends_with("/content")
-}
-
-fn apply_forward_headers(
-    mut builder: reqwest::RequestBuilder,
-    headers: &HeaderMap,
-    preserve_content_type: bool,
-) -> reqwest::RequestBuilder {
-    for (name, value) in headers {
-        if should_forward_header(name, preserve_content_type) {
-            builder = builder.header(name, value.clone());
-        }
-    }
-    builder
-}
-
-fn should_forward_header(name: &HeaderName, preserve_content_type: bool) -> bool {
-    if !preserve_content_type && name == CONTENT_TYPE {
-        return false;
-    }
-
-    !matches!(
-        name.as_str(),
-        "authorization"
-            | "content-length"
-            | "host"
-            | "connection"
-            | "transfer-encoding"
-            | "content-encoding"
-    )
-}
-
-fn build_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> String {
-    let mut url = format!("{}{}", base_url.trim_end_matches('/'), path);
-    if let Some(query) = query.filter(|query| !query.is_empty()) {
-        url.push('?');
-        url.push_str(query);
-    }
-    url
 }
 
 fn mapped_model(channel: &SelectedChannel, requested_model: &str) -> String {
@@ -4613,13 +4727,6 @@ fn extract_model_from_response_value(value: &Value) -> Option<String> {
         })
 }
 
-fn extract_generic_resource_id(value: &Value) -> Option<String> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
 fn payload_has_text_delta(payload: &Value) -> bool {
     payload
         .get("choices")
@@ -4641,78 +4748,6 @@ fn payload_has_text_delta(payload: &Value) -> bool {
             .get("type")
             .and_then(Value::as_str)
             .is_some_and(|event_type| event_type == "response.output_text.delta")
-}
-
-fn referenced_resource_ids(body: &Value) -> Vec<(&'static str, String)> {
-    let mut refs = Vec::new();
-    collect_referenced_resource_ids(body, &mut refs);
-    refs
-}
-
-fn collect_referenced_resource_ids(value: &Value, refs: &mut Vec<(&'static str, String)>) {
-    match value {
-        Value::Object(map) => {
-            for (field, kind) in [
-                ("response_id", "response"),
-                ("previous_response_id", "response"),
-                ("assistant_id", "assistant"),
-                ("thread_id", "thread"),
-                ("run_id", "run"),
-                ("batch_id", "batch"),
-                ("vector_store_id", "vector_store"),
-                ("vector_store_ids", "vector_store"),
-                ("file_id", "file"),
-                ("file_ids", "file"),
-                ("input_file_id", "file"),
-                ("upload_id", "upload"),
-                ("fine_tuning_job_id", "fine_tuning_job"),
-            ] {
-                let Some(nested) = map.get(field) else {
-                    continue;
-                };
-                match nested {
-                    Value::String(id) => push_referenced_resource_id(refs, kind, id),
-                    Value::Array(items) => {
-                        for item in items {
-                            if let Some(id) = item.as_str() {
-                                push_referenced_resource_id(refs, kind, id);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            for nested in map.values() {
-                collect_referenced_resource_ids(nested, refs);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_referenced_resource_ids(item, refs);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn push_referenced_resource_id(
-    refs: &mut Vec<(&'static str, String)>,
-    kind: &'static str,
-    resource_id: &str,
-) {
-    if resource_id.trim().is_empty() {
-        return;
-    }
-
-    if refs
-        .iter()
-        .any(|(existing_kind, existing_id)| existing_kind == &kind && existing_id == resource_id)
-    {
-        return;
-    }
-
-    refs.push((kind, resource_id.to_string()));
 }
 
 async fn parse_multipart_payload(
@@ -4804,6 +4839,8 @@ mod tests {
         MockRoute, MockUpstreamServer, MultipartRequestSpec, TestHarness, response_json,
         response_text,
     };
+    use summer_ai_model::entity::channel_account::AccountStatus;
+    use summer_ai_model::entity::log::LogStatus;
     use summer_web::axum::http::header;
 
     #[test]
@@ -4921,6 +4958,8 @@ mod tests {
 
     #[test]
     fn referenced_resource_ids_extract_known_fields() {
+        use crate::router::openai_passthrough::resource::referenced_resource_ids;
+
         let body = serde_json::json!({
             "assistant_id": "asst_123",
             "file_id": "file_123",
@@ -4957,6 +4996,8 @@ mod tests {
 
     #[test]
     fn resource_affinity_lookup_keys_keeps_explicit_keys_first() {
+        use crate::router::openai_passthrough::resource::resource_affinity_lookup_keys;
+
         let body = serde_json::json!({
             "assistant_id": "asst_123",
             "thread_id": "thread_123",
@@ -5100,6 +5141,8 @@ mod tests {
 
     #[test]
     fn build_upstream_url_preserves_query_string() {
+        use crate::router::openai_passthrough::support::build_upstream_url;
+
         assert_eq!(
             build_upstream_url(
                 "https://example.com/",
@@ -5111,7 +5154,46 @@ mod tests {
     }
 
     #[test]
+    fn build_upstream_url_avoids_duplicate_v1_for_azure_openai_base() {
+        use crate::router::openai_passthrough::support::build_upstream_url;
+
+        assert_eq!(
+            build_upstream_url(
+                "https://example-resource.openai.azure.com/openai/v1/",
+                "/v1/models",
+                Some("api-version=preview")
+            ),
+            "https://example-resource.openai.azure.com/openai/v1/models?api-version=preview"
+        );
+    }
+
+    #[test]
+    fn apply_upstream_auth_uses_api_key_for_azure_channels() {
+        use crate::router::openai_passthrough::support::apply_upstream_auth;
+
+        let request = apply_upstream_auth(
+            reqwest::Client::new()
+                .get("https://example-resource.openai.azure.com/openai/v1/models"),
+            14,
+            "azure-key",
+        )
+        .build()
+        .expect("build request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("azure-key")
+        );
+        assert!(request.headers().get("authorization").is_none());
+    }
+
+    #[test]
     fn should_forward_header_filters_sensitive_headers() {
+        use crate::router::openai_passthrough::support::should_forward_header;
+
         assert!(!should_forward_header(&header::AUTHORIZATION, false));
         assert!(!should_forward_header(&header::CONTENT_LENGTH, false));
         assert!(should_forward_header(
@@ -5550,6 +5632,355 @@ mod tests {
             1
         );
         assert_eq!(fallback.total_hits(), 0);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn threads_runs_create_without_request_model_settles_usage_from_response_model() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/threads/runs",
+            Some("Bearer sk-primary"),
+            None,
+            StatusCode::OK,
+            serde_json::json!({
+                "id": "run_usage_primary",
+                "object": "thread.run",
+                "thread_id": "thread_usage_primary",
+                "assistant_id": "asst_usage_primary",
+                "model": "__MODEL__",
+                "status": "completed",
+                "route": "primary",
+                "usage": {
+                    "prompt_tokens": 4,
+                    "completion_tokens": 3,
+                    "total_tokens": 7
+                }
+            }),
+        )])
+        .await;
+        let harness = TestHarness::assistants_threads_affinity_fixture(
+            &primary.base_url,
+            "http://127.0.0.1:9",
+        )
+        .await;
+        primary.replace_placeholder("__MODEL__", &harness.model_name);
+        let request_id = format!("threads-runs-usage-{}", harness.model_name);
+
+        let response = harness
+            .json_request(
+                Method::POST,
+                "/v1/threads/runs",
+                &request_id,
+                serde_json::json!({
+                    "assistant_id": "asst_usage_primary",
+                    "thread": {
+                        "messages": [{
+                            "role": "user",
+                            "content": "hello"
+                        }]
+                    }
+                }),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["id"], "run_usage_primary");
+        assert_eq!(payload["route"], "primary");
+
+        let token = harness.wait_for_token_used_quota(7).await;
+        assert_eq!(token.used_quota, 7);
+
+        let log = harness.wait_for_log_by_request_id(&request_id).await;
+        assert_eq!(log.endpoint, "threads/runs");
+        assert_eq!(log.request_format, "openai/threads_runs");
+        assert_eq!(log.requested_model, harness.model_name);
+        assert_eq!(log.upstream_model, harness.model_name);
+        assert_eq!(log.model_name, harness.model_name);
+        assert_eq!(log.prompt_tokens, 4);
+        assert_eq!(log.completion_tokens, 3);
+        assert_eq!(log.total_tokens, 7);
+        assert_eq!(log.quota, 7);
+        assert_eq!(log.status_code, 200);
+        assert_eq!(log.status, LogStatus::Success);
+        assert!(!log.is_stream);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn threads_runs_stream_without_request_model_settles_usage_from_stream_tail() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::raw(
+            Method::POST,
+            "/v1/threads/runs",
+            Some("Bearer sk-primary"),
+            Some("\"stream\":true"),
+            StatusCode::OK,
+            "text/event-stream",
+            concat!(
+                "data: {\"id\":\"run_stream_primary\",\"object\":\"thread.run\",\"thread_id\":\"thread_stream_primary\",\"assistant_id\":\"asst_stream_primary\",\"model\":\"__MODEL__\",\"status\":\"in_progress\"}\n\n",
+                "data: {\"id\":\"run_stream_primary\",\"object\":\"thread.run\",\"thread_id\":\"thread_stream_primary\",\"assistant_id\":\"asst_stream_primary\",\"model\":\"__MODEL__\",\"status\":\"completed\",\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}\n\n",
+                "data: [DONE]\n\n"
+            ),
+        )
+        .with_response_headers(vec![("x-request-id", "run-stream-upstream-123")])])
+        .await;
+        let harness = TestHarness::assistants_threads_affinity_fixture(
+            &primary.base_url,
+            "http://127.0.0.1:9",
+        )
+        .await;
+        primary.replace_placeholder("__MODEL__", &harness.model_name);
+        let request_id = format!("threads-runs-stream-usage-{}", harness.model_name);
+
+        let response = harness
+            .json_request(
+                Method::POST,
+                "/v1/threads/runs",
+                &request_id,
+                serde_json::json!({
+                    "assistant_id": "asst_stream_primary",
+                    "stream": true,
+                    "thread": {
+                        "messages": [{
+                            "role": "user",
+                            "content": "hello"
+                        }]
+                    }
+                }),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream_request_id = response
+            .headers()
+            .get("x-upstream-request-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("thread run stream upstream request id")
+            .to_string();
+        let body = response_text(response).await;
+        assert!(body.contains("run_stream_primary"));
+        assert!(body.contains("\"total_tokens\":7"));
+        assert_eq!(upstream_request_id, "run-stream-upstream-123");
+
+        let token = harness.wait_for_token_used_quota(7).await;
+        assert_eq!(token.used_quota, 7);
+
+        let log = harness.wait_for_log_by_request_id(&request_id).await;
+        assert_eq!(log.endpoint, "threads/runs");
+        assert_eq!(log.request_format, "openai/threads_runs");
+        assert_eq!(log.requested_model, harness.model_name);
+        assert_eq!(log.upstream_model, harness.model_name);
+        assert_eq!(log.model_name, harness.model_name);
+        assert_eq!(log.upstream_request_id, "run-stream-upstream-123");
+        assert_eq!(log.prompt_tokens, 4);
+        assert_eq!(log.completion_tokens, 3);
+        assert_eq!(log.total_tokens, 7);
+        assert_eq!(log.quota, 7);
+        assert_eq!(log.status_code, 200);
+        assert_eq!(log.status, LogStatus::Success);
+        assert!(log.is_stream);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn threads_runs_stream_falls_back_after_primary_overload() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/threads/runs",
+            Some("Bearer sk-primary"),
+            Some("\"stream\":true"),
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({
+                "error": {
+                    "message": "primary thread run upstream overloaded",
+                    "type": "server_error"
+                }
+            }),
+        )])
+        .await;
+        let fallback = MockUpstreamServer::spawn(vec![MockRoute::raw(
+            Method::POST,
+            "/v1/threads/runs",
+            Some("Bearer sk-fallback"),
+            Some("\"stream\":true"),
+            StatusCode::OK,
+            "text/event-stream",
+            concat!(
+                "data: {\"id\":\"run_stream_fallback\",\"object\":\"thread.run\",\"thread_id\":\"thread_stream_fallback\",\"assistant_id\":\"asst_stream_fallback\",\"model\":\"__MODEL__\",\"status\":\"in_progress\",\"route\":\"fallback\"}\n\n",
+                "data: {\"id\":\"run_stream_fallback\",\"object\":\"thread.run\",\"thread_id\":\"thread_stream_fallback\",\"assistant_id\":\"asst_stream_fallback\",\"model\":\"__MODEL__\",\"status\":\"completed\",\"route\":\"fallback\",\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}\n\n",
+                "data: [DONE]\n\n"
+            ),
+        )
+        .with_response_headers(vec![("x-request-id", "run-stream-fallback-upstream-123")])])
+        .await;
+        let harness =
+            TestHarness::assistants_threads_affinity_fixture(&primary.base_url, &fallback.base_url)
+                .await;
+        fallback.replace_placeholder("__MODEL__", &harness.model_name);
+        let request_id = format!("threads-runs-stream-fallback-{}", harness.model_name);
+
+        let response = harness
+            .json_request(
+                Method::POST,
+                "/v1/threads/runs",
+                &request_id,
+                serde_json::json!({
+                    "assistant_id": "asst_stream_fallback",
+                    "stream": true,
+                    "thread": {
+                        "messages": [{
+                            "role": "user",
+                            "content": "hello"
+                        }]
+                    }
+                }),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream_request_id = response
+            .headers()
+            .get("x-upstream-request-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("thread run fallback stream upstream request id")
+            .to_string();
+        let body = response_text(response).await;
+        assert!(body.contains("run_stream_fallback"));
+        assert!(body.contains("\"route\":\"fallback\""));
+        assert!(body.contains("\"total_tokens\":7"));
+        assert_eq!(upstream_request_id, "run-stream-fallback-upstream-123");
+
+        let token = harness.wait_for_token_used_quota(7).await;
+        assert_eq!(token.used_quota, 7);
+
+        let log = harness.wait_for_log_by_request_id(&request_id).await;
+        assert_eq!(log.endpoint, "threads/runs");
+        assert_eq!(log.request_format, "openai/threads_runs");
+        assert_eq!(log.requested_model, harness.model_name);
+        assert_eq!(log.upstream_model, harness.model_name);
+        assert_eq!(log.model_name, harness.model_name);
+        assert_eq!(log.upstream_request_id, "run-stream-fallback-upstream-123");
+        assert_eq!(log.total_tokens, 7);
+        assert_eq!(log.quota, 7);
+        assert_eq!(log.status, LogStatus::Success);
+        assert!(log.is_stream);
+
+        let primary_account = harness.wait_for_primary_account_overloaded().await;
+        assert_eq!(primary_account.failure_streak, 1);
+        assert!(primary_account.overload_until.is_some());
+        assert!(primary_account.rate_limited_until.is_none());
+
+        let primary_channel = harness.primary_channel_model().await;
+        assert_eq!(primary_channel.failure_streak, 1);
+        assert_eq!(primary_channel.last_health_status, 3);
+
+        assert_eq!(primary.hit_count("/v1/threads/runs"), 1);
+        assert_eq!(fallback.hit_count("/v1/threads/runs"), 1);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn threads_runs_stream_falls_back_after_primary_rate_limit() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/threads/runs",
+            Some("Bearer sk-primary"),
+            Some("\"stream\":true"),
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({
+                "error": {
+                    "message": "primary thread run rate limited",
+                    "type": "rate_limit_error"
+                }
+            }),
+        )])
+        .await;
+        let fallback = MockUpstreamServer::spawn(vec![MockRoute::raw(
+            Method::POST,
+            "/v1/threads/runs",
+            Some("Bearer sk-fallback"),
+            Some("\"stream\":true"),
+            StatusCode::OK,
+            "text/event-stream",
+            concat!(
+                "data: {\"id\":\"run_stream_rate_limit_fallback\",\"object\":\"thread.run\",\"thread_id\":\"thread_stream_rate_limit_fallback\",\"assistant_id\":\"asst_stream_rate_limit_fallback\",\"model\":\"__MODEL__\",\"status\":\"in_progress\",\"route\":\"fallback\"}\n\n",
+                "data: {\"id\":\"run_stream_rate_limit_fallback\",\"object\":\"thread.run\",\"thread_id\":\"thread_stream_rate_limit_fallback\",\"assistant_id\":\"asst_stream_rate_limit_fallback\",\"model\":\"__MODEL__\",\"status\":\"completed\",\"route\":\"fallback\",\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}\n\n",
+                "data: [DONE]\n\n"
+            ),
+        )
+        .with_response_headers(vec![("x-request-id", "run-stream-rate-limit-upstream-123")])])
+        .await;
+        let harness =
+            TestHarness::assistants_threads_affinity_fixture(&primary.base_url, &fallback.base_url)
+                .await;
+        fallback.replace_placeholder("__MODEL__", &harness.model_name);
+        let request_id = format!("threads-runs-stream-rate-limit-{}", harness.model_name);
+
+        let response = harness
+            .json_request(
+                Method::POST,
+                "/v1/threads/runs",
+                &request_id,
+                serde_json::json!({
+                    "assistant_id": "asst_stream_rate_limit_fallback",
+                    "stream": true,
+                    "thread": {
+                        "messages": [{
+                            "role": "user",
+                            "content": "hello"
+                        }]
+                    }
+                }),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream_request_id = response
+            .headers()
+            .get("x-upstream-request-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("thread run rate limit fallback stream upstream request id")
+            .to_string();
+        let body = response_text(response).await;
+        assert!(body.contains("run_stream_rate_limit_fallback"));
+        assert!(body.contains("\"route\":\"fallback\""));
+        assert!(body.contains("\"total_tokens\":7"));
+        assert_eq!(upstream_request_id, "run-stream-rate-limit-upstream-123");
+
+        let token = harness.wait_for_token_used_quota(7).await;
+        assert_eq!(token.used_quota, 7);
+
+        let log = harness.wait_for_log_by_request_id(&request_id).await;
+        assert_eq!(log.endpoint, "threads/runs");
+        assert_eq!(log.request_format, "openai/threads_runs");
+        assert_eq!(log.requested_model, harness.model_name);
+        assert_eq!(log.upstream_model, harness.model_name);
+        assert_eq!(log.model_name, harness.model_name);
+        assert_eq!(
+            log.upstream_request_id,
+            "run-stream-rate-limit-upstream-123"
+        );
+        assert_eq!(log.total_tokens, 7);
+        assert_eq!(log.quota, 7);
+        assert_eq!(log.status, LogStatus::Success);
+        assert!(log.is_stream);
+
+        let primary_account = harness.wait_for_primary_account_rate_limited().await;
+        assert_eq!(primary_account.failure_streak, 1);
+        assert!(primary_account.rate_limited_until.is_some());
+        assert!(primary_account.overload_until.is_none());
+
+        let primary_channel = harness.primary_channel_model().await;
+        assert_eq!(primary_channel.failure_streak, 1);
+        assert_eq!(primary_channel.last_health_status, 3);
+
+        assert_eq!(primary.hit_count("/v1/threads/runs"), 1);
+        assert_eq!(fallback.hit_count("/v1/threads/runs"), 1);
 
         harness.cleanup().await;
     }
@@ -7873,6 +8304,456 @@ mod tests {
         assert_eq!(fallback.hit_count("/v1/audio/speech"), 1);
         assert_eq!(fallback.hit_count("/v1/moderations"), 1);
         assert_eq!(fallback.hit_count("/v1/rerank"), 1);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn image_generations_route_settles_fallback_usage_and_persists_log() {
+        let primary = MockUpstreamServer::spawn(vec![
+            MockRoute::json(
+                Method::POST,
+                "/v1/images/generations",
+                Some("Bearer sk-primary"),
+                Some("draw a sunset"),
+                StatusCode::OK,
+                serde_json::json!({
+                    "created": 1,
+                    "data": [{
+                        "url": "https://primary.example/image.png",
+                        "route": "primary"
+                    }]
+                }),
+            )
+            .with_response_headers(vec![("x-request-id", "img-upstream-primary-123")]),
+        ])
+        .await;
+        let harness = TestHarness::model_passthrough_affinity_fixture(
+            &primary.base_url,
+            "http://127.0.0.1:9",
+        )
+        .await;
+        let request_body = serde_json::json!({
+            "model": harness.model_name,
+            "prompt": "draw a sunset"
+        });
+        let expected_tokens = i64::from(estimate_json_tokens(&request_body));
+        let request_id = format!(
+            "model-passthrough-image-generations-accounting-{}",
+            harness.model_name
+        );
+
+        let response = harness
+            .json_request(
+                Method::POST,
+                "/v1/images/generations",
+                &request_id,
+                request_body,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream_request_id = response
+            .headers()
+            .get("x-upstream-request-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("image generations upstream request id")
+            .to_string();
+        let payload = response_json(response).await;
+        assert_eq!(payload["data"][0]["route"], "primary");
+        assert_eq!(upstream_request_id, "img-upstream-primary-123");
+
+        let token = harness.wait_for_token_used_quota(expected_tokens).await;
+        assert_eq!(token.used_quota, expected_tokens);
+
+        let log = harness.wait_for_log_by_request_id(&request_id).await;
+        assert_eq!(log.endpoint, "images/generations");
+        assert_eq!(log.request_format, "openai/images_generations");
+        assert_eq!(log.requested_model, harness.model_name);
+        assert_eq!(log.upstream_model, harness.model_name);
+        assert_eq!(log.model_name, harness.model_name);
+        assert_eq!(log.upstream_request_id, "img-upstream-primary-123");
+        assert_eq!(log.prompt_tokens, expected_tokens as i32);
+        assert_eq!(log.completion_tokens, 0);
+        assert_eq!(log.total_tokens, expected_tokens as i32);
+        assert_eq!(log.quota, expected_tokens);
+        assert_eq!(log.status_code, 200);
+        assert_eq!(log.status, LogStatus::Success);
+        assert!(!log.is_stream);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn image_generations_route_falls_back_after_primary_rate_limit() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/images/generations",
+            Some("Bearer sk-primary"),
+            Some("draw a sunset"),
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({
+                "error": {
+                    "message": "primary image rate limited",
+                    "type": "rate_limit_error"
+                }
+            }),
+        )])
+        .await;
+        let fallback = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/images/generations",
+            Some("Bearer sk-fallback"),
+            Some("draw a sunset"),
+            StatusCode::OK,
+            serde_json::json!({
+                "created": 1,
+                "data": [{
+                    "url": "https://fallback.example/image.png",
+                    "route": "fallback"
+                }]
+            }),
+        )])
+        .await;
+        let harness =
+            TestHarness::model_passthrough_affinity_fixture(&primary.base_url, &fallback.base_url)
+                .await;
+        let request_body = serde_json::json!({
+            "model": harness.model_name,
+            "prompt": "draw a sunset"
+        });
+        let expected_tokens = i64::from(estimate_json_tokens(&request_body));
+        let request_id = format!("image-generations-fallback-{}", harness.model_name);
+
+        let response = harness
+            .json_request(
+                Method::POST,
+                "/v1/images/generations",
+                &request_id,
+                request_body,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["data"][0]["route"], "fallback");
+
+        let token = harness.wait_for_token_used_quota(expected_tokens).await;
+        assert_eq!(token.used_quota, expected_tokens);
+
+        let log = harness.wait_for_log_by_request_id(&request_id).await;
+        assert_eq!(log.endpoint, "images/generations");
+        assert_eq!(log.request_format, "openai/images_generations");
+        assert_eq!(log.requested_model, harness.model_name);
+        assert_eq!(log.upstream_model, harness.model_name);
+        assert_eq!(log.total_tokens, expected_tokens as i32);
+        assert_eq!(log.quota, expected_tokens);
+        assert_eq!(log.status, LogStatus::Success);
+
+        let primary_account = harness.wait_for_primary_account_rate_limited().await;
+        assert_eq!(primary_account.failure_streak, 1);
+        assert!(primary_account.rate_limited_until.is_some());
+
+        let primary_channel = harness.primary_channel_model().await;
+        assert_eq!(primary_channel.failure_streak, 1);
+        assert_eq!(primary_channel.last_health_status, 3);
+
+        assert_eq!(primary.hit_count("/v1/images/generations"), 1);
+        assert_eq!(fallback.hit_count("/v1/images/generations"), 1);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn image_generations_route_skips_rate_limited_primary_on_next_request() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/images/generations",
+            Some("Bearer sk-primary"),
+            Some("draw a sunset"),
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({
+                "error": {
+                    "message": "primary image rate limited",
+                    "type": "rate_limit_error"
+                }
+            }),
+        )])
+        .await;
+        let fallback = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/images/generations",
+            Some("Bearer sk-fallback"),
+            Some("draw a sunset"),
+            StatusCode::OK,
+            serde_json::json!({
+                "created": 1,
+                "data": [{
+                    "url": "https://fallback.example/image.png",
+                    "route": "fallback"
+                }]
+            }),
+        )])
+        .await;
+        let harness =
+            TestHarness::model_passthrough_affinity_fixture(&primary.base_url, &fallback.base_url)
+                .await;
+        let request_body = serde_json::json!({
+            "model": harness.model_name,
+            "prompt": "draw a sunset"
+        });
+        let expected_tokens = i64::from(estimate_json_tokens(&request_body));
+        let first_request_id = format!("image-generations-rate-limit-first-{}", harness.model_name);
+        let second_request_id =
+            format!("image-generations-rate-limit-second-{}", harness.model_name);
+
+        let first_response = harness
+            .json_request(
+                Method::POST,
+                "/v1/images/generations",
+                &first_request_id,
+                request_body.clone(),
+            )
+            .await;
+        assert_eq!(first_response.status(), StatusCode::OK);
+        let first_payload = response_json(first_response).await;
+        assert_eq!(first_payload["data"][0]["route"], "fallback");
+
+        let primary_account = harness.wait_for_primary_account_rate_limited().await;
+        assert_eq!(primary_account.failure_streak, 1);
+        assert!(primary_account.rate_limited_until.is_some());
+
+        let second_response = harness
+            .json_request(
+                Method::POST,
+                "/v1/images/generations",
+                &second_request_id,
+                request_body,
+            )
+            .await;
+        assert_eq!(second_response.status(), StatusCode::OK);
+        let second_payload = response_json(second_response).await;
+        assert_eq!(second_payload["data"][0]["route"], "fallback");
+
+        let token = harness.wait_for_token_used_quota(expected_tokens * 2).await;
+        assert_eq!(token.used_quota, expected_tokens * 2);
+
+        assert_eq!(primary.hit_count("/v1/images/generations"), 1);
+        assert_eq!(fallback.hit_count("/v1/images/generations"), 2);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn image_generations_route_quarantines_primary_account_after_auth_failure() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/images/generations",
+            Some("Bearer sk-primary"),
+            Some("draw a sunset"),
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({
+                "error": {
+                    "message": "invalid api key",
+                    "type": "authentication_error"
+                }
+            }),
+        )])
+        .await;
+        let fallback = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/images/generations",
+            Some("Bearer sk-fallback"),
+            Some("draw a sunset"),
+            StatusCode::OK,
+            serde_json::json!({
+                "created": 1,
+                "data": [{
+                    "url": "https://fallback.example/image-auth.png",
+                    "route": "fallback"
+                }]
+            }),
+        )])
+        .await;
+        let harness =
+            TestHarness::model_passthrough_affinity_fixture(&primary.base_url, &fallback.base_url)
+                .await;
+        let request_body = serde_json::json!({
+            "model": harness.model_name,
+            "prompt": "draw a sunset"
+        });
+        let expected_tokens = i64::from(estimate_json_tokens(&request_body));
+        let first_request_id = format!("image-generations-auth-first-{}", harness.model_name);
+        let second_request_id = format!("image-generations-auth-second-{}", harness.model_name);
+
+        let first_response = harness
+            .json_request(
+                Method::POST,
+                "/v1/images/generations",
+                &first_request_id,
+                request_body.clone(),
+            )
+            .await;
+        assert_eq!(first_response.status(), StatusCode::OK);
+        let first_payload = response_json(first_response).await;
+        assert_eq!(first_payload["data"][0]["route"], "fallback");
+
+        let primary_account = harness.wait_for_primary_account_disabled().await;
+        assert_eq!(primary_account.status, AccountStatus::Disabled);
+        assert!(!primary_account.schedulable);
+        assert_eq!(primary_account.failure_streak, 1);
+
+        let primary_channel = harness.primary_channel_model().await;
+        assert_eq!(primary_channel.failure_streak, 0);
+        assert_eq!(primary_channel.last_health_status, 2);
+
+        let second_response = harness
+            .json_request(
+                Method::POST,
+                "/v1/images/generations",
+                &second_request_id,
+                request_body,
+            )
+            .await;
+        assert_eq!(second_response.status(), StatusCode::OK);
+        let second_payload = response_json(second_response).await;
+        assert_eq!(second_payload["data"][0]["route"], "fallback");
+
+        let token = harness.wait_for_token_used_quota(expected_tokens * 2).await;
+        assert_eq!(token.used_quota, expected_tokens * 2);
+
+        assert_eq!(primary.hit_count("/v1/images/generations"), 1);
+        assert_eq!(fallback.hit_count("/v1/images/generations"), 2);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn image_generations_route_falls_back_after_primary_overload() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/images/generations",
+            Some("Bearer sk-primary"),
+            Some("draw a sunset"),
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({
+                "error": {
+                    "message": "primary image upstream overloaded",
+                    "type": "server_error"
+                }
+            }),
+        )])
+        .await;
+        let fallback = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/images/generations",
+            Some("Bearer sk-fallback"),
+            Some("draw a sunset"),
+            StatusCode::OK,
+            serde_json::json!({
+                "created": 1,
+                "data": [{
+                    "url": "https://fallback.example/image-overload.png",
+                    "route": "fallback"
+                }]
+            }),
+        )])
+        .await;
+        let harness =
+            TestHarness::model_passthrough_affinity_fixture(&primary.base_url, &fallback.base_url)
+                .await;
+        let request_body = serde_json::json!({
+            "model": harness.model_name,
+            "prompt": "draw a sunset"
+        });
+        let expected_tokens = i64::from(estimate_json_tokens(&request_body));
+        let request_id = format!("image-generations-overload-{}", harness.model_name);
+
+        let response = harness
+            .json_request(
+                Method::POST,
+                "/v1/images/generations",
+                &request_id,
+                request_body,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["data"][0]["route"], "fallback");
+
+        let token = harness.wait_for_token_used_quota(expected_tokens).await;
+        assert_eq!(token.used_quota, expected_tokens);
+
+        let log = harness.wait_for_log_by_request_id(&request_id).await;
+        assert_eq!(log.endpoint, "images/generations");
+        assert_eq!(log.request_format, "openai/images_generations");
+        assert_eq!(log.requested_model, harness.model_name);
+        assert_eq!(log.upstream_model, harness.model_name);
+        assert_eq!(log.total_tokens, expected_tokens as i32);
+        assert_eq!(log.quota, expected_tokens);
+        assert_eq!(log.status, LogStatus::Success);
+
+        let primary_account = harness.wait_for_primary_account_overloaded().await;
+        assert_eq!(primary_account.failure_streak, 1);
+        assert!(primary_account.overload_until.is_some());
+        assert!(primary_account.rate_limited_until.is_none());
+
+        let primary_channel = harness.primary_channel_model().await;
+        assert_eq!(primary_channel.failure_streak, 1);
+        assert_eq!(primary_channel.last_health_status, 3);
+
+        assert_eq!(primary.hit_count("/v1/images/generations"), 1);
+        assert_eq!(fallback.hit_count("/v1/images/generations"), 1);
+
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres and redis"]
+    async fn uploads_create_without_model_does_not_consume_quota_or_persist_usage_log() {
+        let primary = MockUpstreamServer::spawn(vec![MockRoute::json(
+            Method::POST,
+            "/v1/uploads",
+            Some("Bearer sk-primary"),
+            Some("upload-boundary-primary.bin"),
+            StatusCode::OK,
+            serde_json::json!({
+                "id": "upload_boundary_primary",
+                "object": "upload",
+                "status": "in_progress",
+                "route": "primary"
+            }),
+        )])
+        .await;
+        let harness =
+            TestHarness::uploads_affinity_fixture(&primary.base_url, "http://127.0.0.1:9").await;
+        let request_id = format!("uploads-boundary-create-{}", harness.model_name);
+
+        let response = harness
+            .json_request(
+                Method::POST,
+                "/v1/uploads",
+                &request_id,
+                serde_json::json!({
+                    "filename": "upload-boundary-primary.bin",
+                    "purpose": "assistants",
+                    "bytes": 18,
+                    "mime_type": "application/octet-stream"
+                }),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["id"], "upload_boundary_primary");
+        assert_eq!(payload["route"], "primary");
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let token = harness.token_model().await;
+        assert_eq!(token.used_quota, 0);
+        harness.assert_no_log_by_request_id(&request_id).await;
 
         harness.cleanup().await;
     }

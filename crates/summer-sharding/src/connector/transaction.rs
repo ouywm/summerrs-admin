@@ -15,7 +15,9 @@ pub struct ShardingTransaction {
     pub(crate) inner: std::sync::Arc<ShardingConnectionInner>,
     pub(crate) options: TransactionOptions,
     pub(crate) transactions: Arc<tokio::sync::Mutex<BTreeMap<String, DatabaseTransaction>>>,
+    pub(crate) access_context_override: Option<crate::connector::ShardingAccessContext>,
     pub(crate) tenant_override: Option<crate::tenant::TenantContext>,
+    pub(crate) shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
 }
 
 pub struct TwoPhaseShardingTransaction {
@@ -77,7 +79,9 @@ impl ShardingTransaction {
             inner: connection.inner.clone(),
             options,
             transactions: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+            access_context_override: connection.access_context_override.clone(),
             tenant_override: connection.tenant_override.clone(),
+            shadow_headers_override: connection.shadow_headers_override.clone(),
         })
     }
 
@@ -94,7 +98,9 @@ impl ShardingTransaction {
             inner: self.inner.clone(),
             options,
             transactions: Arc::new(tokio::sync::Mutex::new(transactions)),
+            access_context_override: self.access_context_override.clone(),
             tenant_override: self.tenant_override.clone(),
+            shadow_headers_override: self.shadow_headers_override.clone(),
         })
     }
 
@@ -132,7 +138,31 @@ impl ShardingTransaction {
             inner: self.inner.clone(),
             options: self.options,
             transactions: self.transactions.clone(),
+            access_context_override: self.access_context_override.clone(),
             tenant_override: Some(self.inner.tenant_router.resolve_context(tenant)),
+            shadow_headers_override: self.shadow_headers_override.clone(),
+        }
+    }
+
+    pub fn with_access_context(&self, context: crate::connector::ShardingAccessContext) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            options: self.options,
+            transactions: self.transactions.clone(),
+            access_context_override: Some(context),
+            tenant_override: self.tenant_override.clone(),
+            shadow_headers_override: self.shadow_headers_override.clone(),
+        }
+    }
+
+    pub fn with_shadow_headers(&self, headers: BTreeMap<String, String>) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            options: self.options,
+            transactions: self.transactions.clone(),
+            access_context_override: self.access_context_override.clone(),
+            tenant_override: self.tenant_override.clone(),
+            shadow_headers_override: Some(Arc::new(headers)),
         }
     }
 }
@@ -377,7 +407,15 @@ impl ConnectionTrait for ShardingTransaction {
         stmt: sea_orm::Statement,
     ) -> std::result::Result<ExecResult, DbErr> {
         self.inner
-            .execute_with_raw(self, stmt, true, None, self.tenant_override.clone())
+            .execute_with_raw(
+                self,
+                stmt,
+                true,
+                None,
+                self.access_context_override.clone(),
+                self.tenant_override.clone(),
+                self.shadow_headers_override.clone(),
+            )
             .await
     }
 
@@ -391,7 +429,15 @@ impl ConnectionTrait for ShardingTransaction {
         stmt: sea_orm::Statement,
     ) -> std::result::Result<Option<QueryResult>, DbErr> {
         self.inner
-            .query_one_with_raw(self, stmt, true, None, self.tenant_override.clone())
+            .query_one_with_raw(
+                self,
+                stmt,
+                true,
+                None,
+                self.access_context_override.clone(),
+                self.tenant_override.clone(),
+                self.shadow_headers_override.clone(),
+            )
             .await
     }
 
@@ -400,7 +446,15 @@ impl ConnectionTrait for ShardingTransaction {
         stmt: sea_orm::Statement,
     ) -> std::result::Result<Vec<QueryResult>, DbErr> {
         self.inner
-            .query_all_with_raw(self, stmt, true, None, self.tenant_override.clone())
+            .query_all_with_raw(
+                self,
+                stmt,
+                true,
+                None,
+                self.access_context_override.clone(),
+                self.tenant_override.clone(),
+                self.shadow_headers_override.clone(),
+            )
             .await
     }
 }
@@ -722,10 +776,9 @@ mod saga_tests {
         datasources.insert(
             "ds_primary".to_string(),
             DataSourceConfig {
-                uri: "mock://primary".to_string(),
                 schema: Some("test".to_string()),
                 role: DataSourceRole::Primary,
-                weight: 1,
+                ..DataSourceConfig::new("mock://primary")
             },
         );
 
@@ -757,10 +810,9 @@ mod saga_tests {
         datasources.insert(
             "ds_primary".to_string(),
             DataSourceConfig {
-                uri: "mock://primary".to_string(),
                 schema: Some("test".to_string()),
                 role: DataSourceRole::Primary,
-                weight: 1,
+                ..DataSourceConfig::new("mock://primary")
             },
         );
 
@@ -816,10 +868,9 @@ mod saga_tests {
         datasources.insert(
             "ds_primary".to_string(),
             DataSourceConfig {
-                uri: "mock://primary".to_string(),
                 schema: Some("test".to_string()),
                 role: DataSourceRole::Primary,
-                weight: 1,
+                ..DataSourceConfig::new("mock://primary")
             },
         );
 
@@ -896,22 +947,6 @@ mod saga_tests {
                 .contains("would span multiple datasources")
         );
         assert_eq!(transaction.transactions.lock().await.len(), 1);
-    }
-
-    fn e2e_database_url() -> String {
-        std::env::var("SUMMER_SHARDING_E2E_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| {
-                "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai"
-                    .to_string()
-            })
-    }
-
-    fn e2e_replica_database_url() -> String {
-        std::env::var("SUMMER_SHARDING_E2E_REPLICA_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://admin:123456@localhost/summerrs_admin_sharding_e2e?options=-c%20TimeZone%3DAsia%2FShanghai"
-                .to_string()
-        })
     }
 
     async fn prepare_real_transaction_probe_tables(
@@ -993,8 +1028,11 @@ mod saga_tests {
     #[tokio::test]
     #[ignore = "requires local PostgreSQL separate-database tenant metadata data"]
     async fn sharding_transaction_rejects_cross_database_work_in_standard_transaction() {
-        let primary_url = e2e_database_url();
-        let tenant_url = e2e_replica_database_url();
+        let primary_url = crate::tenant::test_support::e2e_database_url();
+        let tenant_url = crate::tenant::test_support::e2e_replica_database_url();
+        crate::tenant::test_support::prepare_probe_e2e_environment(&primary_url, &tenant_url)
+            .await
+            .expect("prepare probe environment");
         let suffix =
             Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
         let table = format!("dist_tx_probe_{suffix}");
@@ -1096,8 +1134,11 @@ mod saga_tests {
     #[tokio::test]
     #[ignore = "requires local PostgreSQL separate-database tenant metadata data"]
     async fn sharding_transaction_rolls_back_when_cross_database_enlistment_fails() {
-        let primary_url = e2e_database_url();
-        let tenant_url = e2e_replica_database_url();
+        let primary_url = crate::tenant::test_support::e2e_database_url();
+        let tenant_url = crate::tenant::test_support::e2e_replica_database_url();
+        crate::tenant::test_support::prepare_probe_e2e_environment(&primary_url, &tenant_url)
+            .await
+            .expect("prepare probe environment");
         let suffix =
             Utc::now().timestamp_micros().unsigned_abs() * 1000 + u64::from(random::<u16>());
         let table = format!("dist_tx_probe_{suffix}");

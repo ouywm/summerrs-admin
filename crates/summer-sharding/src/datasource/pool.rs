@@ -9,7 +9,7 @@ use parking_lot::RwLock;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 
 use crate::{
-    config::{DataSourceRole, ShardingConfig},
+    config::{DataSourceConfig, DataSourceRole, ShardingConfig},
     datasource::{
         DataSourceDiscovery, DataSourceHealth, DataSourceRouteState, SlowQueryMetric,
         record_slow_query, set_route_state,
@@ -40,7 +40,7 @@ impl DataSourcePool {
     pub async fn build(config: Arc<ShardingConfig>) -> Result<Self> {
         let mut connections = BTreeMap::new();
         for (name, datasource) in &config.datasources {
-            let connection = Database::connect(datasource.uri.as_str()).await?;
+            let connection = connect_datasource(datasource).await?;
             connections.insert(name.clone(), connection);
         }
         Ok(Self {
@@ -72,8 +72,8 @@ impl DataSourcePool {
             .ok_or_else(|| ShardingError::DataSourceNotFound(datasource.to_string()))
     }
 
-    pub async fn upsert_connection(&self, name: &str, uri: &str) -> Result<()> {
-        let connection = Database::connect(uri).await?;
+    pub async fn upsert_connection(&self, name: &str, datasource: &DataSourceConfig) -> Result<()> {
+        let connection = connect_datasource(datasource).await?;
         self.connections
             .write()
             .insert(name.to_string(), connection);
@@ -87,8 +87,7 @@ impl DataSourcePool {
     pub async fn sync_tenant_datasources(&self, metadata: &TenantMetadataStore) -> Result<()> {
         let dynamic_candidates = metadata.dynamic_datasources();
         for (name, datasource) in &dynamic_candidates {
-            self.upsert_connection(name.as_str(), datasource.uri.as_str())
-                .await?;
+            self.upsert_connection(name.as_str(), datasource).await?;
         }
 
         let dynamic_names = dynamic_candidates
@@ -207,6 +206,10 @@ impl DataSourcePool {
     }
 }
 
+async fn connect_datasource(datasource: &DataSourceConfig) -> Result<DatabaseConnection> {
+    Ok(Database::connect(datasource.connect_options()).await?)
+}
+
 #[async_trait]
 impl RawStatementExecutor for DataSourcePool {
     async fn execute_for(
@@ -252,10 +255,8 @@ mod tests {
         datasources.insert(
             "primary".to_string(),
             DataSourceConfig {
-                uri: "sqlite::memory:".to_string(),
-                schema: None,
                 role: DataSourceRole::Primary,
-                weight: 1,
+                ..DataSourceConfig::new("sqlite::memory:")
             },
         );
 
@@ -280,7 +281,13 @@ mod tests {
             schema_name: None,
             datasource_name: Some("tenant_t001".to_string()),
             db_uri: Some("sqlite::memory:".to_string()),
+            db_enable_logging: None,
+            db_min_conns: None,
             db_max_conns: None,
+            db_connect_timeout_ms: None,
+            db_idle_timeout_ms: None,
+            db_acquire_timeout_ms: None,
+            db_test_before_acquire: None,
         };
 
         let store = TenantMetadataStore::from_records(vec![record]);
@@ -297,19 +304,15 @@ mod tests {
         datasources.insert(
             "primary".to_string(),
             DataSourceConfig {
-                uri: "mock://primary".to_string(),
-                schema: None,
                 role: DataSourceRole::Primary,
-                weight: 1,
+                ..DataSourceConfig::new("mock://primary")
             },
         );
         datasources.insert(
             "replica".to_string(),
             DataSourceConfig {
-                uri: "mock://replica".to_string(),
-                schema: None,
                 role: DataSourceRole::Replica,
-                weight: 1,
+                ..DataSourceConfig::new("mock://replica")
             },
         );
 

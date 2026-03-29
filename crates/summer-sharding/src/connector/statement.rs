@@ -14,7 +14,7 @@ use sqlparser::{
 
 use crate::{
     algorithm::{RangeBound, ShardingCondition, ShardingValue, parse_datetime_string},
-    connector::ShardingHint,
+    connector::{ShardingAccessContext, ShardingHint},
     error::{Result, ShardingError},
     router::{OrderByItem, QualifiedTableName, SqlOperation},
     tenant::TenantContext,
@@ -71,7 +71,9 @@ pub struct StatementContext {
     pub limit: Option<u64>,
     pub offset: Option<u64>,
     pub hint: Option<ShardingHint>,
+    pub access_context: Option<ShardingAccessContext>,
     pub tenant: Option<TenantContext>,
+    pub shadow_headers: BTreeMap<String, String>,
 }
 
 impl StatementContext {
@@ -194,7 +196,9 @@ pub fn analyze_statement(stmt: &Statement) -> Result<StatementContext> {
         limit,
         offset,
         hint: None,
+        access_context: None,
         tenant: None,
+        shadow_headers: BTreeMap::new(),
     })
 }
 

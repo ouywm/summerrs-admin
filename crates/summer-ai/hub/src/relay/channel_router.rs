@@ -48,7 +48,19 @@ impl RouteSelectionPlan {
         }
     }
 
-    pub fn next(&mut self) -> Option<SelectedChannel> {
+    pub fn exclude_selected_channel(&mut self, channel: &SelectedChannel) {
+        self.exclusions.exclude_selected_channel(channel);
+    }
+
+    pub fn exclude_selected_account(&mut self, channel: &SelectedChannel) {
+        self.exclusions.exclude_selected_account(channel);
+    }
+}
+
+impl Iterator for RouteSelectionPlan {
+    type Item = SelectedChannel;
+
+    fn next(&mut self) -> Option<Self::Item> {
         while let Some(selected) = self.ordered.get(self.next_index).cloned() {
             self.next_index += 1;
             if !self.exclusions.selected_is_excluded(&selected) {
@@ -56,14 +68,6 @@ impl RouteSelectionPlan {
             }
         }
         None
-    }
-
-    pub fn exclude_selected_channel(&mut self, channel: &SelectedChannel) {
-        self.exclusions.exclude_selected_channel(channel);
-    }
-
-    pub fn exclude_selected_account(&mut self, channel: &SelectedChannel) {
-        self.exclusions.exclude_selected_account(channel);
     }
 }
 
@@ -846,7 +850,7 @@ mod tests {
 
     #[test]
     fn channel_supports_endpoint_scope_respects_provider_allowlist() {
-        assert!(!channel_supports_endpoint_scope(
+        assert!(channel_supports_endpoint_scope(
             3,
             &serde_json::json!(["chat", "responses"]),
             "responses"
@@ -855,6 +859,39 @@ mod tests {
             3,
             &serde_json::json!(["chat", "responses"]),
             "chat"
+        ));
+        assert!(!channel_supports_endpoint_scope(
+            3,
+            &serde_json::json!(["chat", "responses"]),
+            "embeddings"
+        ));
+    }
+
+    #[test]
+    fn channel_supports_endpoint_scope_keeps_azure_responses_available() {
+        assert!(channel_supports_endpoint_scope(
+            14,
+            &serde_json::json!(["chat", "responses", "embeddings"]),
+            "responses"
+        ));
+        assert!(channel_supports_endpoint_scope(
+            14,
+            &serde_json::json!(["chat", "responses", "embeddings"]),
+            "embeddings"
+        ));
+    }
+
+    #[test]
+    fn channel_supports_endpoint_scope_keeps_gemini_embeddings_available() {
+        assert!(channel_supports_endpoint_scope(
+            24,
+            &serde_json::json!(["chat", "embeddings"]),
+            "embeddings"
+        ));
+        assert!(!channel_supports_endpoint_scope(
+            24,
+            &serde_json::json!(["chat", "embeddings"]),
+            "responses"
         ));
     }
 

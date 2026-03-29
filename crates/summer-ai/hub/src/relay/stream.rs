@@ -226,9 +226,7 @@ fn resolve_stream_settlement(
 
 #[cfg(test)]
 mod tests {
-    use summer_ai_core::provider::{
-        ProviderErrorInfo, ProviderErrorKind, ProviderStreamError,
-    };
+    use summer_ai_core::provider::{ProviderErrorInfo, ProviderErrorKind, ProviderStreamError};
 
     use super::{
         StreamSettlement, resolve_stream_settlement, stream_error_health_message,
@@ -308,7 +306,10 @@ mod tests {
 
         assert!(matches!(
             settlement,
-            StreamSettlement::Failure { status_code: 400, .. }
+            StreamSettlement::Failure {
+                status_code: 400,
+                ..
+            }
         ));
     }
 

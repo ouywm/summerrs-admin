@@ -5,6 +5,8 @@ mod metadata;
 mod rewrite;
 mod rls;
 mod router;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub use context::TenantContext;
 pub use lifecycle::TenantLifecycleManager;

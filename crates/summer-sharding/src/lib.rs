@@ -43,9 +43,7 @@ pub use config::{
     TenantConfig, TenantIdSource, TenantIsolationLevel, TenantRowLevelConfig,
     TenantRowLevelStrategy,
 };
-pub use connector::hint::{
-    ShardingAccessContext, current_access_context, should_skip_masking, with_access_context,
-};
+pub use connector::hint::{ShardingAccessContext, should_skip_masking, with_access_context};
 pub use connector::{
     PreparedTwoPhaseTransaction, ShardingConnection, ShardingHint, ShardingTransaction,
     TwoPhaseShardingTransaction, TwoPhaseTransactionError, analyze_statement, with_hint,

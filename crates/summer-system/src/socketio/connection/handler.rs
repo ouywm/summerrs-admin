@@ -5,7 +5,7 @@ use summer_web::socketioxide::extract::SocketRef;
 use summer_web::socketioxide::socket::DisconnectReason;
 use tracing::{info, warn};
 
-use super::service::{SocketGatewayService, SocketIdentity};
+use super::service::SocketGatewayService;
 
 #[on_connection]
 async fn on_connection(socket: SocketRef) {
@@ -24,10 +24,7 @@ async fn on_disconnect(
 ) {
     let socket_id = socket.id.to_string();
     let namespace = socket.ns().to_string();
-    let login_id = socket
-        .extensions
-        .get::<SocketIdentity>()
-        .map(|id| id.login_id.clone());
+    let login_id = service.login_id_by_socket(&socket_id).await.ok().flatten();
 
     match service
         .unregister_connection(&socket_id, &namespace, login_id.as_deref())

@@ -48,8 +48,8 @@ md-5 = "0.10"
 mime = "0.3.17"
 mime_guess = "2"
 parking_lot = "0.12.5"
-pgwire-replication = "0.2.0"
 password-hash = "0.5"
+pgwire-replication = "0.2.0"
 rand = "0.10.0"
 regex = "1.12.3"
 reqwest = "0.13.2"
@@ -65,7 +65,7 @@ serde_json = "1.0.149"
 serde_repr = "0.1"
 sha2 = "0.10"
 sqlparser = "0.54.0"
-summer = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6eee7309c8b0c4052c2990565f2c9b0a03e" }
+summer = "0.5.0"
 summer-admin-macros = { path = "crates/summer-admin-macros" }
 summer-ai = { path = "crates/summer-ai" }
 summer-ai-core = { path = "crates/summer-ai/core" }
@@ -73,16 +73,16 @@ summer-ai-model = { path = "crates/summer-ai/model" }
 summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
-summer-job = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6eee7309c8b0c4052c2990565f2c9b0a03e" }
-summer-macros = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6eee7309c8b0c4052c2990565f2c9b0a03e" }
-summer-mail = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6eee7309c8b0c4052c2990565f2c9b0a03e" }
+summer-job = "0.5.0"
+summer-macros = "0.5.0"
+summer-mail = "0.5.0"
 summer-mcp = { path = "crates/summer-mcp" }
-summer-redis = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6eee7309c8b0c4052c2990565f2c9b0a03e" }
+summer-redis = "0.5.0"
 summer-rig = { path = "crates/summer-rig" }
-summer-sea-orm = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6eee7309c8b0c4052c2990565f2c9b0a03e", default-features = false }
+summer-sea-orm = { version = "0.5.0-rc.1", default-features = false }
 summer-sharding = { path = "crates/summer-sharding" }
 summer-system-model = { path = "crates/summer-system-model" }
-summer-web = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6eee7309c8b0c4052c2990565f2c9b0a03e" }
+summer-web = "0.5.0"
 sysinfo = "0.35"
 thiserror = "2.0.18"
 tokio = "1.49.0"
@@ -105,3 +105,8 @@ summer-ai-hub = { path = "crates/summer-ai/hub" }
 summer-plugins = { path = "crates/summer-plugins" }
 summer-system = { path = "crates/summer-system" }
 tokio-stream = "0.1"
+
+[patch.crates-io]
+aide = { path = "vendor/aide-0.16.0-alpha.3" }
+sea-orm = { path = "vendor/sea-orm-2.0.0-rc.37" }
+summer-macros = { path = "vendor/summer-macros-0.5.0" }

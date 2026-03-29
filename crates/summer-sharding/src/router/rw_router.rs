@@ -177,28 +177,22 @@ mod tests {
         datasources.insert(
             "ds_ai_primary".to_string(),
             DataSourceConfig {
-                uri: "mock://primary".to_string(),
-                schema: None,
                 role: DataSourceRole::Primary,
-                weight: 1,
+                ..DataSourceConfig::new("mock://primary")
             },
         );
         datasources.insert(
             "ds_ai_replica_a".to_string(),
             DataSourceConfig {
-                uri: "mock://replica-a".to_string(),
-                schema: None,
                 role: DataSourceRole::Replica,
-                weight: 1,
+                ..DataSourceConfig::new("mock://replica-a")
             },
         );
         datasources.insert(
             "ds_ai_replica_b".to_string(),
             DataSourceConfig {
-                uri: "mock://replica-b".to_string(),
-                schema: None,
                 role: DataSourceRole::Replica,
-                weight: 1,
+                ..DataSourceConfig::new("mock://replica-b")
             },
         );
 

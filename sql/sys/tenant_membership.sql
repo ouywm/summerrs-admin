@@ -40,8 +40,8 @@ COMMENT ON COLUMN sys.tenant_membership.tenant_id IS '租户业务唯一标识�
 COMMENT ON COLUMN sys.tenant_membership.user_id IS '系统用户ID，对应 sys.user.id';
 COMMENT ON COLUMN sys.tenant_membership.role_code IS '租户内成员角色编码，由业务侧自定义';
 COMMENT ON COLUMN sys.tenant_membership.is_default IS '是否为该用户默认进入的租户';
-COMMENT ON COLUMN sys.tenant_membership.status IS '状态：1=正常 2=禁用 3=移除';
-COMMENT ON COLUMN sys.tenant_membership.source IS '来源：manual/invite/sso/scim/system';
+COMMENT ON COLUMN sys.tenant_membership.status IS '状态：1-正常 2-禁用 3-移除';
+COMMENT ON COLUMN sys.tenant_membership.source IS '来源：manual-手动 invite-邀请 sso-单点登录 scim-SCIM同步 system-系统初始化';
 COMMENT ON COLUMN sys.tenant_membership.joined_time IS '加入时间';
 COMMENT ON COLUMN sys.tenant_membership.last_access_time IS '最近访问时间';
 COMMENT ON COLUMN sys.tenant_membership.remark IS '备注';

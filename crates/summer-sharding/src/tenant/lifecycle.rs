@@ -29,7 +29,7 @@ impl TenantLifecycleManager {
             .datasource_name
             .clone()
             .unwrap_or_else(|| format!("tenant_{tenant_suffix}"));
-        let database_name = datasource_name.replace('-', "_");
+        let database_name = database_name(record, datasource_name.as_str());
 
         let resource_sql = match record.isolation_level {
             TenantIsolationLevel::SharedRow => Vec::new(),
@@ -58,11 +58,14 @@ impl TenantLifecycleManager {
         };
 
         let metadata_sql = vec![format!(
-            "INSERT INTO sys.tenant_datasource (tenant_id, isolation_level, status, schema_name, datasource_name, db_uri, db_max_conns) \
-             VALUES ('{tenant_id}', {isolation}, 'active', {schema_name}, {datasource_name}, {db_uri}, {db_max_conns}) \
+            "INSERT INTO sys.tenant_datasource (tenant_id, isolation_level, status, schema_name, datasource_name, db_uri, db_enable_logging, db_min_conns, db_max_conns, db_connect_timeout_ms, db_idle_timeout_ms, db_acquire_timeout_ms, db_test_before_acquire) \
+             VALUES ('{tenant_id}', {isolation}, 'active', {schema_name}, {datasource_name}, {db_uri}, {db_enable_logging}, {db_min_conns}, {db_max_conns}, {db_connect_timeout_ms}, {db_idle_timeout_ms}, {db_acquire_timeout_ms}, {db_test_before_acquire}) \
              ON CONFLICT (tenant_id) DO UPDATE SET \
                isolation_level = EXCLUDED.isolation_level, status = EXCLUDED.status, \
-               schema_name = EXCLUDED.schema_name, datasource_name = EXCLUDED.datasource_name, db_uri = EXCLUDED.db_uri, db_max_conns = EXCLUDED.db_max_conns",
+               schema_name = EXCLUDED.schema_name, datasource_name = EXCLUDED.datasource_name, db_uri = EXCLUDED.db_uri, \
+               db_enable_logging = EXCLUDED.db_enable_logging, db_min_conns = EXCLUDED.db_min_conns, db_max_conns = EXCLUDED.db_max_conns, \
+               db_connect_timeout_ms = EXCLUDED.db_connect_timeout_ms, db_idle_timeout_ms = EXCLUDED.db_idle_timeout_ms, \
+               db_acquire_timeout_ms = EXCLUDED.db_acquire_timeout_ms, db_test_before_acquire = EXCLUDED.db_test_before_acquire",
             tenant_id = escape_literal(record.tenant_id.as_str()),
             isolation = isolation_literal(record.isolation_level),
             schema_name =
@@ -74,10 +77,16 @@ impl TenantLifecycleManager {
                     record.isolation_level == TenantIsolationLevel::SeparateDatabase
                 })),
             db_uri = option_literal(record.db_uri.as_deref()),
+            db_enable_logging = option_bool_literal(record.db_enable_logging),
+            db_min_conns = option_u32_literal(record.db_min_conns),
             db_max_conns = record
                 .db_max_conns
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "NULL".to_string()),
+            db_connect_timeout_ms = option_u64_literal(record.db_connect_timeout_ms),
+            db_idle_timeout_ms = option_u64_literal(record.db_idle_timeout_ms),
+            db_acquire_timeout_ms = option_u64_literal(record.db_acquire_timeout_ms),
+            db_test_before_acquire = option_bool_literal(record.db_test_before_acquire),
         )];
 
         let notify_sql = vec![notify_sql(TenantMetadataEvent {
@@ -107,7 +116,7 @@ impl TenantLifecycleManager {
             .datasource_name
             .clone()
             .unwrap_or_else(|| format!("tenant_{tenant_suffix}"));
-        let database_name = datasource_name.replace('-', "_");
+        let database_name = database_name(record, datasource_name.as_str());
 
         let resource_sql = match record.isolation_level {
             TenantIsolationLevel::SharedRow => Vec::new(),
@@ -154,7 +163,13 @@ impl TenantLifecycleManager {
                 schema_name: schema_name.map(str::to_string),
                 datasource_name: None,
                 db_uri: None,
+                db_enable_logging: None,
+                db_min_conns: None,
                 db_max_conns: None,
+                db_connect_timeout_ms: None,
+                db_idle_timeout_ms: None,
+                db_acquire_timeout_ms: None,
+                db_test_before_acquire: None,
             },
             &Vec::new(),
         )
@@ -175,7 +190,13 @@ impl TenantLifecycleManager {
                 schema_name: schema_name.map(str::to_string),
                 datasource_name: None,
                 db_uri: None,
+                db_enable_logging: None,
+                db_min_conns: None,
                 db_max_conns: None,
+                db_connect_timeout_ms: None,
+                db_idle_timeout_ms: None,
+                db_acquire_timeout_ms: None,
+                db_test_before_acquire: None,
             },
             &Vec::new(),
         )
@@ -193,6 +214,24 @@ fn option_literal(value: Option<&str>) -> String {
         .unwrap_or_else(|| "NULL".to_string())
 }
 
+fn option_bool_literal(value: Option<bool>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "NULL".to_string())
+}
+
+fn option_u32_literal(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "NULL".to_string())
+}
+
+fn option_u64_literal(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "NULL".to_string())
+}
+
 fn escape_literal(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -204,6 +243,19 @@ fn notify_sql(event: TenantMetadataEvent) -> String {
             .unwrap_or_else(|_| "{\"event\":\"reload\"}".to_string())
             .replace('\'', "''")
     )
+}
+
+fn database_name(record: &TenantMetadataRecord, fallback_datasource_name: &str) -> String {
+    record
+        .db_uri
+        .as_deref()
+        .and_then(|uri| url::Url::parse(uri).ok())
+        .and_then(|uri| {
+            uri.path_segments()
+                .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+                .map(|segment| segment.to_string())
+        })
+        .unwrap_or_else(|| fallback_datasource_name.replace('-', "_"))
 }
 
 #[cfg(test)]
@@ -245,7 +297,13 @@ mod tests {
                 schema_name: None,
                 datasource_name: None,
                 db_uri: None,
+                db_enable_logging: None,
+                db_min_conns: None,
                 db_max_conns: None,
+                db_connect_timeout_ms: None,
+                db_idle_timeout_ms: None,
+                db_acquire_timeout_ms: None,
+                db_test_before_acquire: None,
             },
             &["ai.log".to_string(), "ai.request".to_string()],
         );
@@ -259,5 +317,40 @@ mod tests {
         assert!(!plan.metadata_sql[0].contains("'2'"));
         assert!(plan.metadata_sql[0].contains(", 2, 'active'"));
         assert!(plan.notify_sql[0].contains("pg_notify"));
+    }
+
+    #[test]
+    fn lifecycle_uses_database_name_from_db_uri_when_present() {
+        let manager = TenantLifecycleManager;
+        let plan = manager.plan_onboard(
+            &TenantMetadataRecord {
+                tenant_id: "T-DB".to_string(),
+                isolation_level: TenantIsolationLevel::SeparateDatabase,
+                status: Some("active".to_string()),
+                schema_name: None,
+                datasource_name: Some("tenant_tdb".to_string()),
+                db_uri: Some(
+                    "postgres://admin:123456@localhost/tenant_real_db?sslmode=disable".to_string(),
+                ),
+                db_enable_logging: Some(true),
+                db_min_conns: Some(2),
+                db_max_conns: Some(8),
+                db_connect_timeout_ms: Some(1_500),
+                db_idle_timeout_ms: Some(2_500),
+                db_acquire_timeout_ms: Some(3_500),
+                db_test_before_acquire: Some(false),
+            },
+            &[],
+        );
+
+        assert_eq!(plan.resource_sql, vec!["CREATE DATABASE tenant_real_db"]);
+        assert!(plan.metadata_sql[0].contains("db_enable_logging"));
+        assert!(plan.metadata_sql[0].contains("db_min_conns"));
+        assert!(plan.metadata_sql[0].contains("db_connect_timeout_ms"));
+        assert!(plan.metadata_sql[0].contains("db_idle_timeout_ms"));
+        assert!(plan.metadata_sql[0].contains("db_acquire_timeout_ms"));
+        assert!(plan.metadata_sql[0].contains("db_test_before_acquire"));
+        assert!(plan.metadata_sql[0].contains("true"));
+        assert!(plan.metadata_sql[0].contains(", 2, 8, 1500, 2500, 3500, false)"));
     }
 }

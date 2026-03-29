@@ -9,9 +9,12 @@ use sea_orm::{ConnectionTrait, DbBackend, DbErr, ExecResult, QueryResult, Statem
 use crate::{
     audit::{AuditEvent, DefaultSqlAuditor, SqlAuditor},
     config::ShardingConfig,
-    connector::ShardingHint,
     connector::statement::{StatementContext, analyze_statement},
-    datasource::{DataSourcePool, FanoutMetric, SlowQueryMetric, record_fanout, record_slow_query},
+    connector::{ShardingAccessContext, ShardingHint},
+    datasource::{
+        DataSourceHealth, DataSourcePool, DataSourceRouteState, FanoutMetric, SlowQueryMetric,
+        record_fanout, record_slow_query, route_state,
+    },
     error::{Result, ShardingError},
     execute::{ExecutionUnit, Executor, RawStatementExecutor, ScatterGatherExecutor},
     keygen::{KeyGenerator, KeyGeneratorRegistry},
@@ -31,7 +34,9 @@ use crate::{
 pub struct ShardingConnection {
     pub(crate) inner: Arc<ShardingConnectionInner>,
     pub(crate) hint_override: Option<ShardingHint>,
+    pub(crate) access_context_override: Option<ShardingAccessContext>,
     pub(crate) tenant_override: Option<crate::tenant::TenantContext>,
+    pub(crate) shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
 }
 
 pub(crate) struct ShardingConnectionInner {
@@ -101,7 +106,9 @@ impl ShardingConnection {
         Ok(Self {
             inner: Arc::new(inner),
             hint_override: None,
+            access_context_override: None,
             tenant_override: None,
+            shadow_headers_override: None,
         })
     }
 
@@ -113,7 +120,9 @@ impl ShardingConnection {
         Self {
             inner: self.inner.clone(),
             hint_override: Some(hint),
+            access_context_override: self.access_context_override.clone(),
             tenant_override: self.tenant_override.clone(),
+            shadow_headers_override: self.shadow_headers_override.clone(),
         }
     }
 
@@ -121,12 +130,55 @@ impl ShardingConnection {
         Self {
             inner: self.inner.clone(),
             hint_override: self.hint_override.clone(),
+            access_context_override: self.access_context_override.clone(),
             tenant_override: Some(self.resolve_tenant_context(tenant)),
+            shadow_headers_override: self.shadow_headers_override.clone(),
+        }
+    }
+
+    pub fn with_access_context(&self, context: ShardingAccessContext) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            hint_override: self.hint_override.clone(),
+            access_context_override: Some(context),
+            tenant_override: self.tenant_override.clone(),
+            shadow_headers_override: self.shadow_headers_override.clone(),
+        }
+    }
+
+    pub fn with_shadow_headers(&self, headers: BTreeMap<String, String>) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            hint_override: self.hint_override.clone(),
+            access_context_override: self.access_context_override.clone(),
+            tenant_override: self.tenant_override.clone(),
+            shadow_headers_override: Some(Arc::new(headers)),
         }
     }
 
     pub fn tenant_metadata_store(&self) -> Arc<TenantMetadataStore> {
         self.inner.tenant_metadata.clone()
+    }
+
+    pub fn datasource_names(&self) -> Vec<String> {
+        self.inner.pool.datasource_names()
+    }
+
+    pub async fn health_check(&self) -> Vec<DataSourceHealth> {
+        self.inner.pool.health_check().await
+    }
+
+    pub async fn refresh_route_states(&self) -> Vec<DataSourceRouteState> {
+        self.inner.pool.refresh_read_write_route_states().await
+    }
+
+    pub fn route_states(&self) -> Vec<DataSourceRouteState> {
+        self.inner
+            .pool
+            .primary_datasource_names()
+            .into_iter()
+            .filter_map(|primary| route_state(primary.as_str()))
+            .collect()
     }
 
     pub fn resolve_tenant_context(
@@ -208,7 +260,9 @@ impl ShardingConnection {
                 stmt,
                 force_primary,
                 self.hint_override.clone(),
+                self.access_context_override.clone(),
                 self.tenant_override.clone(),
+                self.shadow_headers_override.clone(),
             )
             .await
     }
@@ -225,7 +279,9 @@ impl ShardingConnection {
                 stmt,
                 force_primary,
                 self.hint_override.clone(),
+                self.access_context_override.clone(),
                 self.tenant_override.clone(),
+                self.shadow_headers_override.clone(),
             )
             .await
     }
@@ -242,7 +298,9 @@ impl ShardingConnection {
                 stmt,
                 force_primary,
                 self.hint_override.clone(),
+                self.access_context_override.clone(),
                 self.tenant_override.clone(),
+                self.shadow_headers_override.clone(),
             )
             .await
     }
@@ -259,24 +317,51 @@ impl ShardingConnection {
                 stmt,
                 force_primary,
                 self.hint_override.clone(),
+                self.access_context_override.clone(),
                 self.tenant_override.clone(),
+                self.shadow_headers_override.clone(),
             )
             .await
     }
 }
 
 impl ShardingConnectionInner {
+    fn ensure_tenant_available(&self, tenant: Option<&crate::tenant::TenantContext>) -> Result<()> {
+        let Some(tenant) = tenant else {
+            return Ok(());
+        };
+        let Some(metadata) = self.tenant_metadata.get(tenant.tenant_id.as_str()) else {
+            return Ok(());
+        };
+        match metadata.status.as_deref() {
+            None => Ok(()),
+            Some(status) if status.eq_ignore_ascii_case("active") => Ok(()),
+            Some(status) => Err(ShardingError::Route(format!(
+                "tenant `{}` is not active: {status}",
+                tenant.tenant_id
+            ))),
+        }
+    }
+
     pub(crate) async fn prepare_statement(
         &self,
         raw: &dyn RawStatementExecutor,
         stmt: &Statement,
         force_primary: bool,
         hint_override: Option<ShardingHint>,
+        access_context_override: Option<ShardingAccessContext>,
         tenant_override: Option<crate::tenant::TenantContext>,
+        shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
     ) -> Result<(StatementContext, RoutePlan, Vec<ExecutionUnit>)> {
         let mut analysis = analyze_statement(stmt)?;
-        analysis.hint = hint_override.or_else(crate::connector::hint::current_hint);
+        analysis.hint = hint_override;
+        analysis.access_context = access_context_override;
         analysis.tenant = tenant_override;
+        analysis.shadow_headers = shadow_headers_override
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
+        self.ensure_tenant_available(analysis.tenant.as_ref())?;
         self.resolve_lookup_sharding_conditions(raw, &mut analysis)
             .await?;
         self.reject_sharding_key_update(&analysis, stmt.values.as_ref())?;
@@ -388,11 +473,21 @@ impl ShardingConnectionInner {
         stmt: Statement,
         force_primary: bool,
         hint_override: Option<ShardingHint>,
+        access_context_override: Option<ShardingAccessContext>,
         tenant_override: Option<crate::tenant::TenantContext>,
+        shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
     ) -> std::result::Result<ExecResult, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(raw, &stmt, force_primary, hint_override, tenant_override)
+            .prepare_statement(
+                raw,
+                &stmt,
+                force_primary,
+                hint_override,
+                access_context_override,
+                tenant_override,
+                shadow_headers_override,
+            )
             .await?;
         let result = self.executor.execute(raw, units).await.map_err(DbErr::from);
         if result.is_ok() {
@@ -409,11 +504,21 @@ impl ShardingConnectionInner {
         stmt: Statement,
         force_primary: bool,
         hint_override: Option<ShardingHint>,
+        access_context_override: Option<ShardingAccessContext>,
         tenant_override: Option<crate::tenant::TenantContext>,
+        shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
     ) -> std::result::Result<Option<QueryResult>, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(raw, &stmt, force_primary, hint_override, tenant_override)
+            .prepare_statement(
+                raw,
+                &stmt,
+                force_primary,
+                hint_override,
+                access_context_override,
+                tenant_override,
+                shadow_headers_override,
+            )
             .await?;
         let result = self
             .executor
@@ -430,11 +535,21 @@ impl ShardingConnectionInner {
         stmt: Statement,
         force_primary: bool,
         hint_override: Option<ShardingHint>,
+        access_context_override: Option<ShardingAccessContext>,
         tenant_override: Option<crate::tenant::TenantContext>,
+        shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
     ) -> std::result::Result<Vec<QueryResult>, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(raw, &stmt, force_primary, hint_override, tenant_override)
+            .prepare_statement(
+                raw,
+                &stmt,
+                force_primary,
+                hint_override,
+                access_context_override,
+                tenant_override,
+                shadow_headers_override,
+            )
             .await?;
         let result = self
             .executor
@@ -820,29 +935,14 @@ mod tests {
         config::{ShardingConfig, TenantIsolationLevel},
         connector::ShardingHint,
         datasource::{
-            DataSourcePool, InMemoryRuntimeRecorder, reset_runtime_recorder, set_runtime_recorder,
+            DataSourcePool, InMemoryRuntimeRecorder, clear_route_states, reset_runtime_recorder,
+            set_runtime_recorder,
         },
         encrypt::{AesGcmEncryptor, EncryptAlgorithm},
-        tenant::TenantContext,
+        tenant::{TenantContext, test_support},
     };
 
     use super::ShardingConnection;
-
-    fn e2e_database_url() -> String {
-        std::env::var("SUMMER_SHARDING_E2E_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| {
-                "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai"
-                    .to_string()
-            })
-    }
-
-    fn e2e_replica_database_url() -> String {
-        std::env::var("SUMMER_SHARDING_E2E_REPLICA_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://admin:123456@localhost/summerrs_admin_sharding_e2e?options=-c%20TimeZone%3DAsia%2FShanghai"
-                .to_string()
-        })
-    }
 
     #[test]
     fn sharding_connection_routes_query_to_month_shards() {
@@ -1039,7 +1139,13 @@ mod tests {
                 schema_name: Some("tenant_ent01".to_string()),
                 datasource_name: None,
                 db_uri: None,
+                db_enable_logging: None,
+                db_min_conns: None,
                 db_max_conns: None,
+                db_connect_timeout_ms: None,
+                db_idle_timeout_ms: None,
+                db_acquire_timeout_ms: None,
+                db_test_before_acquire: None,
             });
 
         block_on(
@@ -1062,10 +1168,134 @@ mod tests {
         assert!(!sql.contains("tenant_id = 'T-ENT-01'"), "sql={sql}");
     }
 
+    #[test]
+    fn sharding_connection_rejects_inactive_tenant_metadata() {
+        let config = std::sync::Arc::new(
+            ShardingConfig::from_test_str(
+                r#"
+                [datasources.ds_ai]
+                uri = "mock://ai"
+                schema = "ai"
+                role = "primary"
+
+                [tenant]
+                enabled = true
+                default_isolation = "shared_row"
+
+                [tenant.row_level]
+                column_name = "tenant_id"
+                strategy = "sql_rewrite"
+                "#,
+            )
+            .expect("config"),
+        );
+        let connection = MockDatabase::new(DbBackend::Postgres)
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .into_connection();
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([("ds_ai".to_string(), connection)]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool).expect("connection");
+        sharding
+            .tenant_metadata_store()
+            .upsert(crate::tenant::TenantMetadataRecord {
+                tenant_id: "T-INACTIVE".to_string(),
+                isolation_level: TenantIsolationLevel::SharedRow,
+                status: Some("inactive".to_string()),
+                schema_name: None,
+                datasource_name: None,
+                db_uri: None,
+                db_enable_logging: None,
+                db_min_conns: None,
+                db_max_conns: None,
+                db_connect_timeout_ms: None,
+                db_idle_timeout_ms: None,
+                db_acquire_timeout_ms: None,
+                db_test_before_acquire: None,
+            });
+
+        let error = block_on(
+            sharding
+                .with_tenant_context(TenantContext::new(
+                    "T-INACTIVE",
+                    TenantIsolationLevel::SharedRow,
+                ))
+                .query_all_raw(Statement::from_string(
+                    DbBackend::Postgres,
+                    "SELECT id FROM ai.log WHERE status = 1",
+                )),
+        )
+        .expect_err("inactive tenant should be rejected");
+
+        assert!(error.to_string().contains("not active"));
+    }
+
+    #[tokio::test]
+    async fn sharding_connection_exposes_health_and_route_state_snapshots() {
+        clear_route_states();
+        let config = std::sync::Arc::new(
+            ShardingConfig::from_test_str(
+                r#"
+                [datasources.ds_primary]
+                uri = "mock://primary"
+                schema = "test"
+                role = "primary"
+
+                [datasources.ds_replica]
+                uri = "mock://replica"
+                schema = "test"
+                role = "replica"
+
+                [read_write_splitting]
+                enabled = true
+
+                [[read_write_splitting.rules]]
+                name = "rw"
+                primary = "ds_primary"
+                replicas = ["ds_replica"]
+                load_balance = "round_robin"
+                "#,
+            )
+            .expect("config"),
+        );
+        let primary = MockDatabase::new(DbBackend::Postgres).into_connection();
+        let replica = MockDatabase::new(DbBackend::Postgres).into_connection();
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([
+                ("ds_primary".to_string(), primary),
+                ("ds_replica".to_string(), replica),
+            ]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool).expect("connection");
+
+        let health = sharding.health_check().await;
+        assert_eq!(health.len(), 2);
+        assert!(health.iter().all(|item| item.reachable));
+
+        let refreshed = sharding.refresh_route_states().await;
+        assert_eq!(refreshed.len(), 1);
+        assert_eq!(refreshed[0].configured_primary, "ds_primary");
+
+        let snapshot = sharding.route_states();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].rule_name, "rw");
+        assert_eq!(snapshot[0].configured_primary, "ds_primary");
+
+        clear_route_states();
+    }
+
     #[tokio::test]
     #[ignore = "requires local PostgreSQL seed tenant metadata data"]
     async fn sharding_connection_routes_using_real_tenant_metadata_from_database() {
-        let database_url = e2e_database_url();
+        let database_url = test_support::e2e_database_url();
+        let replica_url = test_support::e2e_replica_database_url();
+        test_support::prepare_probe_e2e_environment(&database_url, &replica_url)
+            .await
+            .expect("prepare probe environment");
         let config = ShardingConfig::from_test_str(
             format!(
                 r#"
@@ -1119,7 +1349,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local PostgreSQL separate-schema seed tenant metadata data"]
     async fn sharding_connection_routes_isolated_probe_to_separate_schema() {
-        let database_url = e2e_database_url();
+        let database_url = test_support::e2e_database_url();
+        let replica_url = test_support::e2e_replica_database_url();
+        test_support::prepare_probe_e2e_environment(&database_url, &replica_url)
+            .await
+            .expect("prepare probe environment");
         let config = ShardingConfig::from_test_str(
             format!(
                 r#"
@@ -1173,7 +1407,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local PostgreSQL separate-table seed tenant metadata data"]
     async fn sharding_connection_routes_isolated_probe_to_separate_table() {
-        let database_url = e2e_database_url();
+        let database_url = test_support::e2e_database_url();
+        let replica_url = test_support::e2e_replica_database_url();
+        test_support::prepare_probe_e2e_environment(&database_url, &replica_url)
+            .await
+            .expect("prepare probe environment");
         let config = ShardingConfig::from_test_str(
             format!(
                 r#"
@@ -1227,7 +1465,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local PostgreSQL separate-database seed tenant metadata data"]
     async fn sharding_connection_routes_isolated_probe_to_separate_database() {
-        let database_url = e2e_database_url();
+        let database_url = test_support::e2e_database_url();
+        let replica_url = test_support::e2e_replica_database_url();
+        test_support::prepare_probe_e2e_environment(&database_url, &replica_url)
+            .await
+            .expect("prepare probe environment");
         let config = ShardingConfig::from_test_str(
             format!(
                 r#"
@@ -1281,8 +1523,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local PostgreSQL primary and replica seed data"]
     async fn sharding_connection_routes_reads_to_replica_and_transaction_reads_to_primary() {
-        let primary_url = e2e_database_url();
-        let replica_url = e2e_replica_database_url();
+        let primary_url = test_support::e2e_database_url();
+        let replica_url = test_support::e2e_replica_database_url();
+        test_support::prepare_rw_probe_environment(&primary_url, &replica_url)
+            .await
+            .expect("prepare rw probe");
         let config = ShardingConfig::from_test_str(
             format!(
                 r#"
@@ -1432,7 +1677,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local PostgreSQL shadow seed data"]
     async fn sharding_connection_routes_real_shadow_hint_to_shadow_table() {
-        let database_url = e2e_database_url();
+        let database_url = test_support::e2e_database_url();
+        test_support::prepare_shadow_probe_environment(&database_url)
+            .await
+            .expect("prepare shadow probe");
         let config = ShardingConfig::from_test_str(
             format!(
                 r#"
@@ -2119,6 +2367,59 @@ mod tests {
     }
 
     #[test]
+    fn sharding_connection_routes_shadow_header_to_shadow_table() {
+        let config = std::sync::Arc::new(
+            ShardingConfig::from_test_str(
+                r#"
+                [datasources.ds_ai]
+                uri = "mock://ai"
+                schema = "ai"
+                role = "primary"
+
+                [shadow]
+                enabled = true
+                shadow_suffix = "_shadow"
+
+                  [shadow.table_mode]
+                  enabled = true
+                  tables = ["ai.log"]
+
+                  [[shadow.conditions]]
+                  type = "header"
+                  key = "X-Shadow"
+                  value = "true"
+                "#,
+            )
+            .expect("config"),
+        );
+        let connection = MockDatabase::new(DbBackend::Postgres)
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .into_connection();
+        let log_connection = connection.clone();
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([("ds_ai".to_string(), connection)]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool)
+            .expect("connection")
+            .with_shadow_headers(BTreeMap::from([(
+                "X-Shadow".to_string(),
+                "true".to_string(),
+            )]));
+
+        block_on(sharding.query_all_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT id FROM ai.log",
+        )))
+        .expect("query");
+
+        let logs = log_connection.into_transaction_log();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].statements()[0].sql.contains("ai.log_shadow"));
+    }
+
+    #[test]
     fn sharding_connection_decrypts_and_masks_sensitive_columns() {
         unsafe {
             std::env::set_var(
@@ -2241,6 +2542,75 @@ mod tests {
         let sharding = ShardingConnection::with_pool(config, pool)
             .expect("connection")
             .with_hint(ShardingHint::SkipMasking);
+
+        let rows = block_on(sharding.query_all_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT phone FROM sys.user WHERE id = 1",
+        )))
+        .expect("query");
+
+        assert_eq!(
+            rows[0].try_get::<String>("", "phone").expect("phone"),
+            "13812341234"
+        );
+    }
+
+    #[test]
+    fn sharding_connection_access_context_skip_masking_returns_plaintext() {
+        unsafe {
+            std::env::set_var(
+                "SUMMER_SHARDING_TEST_AES",
+                "12345678901234567890123456789012",
+            );
+        }
+        let cipher = AesGcmEncryptor::from_material(b"12345678901234567890123456789012")
+            .expect("encryptor")
+            .encrypt("13812341234")
+            .expect("cipher");
+
+        let config = std::sync::Arc::new(
+            ShardingConfig::from_test_str(
+                r#"
+                [datasources.ds_sys]
+                uri = "mock://sys"
+                schema = "sys"
+                role = "primary"
+
+                [encrypt]
+                enabled = true
+
+                  [[encrypt.rules]]
+                  table = "sys.user"
+                  column = "phone"
+                  cipher_column = "phone_cipher"
+                  algorithm = "aes"
+                  key_env = "SUMMER_SHARDING_TEST_AES"
+
+                [masking]
+                enabled = true
+
+                  [[masking.rules]]
+                  table = "sys.user"
+                  column = "phone"
+                  algorithm = "phone"
+                "#,
+            )
+            .expect("config"),
+        );
+        let connection = MockDatabase::new(DbBackend::Postgres)
+            .append_query_results([[BTreeMap::from([("phone".to_string(), cipher.into())])]])
+            .into_connection();
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([("ds_sys".to_string(), connection)]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool)
+            .expect("connection")
+            .with_access_context(
+                crate::connector::hint::ShardingAccessContext::default()
+                    .with_permission("masking:skip"),
+            );
 
         let rows = block_on(sharding.query_all_raw(Statement::from_string(
             DbBackend::Postgres,
