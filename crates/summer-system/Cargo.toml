@@ -43,6 +43,7 @@ summer-sea-orm = { workspace = true, features = [
     "with-web",
     "with-web-openapi",
 ] }
+summer-sharding = { workspace = true }
 summer-system-model = { workspace = true }
 summer-web = { workspace = true, features = [
     "openapi",

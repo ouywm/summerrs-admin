@@ -50,6 +50,18 @@ include!("sys_role.rs");
 pub mod sys_role_menu;
 include!("sys_role_menu.rs");
 
+#[path = "../entity_gen/sys_tenant.rs"]
+pub mod sys_tenant;
+include!("sys_tenant.rs");
+
+#[path = "../entity_gen/sys_tenant_datasource.rs"]
+pub mod sys_tenant_datasource;
+include!("sys_tenant_datasource.rs");
+
+#[path = "../entity_gen/sys_tenant_membership.rs"]
+pub mod sys_tenant_membership;
+include!("sys_tenant_membership.rs");
+
 #[path = "../entity_gen/sys_user.rs"]
 pub mod sys_user;
 include!("sys_user.rs");

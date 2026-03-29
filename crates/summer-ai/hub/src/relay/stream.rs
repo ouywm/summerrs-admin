@@ -1,19 +1,15 @@
-use std::collections::BTreeMap;
-
 use futures::StreamExt;
 use summer_web::axum::response::sse::{Event, KeepAlive, Sse};
 use summer_web::axum::response::{IntoResponse, Response};
 
+use summer_ai_core::provider::{ProviderErrorKind, ProviderStreamError};
 use summer_ai_core::types::chat::ChatCompletionChunk;
 use summer_ai_core::types::common::Usage;
-use summer_ai_core::types::completion::CompletionChunk;
-use summer_ai_core::types::responses::{
-    ResponsesOutputContent, ResponsesOutputItem, ResponsesRequest, ResponsesResponse,
-    ResponsesUsage,
-};
 
 use crate::relay::billing::{BillingEngine, ModelConfigInfo};
 use crate::relay::channel_router::SelectedChannel;
+use crate::relay::rate_limit::RateLimitEngine;
+use crate::service::channel::ChannelService;
 use crate::service::log::{ChatCompletionLogRecord, LogService};
 use crate::service::token::TokenInfo;
 
@@ -30,13 +26,21 @@ pub fn build_sse_response(
     start_elapsed: i64,
     client_ip: String,
     log_svc: LogService,
+    channel_svc: ChannelService,
+    rate_limiter: RateLimitEngine,
     billing: BillingEngine,
+    request_id: String,
+    upstream_request_id: String,
+    user_agent: String,
 ) -> Response {
+    let response_request_id = request_id.clone();
     let stream = async_stream::stream! {
         let mut last_usage: Option<Usage> = None;
+        let mut saw_terminal_finish_reason = false;
         let mut first_token_time: Option<i64> = None;
         let start = std::time::Instant::now();
         let mut upstream_model = String::new();
+        let mut stream_error: Option<anyhow::Error> = None;
 
         tokio::pin!(chunk_stream);
         while let Some(result) = chunk_stream.next().await {
@@ -44,6 +48,13 @@ pub fn build_sse_response(
                 Ok(chunk) => {
                     if first_token_time.is_none() && !chunk.choices.is_empty() {
                         first_token_time = Some(start.elapsed().as_millis() as i64);
+                    }
+                    if chunk
+                        .choices
+                        .iter()
+                        .any(|choice| choice.finish_reason.is_some())
+                    {
+                        saw_terminal_finish_reason = true;
                     }
                     if chunk.usage.is_some() {
                         last_usage = chunk.usage.clone();
@@ -61,6 +72,7 @@ pub fn build_sse_response(
                 }
                 Err(e) => {
                     tracing::error!("Stream error: {e}");
+                    stream_error = Some(e);
                     break;
                 }
             }
@@ -71,13 +83,19 @@ pub fn build_sse_response(
         let total_elapsed = start_elapsed + start.elapsed().as_millis() as i64;
         let ftt = first_token_time.unwrap_or(0) as i32;
 
-        if let Some(usage) = last_usage {
+        match resolve_stream_settlement(
+            last_usage.clone(),
+            saw_terminal_finish_reason,
+            stream_error.as_ref(),
+        ) {
+            StreamSettlement::Success { usage } => {
             let usage_clone = usage.clone();
             tokio::spawn(async move {
                 let logged_quota =
                     BillingEngine::calculate_actual_quota(&usage_clone, &model_config, group_ratio);
                 let actual_quota = match billing
-                    .post_consume(
+                    .post_consume_with_retry(
+                        &request_id,
                         &token_info,
                         pre_consumed,
                         &usage_clone,
@@ -98,7 +116,8 @@ pub fn build_sse_response(
                     &channel,
                     &usage,
                     ChatCompletionLogRecord {
-                        endpoint: "chat/completions".into(),
+                        request_id: request_id.clone(),
+                        upstream_request_id,
                         requested_model,
                         upstream_model,
                         model_name: model_config.model_name,
@@ -107,697 +126,207 @@ pub fn build_sse_response(
                         first_token_time: ftt,
                         is_stream: true,
                         client_ip,
+                        user_agent,
                     },
                 );
-            });
-        } else {
-            billing.refund_later(token_info.token_id, pre_consumed);
-        }
-    };
 
-    Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response()
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn build_completion_sse_response(
-    chunk_stream: futures::stream::BoxStream<'static, anyhow::Result<CompletionChunk>>,
-    token_info: TokenInfo,
-    pre_consumed: i64,
-    model_config: ModelConfigInfo,
-    group_ratio: f64,
-    channel: SelectedChannel,
-    requested_model: String,
-    start_elapsed: i64,
-    client_ip: String,
-    log_svc: LogService,
-    billing: BillingEngine,
-) -> Response {
-    let stream = async_stream::stream! {
-        let mut last_usage: Option<Usage> = None;
-        let mut first_token_time: Option<i64> = None;
-        let start = std::time::Instant::now();
-        let mut upstream_model = String::new();
-
-        tokio::pin!(chunk_stream);
-        while let Some(result) = chunk_stream.next().await {
-            match result {
-                Ok(chunk) => {
-                    if first_token_time.is_none() && !chunk.choices.is_empty() {
-                        first_token_time = Some(start.elapsed().as_millis() as i64);
-                    }
-                    if chunk.usage.is_some() {
-                        last_usage = chunk.usage.clone();
-                    }
-                    if upstream_model.is_empty() {
-                        upstream_model = chunk.model.clone();
-                    }
-                    match serde_json::to_string(&chunk) {
-                        Ok(json) => yield Ok::<_, std::convert::Infallible>(Event::default().data(json)),
-                        Err(error) => {
-                            tracing::error!("failed to serialize completion chunk: {error}");
-                            break;
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::error!("completion stream error: {error}");
-                    break;
-                }
-            }
-        }
-
-        yield Ok(Event::default().data("[DONE]"));
-
-        let total_elapsed = start_elapsed + start.elapsed().as_millis() as i64;
-        let ftt = first_token_time.unwrap_or(0) as i32;
-
-        if let Some(usage) = last_usage {
-            let usage_clone = usage.clone();
-            tokio::spawn(async move {
-                let logged_quota =
-                    BillingEngine::calculate_actual_quota(&usage_clone, &model_config, group_ratio);
-                let actual_quota = match billing
-                    .post_consume(
-                        &token_info,
-                        pre_consumed,
-                        &usage_clone,
-                        &model_config,
-                        group_ratio,
-                    )
+                if let Err(error) = rate_limiter
+                    .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
                     .await
                 {
-                    Ok(quota) => quota,
-                    Err(error) => {
-                        tracing::error!("failed to settle completion stream usage asynchronously: {error}");
-                        logged_quota
-                    }
-                };
-
-                log_svc.record_endpoint_usage_async(
-                    &token_info,
-                    &channel,
-                    &usage,
-                    crate::service::log::EndpointUsageLogRecord {
-                        endpoint: "completions".into(),
-                        requested_model,
-                        upstream_model,
-                        model_name: model_config.model_name,
-                        quota: actual_quota,
-                        elapsed_time: total_elapsed as i32,
-                        first_token_time: ftt,
-                        is_stream: true,
-                        client_ip,
-                    },
-                );
-            });
-        } else {
-            billing.refund_later(token_info.token_id, pre_consumed);
-        }
-    };
-
-    Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response()
-}
-
-/// Convert the upstream chat chunk stream into a minimal Responses API SSE stream.
-#[allow(clippy::too_many_arguments)]
-pub fn build_responses_sse_response(
-    chunk_stream: futures::stream::BoxStream<'static, anyhow::Result<ChatCompletionChunk>>,
-    request: ResponsesRequest,
-    token_info: TokenInfo,
-    pre_consumed: i64,
-    model_config: ModelConfigInfo,
-    group_ratio: f64,
-    channel: SelectedChannel,
-    requested_model: String,
-    start_elapsed: i64,
-    client_ip: String,
-    log_svc: LogService,
-    billing: BillingEngine,
-) -> Response {
-    let stream = async_stream::stream! {
-        let mut state = ResponsesStreamState::new(&request);
-        let start = std::time::Instant::now();
-        let mut last_usage: Option<Usage> = None;
-        let mut first_token_time: Option<i64> = None;
-        let mut upstream_model = String::new();
-
-        tokio::pin!(chunk_stream);
-        while let Some(result) = chunk_stream.next().await {
-            match result {
-                Ok(chunk) => {
-                    if first_token_time.is_none() && !chunk.choices.is_empty() {
-                        first_token_time = Some(start.elapsed().as_millis() as i64);
-                    }
-                    if chunk.usage.is_some() {
-                        last_usage = chunk.usage.clone();
-                    }
-                    if upstream_model.is_empty() {
-                        upstream_model = chunk.model.clone();
-                    }
-
-                    if state.response_id.is_none() {
-                        state.initialize(&chunk);
-                        if let Some(created) = state.created_event() {
-                            yield Ok::<_, std::convert::Infallible>(created);
-                        }
-                        if let Some(in_progress) = state.in_progress_event() {
-                            yield Ok(in_progress);
-                        }
-                    }
-
-                    for choice in &chunk.choices {
-                        if let Some(text_delta) = choice.delta.content.as_deref()
-                            && !text_delta.is_empty()
-                        {
-                            if let Some(event) = state.ensure_text_item_added() {
-                                yield Ok(event);
-                            }
-                            state.text_delta.push_str(text_delta);
-                            yield Ok(responses_event(
-                                "response.output_text.delta",
-                                serde_json::json!({
-                                    "type": "response.output_text.delta",
-                                    "output_index": state.text_output_index,
-                                    "item_id": state.text_item_id,
-                                    "content_index": 0,
-                                    "delta": text_delta,
-                                }),
-                            ));
-                        }
-
-                        if let Some(tool_calls) = choice.delta.tool_calls.as_ref() {
-                            for tool_call in tool_calls {
-                                if !state.tool_calls.contains_key(&tool_call.index) {
-                                    let output_index = state.next_output_index();
-                                    let response_id =
-                                        state.response_id.as_deref().unwrap_or("resp").to_string();
-                                    state.tool_calls.insert(
-                                        tool_call.index,
-                                        ResponsesStreamToolCall::new(
-                                            output_index,
-                                            &response_id,
-                                            tool_call.index,
-                                        ),
-                                    );
-                                }
-                                let entry = state
-                                    .tool_calls
-                                    .get_mut(&tool_call.index)
-                                    .expect("tool call state should exist");
-
-                                if let Some(call_id) = tool_call.id.as_ref()
-                                    && !call_id.is_empty()
-                                {
-                                    entry.call_id = call_id.clone();
-                                }
-                                if let Some(function) = tool_call.function.as_ref() {
-                                    if let Some(name) = function.name.as_ref()
-                                        && !name.is_empty()
-                                    {
-                                        entry.name = name.clone();
-                                    }
-                                    if let Some(arguments_delta) = function.arguments.as_ref()
-                                        && !arguments_delta.is_empty()
-                                    {
-                                        entry.arguments.push_str(arguments_delta);
-                                        if !entry.added {
-                                            entry.added = true;
-                                            yield Ok(responses_event(
-                                                "response.output_item.added",
-                                                serde_json::json!({
-                                                    "type": "response.output_item.added",
-                                                    "output_index": entry.output_index,
-                                                    "item": {
-                                                        "id": entry.item_id,
-                                                        "type": "function_call",
-                                                        "status": "in_progress",
-                                                        "call_id": entry.call_id,
-                                                        "name": entry.name,
-                                                        "arguments": entry.arguments,
-                                                    }
-                                                }),
-                                            ));
-                                        }
-
-                                        yield Ok(responses_event(
-                                            "response.function_call_arguments.delta",
-                                            serde_json::json!({
-                                                "type": "response.function_call_arguments.delta",
-                                                "output_index": entry.output_index,
-                                                "item_id": entry.item_id,
-                                                "delta": arguments_delta,
-                                            }),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Some(finish_reason) = choice.finish_reason.as_ref() {
-                            state.finish_reason = Some(format!("{finish_reason:?}"));
-                            if state.text_item_added && !state.text_delta.is_empty() {
-                                let output_item = state.take_text_output_item();
-                                yield Ok(responses_event(
-                                    "response.output_text.done",
-                                    serde_json::json!({
-                                        "type": "response.output_text.done",
-                                        "output_index": output_item.0,
-                                        "item_id": output_item.1.id,
-                                        "content_index": 0,
-                                        "text": output_item.2,
-                                    }),
-                                ));
-                                yield Ok(responses_event(
-                                    "response.output_item.done",
-                                    serde_json::json!({
-                                        "type": "response.output_item.done",
-                                        "output_index": output_item.0,
-                                        "item": output_item.1,
-                                    }),
-                                ));
-                            }
-
-                            if matches!(finish_reason, summer_ai_core::types::common::FinishReason::ToolCalls) {
-                                for tool_call in state.take_tool_outputs() {
-                                    yield Ok(responses_event(
-                                        "response.function_call_arguments.done",
-                                        serde_json::json!({
-                                            "type": "response.function_call_arguments.done",
-                                            "output_index": tool_call.0,
-                                            "item_id": tool_call.1.id,
-                                            "arguments": tool_call.2,
-                                        }),
-                                    ));
-                                    yield Ok(responses_event(
-                                        "response.output_item.done",
-                                        serde_json::json!({
-                                            "type": "response.output_item.done",
-                                            "output_index": tool_call.0,
-                                            "item": tool_call.1,
-                                        }),
-                                    ));
-                                }
-                            }
-                        }
-                    }
+                    tracing::warn!("failed to finalize stream rate limit success: {error}");
                 }
-                Err(error) => {
-                    tracing::error!("responses stream error: {error}");
-                    break;
-                }
-            }
-        }
 
-        if state.text_item_added && !state.text_delta.is_empty() {
-            let output_item = state.take_text_output_item();
-            yield Ok(responses_event(
-                "response.output_text.done",
-                serde_json::json!({
-                    "type": "response.output_text.done",
-                    "output_index": output_item.0,
-                    "item_id": output_item.1.id,
-                    "content_index": 0,
-                    "text": output_item.2,
-                }),
-            ));
-            yield Ok(responses_event(
-                "response.output_item.done",
-                serde_json::json!({
-                    "type": "response.output_item.done",
-                    "output_index": output_item.0,
-                    "item": output_item.1,
-                }),
-            ));
-        }
-
-        for tool_call in state.take_tool_outputs() {
-            yield Ok(responses_event(
-                "response.function_call_arguments.done",
-                serde_json::json!({
-                    "type": "response.function_call_arguments.done",
-                    "output_index": tool_call.0,
-                    "item_id": tool_call.1.id,
-                    "arguments": tool_call.2,
-                }),
-            ));
-            yield Ok(responses_event(
-                "response.output_item.done",
-                serde_json::json!({
-                    "type": "response.output_item.done",
-                    "output_index": tool_call.0,
-                    "item": tool_call.1,
-                }),
-            ));
-        }
-
-        let total_elapsed = start_elapsed + start.elapsed().as_millis() as i64;
-        let ftt = first_token_time.unwrap_or(0) as i32;
-        let usage = last_usage.clone().unwrap_or_default();
-        let completed_response = state.completed_response(
-            upstream_model.clone(),
-            ResponsesUsage::from_usage(&usage),
-        );
-        yield Ok(responses_event(
-            "response.completed",
-            serde_json::json!({
-                "type": "response.completed",
-                "response": completed_response,
-            }),
-        ));
-
-        if let Some(usage) = last_usage {
-            let usage_clone = usage.clone();
-            tokio::spawn(async move {
-                let logged_quota =
-                    BillingEngine::calculate_actual_quota(&usage_clone, &model_config, group_ratio);
-                let actual_quota = match billing
-                    .post_consume(
-                        &token_info,
-                        pre_consumed,
-                        &usage_clone,
-                        &model_config,
-                        group_ratio,
-                    )
+                if let Err(error) = channel_svc
+                    .record_relay_success(channel.channel_id, channel.account_id, total_elapsed)
                     .await
                 {
-                    Ok(quota) => quota,
-                    Err(error) => {
-                        tracing::error!("failed to settle responses stream usage asynchronously: {error}");
-                        logged_quota
-                    }
-                };
-
-                log_svc.record_chat_completion_async(
-                    &token_info,
-                    &channel,
-                    &usage,
-                    ChatCompletionLogRecord {
-                        endpoint: "responses".into(),
-                        requested_model,
-                        upstream_model,
-                        model_name: model_config.model_name,
-                        quota: actual_quota,
-                        elapsed_time: total_elapsed as i32,
-                        first_token_time: ftt,
-                        is_stream: true,
-                        client_ip,
-                    },
-                );
+                    tracing::warn!("failed to update stream relay success health state: {error}");
+                }
             });
-        } else {
-            billing.refund_later(token_info.token_id, pre_consumed);
+            }
+            StreamSettlement::Failure { status_code, message } => {
+            billing.refund_later(request_id.clone(), token_info.token_id, pre_consumed);
+            let rl = rate_limiter.clone();
+            let request_id_for_task = request_id.clone();
+            tokio::spawn(async move {
+                if let Err(error) = rl.finalize_failure_with_retry(&request_id_for_task).await {
+                    tracing::warn!("failed to finalize stream rate limit failure: {error}");
+                }
+            });
+            channel_svc.record_relay_failure_async(
+                channel.channel_id,
+                channel.account_id,
+                total_elapsed,
+                status_code,
+                message,
+            );
+        }
         }
     };
 
-    Sse::new(stream)
+    let mut response = Sse::new(stream)
         .keep_alive(KeepAlive::default())
-        .into_response()
+        .into_response();
+    if let Ok(value) = summer_web::axum::http::HeaderValue::from_str(&response_request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    response
 }
 
-fn responses_event(event_name: &str, payload: serde_json::Value) -> Event {
-    Event::default().event(event_name).data(payload.to_string())
+fn stream_error_health_status_code(error: &anyhow::Error) -> i32 {
+    error
+        .downcast_ref::<ProviderStreamError>()
+        .map(|error| match error.info.kind {
+            ProviderErrorKind::InvalidRequest => 400,
+            ProviderErrorKind::Authentication => 401,
+            ProviderErrorKind::RateLimit => 429,
+            ProviderErrorKind::Server | ProviderErrorKind::Api => 502,
+        })
+        .unwrap_or(0)
 }
 
-struct ResponsesStreamState {
-    response_id: Option<String>,
-    created_at: i64,
-    request: ResponsesRequest,
-    model: String,
-    output: Vec<ResponsesOutputItem>,
-    output_text: String,
-    text_item_id: String,
-    text_item_added: bool,
-    text_output_index: usize,
-    text_delta: String,
-    next_output_index: usize,
-    tool_calls: BTreeMap<i32, ResponsesStreamToolCall>,
-    finish_reason: Option<String>,
+fn stream_error_health_message(error: &anyhow::Error) -> String {
+    error
+        .downcast_ref::<ProviderStreamError>()
+        .map(|error| error.info.message.clone())
+        .unwrap_or_else(|| error.to_string())
 }
 
-impl ResponsesStreamState {
-    fn new(request: &ResponsesRequest) -> Self {
-        Self {
-            response_id: None,
-            created_at: chrono::Utc::now().timestamp(),
-            request: request.clone(),
-            model: request.model.clone(),
-            output: Vec::new(),
-            output_text: String::new(),
-            text_item_id: String::new(),
-            text_item_added: false,
-            text_output_index: 0,
-            text_delta: String::new(),
-            next_output_index: 0,
-            tool_calls: BTreeMap::new(),
-            finish_reason: None,
-        }
-    }
+#[derive(Debug, Clone)]
+enum StreamSettlement {
+    Success { usage: Usage },
+    Failure { status_code: i32, message: String },
+}
 
-    fn initialize(&mut self, chunk: &ChatCompletionChunk) {
-        self.response_id = Some(chunk.id.clone());
-        self.created_at = chunk.created;
-        self.model = chunk.model.clone();
-        self.text_item_id = format!("msg_{}", chunk.id);
-        self.text_output_index = self.next_output_index();
-    }
-
-    fn created_event(&self) -> Option<Event> {
-        Some(responses_event(
-            "response.created",
-            serde_json::json!({
-                "type": "response.created",
-                "response": self.base_response("in_progress", ResponsesUsage::from_usage(&Usage::default())),
-            }),
-        ))
-    }
-
-    fn in_progress_event(&self) -> Option<Event> {
-        Some(responses_event(
-            "response.in_progress",
-            serde_json::json!({
-                "type": "response.in_progress",
-                "response": self.base_response("in_progress", ResponsesUsage::from_usage(&Usage::default())),
-            }),
-        ))
-    }
-
-    fn ensure_text_item_added(&mut self) -> Option<Event> {
-        if self.text_item_added {
-            return None;
-        }
-
-        self.text_item_added = true;
-        Some(responses_event(
-            "response.output_item.added",
-            serde_json::json!({
-                "type": "response.output_item.added",
-                "output_index": self.text_output_index,
-                "item": {
-                    "id": self.text_item_id,
-                    "type": "message",
-                    "status": "in_progress",
-                    "role": "assistant",
-                    "content": []
-                }
-            }),
-        ))
-    }
-
-    fn take_text_output_item(&mut self) -> (usize, ResponsesOutputItem, String) {
-        let text = std::mem::take(&mut self.text_delta);
-        self.output_text.push_str(&text);
-        self.text_item_added = false;
-
-        let item = ResponsesOutputItem {
-            id: self.text_item_id.clone(),
-            r#type: "message".into(),
-            status: response_status(self.finish_reason.as_deref()).into(),
-            role: Some("assistant".into()),
-            content: Some(vec![ResponsesOutputContent {
-                r#type: "output_text".into(),
-                text: text.clone(),
-            }]),
-            call_id: None,
-            name: None,
-            arguments: None,
+fn resolve_stream_settlement(
+    last_usage: Option<Usage>,
+    saw_terminal_finish_reason: bool,
+    stream_error: Option<&anyhow::Error>,
+) -> StreamSettlement {
+    if let Some(error) = stream_error {
+        return StreamSettlement::Failure {
+            status_code: stream_error_health_status_code(error),
+            message: stream_error_health_message(error),
         };
-        self.output.push(item.clone());
-        (self.text_output_index, item, text)
     }
 
-    fn take_tool_outputs(&mut self) -> Vec<(usize, ResponsesOutputItem, String)> {
-        let states = std::mem::take(&mut self.tool_calls);
-        states
-            .into_values()
-            .map(|tool_call| {
-                let item = ResponsesOutputItem {
-                    id: tool_call.item_id.clone(),
-                    r#type: "function_call".into(),
-                    status: "completed".into(),
-                    role: None,
-                    content: None,
-                    call_id: Some(tool_call.call_id.clone()),
-                    name: Some(tool_call.name.clone()),
-                    arguments: Some(tool_call.arguments.clone()),
-                };
-                self.output.push(item.clone());
-                (tool_call.output_index, item, tool_call.arguments)
-            })
-            .collect()
-    }
-
-    fn completed_response(
-        &self,
-        upstream_model: String,
-        usage: ResponsesUsage,
-    ) -> ResponsesResponse {
-        let mut response =
-            self.base_response(response_status(self.finish_reason.as_deref()), usage);
-        response.model = if upstream_model.is_empty() {
-            self.model.clone()
-        } else {
-            upstream_model
-        };
-        response.output = self.output.clone();
-        response.output_text = if self.output_text.is_empty() {
-            None
-        } else {
-            Some(self.output_text.clone())
-        };
-        response
-    }
-
-    fn base_response(&self, status: &str, usage: ResponsesUsage) -> ResponsesResponse {
-        ResponsesResponse {
-            id: self
-                .response_id
-                .clone()
-                .unwrap_or_else(|| "resp_pending".into()),
-            object: "response".into(),
-            created_at: self.created_at,
-            model: self.model.clone(),
-            status: status.into(),
-            output: Vec::new(),
-            output_text: None,
-            usage,
-            incomplete_details: match status {
-                "incomplete" => Some(
-                    summer_ai_core::types::responses::ResponsesIncompleteDetails {
-                        reason: "max_output_tokens".into(),
-                    },
-                ),
-                "failed" => Some(
-                    summer_ai_core::types::responses::ResponsesIncompleteDetails {
-                        reason: "content_filter".into(),
-                    },
-                ),
-                _ => None,
-            },
-            text: Some(
-                summer_ai_core::types::responses::ResponsesOutputTextConfig {
-                    format: summer_ai_core::types::responses::ResponsesOutputTextFormat {
-                        r#type: self
-                            .request
-                            .text
-                            .as_ref()
-                            .and_then(|text| text.format.as_ref())
-                            .and_then(|format| format.get("type"))
-                            .and_then(|format| format.as_str())
-                            .unwrap_or("text")
-                            .to_string(),
-                    },
-                },
-            ),
-        }
-    }
-
-    fn next_output_index(&mut self) -> usize {
-        let index = self.next_output_index;
-        self.next_output_index += 1;
-        index
-    }
-}
-
-struct ResponsesStreamToolCall {
-    item_id: String,
-    output_index: usize,
-    call_id: String,
-    name: String,
-    arguments: String,
-    added: bool,
-}
-
-impl ResponsesStreamToolCall {
-    fn new(output_index: usize, response_id: &str, tool_index: i32) -> Self {
-        Self {
-            item_id: format!("fc_{response_id}_{tool_index}"),
-            output_index,
-            call_id: format!("call_{response_id}_{tool_index}"),
-            name: String::new(),
-            arguments: String::new(),
-            added: false,
-        }
-    }
-}
-
-fn response_status(finish_reason: Option<&str>) -> &'static str {
-    match finish_reason {
-        Some("Length") => "incomplete",
-        Some("ContentFilter") => "failed",
-        _ => "completed",
+    match (last_usage, saw_terminal_finish_reason) {
+        (Some(usage), true) => StreamSettlement::Success { usage },
+        (Some(_), false) => StreamSettlement::Failure {
+            status_code: 0,
+            message: "stream ended before terminal finish_reason".into(),
+        },
+        (None, _) => StreamSettlement::Failure {
+            status_code: 0,
+            message: "stream ended without usage".into(),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use summer_ai_core::provider::{ProviderErrorInfo, ProviderErrorKind, ProviderStreamError};
 
-    fn sample_request() -> ResponsesRequest {
-        serde_json::from_value(serde_json::json!({
-            "model": "gpt-5.4",
-            "input": "hello"
-        }))
-        .unwrap()
+    use super::{
+        StreamSettlement, resolve_stream_settlement, stream_error_health_message,
+        stream_error_health_status_code,
+    };
+    use summer_ai_core::types::common::Usage;
+
+    #[test]
+    fn stream_error_health_status_code_uses_provider_error_kind() {
+        let error = anyhow::Error::new(ProviderStreamError::new(ProviderErrorInfo::new(
+            ProviderErrorKind::InvalidRequest,
+            "bad tool schema",
+            "invalid_request_error",
+        )));
+        assert_eq!(stream_error_health_status_code(&error), 400);
+
+        let error = anyhow::Error::new(ProviderStreamError::new(ProviderErrorInfo::new(
+            ProviderErrorKind::RateLimit,
+            "slow down",
+            "rate_limit_error",
+        )));
+        assert_eq!(stream_error_health_status_code(&error), 429);
     }
 
     #[test]
-    fn response_status_maps_finish_reasons() {
-        assert_eq!(response_status(Some("Length")), "incomplete");
-        assert_eq!(response_status(Some("ContentFilter")), "failed");
-        assert_eq!(response_status(Some("ToolCalls")), "completed");
-        assert_eq!(response_status(None), "completed");
+    fn stream_error_health_message_prefers_provider_message() {
+        let error = anyhow::Error::new(ProviderStreamError::new(ProviderErrorInfo::new(
+            ProviderErrorKind::InvalidRequest,
+            "bad tool schema",
+            "invalid_request_error",
+        )));
+        assert_eq!(stream_error_health_message(&error), "bad tool schema");
+
+        let error = anyhow::anyhow!("plain stream failure");
+        assert_eq!(stream_error_health_message(&error), "plain stream failure");
     }
 
     #[test]
-    fn responses_stream_state_builds_completed_response_with_text_output() {
-        let mut state = ResponsesStreamState::new(&sample_request());
-        state.response_id = Some("resp_123".into());
-        state.created_at = 1_700_000_000;
-        state.text_item_id = "msg_resp_123".into();
-        state.text_output_index = 0;
-        state.text_item_added = true;
-        state.text_delta = "hello world".into();
-        state.finish_reason = Some("ToolCalls".into());
-
-        let _ = state.take_text_output_item();
-        let response = state.completed_response(
-            "gpt-5.4".into(),
-            ResponsesUsage::from_usage(&Usage {
+    fn resolve_stream_settlement_requires_terminal_finish_reason() {
+        let settlement = resolve_stream_settlement(
+            Some(Usage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
                 cached_tokens: 0,
                 reasoning_tokens: 0,
             }),
+            false,
+            None,
         );
 
-        assert_eq!(response.id, "resp_123");
-        assert_eq!(response.output_text.as_deref(), Some("hello world"));
-        assert_eq!(response.output.len(), 1);
-        assert_eq!(response.output[0].r#type, "message");
+        assert!(matches!(
+            settlement,
+            StreamSettlement::Failure { status_code: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn resolve_stream_settlement_prefers_provider_error_over_usage() {
+        let error = anyhow::Error::new(ProviderStreamError::new(ProviderErrorInfo::new(
+            ProviderErrorKind::InvalidRequest,
+            "bad tool schema",
+            "invalid_request_error",
+        )));
+
+        let settlement = resolve_stream_settlement(
+            Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+            }),
+            false,
+            Some(&error),
+        );
+
+        assert!(matches!(
+            settlement,
+            StreamSettlement::Failure {
+                status_code: 400,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn resolve_stream_settlement_succeeds_only_on_clean_terminal_stream() {
+        let settlement = resolve_stream_settlement(
+            Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+            }),
+            true,
+            None,
+        );
+
+        assert!(matches!(settlement, StreamSettlement::Success { .. }));
     }
 }

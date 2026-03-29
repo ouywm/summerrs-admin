@@ -11,21 +11,29 @@ chrono = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
-reqwest = { workspace = true, features = ["json", "stream", "multipart"] }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
 schemars = { workspace = true, features = ["derive"] }
 sea-orm = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 summer = { workspace = true }
+summer-admin-macros = { workspace = true }
 summer-ai-core = { workspace = true }
 summer-ai-model = { workspace = true }
 summer-auth = { workspace = true, features = ["web", "openapi"] }
 summer-common = { workspace = true }
+summer-job = { workspace = true }
 summer-plugins = { workspace = true }
+summer-redis = { workspace = true }
 summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
 summer-web = { workspace = true }
 tokio = { workspace = true }
-tower-layer = "0.3"
-tower-service = "0.3"
+tower-layer = { workspace = true }
+tower-service = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+axum-client-ip = { workspace = true }
+tower = { workspace = true }

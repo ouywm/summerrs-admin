@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod job;
 pub mod plugin;
 pub mod relay;
 pub mod router;

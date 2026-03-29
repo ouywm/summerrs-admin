@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod batch;
 pub mod chat;
 pub mod common;
 pub mod completion;

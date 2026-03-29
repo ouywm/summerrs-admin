@@ -1,173 +1,158 @@
-# Entity-First, DTO, VO And Schema Sync Patterns
+# Entity, DTO, VO, And Schema Sync Patterns
 
-这部分聚焦本仓库当前的数据模型约定：SeaORM 2.0、entity-first、`entity_gen + entity`、无数据库外键。
+This reference focuses on the workspace's current data-model conventions:
+SeaORM 2.0, entity-first modeling, `entity_gen + entity`, and no database
+foreign keys.
 
-## Canonical examples
+## Canonical Examples
 
-- system entity 扩展入口：`crates/summer-system-model/src/entity/sys_user.rs`
-- system raw entity：`crates/summer-system-model/src/entity_gen/sys_user.rs`
-- system DTO：`crates/summer-system-model/src/dto/sys_user.rs`
-- system VO：`crates/summer-system-model/src/vo/sys_user.rs`
-- schema sync 插件：`crates/summer-system/src/plugins/schema_sync.rs`
+- System entity extension entry: `crates/summer-system-model/src/entity/sys_user.rs`
+- System raw entity source: `crates/summer-system-model/src/entity_gen/sys_user.rs`
+- System DTO: `crates/summer-system-model/src/dto/sys_user.rs`
+- System VO: `crates/summer-system-model/src/vo/sys_user.rs`
+- Shared schema sync plugin: `crates/summer-plugins/src/entity_schema_sync.rs`
 
-## 模型 crate 怎么分
+## Model Crate Split
 
-- `crates/summer-system-model`：system 的 entity / dto / vo
-- `crates/summer-ai-model`：AI 的表和共享契约
-- `crates/summer-biz-model`：以后如果 biz/customer 再拆，就沿用同一套模式
+- `crates/summer-system-model`: system entities, DTOs, VOs, and `views`
+- `crates/summer-ai/model`: AI domain entities, DTOs, and VOs
+- Future business model crates can reuse the same pattern, but do not cite
+  non-existent crates as if they already exist
 
-## `entity_gen + entity` 约定
+## `entity_gen + entity` Convention
 
-### 1. `src/entity_gen`
+### `src/entity_gen`
 
-- 存放原始实体源码
-- 允许被 codegen / MCP / CLI 覆盖
-- 不要把稳定业务逻辑直接写进去
+- Stores raw entity source files
+- May be overwritten by codegen, MCP, or CLI tools
+- Should not hold stable business behavior
 
-### 2. `src/entity`
+### `src/entity`
 
-- 这是应用代码唯一应该依赖的实体入口
-- 每个模块通过 `include!("../entity_gen/<name>.rs")` 引入 raw entity
-- `ActiveModelBehavior`、扩展方法、稳定 helper 写在这里
+- This is the stable entity layer that application code should depend on
+- Each entity module can include the raw source and add behavior or helpers
+- Put `ActiveModelBehavior` and stable extensions here
 
-### 3. 导入规则
+### Import Rule
 
-- 业务代码只用 `summer_system_model::entity::sys_user`
-- 不要在业务代码里直接依赖 `entity_gen`
+Business code should use:
 
-## SeaORM 2.0 entity-first 规则
+- `summer_system_model::entity::sys_user`
 
-### 关系规则
+Do not depend directly on `entity_gen` from application code.
 
-本仓库不使用数据库外键。
+## SeaORM 2.0 Entity-First Rules
 
-所以：
+### Relation Rule
 
-- `has_many` / `has_many, via = "..."` 用来声明关系导航
-- `belongs_to` 仍然可以写，但默认加 `skip_fk`
+This workspace does not rely on database foreign keys.
 
-示例：
+That means:
+
+- `has_many` and `via` relations are fine for navigation
+- `belongs_to` is still useful, but usually paired with `skip_fk`
+
+Example:
 
 ```rust
 #[sea_orm(belongs_to, from = "user_id", to = "id", skip_fk)]
 pub user: Option<super::sys_user::Entity>,
 ```
 
-这样可以：
+This preserves SeaORM relation and join ergonomics without forcing database
+foreign keys into the schema.
 
-- 保留 SeaORM 的 relation / join / find_also_related 能力
-- 避免 schema sync 在数据库里创建外键
+### Naming And Renames
 
-### 命名与重命名规则
+- Use `column_name = "..."` when only the Rust field name changes
+- Use `renamed_from = "..."` when the database column is actually being renamed
 
-- 只是 Rust 字段名想更短：用 `column_name = "..."`
-- 真正想改数据库列名：必须用 `renamed_from = "..."`
+Do not silently rename fields and expect schema sync to infer intent.
 
-不要直接改字段名后指望 sync 猜到“这是重命名”。
+## What Schema Sync Can Do
 
-## schema sync 能做什么
+In this repo, schema sync is best understood as "safe structure filling", not a
+full diff engine.
 
-在当前项目里，把它理解成“补结构”，不是完整 diff 引擎。
+Usually safe:
 
-### 通常会做
+- create new tables
+- add new columns
+- rename columns when `renamed_from` is explicit
+- add normal indexes
+- add unique indexes / composite unique keys
 
-- 新增表
-- 新增字段
-- `renamed_from` 驱动的列重命名
-- 新增普通索引
-- 新增唯一索引 / 组合唯一键
-- 新增外键（但本项目通过 `skip_fk` 禁掉了）
+Do not rely on it for:
 
-### 不要指望它做
+- dropping tables
+- dropping columns
+- changing column types
+- changing nullability
+- changing defaults
+- syncing comments
 
-- 删除表
-- 删除字段
-- 删除外键
-- 自动同步注释
-- 自动同步字段类型变化
-- 自动同步可空/非空变化
-- 自动同步默认值变化
+Those changes should go through explicit SQL or migrations.
 
-这类变更要走明确 SQL / migration。
+## Entity Pattern
 
-## Entity 模式
+Common traits and patterns in this repo:
 
-本仓库实体常见特征：
-
-- `#[sea_orm::model]`
 - `DeriveEntityModel`
-- 业务枚举用 `DeriveActiveEnum`
+- `DeriveActiveEnum` for business enums
 - `Serialize` / `Deserialize`
-- 需要时加 `JsonSchema`
-- 时间戳逻辑写在 `entity` 层的 `ActiveModelBehavior`
+- `JsonSchema` where API contracts need it
+- timestamps and write-time defaults handled in the stable entity layer
 
-## DTO 模式
+## DTO Pattern
 
 ### Create DTO
 
-Create DTO 负责：
+Create DTOs should own:
 
-- 参数校验
-- 默认值收口
-- 转 `ActiveModel`
-
-```rust
-impl CreateUserDto {
-    pub fn into_active_model(
-        self,
-        hashed_password: String,
-        operator: String,
-    ) -> sys_user::ActiveModel {
-        sys_user::ActiveModel {
-            user_name: Set(self.user_name),
-            password: Set(hashed_password),
-            create_by: Set(operator.clone()),
-            update_by: Set(operator),
-            ..Default::default()
-        }
-    }
-}
-```
+- validation
+- defaulting
+- conversion into `ActiveModel`
 
 ### Update DTO
 
-Update DTO 负责：
+Update DTOs should:
 
-- 只处理可更新字段
-- 通过 `apply_to()` 写入 `ActiveModel`
+- only expose mutable fields
+- implement `apply_to()` against an `ActiveModel`
 
 ### Query DTO
 
-Query DTO 优先转成 `Condition`，这样 service 里可以直接：
+Prefer query DTOs that convert to `Condition` so services can write:
 
 ```rust
 sys_user::Entity::find().filter(query)
 ```
 
-## VO 模式
+## VO Pattern
 
-VO 是前端契约，不必和 entity 一模一样。
+VOs are frontend contracts, not entity mirrors.
 
-当前常见做法：
+Common patterns:
 
 - `#[serde(rename_all = "camelCase")]`
-- 用 `from_model()` 做展示转换
-- 需要时把枚举转成前端友好的文本
-- 时间字段走统一 serializer
+- `from_model()` conversion helpers
+- enum values converted into frontend-friendly output when needed
 
-## 新增实体时的最小流程
+## Minimal Flow For A New Entity
 
-1. 决定 raw entity 是手写还是生成到 `entity_gen`
-2. 在 `entity` 层补 `ActiveModelBehavior` 和稳定扩展
-3. DTO 负责输入和校验
-4. VO 负责输出契约
-5. Query DTO 负责 `Condition`
-6. 若开启 schema sync，确认本次变更属于“可补结构”的范围
+1. Decide whether the raw entity is generated or written directly into
+   `entity_gen`
+2. Add stable behavior in `entity`
+3. Add DTOs for input and validation
+4. Add VOs for output contracts
+5. Add query DTOs for filtering
+6. If schema sync is involved, make sure the change belongs to the "safe
+   structure filling" category
 
-## 反模式
+## Anti-Patterns
 
-- 不要在业务代码里直接 import `entity_gen`
-- 不要在实体里建立数据库外键
-- 不要把前端展示字段塞回 entity
-- 不要让 router 直接操作 `ActiveModel`
-- 不要把危险 schema 变更全交给 sync
+- Do not import `entity_gen` directly in business code
+- Do not add database foreign keys just because SeaORM supports relations
+- Do not push frontend-only fields into entities
+- Do not let routers mutate `ActiveModel`
+- Do not assume schema sync handles dangerous schema changes

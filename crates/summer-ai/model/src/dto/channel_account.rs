@@ -6,12 +6,12 @@ use validator::Validate;
 
 use crate::entity::channel_account::{self, AccountStatus};
 
-/// Create an AI channel account.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Validate)]
+/// 创建渠道账号
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateChannelAccountDto {
     pub channel_id: i64,
-    #[validate(length(min = 1, max = 128))]
+    #[validate(length(min = 1, max = 128, message = "账号名称长度 1-128"))]
     pub name: String,
     #[validate(length(min = 1, max = 64))]
     pub credential_type: String,
@@ -31,8 +31,6 @@ pub struct CreateChannelAccountDto {
     pub concurrency_limit: i32,
     #[serde(default)]
     pub quota_limit: f64,
-    #[serde(default)]
-    pub quota_used: f64,
     #[serde(default)]
     pub balance: f64,
     pub expires_at: Option<DateTime<FixedOffset>>,
@@ -58,11 +56,11 @@ fn default_rate_multiplier() -> f64 {
 
 impl CreateChannelAccountDto {
     pub fn into_active_model(self, operator: &str) -> channel_account::ActiveModel {
-        use sea_orm::entity::prelude::BigDecimal;
+        use sea_orm::prelude::BigDecimal;
         use std::str::FromStr;
 
-        let now = chrono::Utc::now().fixed_offset();
-        let bd = |value: f64| BigDecimal::from_str(&value.to_string()).unwrap_or_default();
+        let decimal =
+            |value: f64| BigDecimal::from_str(&value.to_string()).unwrap_or_else(|_| 0.into());
 
         channel_account::ActiveModel {
             channel_id: Set(self.channel_id),
@@ -74,12 +72,12 @@ impl CreateChannelAccountDto {
             schedulable: Set(self.schedulable),
             priority: Set(self.priority),
             weight: Set(self.weight),
-            rate_multiplier: Set(bd(self.rate_multiplier)),
+            rate_multiplier: Set(decimal(self.rate_multiplier)),
             concurrency_limit: Set(self.concurrency_limit),
-            quota_limit: Set(bd(self.quota_limit)),
-            quota_used: Set(bd(self.quota_used)),
-            balance: Set(bd(self.balance)),
-            balance_updated_at: Set(if self.balance == 0.0 { None } else { Some(now) }),
+            quota_limit: Set(decimal(self.quota_limit)),
+            quota_used: Set(decimal(0.0)),
+            balance: Set(decimal(self.balance)),
+            balance_updated_at: Set(None),
             response_time: Set(0),
             failure_streak: Set(0),
             last_used_at: Set(None),
@@ -96,15 +94,13 @@ impl CreateChannelAccountDto {
             remark: Set(self.remark),
             create_by: Set(operator.to_string()),
             update_by: Set(operator.to_string()),
-            create_time: Set(now),
-            update_time: Set(now),
             ..Default::default()
         }
     }
 }
 
-/// Update an AI channel account.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Validate)]
+/// 更新渠道账号
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateChannelAccountDto {
     pub channel_id: Option<i64>,
@@ -120,7 +116,6 @@ pub struct UpdateChannelAccountDto {
     pub rate_multiplier: Option<f64>,
     pub concurrency_limit: Option<i32>,
     pub quota_limit: Option<f64>,
-    pub quota_used: Option<f64>,
     pub balance: Option<f64>,
     pub expires_at: Option<DateTime<FixedOffset>>,
     pub test_model: Option<String>,
@@ -130,10 +125,11 @@ pub struct UpdateChannelAccountDto {
 
 impl UpdateChannelAccountDto {
     pub fn apply_to(self, active: &mut channel_account::ActiveModel, operator: &str) {
-        use sea_orm::entity::prelude::BigDecimal;
+        use sea_orm::prelude::BigDecimal;
         use std::str::FromStr;
 
-        let bd = |value: f64| BigDecimal::from_str(&value.to_string()).unwrap_or_default();
+        let decimal =
+            |value: f64| BigDecimal::from_str(&value.to_string()).unwrap_or_else(|_| 0.into());
 
         if let Some(value) = self.channel_id {
             active.channel_id = Set(value);
@@ -163,20 +159,16 @@ impl UpdateChannelAccountDto {
             active.weight = Set(value);
         }
         if let Some(value) = self.rate_multiplier {
-            active.rate_multiplier = Set(bd(value));
+            active.rate_multiplier = Set(decimal(value));
         }
         if let Some(value) = self.concurrency_limit {
             active.concurrency_limit = Set(value);
         }
         if let Some(value) = self.quota_limit {
-            active.quota_limit = Set(bd(value));
-        }
-        if let Some(value) = self.quota_used {
-            active.quota_used = Set(bd(value));
+            active.quota_limit = Set(decimal(value));
         }
         if let Some(value) = self.balance {
-            active.balance = Set(bd(value));
-            active.balance_updated_at = Set(Some(chrono::Utc::now().fixed_offset()));
+            active.balance = Set(decimal(value));
         }
         if let Some(value) = self.expires_at {
             active.expires_at = Set(Some(value));
@@ -194,8 +186,8 @@ impl UpdateChannelAccountDto {
     }
 }
 
-/// Query AI channel accounts.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+/// 查询渠道账号
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryChannelAccountDto {
     pub channel_id: Option<i64>,

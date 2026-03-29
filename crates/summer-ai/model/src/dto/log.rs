@@ -162,3 +162,27 @@ pub struct LogStatsQueryDto {
     pub model_name: Option<String>,
     pub channel_id: Option<i64>,
 }
+
+impl From<LogStatsQueryDto> for sea_orm::Condition {
+    fn from(dto: LogStatsQueryDto) -> Self {
+        use sea_orm::ColumnTrait;
+
+        let mut cond = sea_orm::Condition::all();
+        if let Some(v) = dto.user_id {
+            cond = cond.add(log::Column::UserId.eq(v));
+        }
+        if let Some(v) = dto.model_name {
+            cond = cond.add(log::Column::ModelName.contains(&v));
+        }
+        if let Some(v) = dto.channel_id {
+            cond = cond.add(log::Column::ChannelId.eq(v));
+        }
+        if let Some(v) = dto.start_time {
+            cond = cond.add(log::Column::CreateTime.gte(v));
+        }
+        if let Some(v) = dto.end_time {
+            cond = cond.add(log::Column::CreateTime.lte(v));
+        }
+        cond
+    }
+}

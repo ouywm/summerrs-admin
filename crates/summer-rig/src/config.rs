@@ -27,6 +27,14 @@ pub struct ProviderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use summer::App;
+    use summer::config::ConfigRegistry;
+
+    fn load_config(toml_str: &str) -> RigConfig {
+        let mut builder = App::new();
+        builder.use_config_str(toml_str);
+        builder.get_config::<RigConfig>().expect("rig config")
+    }
 
     #[test]
     fn test_deserialize_full_config() {
@@ -46,9 +54,7 @@ mod tests {
             default_model = "qwen2.5:14b"
         "#;
 
-        let value: toml::Value = toml::from_str(toml_str).unwrap();
-        let rig_value = value.get("rig").unwrap();
-        let config: RigConfig = rig_value.clone().try_into().unwrap();
+        let config = load_config(toml_str);
 
         assert_eq!(config.default_provider, "openai");
         assert_eq!(config.providers.len(), 2);
@@ -80,8 +86,7 @@ mod tests {
             api_key = "sk-xxx"
         "#;
 
-        let value: toml::Value = toml::from_str(toml_str).unwrap();
-        let config: RigConfig = value.get("rig").unwrap().clone().try_into().unwrap();
+        let config = load_config(toml_str);
 
         assert_eq!(config.default_provider, "ds");
         assert_eq!(config.providers.len(), 1);
@@ -118,8 +123,7 @@ mod tests {
             default_model = "llama3:70b"
         "#;
 
-        let value: toml::Value = toml::from_str(toml_str).unwrap();
-        let config: RigConfig = value.get("rig").unwrap().clone().try_into().unwrap();
+        let config = load_config(toml_str);
 
         assert_eq!(config.providers.len(), 4);
         assert!(config.providers.contains_key("main"));

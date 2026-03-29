@@ -1,38 +1,42 @@
 # Route And Service Patterns
 
-这部分把 `summer-web` 风格和当前仓库的 system 模块写法合并成一个 AI 可直接套用的模式。
+This reference explains how route, DTO, VO, and service code is structured in the
+current Summerrs Admin workspace.
 
-## Canonical examples
+## Canonical Examples
 
-- 标准 CRUD route：`crates/summer-system/src/router/sys_user.rs`
-- 认证 route：`crates/summer-system/src/router/auth.rs`
-- 标准 service：`crates/summer-system/src/service/sys_user_service.rs`
-- 在线用户 service：`crates/summer-system/src/service/online_service.rs`
-- 应用装配根：`crates/app/src/main.rs`
+- Standard CRUD route: `crates/summer-system/src/router/sys_user.rs`
+- Auth route: `crates/summer-system/src/router/auth.rs`
+- Standard service: `crates/summer-system/src/service/sys_user_service.rs`
+- Online user service: `crates/summer-system/src/service/online_service.rs`
+- App assembly root: `crates/app/src/main.rs`
 
-## Route 放哪里
+## Where Routes Live
 
-- system 路由文件：`crates/summer-system/src/router/*.rs`
-- system service：`crates/summer-system/src/service/*.rs`
-- 应用装配仍在：`crates/app/src/main.rs`
+- System routes: `crates/summer-system/src/router/*.rs`
+- System services: `crates/summer-system/src/service/*.rs`
+- DTO/VO contracts: `crates/summer-system-model/src/dto` and
+  `crates/summer-system-model/src/vo`
+- The app assembly root remains `crates/app/src/main.rs`
 
-新增 route 时，通常需要：
+When you add a new route, the common flow is:
 
-1. 新建或修改 `crates/summer-system/src/router/<module>.rs`
-2. 更新 `crates/summer-system/src/router/mod.rs`
-3. 如有新 service，更新 `crates/summer-system/src/service/mod.rs`
-4. 保持 `crates/app/src/main.rs` 的装配逻辑不乱改
+1. Add or update `crates/summer-system/src/router/<module>.rs`
+2. Update `crates/summer-system/src/router/mod.rs`
+3. Add or update the corresponding service in
+   `crates/summer-system/src/service`
+4. Keep `crates/app/src/main.rs` focused on plugin assembly, not business logic
 
-## Route 宏怎么选
+## Route Macros
 
-本项目优先使用带 OpenAPI 的宏：
+Prefer the OpenAPI-aware route macros already used in the repo:
 
 - `get_api`
 - `post_api`
 - `put_api`
 - `delete_api`
 
-## Route imports 模板
+## Common Route Imports
 
 ```rust
 use summer_common::error::ApiResult;
@@ -43,15 +47,15 @@ use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api, put_api};
 ```
 
-如果需要登录态，再加：
+If login state is required, add:
 
 ```rust
 use summer_auth::{AdminUser, LoginUser};
 ```
 
-## Handler 参数怎么写
+## Common Handler Parameters
 
-本仓库最常见的参数组合：
+Typical handler signatures combine:
 
 - `Component(svc): Component<MyService>`
 - `Path(id): Path<i64>`
@@ -60,9 +64,9 @@ use summer_auth::{AdminUser, LoginUser};
 - `pagination: Pagination`
 - `AdminUser { login_id, profile, .. }: AdminUser`
 
-## Handler 返回值怎么写
+## Common Return Shapes
 
-### 有响应体
+With a response body:
 
 ```rust
 pub async fn detail(...) -> ApiResult<Json<UserDetailVo>> {
@@ -71,7 +75,7 @@ pub async fn detail(...) -> ApiResult<Json<UserDetailVo>> {
 }
 ```
 
-### 无响应体
+Without a response body:
 
 ```rust
 pub async fn create(...) -> ApiResult<()> {
@@ -80,26 +84,26 @@ pub async fn create(...) -> ApiResult<()> {
 }
 ```
 
-优先 `summer_common::response::Json<T>`，不要默认用裸 `axum::Json<T>`。
+Prefer `summer_common::response::Json<T>` over raw `axum::Json<T>`.
 
-## `#[log]` 怎么用
+## `#[log]` Usage
 
-当前管理接口几乎都带操作日志。模式如下：
+Management routes typically include operation logging:
 
 ```rust
-#[log(module = "用户管理", action = "更新用户", biz_type = Update)]
+#[log(module = "User", action = "Update User", biz_type = Update)]
 #[put_api("/user/{id}")]
 pub async fn update_user(...) -> ApiResult<()> {
     ...
 }
 ```
 
-规则：
+Rules:
 
-- `#[log]` 放在 route 宏上方
-- 敏感接口可以加 `save_params = false`
+- Put `#[log]` directly above the route macro
+- Use `save_params = false` for sensitive endpoints when needed
 
-## Service 标准写法
+## Service Pattern
 
 ```rust
 #[derive(Clone, Service)]
@@ -111,24 +115,24 @@ pub struct MyService {
 }
 ```
 
-### 常见注入对象
+Common injected types:
 
 - `DbConn`
 - `SessionManager`
-- 其他 `Service`
-- 自定义插件注册的组件
+- Other `Service` types
+- Components registered by plugins
 
-## Service 内部约定
+## Service Responsibilities
 
-- 业务规则、事务、聚合查询写在 service
-- router 只做参数提取和 service 转发
-- 错误统一返回 `ApiErrors` / `ApiResult`
-- 数据库错误通常 `.context("...")?`
-- 复杂写操作优先事务包裹
+- Transactions belong in services
+- Aggregation and policy logic belong in services
+- Routers should only extract parameters, log, and delegate
+- Use `ApiErrors` / `ApiResult` consistently
+- Add context to database errors with `.context("...")?`
 
-## 分页查询模式
+## Pagination Pattern
 
-本仓库使用 `summer-sea-orm` 的分页扩展：
+This repo commonly uses `summer-sea-orm` pagination helpers:
 
 ```rust
 let page = sys_user::Entity::find()
@@ -137,21 +141,10 @@ let page = sys_user::Entity::find()
     .await?;
 ```
 
-适用前提：
+This works best when the query DTO can be passed directly into `.filter(query)`.
 
-- Query DTO 能转成 `Condition`
-- handler 参数里直接接 `Pagination`
+## Anti-Patterns
 
-## 手写接口的最小流程
-
-1. 在 `dto` 定义请求结构和校验
-2. 在 `vo` 定义返回结构和 `from_model()`
-3. 在 `service` 写查询、事务、聚合逻辑
-4. 在 `router` 只保留参数提取、日志、service 调用
-5. 更新对应 `mod.rs`
-
-## 反模式
-
-- 不要把大量业务逻辑写在 route
-- 不要让 route 直接操作 `ActiveModel`
-- 不要把多表聚合逻辑散落在 handler
+- Do not put heavy business logic in routes
+- Do not manipulate `ActiveModel` directly in handlers
+- Do not scatter multi-table aggregation logic across handlers

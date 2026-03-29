@@ -78,8 +78,5 @@ async fn socket_auth_middleware(
     }
     socket.join(rooms);
 
-    // 存入 per-socket extensions，断连时可直接取用
-    socket.extensions.insert(identity);
-
     Ok(())
 }

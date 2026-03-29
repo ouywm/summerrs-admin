@@ -10,5 +10,6 @@ pub mod sys_file;
 pub mod sys_menu;
 pub mod sys_notice;
 pub mod sys_role;
+pub mod sys_tenant;
 pub mod sys_user;
 pub mod user_profile;

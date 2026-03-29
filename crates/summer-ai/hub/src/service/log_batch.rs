@@ -40,6 +40,29 @@ impl AiLogBatchQueue {
         Self(queue)
     }
 
+    #[cfg(test)]
+    pub(crate) fn immediate(db: DbConn) -> Self {
+        Self(
+            TypedBatchQueueBuilder::new()
+                .register_batch::<log::ActiveModel, _, _>(
+                    1,
+                    Duration::from_millis(1),
+                    16,
+                    move |batch| {
+                        let db = db.clone();
+                        async move {
+                            if let Err(error) = log::Entity::insert_many(batch).exec(&db).await {
+                                tracing::error!(
+                                    "failed to persist AI usage logs immediately in tests: {error}"
+                                );
+                            }
+                        }
+                    },
+                )
+                .build(),
+        )
+    }
+
     pub fn push(&self, model: log::ActiveModel) {
         self.0.push(model);
     }

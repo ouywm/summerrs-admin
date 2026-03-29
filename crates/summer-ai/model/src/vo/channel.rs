@@ -55,6 +55,12 @@ impl ChannelVo {
     }
 }
 
+/// 渠道列表 VO 别名。
+///
+/// Step 1.2 文档中使用 `ChannelListVo` 命名；
+/// 当前项目沿用 `*Vo` 作为列表项惯例，因此这里保留一个兼容别名。
+pub type ChannelListVo = ChannelVo;
+
 /// 渠道详情 VO
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -131,10 +137,8 @@ impl ChannelDetailVo {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelTestVo {
-    pub channel_id: i64,
     pub success: bool,
-    pub status_code: u16,
-    pub response_time: i32,
-    pub model: String,
+    pub status_code: i32,
+    pub elapsed_ms: i64,
     pub message: String,
 }

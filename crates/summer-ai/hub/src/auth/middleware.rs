@@ -115,10 +115,23 @@ mod tests {
     use super::requires_ai_auth;
 
     #[test]
-    fn requires_ai_auth_matches_public_ai_routes_by_prefix() {
-        assert!(requires_ai_auth("/v1/images/variations"));
-        assert!(requires_ai_auth("/api/v1/files"));
-        assert!(requires_ai_auth("/v1/responses/resp_123/input_items"));
-        assert!(!requires_ai_auth("/api/ai/channel"));
+    fn requires_auth_for_v1_openai_endpoints() {
+        assert!(requires_ai_auth("/v1/chat/completions"));
+        assert!(requires_ai_auth("/v1/files"));
+        assert!(requires_ai_auth("/v1/threads/runs"));
+    }
+
+    #[test]
+    fn requires_auth_for_api_v1_openai_endpoints() {
+        assert!(requires_ai_auth("/api/v1/models"));
+        assert!(requires_ai_auth("/api/v1/rerank"));
+        assert!(requires_ai_auth("/api/v1/vector_stores"));
+    }
+
+    #[test]
+    fn ignores_non_openai_control_plane_routes() {
+        assert!(!requires_ai_auth("/ai/token"));
+        assert!(!requires_ai_auth("/system/menu/list"));
+        assert!(!requires_ai_auth("/health"));
     }
 }

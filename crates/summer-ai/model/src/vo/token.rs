@@ -53,6 +53,11 @@ impl TokenVo {
     }
 }
 
+/// 令牌列表 VO 别名。
+///
+/// 与实现文档中的 `TokenListVo` 对齐，避免后续接口层命名再漂移。
+pub type TokenListVo = TokenVo;
+
 /// 创建令牌时返回（含明文 key，仅此一次）
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

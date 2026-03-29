@@ -62,6 +62,14 @@ impl SocketGatewayService {
         self.sessions.cleanup(socket_id, namespace, login_id).await
     }
 
+    pub async fn login_id_by_socket(&self, socket_id: &str) -> ApiResult<Option<String>> {
+        Ok(self
+            .sessions
+            .get(socket_id)
+            .await?
+            .map(|session| session.login_id))
+    }
+
     /// 静默断开该用户的所有 socket（不推送事件）
     #[allow(dead_code)]
     pub async fn disconnect_by_login_id(&self, login_id: &LoginId) -> ApiResult<usize> {

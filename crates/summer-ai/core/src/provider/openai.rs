@@ -81,6 +81,36 @@ impl ProviderAdapter for OpenAiAdapter {
 
         Ok(Box::pin(stream))
     }
+
+    fn build_responses_request(
+        &self,
+        client: &reqwest::Client,
+        base_url: &str,
+        api_key: &str,
+        req: &serde_json::Value,
+        actual_model: &str,
+    ) -> Result<reqwest::RequestBuilder> {
+        let mut body = req.clone();
+        body["model"] = serde_json::Value::String(actual_model.to_string());
+
+        let url = format!("{}/v1/responses", base_url.trim_end_matches('/'));
+        Ok(client.post(url).bearer_auth(api_key).json(&body))
+    }
+
+    fn build_embeddings_request(
+        &self,
+        client: &reqwest::Client,
+        base_url: &str,
+        api_key: &str,
+        req: &serde_json::Value,
+        actual_model: &str,
+    ) -> Result<reqwest::RequestBuilder> {
+        let mut body = req.clone();
+        body["model"] = serde_json::Value::String(actual_model.to_string());
+
+        let url = format!("{}/v1/embeddings", base_url.trim_end_matches('/'));
+        Ok(client.post(url).bearer_auth(api_key).json(&body))
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +196,64 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
         assert_eq!(body["model"], "mapped-model");
         assert_eq!(body["messages"][0]["role"], "user");
+    }
+
+    #[test]
+    fn build_responses_request_uses_responses_endpoint() {
+        let client = reqwest::Client::new();
+        let adapter = OpenAiAdapter;
+        let req = serde_json::json!({
+            "model": "gpt-4.1",
+            "input": "hello"
+        });
+
+        let builder = adapter
+            .build_responses_request(
+                &client,
+                "https://api.openai.com/",
+                "sk-test",
+                &req,
+                "gpt-4.1-mini",
+            )
+            .unwrap();
+
+        let built = builder.build().unwrap();
+        assert_eq!(built.url().as_str(), "https://api.openai.com/v1/responses");
+        assert_eq!(built.method(), reqwest::Method::POST);
+
+        let body_bytes = built.body().unwrap().as_bytes().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
+        assert_eq!(body["model"], "gpt-4.1-mini");
+        assert_eq!(body["input"], "hello");
+    }
+
+    #[test]
+    fn build_embeddings_request_uses_embeddings_endpoint() {
+        let client = reqwest::Client::new();
+        let adapter = OpenAiAdapter;
+        let req = serde_json::json!({
+            "model": "text-embedding-3-large",
+            "input": "hello"
+        });
+
+        let builder = adapter
+            .build_embeddings_request(
+                &client,
+                "https://api.openai.com/",
+                "sk-test",
+                &req,
+                "text-embedding-3-small",
+            )
+            .unwrap();
+
+        let built = builder.build().unwrap();
+        assert_eq!(built.url().as_str(), "https://api.openai.com/v1/embeddings");
+        assert_eq!(built.method(), reqwest::Method::POST);
+
+        let body_bytes = built.body().unwrap().as_bytes().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
+        assert_eq!(body["model"], "text-embedding-3-small");
+        assert_eq!(body["input"], "hello");
     }
 
     #[test]

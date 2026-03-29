@@ -3,6 +3,7 @@ use sea_orm::Set;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+use crate::dto::endpoint_scope::{default_endpoint_scope_array, normalize_endpoint_scope_value};
 use crate::entity::model_config::{self, ModelType};
 
 /// 创建/更新模型配置
@@ -16,7 +17,7 @@ pub struct CreateModelConfigDto {
     pub model_type: ModelType,
     #[serde(default)]
     pub vendor_code: String,
-    #[serde(default)]
+    #[serde(default = "default_endpoint_scope_array")]
     pub supported_endpoints: serde_json::Value,
     #[serde(default = "default_ratio")]
     pub input_ratio: f64,
@@ -51,19 +52,21 @@ fn default_true() -> bool {
 }
 
 impl CreateModelConfigDto {
-    pub fn into_active_model(self, operator: &str) -> model_config::ActiveModel {
+    pub fn into_active_model(self, operator: &str) -> Result<model_config::ActiveModel, String> {
         use sea_orm::entity::prelude::BigDecimal;
         use std::str::FromStr;
 
         let now = chrono::Utc::now().fixed_offset();
         let bd = |v: f64| BigDecimal::from_str(&v.to_string()).unwrap_or_default();
+        let supported_endpoints =
+            normalize_endpoint_scope_value(self.supported_endpoints, "supportedEndpoints")?;
 
-        model_config::ActiveModel {
+        Ok(model_config::ActiveModel {
             model_name: Set(self.model_name),
             display_name: Set(self.display_name),
             model_type: Set(self.model_type),
             vendor_code: Set(self.vendor_code),
-            supported_endpoints: Set(self.supported_endpoints),
+            supported_endpoints: Set(supported_endpoints),
             input_ratio: Set(bd(self.input_ratio)),
             output_ratio: Set(bd(self.output_ratio)),
             cached_input_ratio: Set(bd(self.cached_input_ratio)),
@@ -79,7 +82,7 @@ impl CreateModelConfigDto {
             create_time: Set(now),
             update_time: Set(now),
             ..Default::default()
-        }
+        })
     }
 }
 
@@ -104,7 +107,11 @@ pub struct UpdateModelConfigDto {
 }
 
 impl UpdateModelConfigDto {
-    pub fn apply_to(self, active: &mut model_config::ActiveModel, operator: &str) {
+    pub fn apply_to(
+        self,
+        active: &mut model_config::ActiveModel,
+        operator: &str,
+    ) -> Result<(), String> {
         use sea_orm::entity::prelude::BigDecimal;
         use std::str::FromStr;
 
@@ -120,7 +127,8 @@ impl UpdateModelConfigDto {
             active.vendor_code = Set(v);
         }
         if let Some(v) = self.supported_endpoints {
-            active.supported_endpoints = Set(v);
+            active.supported_endpoints =
+                Set(normalize_endpoint_scope_value(v, "supportedEndpoints")?);
         }
         if let Some(v) = self.input_ratio {
             active.input_ratio = Set(bd(v));
@@ -153,6 +161,7 @@ impl UpdateModelConfigDto {
             active.remark = Set(v);
         }
         active.update_by = Set(operator.to_string());
+        Ok(())
     }
 }
 

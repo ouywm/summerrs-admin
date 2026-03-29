@@ -1,5 +1,6 @@
 use anyhow::Context;
 use sea_orm::{ColumnTrait, EntityTrait, ExprTrait, QueryFilter};
+use serde::{Deserialize, Serialize};
 use summer::plugin::Service;
 use summer_sea_orm::DbConn;
 
@@ -8,22 +9,46 @@ use summer_ai_model::entity::model_config;
 use summer_ai_model::entity::token;
 use summer_common::error::{ApiErrors, ApiResult};
 
+use crate::service::runtime_cache::RuntimeCacheService;
 use crate::service::token::TokenInfo;
 
+const MODEL_CONFIG_CACHE_TTL_SECONDS: u64 = 300;
+const GROUP_RATIO_CACHE_TTL_SECONDS: u64 = 300;
+const BILLING_RECORD_TTL_SECONDS: u64 = 24 * 60 * 60;
+
 /// Pricing ratios for one model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfigInfo {
     pub model_name: String,
     pub input_ratio: f64,
     pub output_ratio: f64,
     pub cached_input_ratio: f64,
     pub reasoning_ratio: f64,
+    pub supported_endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+enum BillingReservationStatus {
+    Reserved,
+    Settled,
+    Refunded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BillingReservationRecord {
+    request_id: String,
+    token_id: i64,
+    pre_consumed: i64,
+    status: BillingReservationStatus,
+    actual_quota: Option<i64>,
 }
 
 #[derive(Clone, Service)]
 pub struct BillingEngine {
     #[inject(component)]
     db: DbConn,
+    #[inject(component)]
+    cache: RuntimeCacheService,
 }
 
 impl BillingEngine {
@@ -33,11 +58,35 @@ impl BillingEngine {
     /// `UPDATE ai.token SET remain_quota = remain_quota - ? WHERE id = ? AND remain_quota >= ?`
     pub async fn pre_consume(
         &self,
-        token_id: i64,
+        request_id: &str,
+        token_info: &TokenInfo,
         estimated_tokens: i32,
         model_input_ratio: f64,
         group_ratio: f64,
     ) -> ApiResult<i64> {
+        let record_key = billing_record_key(request_id);
+        if let Some(record) = self
+            .cache
+            .get_json::<BillingReservationRecord>(&record_key)
+            .await?
+        {
+            return Ok(record.pre_consumed);
+        }
+
+        if token_info.unlimited_quota {
+            let record = BillingReservationRecord {
+                request_id: request_id.to_string(),
+                token_id: token_info.token_id,
+                pre_consumed: 0,
+                status: BillingReservationStatus::Reserved,
+                actual_quota: None,
+            };
+            self.cache
+                .set_json(&record_key, &record, BILLING_RECORD_TTL_SECONDS)
+                .await?;
+            return Ok(0);
+        }
+
         let quota = (estimated_tokens as f64 * model_input_ratio * group_ratio).ceil() as i64;
         let quota = Ord::max(quota, 1);
 
@@ -47,7 +96,7 @@ impl BillingEngine {
                 token::Column::RemainQuota,
                 Expr::col(token::Column::RemainQuota).sub(quota),
             )
-            .filter(token::Column::Id.eq(token_id))
+            .filter(token::Column::Id.eq(token_info.token_id))
             .filter(token::Column::RemainQuota.gte(quota))
             .exec(&self.db)
             .await
@@ -55,18 +104,37 @@ impl BillingEngine {
             .map_err(ApiErrors::Internal)?;
 
         if result.rows_affected == 0 {
-            let tk = token::Entity::find_by_id(token_id)
-                .one(&self.db)
-                .await
-                .context("failed to query token after quota reservation miss")
-                .map_err(ApiErrors::Internal)?;
-
-            if let Some(tk) = tk
-                && tk.unlimited_quota
-            {
-                return Ok(0);
-            }
             return Err(ApiErrors::Forbidden("quota exceeded".into()));
+        }
+
+        let record = BillingReservationRecord {
+            request_id: request_id.to_string(),
+            token_id: token_info.token_id,
+            pre_consumed: quota,
+            status: BillingReservationStatus::Reserved,
+            actual_quota: None,
+        };
+
+        let inserted = match self
+            .cache
+            .set_json_if_absent(&record_key, &record, BILLING_RECORD_TTL_SECONDS)
+            .await
+        {
+            Ok(inserted) => inserted,
+            Err(error) => {
+                let _ = self.apply_refund_amount(token_info.token_id, quota).await;
+                return Err(error);
+            }
+        };
+        if !inserted {
+            let _ = self.apply_refund_amount(token_info.token_id, quota).await;
+            if let Some(existing) = self
+                .cache
+                .get_json::<BillingReservationRecord>(&record_key)
+                .await?
+            {
+                return Ok(existing.pre_consumed);
+            }
         }
 
         Ok(quota)
@@ -93,6 +161,7 @@ impl BillingEngine {
     /// delta = actual - pre_consumed
     pub async fn post_consume(
         &self,
+        request_id: &str,
         token_info: &TokenInfo,
         pre_consumed: i64,
         usage: &Usage,
@@ -100,8 +169,22 @@ impl BillingEngine {
         group_ratio: f64,
     ) -> ApiResult<i64> {
         let actual_quota = Self::calculate_actual_quota(usage, model_config, group_ratio);
-        let delta = actual_quota - pre_consumed;
-        let token_id = token_info.token_id;
+        let record_key = billing_record_key(request_id);
+        let mut record = self
+            .cache
+            .get_json::<BillingReservationRecord>(&record_key)
+            .await?
+            .unwrap_or(BillingReservationRecord {
+                request_id: request_id.to_string(),
+                token_id: token_info.token_id,
+                pre_consumed,
+                status: BillingReservationStatus::Reserved,
+                actual_quota: None,
+            });
+
+        if record.status == BillingReservationStatus::Settled {
+            return Ok(record.actual_quota.unwrap_or(actual_quota));
+        }
 
         use sea_orm::sea_query::Expr;
         let mut update = token::Entity::update_many().col_expr(
@@ -109,83 +192,126 @@ impl BillingEngine {
             Expr::col(token::Column::UsedQuota).add(actual_quota),
         );
 
-        if !token_info.unlimited_quota && delta != 0 {
-            update = update.col_expr(
-                token::Column::RemainQuota,
-                Expr::col(token::Column::RemainQuota).sub(delta),
-            );
+        if !token_info.unlimited_quota {
+            let quota_delta = match record.status {
+                BillingReservationStatus::Reserved => actual_quota - record.pre_consumed,
+                BillingReservationStatus::Refunded => actual_quota,
+                BillingReservationStatus::Settled => 0,
+            };
+            if quota_delta != 0 {
+                update = update.col_expr(
+                    token::Column::RemainQuota,
+                    Expr::col(token::Column::RemainQuota).sub(quota_delta),
+                );
+            }
         }
 
         update
-            .filter(token::Column::Id.eq(token_id))
+            .filter(token::Column::Id.eq(record.token_id))
             .exec(&self.db)
             .await
             .context("post settlement failed")
             .map_err(ApiErrors::Internal)?;
 
+        record.status = BillingReservationStatus::Settled;
+        record.actual_quota = Some(actual_quota);
+        self.cache
+            .set_json(&record_key, &record, BILLING_RECORD_TTL_SECONDS)
+            .await?;
+
         Ok(actual_quota)
     }
 
-    /// Finalize a pre-reserved quota when the endpoint does not return usage details.
-    pub async fn commit_reserved_quota(
+    pub async fn post_consume_with_retry(
         &self,
+        request_id: &str,
         token_info: &TokenInfo,
-        reserved_quota: i64,
+        pre_consumed: i64,
+        usage: &Usage,
+        model_config: &ModelConfigInfo,
+        group_ratio: f64,
     ) -> ApiResult<i64> {
-        if reserved_quota <= 0 {
-            return Ok(0);
-        }
-
-        use sea_orm::sea_query::Expr;
-        token::Entity::update_many()
-            .col_expr(
-                token::Column::UsedQuota,
-                Expr::col(token::Column::UsedQuota).add(reserved_quota),
+        retry_async(|| {
+            self.post_consume(
+                request_id,
+                token_info,
+                pre_consumed,
+                usage,
+                model_config,
+                group_ratio,
             )
-            .filter(token::Column::Id.eq(token_info.token_id))
-            .exec(&self.db)
-            .await
-            .context("failed to commit reserved quota")
-            .map_err(ApiErrors::Internal)?;
-
-        Ok(reserved_quota)
+        })
+        .await
     }
 
     /// Schedule a refund after a terminal failure.
-    pub fn refund_later(&self, token_id: i64, pre_consumed: i64) {
+    pub fn refund_later(&self, request_id: String, token_id: i64, pre_consumed: i64) {
         if pre_consumed <= 0 {
             return;
         }
 
         let this = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = this.refund(token_id, pre_consumed).await {
+            if let Err(error) = this
+                .refund_with_retry(&request_id, token_id, pre_consumed)
+                .await
+            {
                 tracing::warn!("failed to refund reserved quota asynchronously: {error}");
             }
         });
     }
 
     /// Refund previously reserved quota after a failed request.
-    pub async fn refund(&self, token_id: i64, pre_consumed: i64) -> ApiResult<()> {
-        if pre_consumed <= 0 {
+    pub async fn refund(
+        &self,
+        request_id: &str,
+        token_id: i64,
+        pre_consumed: i64,
+    ) -> ApiResult<()> {
+        let record_key = billing_record_key(request_id);
+        let mut record = self
+            .cache
+            .get_json::<BillingReservationRecord>(&record_key)
+            .await?
+            .unwrap_or(BillingReservationRecord {
+                request_id: request_id.to_string(),
+                token_id,
+                pre_consumed,
+                status: BillingReservationStatus::Reserved,
+                actual_quota: None,
+            });
+
+        if record.status == BillingReservationStatus::Settled
+            || record.status == BillingReservationStatus::Refunded
+        {
             return Ok(());
         }
-        use sea_orm::sea_query::Expr;
-        token::Entity::update_many()
-            .col_expr(
-                token::Column::RemainQuota,
-                Expr::col(token::Column::RemainQuota).add(pre_consumed),
-            )
-            .filter(token::Column::Id.eq(token_id))
-            .exec(&self.db)
-            .await
-            .context("refund reserved quota failed")
-            .map_err(ApiErrors::Internal)?;
+
+        self.apply_refund_amount(record.token_id, record.pre_consumed)
+            .await?;
+        record.status = BillingReservationStatus::Refunded;
+        self.cache
+            .set_json(&record_key, &record, BILLING_RECORD_TTL_SECONDS)
+            .await?;
         Ok(())
+    }
+
+    pub async fn refund_with_retry(
+        &self,
+        request_id: &str,
+        token_id: i64,
+        pre_consumed: i64,
+    ) -> ApiResult<()> {
+        retry_async(|| self.refund(request_id, token_id, pre_consumed)).await
     }
 
     /// Load pricing ratios for one model.
     pub async fn get_model_config(&self, model_name: &str) -> ApiResult<ModelConfigInfo> {
+        let cache_key = model_config_cache_key(model_name);
+        if let Some(config) = self.cache.get_json::<ModelConfigInfo>(&cache_key).await? {
+            return Ok(config);
+        }
+
         let cfg = model_config::Entity::find()
             .filter(model_config::Column::ModelName.eq(model_name))
             .one(&self.db)
@@ -193,33 +319,54 @@ impl BillingEngine {
             .context("failed to query model config")
             .map_err(ApiErrors::Internal)?;
 
-        match cfg {
+        let config = match cfg {
             Some(c) => {
                 use std::str::FromStr;
                 let to_f64 = |bd: sea_orm::entity::prelude::BigDecimal| {
                     f64::from_str(&bd.to_string()).unwrap_or(1.0)
                 };
-                Ok(ModelConfigInfo {
+                ModelConfigInfo {
                     model_name: c.model_name,
                     input_ratio: to_f64(c.input_ratio),
                     output_ratio: to_f64(c.output_ratio),
                     cached_input_ratio: to_f64(c.cached_input_ratio),
                     reasoning_ratio: to_f64(c.reasoning_ratio),
-                })
+                    supported_endpoints: json_string_list(&c.supported_endpoints),
+                }
             }
-            None => Ok(ModelConfigInfo {
-                model_name: model_name.to_string(),
-                input_ratio: 1.0,
-                output_ratio: 1.0,
-                cached_input_ratio: 0.0,
-                reasoning_ratio: 0.0,
-            }),
-        }
+            None => {
+                return Err(ApiErrors::BadRequest(format!(
+                    "model is not available: {model_name}"
+                )));
+            }
+        };
+
+        let _ = self
+            .cache
+            .set_json(&cache_key, &config, MODEL_CONFIG_CACHE_TTL_SECONDS)
+            .await;
+
+        Ok(config)
+    }
+
+    pub async fn get_model_config_for_endpoint(
+        &self,
+        model_name: &str,
+        endpoint_scope: &str,
+    ) -> ApiResult<ModelConfigInfo> {
+        let config = self.get_model_config(model_name).await?;
+        config.ensure_endpoint_supported(endpoint_scope)?;
+        Ok(config)
     }
 
     /// Load the pricing ratio for one token group.
     pub async fn get_group_ratio(&self, group_code: &str) -> ApiResult<f64> {
         use summer_ai_model::entity::group_ratio;
+
+        let cache_key = group_ratio_cache_key(group_code);
+        if let Some(ratio) = self.cache.get_json::<f64>(&cache_key).await? {
+            return Ok(ratio);
+        }
 
         let gr = group_ratio::Entity::find()
             .filter(group_ratio::Column::GroupCode.eq(group_code))
@@ -229,13 +376,57 @@ impl BillingEngine {
             .context("failed to query group ratio")
             .map_err(ApiErrors::Internal)?;
 
-        match gr {
+        let ratio = match gr {
             Some(g) => {
                 use std::str::FromStr;
-                Ok(f64::from_str(&g.ratio.to_string()).unwrap_or(1.0))
+                f64::from_str(&g.ratio.to_string()).unwrap_or(1.0)
             }
-            None => Ok(1.0),
+            None => 1.0,
+        };
+
+        let _ = self
+            .cache
+            .set_json(&cache_key, &ratio, GROUP_RATIO_CACHE_TTL_SECONDS)
+            .await;
+
+        Ok(ratio)
+    }
+
+    async fn apply_refund_amount(&self, token_id: i64, amount: i64) -> ApiResult<()> {
+        if amount <= 0 {
+            return Ok(());
         }
+
+        use sea_orm::sea_query::Expr;
+        token::Entity::update_many()
+            .col_expr(
+                token::Column::RemainQuota,
+                Expr::col(token::Column::RemainQuota).add(amount),
+            )
+            .filter(token::Column::Id.eq(token_id))
+            .exec(&self.db)
+            .await
+            .context("refund reserved quota failed")
+            .map_err(ApiErrors::Internal)?;
+        Ok(())
+    }
+}
+
+impl ModelConfigInfo {
+    pub fn ensure_endpoint_supported(&self, endpoint_scope: &str) -> ApiResult<()> {
+        if endpoint_scope.is_empty()
+            || self
+                .supported_endpoints
+                .iter()
+                .any(|supported| supported == endpoint_scope)
+        {
+            return Ok(());
+        }
+
+        Err(ApiErrors::BadRequest(format!(
+            "model {} does not support endpoint: {endpoint_scope}",
+            self.model_name
+        )))
     }
 }
 
@@ -250,4 +441,95 @@ pub fn estimate_prompt_tokens(messages: &[summer_ai_core::types::common::Message
         })
         .sum();
     (total_chars as f64 / 4.0).ceil() as i32
+}
+
+pub fn estimate_total_tokens_for_rate_limit(
+    messages: &[summer_ai_core::types::common::Message],
+    max_tokens: Option<i64>,
+) -> i64 {
+    let prompt_tokens = i64::from(estimate_prompt_tokens(messages));
+    prompt_tokens + std::cmp::Ord::max(max_tokens.unwrap_or(2048), 1)
+}
+
+pub fn model_config_cache_key(model_name: &str) -> String {
+    format!("ai:cache:model-config:{model_name}")
+}
+
+pub fn group_ratio_cache_key(group_code: &str) -> String {
+    format!("ai:cache:group-ratio:{group_code}")
+}
+
+fn json_string_list(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn billing_record_key(request_id: &str) -> String {
+    format!("ai:billing:req:{request_id}")
+}
+
+async fn retry_async<T, F, Fut>(mut f: F) -> ApiResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ApiResult<T>>,
+{
+    let mut backoff_ms = 200_u64;
+    let mut last_error = None;
+
+    for _ in 0..3 {
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                last_error = Some(error);
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                backoff_ms *= 2;
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        ApiErrors::Internal(anyhow::anyhow!(
+            "retry operation failed without a captured error"
+        ))
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_model_config(supported_endpoints: &[&str]) -> ModelConfigInfo {
+        ModelConfigInfo {
+            model_name: "gpt-5.4".into(),
+            input_ratio: 1.0,
+            output_ratio: 1.0,
+            cached_input_ratio: 0.0,
+            reasoning_ratio: 0.0,
+            supported_endpoints: supported_endpoints
+                .iter()
+                .map(|endpoint| (*endpoint).to_string())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn endpoint_support_check_accepts_supported_scope() {
+        let config = sample_model_config(&["chat", "responses"]);
+        assert!(config.ensure_endpoint_supported("responses").is_ok());
+    }
+
+    #[test]
+    fn endpoint_support_check_rejects_missing_scope() {
+        let config = sample_model_config(&["chat"]);
+        let error = config.ensure_endpoint_supported("responses").unwrap_err();
+        assert!(matches!(error, ApiErrors::BadRequest(_)));
+        assert!(error.to_string().contains("responses"));
+    }
 }

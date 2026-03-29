@@ -10,6 +10,7 @@ use summer_mcp::McpPlugin;
 use summer_redis::RedisPlugin;
 use summer_rig::SummerRigPlugin;
 use summer_sea_orm::SeaOrmPlugin;
+use summer_sharding::SummerShardingPlugin;
 use summer_web::LayerConfigurator;
 use summer_web::WebConfigurator;
 use summer_web::WebPlugin;
@@ -24,12 +25,22 @@ use summer_plugins::{
     S3Plugin,
 };
 
+fn app_path_auth_builder() -> PathAuthBuilder {
+    PathAuthBuilder::new()
+        .include("/**")
+        .exclude_all(UserType::all_login_paths())
+        .exclude("/auth/refresh")
+        .exclude("/api/v1/**")
+        .exclude("/v1/**")
+}
+
 #[auto_config(WebConfigurator, JobConfigurator)]
 #[tokio::main]
 async fn main() {
     App::new()
         .add_plugin(WebPlugin)
         .add_plugin(SeaOrmPlugin)
+        .add_plugin(SummerShardingPlugin)
         .add_plugin(EntitySchemaSyncPlugin)
         .add_plugin(SummerAiHubPlugin)
         .add_plugin(RedisPlugin)
@@ -44,14 +55,7 @@ async fn main() {
         .add_plugin(LogBatchCollectorPlugin)
         .add_plugin(McpPlugin)
         .add_plugin(SummerRigPlugin)
-        .auth_configure(
-            PathAuthBuilder::new()
-                .include("/**")
-                .exclude_all(UserType::all_login_paths())
-                .exclude("/auth/refresh")
-                .exclude("/api/v1/**")
-                .exclude("/v1/**"),
-        )
+        .auth_configure(app_path_auth_builder())
         .add_router_layer(|router| {
             router
                 .layer(ClientIpSource::ConnectInfo.into_extension())

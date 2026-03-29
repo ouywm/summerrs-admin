@@ -4,6 +4,7 @@ use sea_orm::Set;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+use crate::dto::endpoint_scope::{default_endpoint_scope_array, normalize_endpoint_scope_value};
 use crate::entity::token::{self, TokenStatus};
 
 /// 创建令牌
@@ -19,7 +20,7 @@ pub struct CreateTokenDto {
     pub unlimited_quota: bool,
     #[serde(default)]
     pub models: serde_json::Value,
-    #[serde(default)]
+    #[serde(default = "default_endpoint_scope_array")]
     pub endpoint_scopes: serde_json::Value,
     #[serde(default)]
     pub ip_whitelist: serde_json::Value,
@@ -49,18 +50,24 @@ impl CreateTokenDto {
         key_hash: String,
         key_prefix: String,
         operator: &str,
-    ) -> token::ActiveModel {
+    ) -> Result<token::ActiveModel, String> {
         let now = chrono::Utc::now().fixed_offset();
-        token::ActiveModel {
+        let endpoint_scopes =
+            normalize_endpoint_scope_value(self.endpoint_scopes, "endpointScopes")?;
+
+        Ok(token::ActiveModel {
             user_id: Set(self.user_id),
+            service_account_id: Set(0),
+            project_id: Set(0),
             name: Set(self.name),
             key_hash: Set(key_hash),
             key_prefix: Set(key_prefix),
             status: Set(TokenStatus::Enabled),
             remain_quota: Set(self.remain_quota),
+            used_quota: Set(0),
             unlimited_quota: Set(self.unlimited_quota),
             models: Set(self.models),
-            endpoint_scopes: Set(self.endpoint_scopes),
+            endpoint_scopes: Set(endpoint_scopes),
             ip_whitelist: Set(self.ip_whitelist),
             ip_blacklist: Set(self.ip_blacklist),
             group_code_override: Set(self.group_code_override),
@@ -69,14 +76,21 @@ impl CreateTokenDto {
             concurrency_limit: Set(self.concurrency_limit),
             daily_quota_limit: Set(self.daily_quota_limit),
             monthly_quota_limit: Set(self.monthly_quota_limit),
+            daily_used_quota: Set(0),
+            monthly_used_quota: Set(0),
+            daily_window_start: Set(None),
+            monthly_window_start: Set(None),
             expire_time: Set(self.expire_time),
+            access_time: Set(None),
+            last_used_ip: Set(String::new()),
+            last_user_agent: Set(String::new()),
             remark: Set(self.remark),
             create_by: Set(operator.to_string()),
             update_by: Set(operator.to_string()),
             create_time: Set(now),
             update_time: Set(now),
             ..Default::default()
-        }
+        })
     }
 }
 
@@ -104,7 +118,7 @@ pub struct UpdateTokenDto {
 }
 
 impl UpdateTokenDto {
-    pub fn apply_to(self, active: &mut token::ActiveModel, operator: &str) {
+    pub fn apply_to(self, active: &mut token::ActiveModel, operator: &str) -> Result<(), String> {
         if let Some(v) = self.name {
             active.name = Set(v);
         }
@@ -121,7 +135,7 @@ impl UpdateTokenDto {
             active.models = Set(v);
         }
         if let Some(v) = self.endpoint_scopes {
-            active.endpoint_scopes = Set(v);
+            active.endpoint_scopes = Set(normalize_endpoint_scope_value(v, "endpointScopes")?);
         }
         if let Some(v) = self.ip_whitelist {
             active.ip_whitelist = Set(v);
@@ -154,6 +168,7 @@ impl UpdateTokenDto {
             active.remark = Set(v);
         }
         active.update_by = Set(operator.to_string());
+        Ok(())
     }
 }
 

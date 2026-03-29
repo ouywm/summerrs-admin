@@ -37,7 +37,6 @@ impl Plugin for SummerAiHubPlugin {
         let http_client =
             UpstreamHttpClient::build().expect("failed to build shared upstream http client");
         let ai_log_queue = AiLogBatchQueue::build(db.clone(), &task_config, &batch_config);
-
         app.add_component(http_client);
         app.add_component(ai_log_queue);
 
@@ -49,6 +48,6 @@ impl Plugin for SummerAiHubPlugin {
     }
 
     fn dependencies(&self) -> Vec<&str> {
-        vec!["summer_sea_orm::SeaOrmPlugin"]
+        vec!["summer_sea_orm::SeaOrmPlugin", "summer_redis::RedisPlugin"]
     }
 }

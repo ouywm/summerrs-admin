@@ -13,4 +13,3 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-toml = "0.9"

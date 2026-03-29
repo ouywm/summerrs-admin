@@ -2,6 +2,7 @@ use summer_auth::AdminUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
+use summer_sea_orm::pagination::{Page, Pagination};
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
@@ -11,11 +12,9 @@ use summer_ai_model::dto::token::{
 use summer_ai_model::vo::token::{TokenCreatedVo, TokenVo};
 
 use crate::service::token::TokenService;
-use summer_sea_orm::pagination::{Page, Pagination};
 
 #[get_api("/ai/token")]
 pub async fn list_tokens(
-    _admin: AdminUser,
     Component(svc): Component<TokenService>,
     Query(query): Query<QueryTokenDto>,
     pagination: Pagination,
@@ -26,12 +25,11 @@ pub async fn list_tokens(
 
 #[get_api("/ai/token/{id}")]
 pub async fn get_token(
-    _admin: AdminUser,
     Component(svc): Component<TokenService>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<TokenVo>> {
-    let token = svc.get_token(id).await?;
-    Ok(Json(token))
+    let vo = svc.get_token(id).await?;
+    Ok(Json(vo))
 }
 
 #[post_api("/ai/token")]
@@ -40,8 +38,8 @@ pub async fn create_token(
     Component(svc): Component<TokenService>,
     ValidatedJson(dto): ValidatedJson<CreateTokenDto>,
 ) -> ApiResult<Json<TokenCreatedVo>> {
-    let token = svc.create_token(dto, &profile.nick_name).await?;
-    Ok(Json(token))
+    let vo = svc.create_token(dto, &profile.nick_name).await?;
+    Ok(Json(vo))
 }
 
 #[put_api("/ai/token/{id}")]

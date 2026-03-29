@@ -11,5 +11,8 @@ pub mod sys_notice_user;
 pub mod sys_operation_log;
 pub mod sys_role;
 pub mod sys_role_menu;
+pub mod sys_tenant;
+pub mod sys_tenant_datasource;
+pub mod sys_tenant_membership;
 pub mod sys_user;
 pub mod sys_user_role;

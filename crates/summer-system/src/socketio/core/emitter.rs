@@ -14,12 +14,23 @@ use super::room;
 ///
 /// 业务代码注入此服务即可向 user / role / 全体 / 单 socket 推送任意事件，
 /// 无需直接操作底层 `SocketIo` 实例。
-#[derive(Clone, Service)]
+#[derive(Service)]
 pub struct SocketEmitter {
     #[inject(component)]
     io: SocketIo,
     #[inject(config)]
     config: SocketIOConfig,
+}
+
+impl Clone for SocketEmitter {
+    fn clone(&self) -> Self {
+        Self {
+            io: self.io.clone(),
+            config: SocketIOConfig {
+                default_namespace: self.config.default_namespace.clone(),
+            },
+        }
+    }
 }
 
 impl SocketEmitter {

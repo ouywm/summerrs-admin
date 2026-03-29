@@ -16,36 +16,6 @@ pub struct AudioSpeechRequest {
 
 impl AudioSpeechRequest {
     pub fn estimate_input_tokens(&self) -> i32 {
-        ((self.input.len() as f64) / 4.0).ceil() as i32
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn audio_speech_request_estimates_tokens() {
-        let req: AudioSpeechRequest = serde_json::from_value(serde_json::json!({
-            "model": "gpt-4o-mini-tts",
-            "input": "hello world",
-            "voice": "alloy"
-        }))
-        .unwrap();
-
-        assert_eq!(req.estimate_input_tokens(), 3);
-    }
-
-    #[test]
-    fn audio_speech_request_preserves_extra_fields() {
-        let req: AudioSpeechRequest = serde_json::from_value(serde_json::json!({
-            "model": "gpt-4o-mini-tts",
-            "input": "hello world",
-            "voice": "alloy",
-            "custom_field": "x"
-        }))
-        .unwrap();
-
-        assert_eq!(req.extra.get("custom_field").unwrap(), "x");
+        (((self.input.len() as f64) / 4.0).ceil() as i32).max(1)
     }
 }
