@@ -9,15 +9,7 @@ rust-project.json
 .idea/
 *.iml
 docs/public
-docs/relay/*
-!docs/relay/README.md
-!docs/relay/repos.json
-!docs/relay/repos.lock.json
-docs/relay/go/
-docs/relay/java/
-docs/relay/python/
-docs/relay/rust/
-docs/relay/typescript/
+docs/relay/
 docs/research/
 docs/summer-ai-hub-impl.md
 docs/summer-ai-hub-plan.md
@@ -25,6 +17,9 @@ perf*
 flamegraph.svg
 logs/
 contrib-plugins/
+.env
+.env.*
+build-tools/sync-relay.py
 *.swp
 *.swo
 *.log

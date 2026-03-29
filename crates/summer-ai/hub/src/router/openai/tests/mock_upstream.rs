@@ -1114,6 +1114,413 @@ async fn gemini_chat_non_stream_mock_upstream_preserves_response_json_schema() {
 }
 
 #[tokio::test]
+#[ignore = "requires local postgres and redis"]
+async fn anthropic_chat_route_falls_back_after_primary_rate_limit() {
+    let actual_model = "claude-sonnet-4-20250514";
+    let primary = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/messages".into(),
+        expected_header_name: "x-api-key".into(),
+        expected_header_value: "sk-primary".into(),
+        expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
+        additional_expected_headers: vec![("anthropic-version".into(), "2023-06-01".into())],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::TOO_MANY_REQUESTS,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body:
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#
+                .to_string(),
+    })
+    .await;
+    let fallback = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/messages".into(),
+        expected_header_name: "x-api-key".into(),
+        expected_header_value: "sk-fallback".into(),
+        expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
+        additional_expected_headers: vec![("anthropic-version".into(), "2023-06-01".into())],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::OK,
+        response_content_type: "application/json".into(),
+        response_headers: vec![(
+            "anthropic-request-id".into(),
+            "anthropic-fallback-chat-123".into(),
+        )],
+        response_body: serde_json::json!({
+            "id": "msg_chat_fallback_123",
+            "model": actual_model,
+            "content": [{"type": "text", "text": "Hello from Claude fallback"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7
+            }
+        })
+        .to_string(),
+    })
+    .await;
+    let harness = TestHarness::anthropic_chat_fallback_affinity_fixture(
+        &primary.base_url,
+        &fallback.base_url,
+    )
+    .await;
+    let request_id = format!("anthropic-chat-fallback-{}", harness.model_name);
+
+    let response = harness
+        .json_request(
+            Method::POST,
+            "/v1/chat/completions",
+            &request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": false
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let upstream_request_id = response
+        .headers()
+        .get("x-upstream-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("anthropic fallback chat upstream request id")
+        .to_string();
+    let payload = crate::router::test_support::response_json(response).await;
+
+    assert_eq!(payload["id"], "msg_chat_fallback_123");
+    assert_eq!(
+        payload["choices"][0]["message"]["content"],
+        "Hello from Claude fallback"
+    );
+    assert_eq!(payload["usage"]["total_tokens"], 19);
+    assert_eq!(upstream_request_id, "anthropic-fallback-chat-123");
+
+    let token = harness.wait_for_token_used_quota(19).await;
+    assert_eq!(token.used_quota, 19);
+
+    let log = harness.wait_for_log_by_request_id(&request_id).await;
+    assert_eq!(log.endpoint, "chat/completions");
+    assert_eq!(log.request_format, "openai/chat_completions");
+    assert_eq!(log.requested_model, harness.model_name);
+    assert_eq!(log.upstream_model, actual_model);
+    assert_eq!(log.model_name, harness.model_name);
+    assert_eq!(log.total_tokens, 19);
+    assert_eq!(log.quota, 19);
+    assert_eq!(log.status_code, 200);
+    assert_eq!(log.upstream_request_id, "anthropic-fallback-chat-123");
+    assert_eq!(log.status, LogStatus::Success);
+    assert!(!log.is_stream);
+
+    let primary_account = harness.wait_for_primary_account_rate_limited().await;
+    assert_eq!(primary_account.failure_streak, 1);
+    assert!(primary_account.rate_limited_until.is_some());
+    assert!(primary_account.overload_until.is_none());
+
+    let primary_channel = harness.primary_channel_model().await;
+    assert_eq!(primary_channel.failure_streak, 1);
+    assert_eq!(primary_channel.last_health_status, 3);
+
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires local postgres and redis"]
+async fn anthropic_chat_route_skips_rate_limited_primary_on_next_request() {
+    let actual_model = "claude-sonnet-4-20250514";
+    let primary = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/messages".into(),
+        expected_header_name: "x-api-key".into(),
+        expected_header_value: "sk-primary".into(),
+        expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
+        additional_expected_headers: vec![("anthropic-version".into(), "2023-06-01".into())],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::TOO_MANY_REQUESTS,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body:
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#
+                .to_string(),
+    })
+    .await;
+    let fallback = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/messages".into(),
+        expected_header_name: "x-api-key".into(),
+        expected_header_value: "sk-fallback".into(),
+        expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
+        additional_expected_headers: vec![("anthropic-version".into(), "2023-06-01".into())],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::OK,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body: serde_json::json!({
+            "id": "msg_chat_fallback_skip_123",
+            "model": actual_model,
+            "content": [{"type": "text", "text": "Hello from Claude fallback"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7
+            }
+        })
+        .to_string(),
+    })
+    .await;
+    let harness = TestHarness::anthropic_chat_fallback_affinity_fixture(
+        &primary.base_url,
+        &fallback.base_url,
+    )
+    .await;
+    let first_request_id = format!("anthropic-chat-rate-limit-first-{}", harness.model_name);
+    let second_request_id = format!("anthropic-chat-rate-limit-second-{}", harness.model_name);
+
+    let first_response = harness
+        .json_request(
+            Method::POST,
+            "/v1/chat/completions",
+            &first_request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": false
+            }),
+        )
+        .await;
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let first_payload = crate::router::test_support::response_json(first_response).await;
+    assert_eq!(first_payload["id"], "msg_chat_fallback_skip_123");
+
+    let primary_account = harness.wait_for_primary_account_rate_limited().await;
+    assert_eq!(primary_account.failure_streak, 1);
+    assert!(primary_account.rate_limited_until.is_some());
+
+    let second_response = harness
+        .json_request(
+            Method::POST,
+            "/v1/chat/completions",
+            &second_request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": false
+            }),
+        )
+        .await;
+    assert_eq!(second_response.status(), StatusCode::OK);
+    let second_payload = crate::router::test_support::response_json(second_response).await;
+    assert_eq!(second_payload["id"], "msg_chat_fallback_skip_123");
+
+    let token = harness.wait_for_token_used_quota(38).await;
+    assert_eq!(token.used_quota, 38);
+
+    assert_eq!(primary.hit_count("/v1/messages"), 1);
+    assert_eq!(fallback.hit_count("/v1/messages"), 2);
+
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires local postgres and redis"]
+async fn gemini_chat_route_falls_back_after_primary_invalid_request_without_quarantining_account() {
+    let actual_model = "gemini-2.5-pro";
+    let primary = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: format!("/v1beta/models/{actual_model}:generateContent"),
+        expected_header_name: "x-goog-api-key".into(),
+        expected_header_value: "sk-primary".into(),
+        expected_body_substring: Some("\"contents\"".into()),
+        additional_expected_headers: vec![],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::BAD_REQUEST,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body: r#"{"error":{"status":"INVALID_ARGUMENT","message":"bad tool schema"}}"#
+            .to_string(),
+    })
+    .await;
+    let fallback = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: format!("/v1beta/models/{actual_model}:generateContent"),
+        expected_header_name: "x-goog-api-key".into(),
+        expected_header_value: "sk-fallback".into(),
+        expected_body_substring: Some("\"contents\"".into()),
+        additional_expected_headers: vec![],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::OK,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body: serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hello from Gemini fallback"}]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 4,
+                "candidatesTokenCount": 6,
+                "totalTokenCount": 10
+            }
+        })
+        .to_string(),
+    })
+    .await;
+    let harness =
+        TestHarness::gemini_chat_fallback_affinity_fixture(&primary.base_url, &fallback.base_url)
+            .await;
+
+    let response = harness
+        .json_request(
+            Method::POST,
+            "/v1/chat/completions",
+            "gemini-chat-invalid-request-fallback",
+            serde_json::json!({
+                "model": harness.model_name,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": false
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = crate::router::test_support::response_json(response).await;
+
+    assert_eq!(
+        payload["choices"][0]["message"]["content"],
+        "Hello from Gemini fallback"
+    );
+    assert_eq!(payload["usage"]["total_tokens"], 10);
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let primary_account = harness.primary_account_model().await;
+    assert_eq!(
+        primary_account.status,
+        summer_ai_model::entity::channel_account::AccountStatus::Enabled
+    );
+    assert!(primary_account.schedulable);
+    assert_eq!(primary_account.failure_streak, 0);
+    assert!(primary_account.rate_limited_until.is_none());
+    assert!(primary_account.overload_until.is_none());
+
+    let primary_channel = harness.primary_channel_model().await;
+    assert_eq!(primary_channel.failure_streak, 0);
+    assert_eq!(primary_channel.last_health_status, 2);
+
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires local postgres and redis"]
+async fn gemini_chat_route_quarantines_primary_account_after_auth_failure() {
+    let actual_model = "gemini-2.5-pro";
+    let primary = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: format!("/v1beta/models/{actual_model}:generateContent"),
+        expected_header_name: "x-goog-api-key".into(),
+        expected_header_value: "sk-primary".into(),
+        expected_body_substring: Some("\"contents\"".into()),
+        additional_expected_headers: vec![],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::UNAUTHORIZED,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body: r#"{"error":{"status":"UNAUTHENTICATED","message":"invalid api key"}}"#
+            .to_string(),
+    })
+    .await;
+    let fallback = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: format!("/v1beta/models/{actual_model}:generateContent"),
+        expected_header_name: "x-goog-api-key".into(),
+        expected_header_value: "sk-fallback".into(),
+        expected_body_substring: Some("\"contents\"".into()),
+        additional_expected_headers: vec![],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::OK,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body: serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hello from Gemini fallback"}]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 4,
+                "candidatesTokenCount": 6,
+                "totalTokenCount": 10
+            }
+        })
+        .to_string(),
+    })
+    .await;
+    let harness =
+        TestHarness::gemini_chat_fallback_affinity_fixture(&primary.base_url, &fallback.base_url)
+            .await;
+    let first_request_id = format!("gemini-chat-auth-first-{}", harness.model_name);
+    let second_request_id = format!("gemini-chat-auth-second-{}", harness.model_name);
+
+    let first_response = harness
+        .json_request(
+            Method::POST,
+            "/v1/chat/completions",
+            &first_request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": false
+            }),
+        )
+        .await;
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let first_payload = crate::router::test_support::response_json(first_response).await;
+    assert_eq!(
+        first_payload["choices"][0]["message"]["content"],
+        "Hello from Gemini fallback"
+    );
+
+    let primary_account = harness.wait_for_primary_account_disabled().await;
+    assert_eq!(
+        primary_account.status,
+        summer_ai_model::entity::channel_account::AccountStatus::Disabled
+    );
+    assert!(!primary_account.schedulable);
+    assert_eq!(primary_account.failure_streak, 1);
+
+    let primary_channel = harness.primary_channel_model().await;
+    assert_eq!(primary_channel.failure_streak, 0);
+    assert_eq!(primary_channel.last_health_status, 2);
+
+    let second_response = harness
+        .json_request(
+            Method::POST,
+            "/v1/chat/completions",
+            &second_request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": false
+            }),
+        )
+        .await;
+    assert_eq!(second_response.status(), StatusCode::OK);
+    let second_payload = crate::router::test_support::response_json(second_response).await;
+    assert_eq!(
+        second_payload["choices"][0]["message"]["content"],
+        "Hello from Gemini fallback"
+    );
+
+    let token = harness.wait_for_token_used_quota(20).await;
+    assert_eq!(token.used_quota, 20);
+
+    assert_eq!(
+        primary.hit_count(&format!("/v1beta/models/{actual_model}:generateContent")),
+        1
+    );
+    assert_eq!(
+        fallback.hit_count(&format!("/v1beta/models/{actual_model}:generateContent")),
+        2
+    );
+
+    harness.cleanup().await;
+}
+
+#[tokio::test]
 async fn gemini_chat_non_stream_mock_upstream_converts_file_uri_image_to_file_data() {
     let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
         "model": "gpt-5.4 xhigh",
@@ -2504,6 +2911,109 @@ async fn gemini_embeddings_route_falls_back_after_primary_invalid_request() {
         serde_json::json!([9.0, 8.0])
     );
     assert_eq!(payload["usage"]["total_tokens"], 2);
+
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires local postgres and redis"]
+async fn anthropic_responses_route_quarantines_primary_account_after_auth_failure() {
+    let actual_model = "claude-sonnet-4-20250514";
+    let primary = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/messages".into(),
+        expected_header_name: "x-api-key".into(),
+        expected_header_value: "sk-primary".into(),
+        expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
+        additional_expected_headers: vec![("anthropic-version".into(), "2023-06-01".into())],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::UNAUTHORIZED,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body:
+            r#"{"type":"error","error":{"type":"authentication_error","message":"invalid api key"}}"#
+                .to_string(),
+    })
+    .await;
+    let fallback = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/messages".into(),
+        expected_header_name: "x-api-key".into(),
+        expected_header_value: "sk-fallback".into(),
+        expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
+        additional_expected_headers: vec![("anthropic-version".into(), "2023-06-01".into())],
+        additional_expected_body_substrings: vec!["\"text\":\"Hello\"".into()],
+        response_status: StatusCode::OK,
+        response_content_type: "application/json".into(),
+        response_headers: vec![],
+        response_body: serde_json::json!({
+            "id": "msg_resp_auth_fallback_123",
+            "model": actual_model,
+            "content": [{"type": "text", "text": "Hello from Claude fallback"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7
+            }
+        })
+        .to_string(),
+    })
+    .await;
+    let harness = TestHarness::anthropic_responses_fallback_affinity_fixture(
+        &primary.base_url,
+        &fallback.base_url,
+    )
+    .await;
+    let first_request_id = format!("anthropic-responses-auth-first-{}", harness.model_name);
+    let second_request_id = format!("anthropic-responses-auth-second-{}", harness.model_name);
+
+    let first_response = harness
+        .json_request(
+            Method::POST,
+            "/v1/responses",
+            &first_request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "input": "Hello",
+                "stream": false
+            }),
+        )
+        .await;
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let first_payload = crate::router::test_support::response_json(first_response).await;
+    assert_eq!(first_payload["id"], "msg_resp_auth_fallback_123");
+
+    let primary_account = harness.wait_for_primary_account_disabled().await;
+    assert_eq!(
+        primary_account.status,
+        summer_ai_model::entity::channel_account::AccountStatus::Disabled
+    );
+    assert!(!primary_account.schedulable);
+    assert_eq!(primary_account.failure_streak, 1);
+
+    let primary_channel = harness.primary_channel_model().await;
+    assert_eq!(primary_channel.failure_streak, 0);
+    assert_eq!(primary_channel.last_health_status, 2);
+
+    let second_response = harness
+        .json_request(
+            Method::POST,
+            "/v1/responses",
+            &second_request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "input": "Hello",
+                "stream": false
+            }),
+        )
+        .await;
+    assert_eq!(second_response.status(), StatusCode::OK);
+    let second_payload = crate::router::test_support::response_json(second_response).await;
+    assert_eq!(second_payload["id"], "msg_resp_auth_fallback_123");
+
+    let token = harness.wait_for_token_used_quota(38).await;
+    assert_eq!(token.used_quota, 38);
+
+    assert_eq!(primary.hit_count("/v1/messages"), 1);
+    assert_eq!(fallback.hit_count("/v1/messages"), 2);
 
     harness.cleanup().await;
 }

@@ -70,8 +70,10 @@ pub struct Model {
     /// 运行状态
     pub status: TenantDatasourceStatus,
     /// 独立 Schema 名称
+    #[sea_orm(unique)]
     pub schema_name: Option<String>,
     /// 动态数据源名称
+    #[sea_orm(unique)]
     pub datasource_name: Option<String>,
     /// 独立数据库连接串
     pub db_uri: Option<String>,

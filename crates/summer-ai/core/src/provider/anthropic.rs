@@ -1700,4 +1700,30 @@ mod tests {
             Some(FinishReason::ContentFilter)
         ));
     }
+
+    #[test]
+    fn parse_error_maps_authentication_error_to_authentication() {
+        let info = AnthropicAdapter.parse_error(
+            StatusCode::UNAUTHORIZED,
+            &HeaderMap::new(),
+            br#"{"type":"error","error":{"type":"authentication_error","message":"invalid api key"}}"#,
+        );
+
+        assert_eq!(info.kind, ProviderErrorKind::Authentication);
+        assert_eq!(info.code, "authentication_error");
+        assert_eq!(info.message, "invalid api key");
+    }
+
+    #[test]
+    fn parse_error_maps_overloaded_error_to_server() {
+        let info = AnthropicAdapter.parse_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &HeaderMap::new(),
+            br#"{"type":"error","error":{"type":"overloaded_error","message":"upstream overloaded"}}"#,
+        );
+
+        assert_eq!(info.kind, ProviderErrorKind::Server);
+        assert_eq!(info.code, "overloaded_error");
+        assert_eq!(info.message, "upstream overloaded");
+    }
 }

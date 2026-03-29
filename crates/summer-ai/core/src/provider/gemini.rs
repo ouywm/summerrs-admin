@@ -2406,4 +2406,43 @@ mod tests {
         assert_eq!(info.code, "FAILED_PRECONDITION");
         assert_eq!(info.message, "project is not configured");
     }
+
+    #[test]
+    fn parse_error_maps_resource_exhausted_to_rate_limit() {
+        let info = GeminiAdapter.parse_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            &HeaderMap::new(),
+            br#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"slow down"}}"#,
+        );
+
+        assert_eq!(info.kind, ProviderErrorKind::RateLimit);
+        assert_eq!(info.code, "RESOURCE_EXHAUSTED");
+        assert_eq!(info.message, "slow down");
+    }
+
+    #[test]
+    fn parse_error_maps_unauthenticated_to_authentication() {
+        let info = GeminiAdapter.parse_error(
+            StatusCode::UNAUTHORIZED,
+            &HeaderMap::new(),
+            br#"{"error":{"status":"UNAUTHENTICATED","message":"invalid api key"}}"#,
+        );
+
+        assert_eq!(info.kind, ProviderErrorKind::Authentication);
+        assert_eq!(info.code, "UNAUTHENTICATED");
+        assert_eq!(info.message, "invalid api key");
+    }
+
+    #[test]
+    fn parse_error_maps_unavailable_to_server() {
+        let info = GeminiAdapter.parse_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &HeaderMap::new(),
+            br#"{"error":{"status":"UNAVAILABLE","message":"upstream overloaded"}}"#,
+        );
+
+        assert_eq!(info.kind, ProviderErrorKind::Server);
+        assert_eq!(info.code, "UNAVAILABLE");
+        assert_eq!(info.message, "upstream overloaded");
+    }
 }
