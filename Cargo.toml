@@ -107,6 +107,4 @@ summer-system = { path = "crates/summer-system" }
 tokio-stream = "0.1"
 
 [patch.crates-io]
-aide = { path = "vendor/aide-0.16.0-alpha.3" }
-sea-orm = { path = "vendor/sea-orm-2.0.0-rc.37" }
-summer-macros = { path = "vendor/summer-macros-0.5.0" }
+sea-orm = { path = "/Volumes/990pro/code/rust/sea-orm" }
