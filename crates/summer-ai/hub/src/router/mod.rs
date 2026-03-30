@@ -5,6 +5,7 @@ pub mod log;
 pub mod model_config;
 pub mod openai;
 pub mod openai_passthrough;
+pub mod runtime;
 pub mod token;
 
 #[cfg(test)]

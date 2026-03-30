@@ -531,6 +531,25 @@ impl TestHarness {
         .await
     }
 
+    pub(crate) async fn anthropic_chat_fallback_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "anthropic-chat-fallback-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["chat"],
+            vec!["chat"],
+            true,
+            channel::ChannelType::Anthropic,
+            "anthropic",
+            model_config::ModelType::Chat,
+            Some("claude-sonnet-4-20250514"),
+        )
+        .await
+    }
+
     pub(crate) async fn anthropic_responses_fallback_affinity_fixture(
         primary_base_url: &str,
         fallback_base_url: &str,
@@ -546,6 +565,25 @@ impl TestHarness {
             "anthropic",
             model_config::ModelType::Chat,
             Some("claude-sonnet-4-20250514"),
+        )
+        .await
+    }
+
+    pub(crate) async fn gemini_chat_fallback_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "gemini-chat-fallback-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["chat"],
+            vec!["chat"],
+            true,
+            channel::ChannelType::Gemini,
+            "gemini",
+            model_config::ModelType::Chat,
+            Some("gemini-2.5-pro"),
         )
         .await
     }
