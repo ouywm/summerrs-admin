@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::algorithm::ShardingValue;
+use crate::extensions::Extensions;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ShardingHint {
@@ -11,7 +12,7 @@ pub enum ShardingHint {
     SkipMasking,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ShardingAccessContext {
     #[serde(default)]
     pub roles: Vec<String>,
@@ -19,6 +20,10 @@ pub struct ShardingAccessContext {
     pub permissions: Vec<String>,
     #[serde(default)]
     pub allow_skip_masking: bool,
+    /// 类型安全的扩展数据容器。
+    /// 外部使用者可通过自定义结构体存入请求级上下文数据。
+    #[serde(skip)]
+    pub extensions: Extensions,
 }
 
 impl ShardingAccessContext {
@@ -35,6 +40,17 @@ impl ShardingAccessContext {
     pub fn allow_skip_masking(mut self) -> Self {
         self.allow_skip_masking = true;
         self
+    }
+
+    /// 存入一个类型安全的扩展数据（链式调用）
+    pub fn with_extension<T: Clone + Send + Sync + 'static>(mut self, val: T) -> Self {
+        self.extensions.insert(val);
+        self
+    }
+
+    /// 获取扩展数据的不可变引用
+    pub fn extension<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.extensions.get::<T>()
     }
 
     pub fn can_skip_masking(&self) -> bool {

@@ -6,6 +6,7 @@ pub mod connector;
 pub mod datasource;
 pub mod ddl;
 pub mod encrypt;
+pub mod extensions;
 pub mod error;
 pub mod execute;
 pub mod keygen;
@@ -15,6 +16,7 @@ pub mod merge;
 pub mod migration;
 pub mod plugin;
 pub mod rewrite;
+pub mod rewrite_plugin;
 pub mod router;
 pub mod shadow;
 pub mod tenant;
@@ -76,6 +78,10 @@ pub use migration::{
 };
 pub use plugin::SummerShardingPlugin;
 pub use rewrite::{DefaultSqlRewriter, SqlRewriter};
+pub use rewrite_plugin::{
+    PluginRegistry, RewriteContext, ShardingRewriteConfigurator, SqlRewritePlugin,
+    helpers as rewrite_helpers,
+};
 pub use router::{
     DefaultSqlRouter, OrderByItem, QualifiedTableName, RoutePlan, RouteTarget, SqlOperation,
     SqlRouter, TableRewrite,

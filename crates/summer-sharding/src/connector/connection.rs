@@ -25,6 +25,7 @@ use crate::{
     },
     merge::{DefaultResultMerger, ResultMerger},
     rewrite::{DefaultSqlRewriter, SqlRewriter},
+    rewrite_plugin::PluginRegistry,
     router::{DefaultSqlRouter, RoutePlan, SqlOperation, SqlRouter},
     shadow::ShadowRouter,
     tenant::{TenantMetadataStore, TenantRouter},
@@ -52,6 +53,8 @@ pub(crate) struct ShardingConnectionInner {
     pub(crate) tenant_router: TenantRouter,
     pub(crate) shadow_router: ShadowRouter,
     pub(crate) auditor: Arc<dyn SqlAuditor>,
+    /// SQL 改写插件注册表（可选，由应用层通过 ShardingRewriteConfigurator 注入）
+    pub(crate) plugin_registry: Option<Arc<PluginRegistry>>,
 }
 
 impl std::fmt::Debug for ShardingConnection {
@@ -100,6 +103,7 @@ impl ShardingConnection {
             shadow_router: ShadowRouter::new(config.clone()),
             tenant_metadata,
             auditor: Arc::new(DefaultSqlAuditor::default()),
+            plugin_registry: None,
             config,
             pool,
         };
@@ -114,6 +118,27 @@ impl ShardingConnection {
 
     pub fn key_generator(&self, logic_table: &str) -> Option<Arc<dyn KeyGenerator>> {
         self.inner.key_generators.get(logic_table).cloned()
+    }
+
+    /// 设置 SQL 改写插件注册表。
+    /// 由 `SummerShardingPlugin::build()` 调用，将应用层注册的插件注入到连接中。
+    ///
+    /// # Panics
+    /// 如果 `ShardingConnection` 的内部 `Arc` 已被克隆（强引用计数 > 1），则 panic。
+    /// 请确保在连接被共享之前调用此方法。
+    pub fn set_plugin_registry(&mut self, registry: PluginRegistry) {
+        let inner = Arc::get_mut(&mut self.inner)
+            .expect("set_plugin_registry must be called before the connection is shared");
+        inner.plugin_registry = Some(Arc::new(registry));
+    }
+
+    /// 获取已注册插件的摘要信息（用于日志）
+    pub fn plugin_summary(&self) -> String {
+        self.inner
+            .plugin_registry
+            .as_ref()
+            .map(|r| r.summary())
+            .unwrap_or_else(|| "none".to_string())
     }
 
     pub fn with_hint(&self, hint: ShardingHint) -> Self {
@@ -369,7 +394,12 @@ impl ShardingConnectionInner {
         let mut plan = self.router.route(&analysis, force_primary)?;
         self.apply_tenant_route(&mut plan, analysis.tenant.as_ref());
         self.shadow_router.apply(&mut plan, &analysis);
-        let statements = self.rewriter.rewrite(stmt, &analysis, &plan)?;
+        let statements = self.rewriter.rewrite(
+            stmt,
+            &analysis,
+            &plan,
+            self.plugin_registry.as_deref(),
+        )?;
         if statements.len() != plan.targets.len() {
             return Err(ShardingError::Rewrite(format!(
                 "rewritten statement count {} does not match route target count {}",

@@ -13,6 +13,7 @@ use crate::TenantContextLayer;
 use crate::{
     ShardingConnection,
     config::SummerShardingConfig,
+    rewrite_plugin::PluginRegistry,
     tenant::{
         PgTenantMetadataListener, TENANT_METADATA_CHANNEL, TenantMetadataListener,
         TenantMetadataNotificationHandler,
@@ -42,13 +43,22 @@ impl Plugin for SummerShardingPlugin {
             return;
         }
 
-        let connection = ShardingConnection::build(
+        let mut connection = ShardingConnection::build(
             config
                 .into_runtime_config()
                 .expect("summer-sharding runtime config build failed"),
         )
         .await
         .expect("summer-sharding connection build failed");
+
+        // 注入 SQL 改写插件注册表（由 sharding_rewrite_configure 注册）
+        if let Some(registry) = app.get_component::<PluginRegistry>() {
+            tracing::info!(
+                plugins = %registry.summary(),
+                "injecting SQL rewrite plugin registry"
+            );
+            connection.set_plugin_registry(registry);
+        }
 
         let metadata_connection: DatabaseConnection = app
             .get_component::<DatabaseConnection>()

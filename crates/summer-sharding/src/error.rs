@@ -21,6 +21,8 @@ pub enum ShardingError {
     TableRuleNotFound(String),
     #[error("missing sharding value for table `{table}` column `{column}`")]
     MissingShardingValue { table: String, column: String },
+    #[error("plugin `{plugin}` rewrite error: {message}")]
+    Plugin { plugin: String, message: String },
     #[error("database error: {0}")]
     Db(#[from] DbErr),
     #[error("io error: {0}")]

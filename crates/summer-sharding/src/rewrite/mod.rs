@@ -12,6 +12,7 @@ use crate::{
     config::ShardingConfig,
     connector::statement::StatementContext,
     error::{Result, ShardingError},
+    rewrite_plugin::{PluginRegistry, context::RewriteContext},
     router::RoutePlan,
     tenant::apply_tenant_rewrite,
 };
@@ -28,6 +29,7 @@ pub trait SqlRewriter: Send + Sync + 'static {
         stmt: &Statement,
         analysis: &StatementContext,
         plan: &RoutePlan,
+        plugin_registry: Option<&PluginRegistry>,
     ) -> Result<Vec<Statement>>;
 }
 
@@ -48,6 +50,7 @@ impl SqlRewriter for DefaultSqlRewriter {
         stmt: &Statement,
         analysis: &StatementContext,
         plan: &RoutePlan,
+        plugin_registry: Option<&PluginRegistry>,
     ) -> Result<Vec<Statement>> {
         let mut rewritten = Vec::with_capacity(plan.targets.len().max(1));
 
@@ -70,7 +73,26 @@ impl SqlRewriter for DefaultSqlRewriter {
                 apply_tenant_rewrite(&mut parsed, tenant, &self.config, &plan.logic_tables);
             }
             apply_encrypt_rewrite(&mut statement, &mut parsed, analysis, &self.config)?;
-            statement.sql = parsed.to_string();
+
+            // 插件链改写：在内置改写完成后执行
+            let mut comments = Vec::new();
+            if let Some(registry) = plugin_registry {
+                let mut ctx = RewriteContext {
+                    statement: &mut parsed,
+                    analysis,
+                    route: plan,
+                    target,
+                    access_ctx: analysis.access_context.as_ref(),
+                    comments: Vec::new(),
+                };
+                registry.rewrite_all(&mut ctx)?;
+                comments = ctx.comments;
+            }
+
+            statement.sql = crate::rewrite_plugin::helpers::format_with_comments(
+                &parsed.to_string(),
+                &comments,
+            );
             rewritten.push(statement);
         }
 
@@ -134,7 +156,7 @@ mod tests {
         };
 
         let rewritten = DefaultSqlRewriter::new(Arc::new(ShardingConfig::default()))
-            .rewrite(&stmt, &analysis, &plan)
+            .rewrite(&stmt, &analysis, &plan, None)
             .expect("rewrite");
 
         assert_eq!(rewritten.len(), 2);
@@ -168,7 +190,7 @@ mod tests {
         };
 
         let rewritten = DefaultSqlRewriter::new(Arc::new(ShardingConfig::default()))
-            .rewrite(&stmt, &analysis, &plan)
+            .rewrite(&stmt, &analysis, &plan, None)
             .expect("rewrite");
 
         assert_eq!(rewritten.len(), 1);
