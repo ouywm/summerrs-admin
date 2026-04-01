@@ -1,5 +1,7 @@
 use std::hash::{Hash, Hasher};
 
+use rustc_hash::FxHasher;
+
 use crate::{
     config::TableRuleConfig,
     error::{Result, ShardingError},
@@ -37,7 +39,7 @@ impl HashModShardingAlgorithm {
             return number.rem_euclid(self.shard_count as i64) as usize;
         }
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         value.as_str().unwrap_or_default().hash(&mut hasher);
         (hasher.finish() as usize) % self.shard_count
     }

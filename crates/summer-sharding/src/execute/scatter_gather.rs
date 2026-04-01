@@ -12,6 +12,50 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct ScatterGatherExecutor;
 
+#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
+async fn execute_measured(
+    raw: &dyn RawStatementExecutor,
+    units: Vec<ExecutionUnit>,
+) -> Result<sea_orm::ExecResult> {
+    super::simple::SimpleExecutor.execute(raw, units).await
+}
+
+#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
+async fn query_one_measured(
+    raw: &dyn RawStatementExecutor,
+    units: Vec<ExecutionUnit>,
+    analysis: &StatementContext,
+    plan: &RoutePlan,
+    merger: &dyn ResultMerger,
+) -> Result<Option<sea_orm::QueryResult>> {
+    let rows = query_all_measured(raw, units, analysis, plan, merger).await?;
+    Ok(rows.into_iter().next())
+}
+
+#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
+async fn query_all_measured(
+    raw: &dyn RawStatementExecutor,
+    units: Vec<ExecutionUnit>,
+    analysis: &StatementContext,
+    plan: &RoutePlan,
+    merger: &dyn ResultMerger,
+) -> Result<Vec<sea_orm::QueryResult>> {
+    ensure_units(&units)?;
+    if units.len() == 1 {
+        return super::simple::SimpleExecutor
+            .query_all(raw, units, analysis, plan, merger)
+            .await;
+    }
+
+    let shards = try_join_all(units.into_iter().map(|unit| async move {
+        raw.query_all_for(unit.datasource.as_str(), unit.statement)
+            .await
+    }))
+    .await?;
+
+    merger.merge(shards, analysis, plan)
+}
+
 #[async_trait]
 impl Executor for ScatterGatherExecutor {
     async fn execute(
@@ -19,7 +63,7 @@ impl Executor for ScatterGatherExecutor {
         raw: &dyn RawStatementExecutor,
         units: Vec<ExecutionUnit>,
     ) -> Result<sea_orm::ExecResult> {
-        super::simple::SimpleExecutor.execute(raw, units).await
+        execute_measured(raw, units).await
     }
 
     async fn query_one(
@@ -30,8 +74,7 @@ impl Executor for ScatterGatherExecutor {
         plan: &RoutePlan,
         merger: &dyn ResultMerger,
     ) -> Result<Option<sea_orm::QueryResult>> {
-        let rows = self.query_all(raw, units, analysis, plan, merger).await?;
-        Ok(rows.into_iter().next())
+        query_one_measured(raw, units, analysis, plan, merger).await
     }
 
     async fn query_all(
@@ -42,20 +85,7 @@ impl Executor for ScatterGatherExecutor {
         plan: &RoutePlan,
         merger: &dyn ResultMerger,
     ) -> Result<Vec<sea_orm::QueryResult>> {
-        ensure_units(&units)?;
-        if units.len() == 1 {
-            return super::simple::SimpleExecutor
-                .query_all(raw, units, analysis, plan, merger)
-                .await;
-        }
-
-        let shards = try_join_all(units.into_iter().map(|unit| async move {
-            raw.query_all_for(unit.datasource.as_str(), unit.statement)
-                .await
-        }))
-        .await?;
-
-        merger.merge(shards, analysis, plan)
+        query_all_measured(raw, units, analysis, plan, merger).await
     }
 }
 

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use crate::{
+    connector::statement::StatementContext,
     error::{Result, ShardingError},
     execute::{ExecutionUnit, Executor, RawStatementExecutor, ensure_units},
     merge::ResultMerger,
@@ -10,6 +11,56 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct SimpleExecutor;
 
+#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
+async fn execute_measured(
+    raw: &dyn RawStatementExecutor,
+    units: Vec<ExecutionUnit>,
+) -> Result<sea_orm::ExecResult> {
+    ensure_units(&units)?;
+    if units.len() != 1 {
+        return Err(ShardingError::Unsupported(
+            "multi-shard writes are not supported by the simple executor".to_string(),
+        ));
+    }
+    let unit = units.into_iter().next().expect("validated execution unit");
+    Ok(raw
+        .execute_for(unit.datasource.as_str(), unit.statement)
+        .await?)
+}
+
+#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
+async fn query_one_measured(
+    raw: &dyn RawStatementExecutor,
+    units: Vec<ExecutionUnit>,
+    analysis: &StatementContext,
+    plan: &RoutePlan,
+    merger: &dyn ResultMerger,
+) -> Result<Option<sea_orm::QueryResult>> {
+    let rows = query_all_measured(raw, units, analysis, plan, merger).await?;
+    Ok(rows.into_iter().next())
+}
+
+#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
+async fn query_all_measured(
+    raw: &dyn RawStatementExecutor,
+    units: Vec<ExecutionUnit>,
+    analysis: &StatementContext,
+    plan: &RoutePlan,
+    merger: &dyn ResultMerger,
+) -> Result<Vec<sea_orm::QueryResult>> {
+    ensure_units(&units)?;
+    if units.len() != 1 {
+        return Err(ShardingError::Unsupported(
+            "multi-shard queries require scatter-gather execution".to_string(),
+        ));
+    }
+    let unit = units.into_iter().next().expect("validated execution unit");
+    let rows = raw
+        .query_all_for(unit.datasource.as_str(), unit.statement)
+        .await?;
+    merger.merge(vec![rows], analysis, plan)
+}
+
 #[async_trait]
 impl Executor for SimpleExecutor {
     async fn execute(
@@ -17,49 +68,29 @@ impl Executor for SimpleExecutor {
         raw: &dyn RawStatementExecutor,
         units: Vec<ExecutionUnit>,
     ) -> Result<sea_orm::ExecResult> {
-        ensure_units(&units)?;
-        if units.len() != 1 {
-            return Err(ShardingError::Unsupported(
-                "multi-shard writes are not supported by the simple executor".to_string(),
-            ));
-        }
-        let unit = units.into_iter().next().expect("validated execution unit");
-        Ok(raw
-            .execute_for(unit.datasource.as_str(), unit.statement)
-            .await?)
+        execute_measured(raw, units).await
     }
 
     async fn query_one(
         &self,
         raw: &dyn RawStatementExecutor,
         units: Vec<ExecutionUnit>,
-        analysis: &crate::connector::statement::StatementContext,
+        analysis: &StatementContext,
         plan: &RoutePlan,
         merger: &dyn ResultMerger,
     ) -> Result<Option<sea_orm::QueryResult>> {
-        let rows = self.query_all(raw, units, analysis, plan, merger).await?;
-        Ok(rows.into_iter().next())
+        query_one_measured(raw, units, analysis, plan, merger).await
     }
 
     async fn query_all(
         &self,
         raw: &dyn RawStatementExecutor,
         units: Vec<ExecutionUnit>,
-        analysis: &crate::connector::statement::StatementContext,
+        analysis: &StatementContext,
         plan: &RoutePlan,
         merger: &dyn ResultMerger,
     ) -> Result<Vec<sea_orm::QueryResult>> {
-        ensure_units(&units)?;
-        if units.len() != 1 {
-            return Err(ShardingError::Unsupported(
-                "multi-shard queries require scatter-gather execution".to_string(),
-            ));
-        }
-        let unit = units.into_iter().next().expect("validated execution unit");
-        let rows = raw
-            .query_all_for(unit.datasource.as_str(), unit.statement)
-            .await?;
-        merger.merge(vec![rows], analysis, plan)
+        query_all_measured(raw, units, analysis, plan, merger).await
     }
 }
 

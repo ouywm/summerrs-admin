@@ -19,6 +19,7 @@ impl Plugin for SummerAiHubPlugin {
 
         let db: DbConn = app
             .get_component::<DbConn>()
+            // SAFETY: startup-time; application cannot function without this
             .expect("DbConn not found; ensure SeaOrmPlugin is registered before SummerAiHubPlugin");
         let task_config =
             app.get_config::<BackgroundTaskConfig>()
@@ -35,6 +36,7 @@ impl Plugin for SummerAiHubPlugin {
             });
 
         let http_client =
+            // SAFETY: startup-time; application cannot function without this
             UpstreamHttpClient::build().expect("failed to build shared upstream http client");
         let ai_log_queue = AiLogBatchQueue::build(db.clone(), &task_config, &batch_config);
         app.add_component(http_client);

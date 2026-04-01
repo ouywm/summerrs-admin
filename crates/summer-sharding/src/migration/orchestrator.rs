@@ -192,11 +192,11 @@ impl MigrationOrchestrator {
             } else {
                 "keep source rows for rollback window".to_string()
             },
-            statement: join_statements(
-                task.delete_after_migrate
-                    .then(|| Self::cleanup_statements(&source_tables, filter_clause.as_str()))
-                    .unwrap_or_default(),
-            ),
+            statement: join_statements(if task.delete_after_migrate {
+                Self::cleanup_statements(&source_tables, filter_clause.as_str())
+            } else {
+                Default::default()
+            }),
         };
 
         Ok(MigrationExecutionPlan {

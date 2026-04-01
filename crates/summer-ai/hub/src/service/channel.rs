@@ -28,6 +28,7 @@ use summer_ai_model::vo::channel_account::ChannelAccountVo;
 
 use crate::relay::channel_router::route_cache_version_key;
 use crate::relay::http_client::UpstreamHttpClient;
+use crate::service::route_health::RouteHealthService;
 use crate::service::runtime_cache::RuntimeCacheService;
 
 const RATE_LIMIT_COOLDOWN_SECONDS: i64 = 60;
@@ -42,14 +43,22 @@ pub struct ChannelService {
     http_client: UpstreamHttpClient,
     #[inject(component)]
     cache: RuntimeCacheService,
+    #[inject(component)]
+    route_health: RouteHealthService,
 }
 
 impl ChannelService {
-    pub fn new(db: DbConn, http_client: UpstreamHttpClient, cache: RuntimeCacheService) -> Self {
+    pub fn new(
+        db: DbConn,
+        http_client: UpstreamHttpClient,
+        cache: RuntimeCacheService,
+        route_health: RouteHealthService,
+    ) -> Self {
         Self {
             db,
             http_client,
             cache,
+            route_health,
         }
     }
 
@@ -102,7 +111,7 @@ impl ChannelService {
         operator: &str,
     ) -> ApiResult<()> {
         let model = self.find_channel_model(id).await?;
-        let final_channel_type = dto.channel_type.unwrap_or(model.channel_type) as i16;
+        let final_channel_type = model.channel_type as i16;
         let endpoint_scopes = dto
             .endpoint_scopes
             .as_ref()
@@ -161,9 +170,18 @@ impl ChannelService {
     }
 
     pub async fn recover_auto_disabled_channels(&self) -> ApiResult<()> {
+        // Cooldown: only attempt recovery for channels whose last error was at least
+        // 5 minutes ago, preventing rapid-fire retries on persistently failing channels.
+        let cooldown_cutoff = chrono::Utc::now().fixed_offset() - chrono::Duration::minutes(5);
+
         let channels = channel::Entity::find()
             .filter(channel::Column::Status.eq(ChannelStatus::AutoDisabled))
             .filter(channel::Column::DeletedAt.is_null())
+            .filter(
+                sea_orm::Condition::any()
+                    .add(channel::Column::LastErrorAt.is_null())
+                    .add(channel::Column::LastErrorAt.lt(cooldown_cutoff)),
+            )
             .order_by_asc(channel::Column::Id)
             .all(&self.db)
             .await
@@ -534,8 +552,19 @@ impl ChannelService {
             })
             .await
             .map_err(map_relay_health_transaction_error)?;
+        let route_health_changed = match self
+            .route_health
+            .record_relay_success(channel_id, account_id)
+            .await
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::warn!("failed to record route health relay success: {error}");
+                false
+            }
+        };
 
-        if invalidate_route_cache {
+        if invalidate_route_cache || route_health_changed {
             self.invalidate_route_cache().await?;
         }
         Ok(())
@@ -586,8 +615,19 @@ impl ChannelService {
             })
             .await
             .map_err(map_relay_health_transaction_error)?;
+        let route_health_changed = match self
+            .route_health
+            .record_relay_failure(channel_id, account_id, status_code)
+            .await
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::warn!("failed to record route health relay failure: {error}");
+                false
+            }
+        };
 
-        if invalidate_route_cache {
+        if invalidate_route_cache || route_health_changed {
             self.invalidate_route_cache().await?;
         }
         Ok(())
@@ -780,6 +820,10 @@ impl ChannelService {
             account_model.overload_until,
             now,
         );
+        let should_invalidate_route_cache = health_update.invalidate_route_cache
+            || channel_model.failure_streak > 0
+            || account_model.failure_streak > 0
+            || channel_model.last_health_status != 1;
 
         let mut channel_active: channel::ActiveModel = channel_model.into();
         channel_active.response_time = Set(elapsed_ms as i32);
@@ -788,7 +832,7 @@ impl ChannelService {
         channel_active.last_health_status = Set(1);
         channel_active.last_error_at = Set(None);
         channel_active.last_error_code = Set(String::new());
-        channel_active.last_error_message = Set(String::new());
+        channel_active.last_error_message = Set(None);
         channel_active.status = Set(health_update.next_channel_status);
         channel_active
             .update(&self.db)
@@ -801,7 +845,7 @@ impl ChannelService {
         account_active.last_used_at = Set(Some(now));
         account_active.last_error_at = Set(None);
         account_active.last_error_code = Set(String::new());
-        account_active.last_error_message = Set(String::new());
+        account_active.last_error_message = Set(None);
         account_active.rate_limited_until = Set(health_update.next_rate_limited_until);
         account_active.overload_until = Set(health_update.next_overload_until);
         account_active.test_time = Set(Some(now));
@@ -810,7 +854,7 @@ impl ChannelService {
             .await
             .context("更新渠道账号测速结果失败")?;
 
-        if health_update.invalidate_route_cache {
+        if should_invalidate_route_cache {
             self.invalidate_route_cache().await?;
         }
         Ok(())
@@ -849,7 +893,7 @@ impl ChannelService {
         channel_active.last_health_status = Set(health_update.next_health_status);
         channel_active.last_error_at = Set(Some(now));
         channel_active.last_error_code = Set(error_code.clone());
-        channel_active.last_error_message = Set(message.to_string());
+        channel_active.last_error_message = Set(Some(message.to_string()));
         channel_active.status = Set(health_update.next_channel_status);
         channel_active
             .update(&self.db)
@@ -863,7 +907,7 @@ impl ChannelService {
         account_active.failure_streak = Set(health_update.next_account_failure_streak);
         account_active.last_error_at = Set(Some(now));
         account_active.last_error_code = Set(error_code);
-        account_active.last_error_message = Set(message.to_string());
+        account_active.last_error_message = Set(Some(message.to_string()));
         account_active.rate_limited_until = Set(health_update.cooldown.rate_limited_until);
         account_active.overload_until = Set(health_update.cooldown.overload_until);
         account_active.test_time = Set(Some(now));
@@ -900,6 +944,10 @@ impl ChannelService {
             account_model.overload_until,
             now,
         );
+        let should_invalidate_route_cache = health_update.invalidate_route_cache
+            || channel_model.failure_streak > 0
+            || account_model.failure_streak > 0
+            || channel_model.last_health_status != 1;
 
         let mut channel_active: channel::ActiveModel = channel_model.into();
         channel_active.response_time = Set(elapsed_ms as i32);
@@ -908,7 +956,7 @@ impl ChannelService {
         channel_active.last_health_status = Set(1);
         channel_active.last_error_at = Set(None);
         channel_active.last_error_code = Set(String::new());
-        channel_active.last_error_message = Set(String::new());
+        channel_active.last_error_message = Set(None);
         channel_active.status = Set(health_update.next_channel_status);
         channel_active
             .update(conn)
@@ -921,7 +969,7 @@ impl ChannelService {
         account_active.last_used_at = Set(Some(now));
         account_active.last_error_at = Set(None);
         account_active.last_error_code = Set(String::new());
-        account_active.last_error_message = Set(String::new());
+        account_active.last_error_message = Set(None);
         account_active.rate_limited_until = Set(health_update.next_rate_limited_until);
         account_active.overload_until = Set(health_update.next_overload_until);
         account_active
@@ -929,7 +977,7 @@ impl ChannelService {
             .await
             .context("更新渠道账号转发成功结果失败")?;
 
-        Ok(health_update.invalidate_route_cache)
+        Ok(should_invalidate_route_cache)
     }
 
     async fn write_relay_failure_with_conn<C: ConnectionTrait>(
@@ -974,7 +1022,7 @@ impl ChannelService {
         channel_active.last_health_status = Set(health_update.next_health_status);
         channel_active.last_error_at = Set(Some(now));
         channel_active.last_error_code = Set(error_code.clone());
-        channel_active.last_error_message = Set(message.to_string());
+        channel_active.last_error_message = Set(Some(message.to_string()));
         channel_active.status = Set(health_update.next_channel_status);
         channel_active
             .update(conn)
@@ -988,7 +1036,7 @@ impl ChannelService {
         account_active.failure_streak = Set(health_update.next_account_failure_streak);
         account_active.last_error_at = Set(Some(now));
         account_active.last_error_code = Set(error_code);
-        account_active.last_error_message = Set(message.to_string());
+        account_active.last_error_message = Set(Some(message.to_string()));
         account_active.rate_limited_until = Set(health_update.cooldown.rate_limited_until);
         account_active.overload_until = Set(health_update.cooldown.overload_until);
         account_active
@@ -1018,7 +1066,7 @@ fn provider_probe_failure_message(
     headers: &HeaderMap,
     body: &[u8],
 ) -> String {
-    let info = get_adapter(channel_type).parse_error(status, headers, body);
+    let info = get_adapter(channel_type).parse_error(status.into(), headers, body);
     if info.message.is_empty() {
         String::from_utf8_lossy(body).trim().to_string()
     } else {
@@ -1372,6 +1420,8 @@ fn compute_failure_health_update(
         next_health_status: if penalize { 3 } else { 2 },
         cooldown,
         invalidate_route_cache: next_channel_status != current_channel_status
+            || penalize
+            || quarantine_account
             || account_availability_changed,
     }
 }
@@ -1453,7 +1503,7 @@ fn select_schedulable_account(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_model_endpoint_scope_pairs, compute_failure_health_update,
+        ChannelService, build_model_endpoint_scope_pairs, compute_failure_health_update,
         compute_relay_success_health_update, compute_test_success_health_update,
         effective_channel_endpoint_scopes, failure_cooldown_window, pick_probe_endpoint_scope,
         provider_probe_failure_message, relay_health_update_is_stale, relay_request_started_at,
@@ -1727,6 +1777,30 @@ mod tests {
     }
 
     #[test]
+    fn extract_api_key_returns_empty_for_non_object_credentials() {
+        assert!(ChannelService::extract_api_key(&serde_json::Value::Null).is_empty());
+        assert!(ChannelService::extract_api_key(&serde_json::json!("sk-plain")).is_empty());
+        assert!(ChannelService::extract_api_key(&serde_json::json!(["sk-array"])).is_empty());
+    }
+
+    #[test]
+    fn extract_api_key_accepts_supported_key_aliases_and_trims_whitespace() {
+        assert_eq!(
+            ChannelService::extract_api_key(&serde_json::json!({"api_key":" sk-primary " })),
+            "sk-primary"
+        );
+        assert_eq!(
+            ChannelService::extract_api_key(&serde_json::json!({"apiKey":"sk-camel"})),
+            "sk-camel"
+        );
+        assert_eq!(
+            ChannelService::extract_api_key(&serde_json::json!({"key":"sk-generic"})),
+            "sk-generic"
+        );
+        assert!(ChannelService::extract_api_key(&serde_json::json!({"api_key":""})).is_empty());
+    }
+
+    #[test]
     fn provider_probe_failure_message_uses_provider_specific_payload() {
         let message = provider_probe_failure_message(
             3,
@@ -1853,7 +1927,7 @@ mod tests {
                 last_used_at: None,
                 last_error_at: None,
                 last_error_code: String::new(),
-                last_error_message: String::new(),
+                last_error_message: None,
                 rate_limited_until: None,
                 overload_until: None,
                 expires_at: Some(now + chrono::Duration::minutes(5)),
@@ -1889,7 +1963,7 @@ mod tests {
                 last_used_at: None,
                 last_error_at: None,
                 last_error_code: String::new(),
-                last_error_message: String::new(),
+                last_error_message: None,
                 rate_limited_until: None,
                 overload_until: None,
                 expires_at: Some(now + chrono::Duration::minutes(5)),
@@ -1935,7 +2009,7 @@ mod tests {
                 last_used_at: None,
                 last_error_at: None,
                 last_error_code: String::new(),
-                last_error_message: String::new(),
+                last_error_message: None,
                 rate_limited_until: None,
                 overload_until: None,
                 expires_at: Some(now + chrono::Duration::minutes(5)),
@@ -1971,7 +2045,7 @@ mod tests {
                 last_used_at: None,
                 last_error_at: None,
                 last_error_code: String::new(),
-                last_error_message: String::new(),
+                last_error_message: None,
                 rate_limited_until: None,
                 overload_until: None,
                 expires_at: Some(now + chrono::Duration::minutes(5)),
@@ -2088,6 +2162,26 @@ mod tests {
         assert!(update.invalidate_route_cache);
         assert_eq!(update.cooldown.rate_limited_until, None);
         assert_eq!(update.cooldown.overload_until, None);
+    }
+
+    #[test]
+    fn compute_failure_health_update_invalidates_route_cache_for_penalized_request_errors() {
+        let now = chrono::Utc::now().fixed_offset();
+        let update = compute_failure_health_update(
+            0,
+            ChannelStatus::Enabled,
+            channel_account::AccountStatus::Enabled,
+            true,
+            0,
+            0,
+            true,
+            None,
+            None,
+            now,
+        );
+
+        assert!(update.penalize);
+        assert!(update.invalidate_route_cache);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use sqlparser::ast::{
-    Delete, FromTable, Insert, Query, SetExpr, Statement, TableFactor, TableObject, TableWithJoins,
-    UpdateTableFromKind,
+    Delete, FromTable, Ident, Insert, Query, SetExpr, Statement, TableAlias, TableFactor,
+    TableObject, TableWithJoins, UpdateTableFromKind,
 };
 
 use crate::router::QualifiedTableName;
@@ -54,10 +54,10 @@ fn rewrite_insert(
     logic_table: &QualifiedTableName,
     actual_table: &QualifiedTableName,
 ) {
-    if let TableObject::TableName(name) = &mut insert.table {
-        if logic_table.matches_object_name(name) {
-            *name = actual_table.to_object_name();
-        }
+    if let TableObject::TableName(name) = &mut insert.table
+        && logic_table.matches_object_name(name)
+    {
+        *name = actual_table.to_object_name();
     }
     if let Some(source) = &mut insert.source {
         rewrite_query(source, logic_table, actual_table);
@@ -114,11 +114,119 @@ fn rewrite_set_expr(
             for table in &mut select.from {
                 rewrite_table_with_joins(table, logic_table, actual_table);
             }
+            // Recurse into WHERE, HAVING, and SELECT subqueries
+            if let Some(selection) = &mut select.selection {
+                rewrite_expr_subqueries(selection, logic_table, actual_table);
+            }
+            if let Some(having) = &mut select.having {
+                rewrite_expr_subqueries(having, logic_table, actual_table);
+            }
+            for item in &mut select.projection {
+                rewrite_select_item_subqueries(item, logic_table, actual_table);
+            }
         }
         SetExpr::Query(query) => rewrite_query(query, logic_table, actual_table),
         SetExpr::SetOperation { left, right, .. } => {
             rewrite_set_expr(left, logic_table, actual_table);
             rewrite_set_expr(right, logic_table, actual_table);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_expr_subqueries(
+    expr: &mut sqlparser::ast::Expr,
+    logic_table: &QualifiedTableName,
+    actual_table: &QualifiedTableName,
+) {
+    match expr {
+        sqlparser::ast::Expr::Subquery(query) => {
+            rewrite_query(query, logic_table, actual_table);
+        }
+        sqlparser::ast::Expr::BinaryOp { left, right, .. } => {
+            rewrite_expr_subqueries(left, logic_table, actual_table);
+            rewrite_expr_subqueries(right, logic_table, actual_table);
+        }
+        sqlparser::ast::Expr::UnaryOp { expr, .. }
+        | sqlparser::ast::Expr::Nested(expr)
+        | sqlparser::ast::Expr::IsNull(expr)
+        | sqlparser::ast::Expr::IsNotNull(expr)
+        | sqlparser::ast::Expr::Cast { expr, .. } => {
+            rewrite_expr_subqueries(expr, logic_table, actual_table);
+        }
+        sqlparser::ast::Expr::InSubquery { subquery, expr, .. } => {
+            rewrite_expr_subqueries(expr, logic_table, actual_table);
+            rewrite_query(subquery, logic_table, actual_table);
+        }
+        sqlparser::ast::Expr::Exists { subquery, .. } => {
+            rewrite_query(subquery, logic_table, actual_table);
+        }
+        sqlparser::ast::Expr::Between {
+            expr, low, high, ..
+        } => {
+            rewrite_expr_subqueries(expr, logic_table, actual_table);
+            rewrite_expr_subqueries(low, logic_table, actual_table);
+            rewrite_expr_subqueries(high, logic_table, actual_table);
+        }
+        sqlparser::ast::Expr::InList { expr, list, .. } => {
+            rewrite_expr_subqueries(expr, logic_table, actual_table);
+            for item in list {
+                rewrite_expr_subqueries(item, logic_table, actual_table);
+            }
+        }
+        sqlparser::ast::Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+            ..
+        } => {
+            if let Some(operand) = operand {
+                rewrite_expr_subqueries(operand, logic_table, actual_table);
+            }
+            for cond in conditions {
+                rewrite_expr_subqueries(cond, logic_table, actual_table);
+            }
+            for result in results {
+                rewrite_expr_subqueries(result, logic_table, actual_table);
+            }
+            if let Some(else_result) = else_result {
+                rewrite_expr_subqueries(else_result, logic_table, actual_table);
+            }
+        }
+        sqlparser::ast::Expr::Function(func) => {
+            if let sqlparser::ast::FunctionArguments::List(args) = &mut func.args {
+                for arg in &mut args.args {
+                    match arg {
+                        sqlparser::ast::FunctionArg::Unnamed(
+                            sqlparser::ast::FunctionArgExpr::Expr(expr),
+                        )
+                        | sqlparser::ast::FunctionArg::Named {
+                            arg: sqlparser::ast::FunctionArgExpr::Expr(expr),
+                            ..
+                        }
+                        | sqlparser::ast::FunctionArg::ExprNamed {
+                            arg: sqlparser::ast::FunctionArgExpr::Expr(expr),
+                            ..
+                        } => rewrite_expr_subqueries(expr, logic_table, actual_table),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_select_item_subqueries(
+    item: &mut sqlparser::ast::SelectItem,
+    logic_table: &QualifiedTableName,
+    actual_table: &QualifiedTableName,
+) {
+    match item {
+        sqlparser::ast::SelectItem::UnnamedExpr(expr)
+        | sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } => {
+            rewrite_expr_subqueries(expr, logic_table, actual_table);
         }
         _ => {}
     }
@@ -141,9 +249,15 @@ fn rewrite_table_factor(
     actual_table: &QualifiedTableName,
 ) {
     match factor {
-        TableFactor::Table { name, .. } => {
+        TableFactor::Table { name, alias, .. } => {
             if logic_table.matches_object_name(name) {
                 *name = actual_table.to_object_name();
+                if alias.is_none() && actual_table.table != logic_table.table {
+                    *alias = Some(TableAlias {
+                        name: Ident::new(logic_table.table.as_str()),
+                        columns: vec![],
+                    });
+                }
             }
         }
         TableFactor::Derived { subquery, .. } => rewrite_query(subquery, logic_table, actual_table),

@@ -5,6 +5,8 @@ pub mod log_batch;
 pub mod model;
 pub mod resource_affinity;
 pub mod response_bridge;
+pub mod route_health;
 pub mod runtime;
 pub mod runtime_cache;
+pub mod runtime_ops;
 pub mod token;

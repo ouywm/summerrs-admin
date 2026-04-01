@@ -252,7 +252,10 @@ fn database_name(record: &TenantMetadataRecord, fallback_datasource_name: &str) 
         .and_then(|uri| url::Url::parse(uri).ok())
         .and_then(|uri| {
             uri.path_segments()
-                .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+                .and_then(|segments| {
+                    let mut segments = segments;
+                    segments.rfind(|segment| !segment.is_empty())
+                })
                 .map(|segment| segment.to_string())
         })
         .unwrap_or_else(|| fallback_datasource_name.replace('-', "_"))

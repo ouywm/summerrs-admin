@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use parking_lot::RwLock;
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
@@ -55,16 +55,16 @@ pub struct TenantMetadataStore {
 }
 
 impl TenantMetadataStore {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn from_records(records: impl IntoIterator<Item = TenantMetadataRecord>) -> Arc<Self> {
+    pub fn from_records(records: impl IntoIterator<Item = TenantMetadataRecord>) -> Self {
         let store = Self::default();
         for record in records {
             store.upsert(record);
         }
-        Arc::new(store)
+        store
     }
 
     pub fn upsert(&self, record: TenantMetadataRecord) {
@@ -85,7 +85,7 @@ impl TenantMetadataStore {
         self.records.read().values().cloned().collect()
     }
 
-    pub async fn load_from_connection(connection: &DatabaseConnection) -> Result<Arc<Self>> {
+    pub async fn load_from_connection(connection: &DatabaseConnection) -> Result<Self> {
         let rows = connection
             .query_all_raw(Statement::from_string(
                 connection.get_database_backend(),

@@ -43,7 +43,7 @@ impl Plugin for SummerShardingPlugin {
             return;
         }
 
-        let mut connection = ShardingConnection::build(
+        let connection = ShardingConnection::build(
             config
                 .into_runtime_config()
                 .expect("summer-sharding runtime config build failed"),

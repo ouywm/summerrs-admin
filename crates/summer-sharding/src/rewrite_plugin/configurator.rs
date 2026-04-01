@@ -1,7 +1,7 @@
 use summer::app::AppBuilder;
 use summer::plugin::MutableComponentRegistry;
 
-use super::registry::PluginRegistry;
+use summer_sql_rewrite::PluginRegistry;
 
 /// 扩展 `AppBuilder`，提供 SQL 改写插件注册入口。
 ///

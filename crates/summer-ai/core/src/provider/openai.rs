@@ -4,6 +4,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
+use crate::types::sse_parser::SseParser;
 
 use super::ProviderAdapter;
 
@@ -39,7 +40,7 @@ impl ProviderAdapter for OpenAiAdapter {
     ) -> Result<BoxStream<'static, Result<ChatCompletionChunk>>> {
         let stream = async_stream::stream! {
             let mut byte_stream = response.bytes_stream();
-            let mut buffer = String::new();
+            let mut parser = SseParser::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = match chunk_result {
@@ -50,13 +51,15 @@ impl ProviderAdapter for OpenAiAdapter {
                     }
                 };
 
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                let events = match parser.feed(&chunk) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        yield Err(anyhow::anyhow!("failed to parse SSE event bytes: {error}"));
+                        break;
+                    }
+                };
 
-                // 按双换行分割 SSE 事件
-                while let Some(pos) = buffer.find("\n\n") {
-                    let event_text = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
-
+                for event_text in events {
                     for line in event_text.lines() {
                         let line = line.trim();
                         if let Some(data) = line.strip_prefix("data:") {
@@ -116,6 +119,7 @@ impl ProviderAdapter for OpenAiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
 
     fn sample_request() -> ChatCompletionRequest {
         serde_json::from_value(serde_json::json!({
@@ -323,5 +327,43 @@ mod tests {
             chunks[1].choices[0].delta.content.as_deref(),
             Some(" world")
         );
+    }
+
+    #[tokio::test]
+    async fn parse_stream_preserves_utf8_when_sse_chunk_splits_multibyte_boundary() {
+        let adapter = OpenAiAdapter;
+        let event = concat!(
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,",
+            "\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你好\"},",
+            "\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let bytes = event.as_bytes();
+        let split_at = bytes
+            .windows("你".len())
+            .position(|window| window == "你".as_bytes())
+            .expect("utf8 boundary")
+            + 1;
+        let chunks = vec![
+            Ok::<_, std::io::Error>(Bytes::copy_from_slice(&bytes[..split_at])),
+            Ok::<_, std::io::Error>(Bytes::copy_from_slice(&bytes[split_at..])),
+        ];
+        let mock_response = http::Response::builder()
+            .status(200)
+            .body(reqwest::Body::wrap_stream(stream::iter(chunks)))
+            .unwrap();
+        let response = reqwest::Response::from(mock_response);
+
+        let chunks: Vec<_> = adapter
+            .parse_stream(response, "gpt-4")
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].choices[0].delta.content.as_deref(), Some("你好"));
     }
 }

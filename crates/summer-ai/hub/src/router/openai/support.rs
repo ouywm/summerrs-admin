@@ -11,8 +11,14 @@ use summer_ai_core::types::error::{OpenAiApiResult, OpenAiErrorResponse};
 use summer_ai_core::types::image::ImageGenerationRequest;
 use summer_ai_core::types::moderation::ModerationRequest;
 use summer_web::axum::extract::Multipart;
+use summer_web::axum::extract::multipart::Field;
 use summer_web::axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
-use summer_web::axum::response::Response;
+use summer_web::axum::response::{IntoResponse, Response};
+
+#[cfg(test)]
+pub(crate) const MAX_MULTIPART_FILE_SIZE_BYTES: usize = 8 * 1024;
+#[cfg(not(test))]
+pub(crate) const MAX_MULTIPART_FILE_SIZE_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct BufferedMultipartField {
@@ -46,7 +52,7 @@ pub(crate) async fn buffer_multipart_fields(
 ) -> OpenAiApiResult<Vec<BufferedMultipartField>> {
     let mut fields = Vec::new();
 
-    while let Some(field) = multipart.next_field().await.map_err(|error| {
+    while let Some(mut field) = multipart.next_field().await.map_err(|error| {
         OpenAiErrorResponse::internal_with("failed to read multipart field", error)
     })? {
         let Some(name) = field.name().map(ToOwned::to_owned) else {
@@ -54,9 +60,7 @@ pub(crate) async fn buffer_multipart_fields(
         };
         let filename = field.file_name().map(ToOwned::to_owned);
         let content_type = field.content_type().map(ToOwned::to_owned);
-        let bytes = field.bytes().await.map_err(|error| {
-            OpenAiErrorResponse::internal_with("failed to buffer multipart field", error)
-        })?;
+        let bytes = read_multipart_field_bytes_limited(&mut field, &name).await?;
         fields.push(BufferedMultipartField {
             name,
             filename,
@@ -66,6 +70,42 @@ pub(crate) async fn buffer_multipart_fields(
     }
 
     Ok(fields)
+}
+
+pub(crate) fn extend_limited_buffer(
+    buffer: &mut Vec<u8>,
+    chunk: &[u8],
+    max_bytes: usize,
+    field_name: &str,
+) -> OpenAiApiResult<()> {
+    let next_len = buffer.len().saturating_add(chunk.len());
+    if next_len > max_bytes {
+        return Err(OpenAiErrorResponse::payload_too_large(format!(
+            "multipart field '{field_name}' exceeds {max_bytes} bytes limit"
+        )));
+    }
+    buffer.extend_from_slice(chunk);
+    Ok(())
+}
+
+pub(crate) async fn read_multipart_field_bytes_limited(
+    field: &mut Field<'_>,
+    field_name: &str,
+) -> OpenAiApiResult<Bytes> {
+    let mut buffer = Vec::new();
+
+    while let Some(chunk) = field.chunk().await.map_err(|error| {
+        OpenAiErrorResponse::internal_with("failed to read multipart field chunk", error)
+    })? {
+        extend_limited_buffer(
+            &mut buffer,
+            &chunk,
+            MAX_MULTIPART_FILE_SIZE_BYTES,
+            field_name,
+        )?;
+    }
+
+    Ok(Bytes::from(buffer))
 }
 
 pub(crate) fn parse_audio_transcription_meta(
@@ -217,6 +257,13 @@ pub(crate) fn build_image_edit_form(
     build_form(fields, Some(actual_model))
 }
 
+pub(crate) fn build_image_variation_form(
+    fields: &[BufferedMultipartField],
+    actual_model: &str,
+) -> anyhow::Result<Form> {
+    build_form(fields, Some(actual_model))
+}
+
 pub(crate) fn build_image_variation_request(
     client: &reqwest::Client,
     base_url: &str,
@@ -227,7 +274,7 @@ pub(crate) fn build_image_variation_request(
     Ok(client
         .post(join_upstream_url(base_url, "/v1/images/variations")?)
         .bearer_auth(api_key)
-        .multipart(build_form(fields, Some(actual_model))?))
+        .multipart(build_image_variation_form(fields, actual_model)?))
 }
 
 pub(crate) fn build_audio_transcription_form(
@@ -252,10 +299,7 @@ pub(crate) fn default_transcription_content_type(response_format: Option<&str>) 
 }
 
 pub(crate) fn binary_response(body: Bytes, content_type: &str) -> Response {
-    let mut response = Response::builder()
-        .status(StatusCode::OK)
-        .body(body.into())
-        .expect("binary response");
+    let mut response = (StatusCode::OK, body).into_response();
     response.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_str(content_type)

@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
-use summer_web::axum::http::{HeaderMap, StatusCode};
 
 use crate::types::chat::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
@@ -16,6 +16,7 @@ use crate::types::common::{
     Usage,
 };
 use crate::types::embedding::{EmbeddingData, EmbeddingRequest, EmbeddingResponse};
+use crate::types::sse_parser::SseParser;
 
 use super::{
     ProviderAdapter, ProviderErrorInfo, ProviderErrorKind, ProviderStreamError,
@@ -278,7 +279,7 @@ impl ProviderAdapter for GeminiAdapter {
         let model = model.to_string();
         let stream = async_stream::stream! {
             let mut byte_stream = response.bytes_stream();
-            let mut buffer = String::new();
+            let mut parser = SseParser::new();
             let mut state = GeminiStreamState {
                 id: format!("gemini-{}", unix_timestamp()),
                 model,
@@ -295,12 +296,15 @@ impl ProviderAdapter for GeminiAdapter {
                     }
                 };
 
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                let events = match parser.feed(&chunk) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        yield Err(error.context("failed to parse gemini SSE event bytes"));
+                        break;
+                    }
+                };
 
-                while let Some(pos) = buffer.find("\n\n") {
-                    let event_text = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
-
+                for event_text in events {
                     let Some(data) = parse_gemini_sse_data(&event_text) else {
                         continue;
                     };
@@ -592,12 +596,7 @@ impl ProviderAdapter for GeminiAdapter {
         })
     }
 
-    fn parse_error(
-        &self,
-        status: StatusCode,
-        _headers: &HeaderMap,
-        body: &[u8],
-    ) -> ProviderErrorInfo {
+    fn parse_error(&self, status: u16, _headers: &HeaderMap, body: &[u8]) -> ProviderErrorInfo {
         let payload: serde_json::Value =
             serde_json::from_slice(body).unwrap_or_else(|_| serde_json::json!({}));
         let error_obj = payload.get("error").unwrap_or(&payload);
@@ -693,7 +692,7 @@ fn extract_embedding_extra_str(
     })
 }
 
-fn default_gemini_error_code(status: StatusCode) -> &'static str {
+fn default_gemini_error_code(status: u16) -> &'static str {
     match status_to_provider_error_kind(status) {
         ProviderErrorKind::InvalidRequest => "INVALID_ARGUMENT",
         ProviderErrorKind::Authentication => "UNAUTHENTICATED",
@@ -1186,7 +1185,10 @@ fn extract_text_segments(content: &serde_json::Value) -> Option<String> {
 }
 
 fn parse_function_arguments(arguments: &str) -> serde_json::Value {
-    serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::Value::String(arguments.into()))
+    serde_json::from_str(arguments).unwrap_or_else(|e| {
+        tracing::warn!(arguments, error = %e, "failed to parse tool call arguments as JSON, passing as raw string");
+        serde_json::Value::String(arguments.into())
+    })
 }
 
 fn serialize_arguments(arguments: serde_json::Value) -> String {
@@ -1254,6 +1256,8 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
+    use reqwest::StatusCode;
 
     fn sample_request() -> ChatCompletionRequest {
         serde_json::from_value(serde_json::json!({
@@ -2045,6 +2049,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parse_stream_preserves_utf8_when_sse_chunk_splits_multibyte_boundary() {
+        let adapter = GeminiAdapter;
+        let event =
+            concat!("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"你好\"}]}}]}\n\n");
+        let bytes = event.as_bytes();
+        let split_at = bytes
+            .windows("你".len())
+            .position(|window| window == "你".as_bytes())
+            .expect("utf8 boundary")
+            + 1;
+        let chunks = vec![
+            Ok::<_, std::io::Error>(Bytes::copy_from_slice(&bytes[..split_at])),
+            Ok::<_, std::io::Error>(Bytes::copy_from_slice(&bytes[split_at..])),
+        ];
+        let mock_response = http::Response::builder()
+            .status(200)
+            .body(reqwest::Body::wrap_stream(stream::iter(chunks)))
+            .unwrap();
+        let response = reqwest::Response::from(mock_response);
+
+        let chunks: Vec<_> = adapter
+            .parse_stream(response, "gemini-2.5-pro")
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.choices[0].delta.content.as_deref() == Some("你好"))
+        );
+    }
+
+    #[tokio::test]
     async fn parse_stream_emits_choice_indexes_for_multiple_candidates() {
         let adapter = GeminiAdapter;
         let sse_body = concat!(
@@ -2397,7 +2438,7 @@ mod tests {
     #[test]
     fn parse_error_treats_failed_precondition_as_account_level_api_error() {
         let info = GeminiAdapter.parse_error(
-            StatusCode::BAD_REQUEST,
+            StatusCode::BAD_REQUEST.as_u16(),
             &HeaderMap::new(),
             br#"{"error":{"status":"FAILED_PRECONDITION","message":"project is not configured"}}"#,
         );
@@ -2410,7 +2451,7 @@ mod tests {
     #[test]
     fn parse_error_maps_resource_exhausted_to_rate_limit() {
         let info = GeminiAdapter.parse_error(
-            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::TOO_MANY_REQUESTS.as_u16(),
             &HeaderMap::new(),
             br#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"slow down"}}"#,
         );
@@ -2423,7 +2464,7 @@ mod tests {
     #[test]
     fn parse_error_maps_unauthenticated_to_authentication() {
         let info = GeminiAdapter.parse_error(
-            StatusCode::UNAUTHORIZED,
+            StatusCode::UNAUTHORIZED.as_u16(),
             &HeaderMap::new(),
             br#"{"error":{"status":"UNAUTHENTICATED","message":"invalid api key"}}"#,
         );
@@ -2436,7 +2477,7 @@ mod tests {
     #[test]
     fn parse_error_maps_unavailable_to_server() {
         let info = GeminiAdapter.parse_error(
-            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::SERVICE_UNAVAILABLE.as_u16(),
             &HeaderMap::new(),
             br#"{"error":{"status":"UNAVAILABLE","message":"upstream overloaded"}}"#,
         );

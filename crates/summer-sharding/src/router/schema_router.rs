@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::{
     config::ShardingConfig,
     error::{Result, ShardingError},
@@ -7,19 +5,21 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct SchemaRouter {
-    config: Arc<ShardingConfig>,
+    config: ShardingConfig,
 }
 
 impl SchemaRouter {
-    pub fn new(config: Arc<ShardingConfig>) -> Self {
-        Self { config }
+    pub fn new(config: &ShardingConfig) -> Self {
+        Self {
+            config: config.clone(),
+        }
     }
 
     pub fn route(&self, schema: Option<&str>) -> Result<String> {
-        if let Some(schema) = schema {
-            if let Some(datasource) = self.config.schema_primary_datasource(schema) {
-                return Ok(datasource.to_string());
-            }
+        if let Some(schema) = schema
+            && let Some(datasource) = self.config.schema_primary_datasource(schema)
+        {
+            return Ok(datasource.to_string());
         }
 
         self.config

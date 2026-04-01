@@ -70,12 +70,14 @@ impl ShardingAlgorithm for InlineShardingAlgorithm {
         if available_targets.is_empty() {
             return vec![target];
         }
+        // Only return the target if it exists in the available targets list.
+        // Returning a non-existent table name would cause a runtime error.
         available_targets
             .iter()
             .find(|candidate| candidate.as_str() == target)
             .cloned()
             .map(|candidate| vec![candidate])
-            .unwrap_or_else(|| vec![target])
+            .unwrap_or_default()
     }
 
     fn do_range_sharding(

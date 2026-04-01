@@ -35,7 +35,9 @@ pub enum ChannelStatus {
     Archived = 4,
 }
 
-/// 渠道类型（1=OpenAI, 3=Anthropic, 14=Azure, 15=Baidu, 17=Ali, 24=Gemini, 28=Ollama）
+/// 渠道类型（0=Unknown, 1=OpenAI, 3=Anthropic, 14=Azure, 15=Baidu, 17=Ali, 24=Gemini, 28=Ollama）
+///
+/// `Unknown` 用于向前兼容：新增渠道类型值时只需添加变体，无需迁移。
 #[derive(
     Debug,
     Clone,
@@ -51,6 +53,9 @@ pub enum ChannelStatus {
 #[sea_orm(rs_type = "i16", db_type = "SmallInteger")]
 #[repr(i16)]
 pub enum ChannelType {
+    /// 未知
+    #[sea_orm(num_value = 0)]
+    Unknown = 0,
     /// OpenAI
     #[sea_orm(num_value = 1)]
     OpenAi = 1,
@@ -137,8 +142,8 @@ pub struct Model {
     /// 最后错误码
     pub last_error_code: String,
     /// 最后错误信息
-    #[sea_orm(column_type = "Text")]
-    pub last_error_message: String,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub last_error_message: Option<String>,
     /// 最后健康状态
     pub last_health_status: i16,
     /// 删除时间（软删除）

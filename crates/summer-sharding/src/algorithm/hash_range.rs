@@ -1,5 +1,7 @@
 use std::hash::{Hash, Hasher};
 
+use rustc_hash::FxHasher;
+
 use super::{ShardingAlgorithm, ShardingValue};
 
 #[derive(Debug, Clone, Default)]
@@ -15,7 +17,7 @@ impl ShardingAlgorithm for HashRangeShardingAlgorithm {
             return Vec::new();
         }
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         match sharding_value {
             ShardingValue::Int(value) => value.hash(&mut hasher),
             ShardingValue::Str(value) => value.hash(&mut hasher),

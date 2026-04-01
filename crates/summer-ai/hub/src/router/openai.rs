@@ -43,24 +43,32 @@ use crate::relay::rate_limit::RateLimitEngine;
 use crate::relay::stream::build_sse_response;
 use crate::router::openai_passthrough::unusable_success_response_message;
 use crate::service::channel::ChannelService;
-use crate::service::log::{
-    AiFailureLogRecord, AiUsageLogRecord, ChatCompletionLogRecord, LogService,
-};
+use crate::service::log::{AiFailureLogRecord, AiUsageLogRecord, LogService};
 use crate::service::model::ModelService;
 use crate::service::resource_affinity::ResourceAffinityService;
 use crate::service::response_bridge::ResponseBridgeService;
+use crate::service::runtime_ops::RuntimeOpsService;
 use crate::service::token::{TokenInfo, TokenService};
 use summer_common::extractor::ClientIp;
 use summer_common::response::Json;
 
+mod audio;
+mod audio_transcribe;
+mod completions;
 mod files;
-mod media;
+mod image_multipart;
+mod images;
+mod moderations;
+mod rerank;
 mod support;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use completions::{
+    bridge_chat_completion_to_completion, completion_request_to_chat_request,
+};
 pub use files::*;
-pub use media::*;
 #[allow(unused_imports)]
 pub(crate) use support::*;
 
@@ -138,6 +146,7 @@ pub async fn chat_completions(
     Component(log_svc): Component<LogService>,
     Component(channel_svc): Component<ChannelService>,
     Component(token_svc): Component<TokenService>,
+    Component(runtime_ops): Component<RuntimeOpsService>,
     ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     Json(req): Json<ChatCompletionRequest>,
@@ -186,8 +195,13 @@ pub async fn chat_completions(
         .map_err(|e| OpenAiErrorResponse::from_quota_error(&e))?;
 
     for attempt in 0..max_retries {
+        if attempt > 0 {
+            runtime_ops.record_fallback_async();
+        }
         let Some(channel) = route_plan.next() else {
-            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+            if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                tracing::warn!(error = %e, "failed to finalize rate limit failure (no channel)");
+            }
             return Err(OpenAiErrorResponse::no_available_channel(
                 "no available channel",
             ));
@@ -212,7 +226,9 @@ pub async fn chat_completions(
         {
             Ok(pre_consumed) => pre_consumed,
             Err(error) => {
-                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                    tracing::warn!(error = %e, "failed to finalize rate limit failure (quota error)");
+                }
                 return Err(OpenAiErrorResponse::from_quota_error(&error));
             }
         };
@@ -228,9 +244,12 @@ pub async fn chat_completions(
         ) {
             Ok(rb) => rb,
             Err(e) => {
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota (build request error)");
+                }
                 channel_svc.record_relay_failure_async(
                     channel.channel_id,
                     channel.account_id,
@@ -262,7 +281,9 @@ pub async fn chat_completions(
                         0,
                         format!("failed to build upstream request: {e}"),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to build upstream request",
                         e,
@@ -282,9 +303,12 @@ pub async fn chat_completions(
                     let stream = match adapter.parse_stream(resp, &actual_model) {
                         Ok(stream) => stream,
                         Err(error) => {
-                            let _ = billing
+                            if let Err(e) = billing
                                 .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                                .await;
+                                .await
+                            {
+                                tracing::warn!(error = %e, "failed to refund quota");
+                            }
                             channel_svc.record_relay_failure_async(
                                 channel.channel_id,
                                 channel.account_id,
@@ -312,7 +336,11 @@ pub async fn chat_completions(
                                     0,
                                     format!("failed to parse upstream stream: {error}"),
                                 );
-                                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                if let Err(e) =
+                                    rate_limiter.finalize_failure_with_retry(&request_id).await
+                                {
+                                    tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                                }
                                 return Err(OpenAiErrorResponse::internal_with(
                                     "failed to parse upstream stream",
                                     error,
@@ -343,9 +371,12 @@ pub async fn chat_completions(
                     let body = match resp.bytes().await {
                         Ok(body) => body,
                         Err(error) => {
-                            let _ = billing
+                            if let Err(e) = billing
                                 .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                                .await;
+                                .await
+                            {
+                                tracing::warn!(error = %e, "failed to refund quota");
+                            }
                             channel_svc.record_relay_failure_async(
                                 channel.channel_id,
                                 channel.account_id,
@@ -373,7 +404,11 @@ pub async fn chat_completions(
                                     0,
                                     format!("failed to read upstream response: {error}"),
                                 );
-                                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                if let Err(e) =
+                                    rate_limiter.finalize_failure_with_retry(&request_id).await
+                                {
+                                    tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                                }
                                 return Err(OpenAiErrorResponse::internal_with(
                                     "failed to read upstream response",
                                     error,
@@ -385,9 +420,12 @@ pub async fn chat_completions(
                     if let Some(message) =
                         unusable_success_response_message(status, &body, "chat/completions", false)
                     {
-                        let _ = billing
+                        if let Err(e) = billing
                             .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(error = %e, "failed to refund quota");
+                        }
                         channel_svc.record_relay_failure_async(
                             channel.channel_id,
                             channel.account_id,
@@ -415,7 +453,11 @@ pub async fn chat_completions(
                                 status.as_u16() as i32,
                                 message.clone(),
                             );
-                            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                            if let Err(e) =
+                                rate_limiter.finalize_failure_with_retry(&request_id).await
+                            {
+                                tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                            }
                             return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                         }
                         continue;
@@ -423,9 +465,12 @@ pub async fn chat_completions(
                     let parsed = match adapter.parse_response(body, &actual_model) {
                         Ok(parsed) => parsed,
                         Err(error) => {
-                            let _ = billing
+                            if let Err(e) = billing
                                 .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                                .await;
+                                .await
+                            {
+                                tracing::warn!(error = %e, "failed to refund quota");
+                            }
                             channel_svc.record_relay_failure_async(
                                 channel.channel_id,
                                 channel.account_id,
@@ -453,7 +498,11 @@ pub async fn chat_completions(
                                     0,
                                     format!("failed to parse upstream response: {error}"),
                                 );
-                                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                if let Err(e) =
+                                    rate_limiter.finalize_failure_with_retry(&request_id).await
+                                {
+                                    tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                                }
                                 return Err(OpenAiErrorResponse::internal_with(
                                     "failed to parse upstream response",
                                     error,
@@ -465,77 +514,30 @@ pub async fn chat_completions(
 
                     let usage = parsed.usage.clone();
                     let upstream_model = parsed.model.clone();
-                    let ti = token_info.clone();
-                    let mc = model_config.clone();
-                    let ch = channel.clone();
-                    let rm = requested_model.clone();
-                    let ip = client_ip.clone();
-                    let bl = billing.clone();
-                    let ls = log_svc.clone();
-                    let cs = channel_svc.clone();
-                    let rl = rate_limiter.clone();
-                    let request_id_for_task = request_id.clone();
-                    let upstream_request_id_for_task = upstream_request_id.clone();
-                    let user_agent_for_task = user_agent.clone();
-                    tokio::spawn(async move {
-                        let logged_quota =
-                            BillingEngine::calculate_actual_quota(&usage, &mc, group_ratio);
-                        let actual_quota = match bl
-                            .post_consume_with_retry(
-                                &request_id_for_task,
-                                &ti,
-                                pre_consumed,
-                                &usage,
-                                &mc,
-                                group_ratio,
-                            )
-                            .await
-                        {
-                            Ok(quota) => quota,
-                            Err(error) => {
-                                tracing::error!(
-                                    "failed to settle non-stream usage asynchronously: {error}"
-                                );
-                                logged_quota
-                            }
-                        };
 
-                        ls.record_chat_completion_async(
-                            &ti,
-                            &ch,
-                            &usage,
-                            ChatCompletionLogRecord {
-                                request_id: request_id_for_task.clone(),
-                                upstream_request_id: upstream_request_id_for_task,
-                                requested_model: rm,
-                                upstream_model,
-                                model_name: mc.model_name,
-                                quota: actual_quota,
-                                elapsed_time: elapsed as i32,
-                                first_token_time: 0,
-                                is_stream: false,
-                                client_ip: ip,
-                                user_agent: user_agent_for_task,
-                            },
-                        );
-
-                        if let Err(error) = rl
-                            .finalize_success_with_retry(
-                                &request_id_for_task,
-                                i64::from(usage.total_tokens),
-                            )
-                            .await
-                        {
-                            tracing::warn!("failed to finalize rate limit success: {error}");
-                        }
-
-                        if let Err(error) = cs
-                            .record_relay_success(ch.channel_id, ch.account_id, elapsed)
-                            .await
-                        {
-                            tracing::warn!("failed to update relay success health state: {error}");
-                        }
-                    });
+                    spawn_usage_accounting_task(
+                        billing,
+                        rate_limiter,
+                        log_svc,
+                        channel_svc,
+                        token_info,
+                        channel,
+                        model_config,
+                        group_ratio,
+                        pre_consumed,
+                        usage,
+                        request_id.clone(),
+                        upstream_request_id.clone(),
+                        requested_model,
+                        upstream_model,
+                        client_ip,
+                        user_agent,
+                        "chat/completions",
+                        "openai/chat_completions",
+                        elapsed,
+                        0,
+                        false,
+                    );
 
                     let mut response = Json(parsed).into_response();
                     insert_request_id_header(&mut response, &request_id);
@@ -549,9 +551,12 @@ pub async fn chat_completions(
                 let status = resp.status();
                 let headers = resp.headers().clone();
                 let body = resp.bytes().await.unwrap_or_default();
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota");
+                }
                 let failure = classify_upstream_provider_failure(
                     channel.channel_type,
                     status,
@@ -585,15 +590,20 @@ pub async fn chat_completions(
                         status_code,
                         failure.message.clone(),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(failure.error);
                 }
             }
             Err(error) => {
                 let elapsed = start.elapsed().as_millis() as i64;
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota");
+                }
                 channel_svc.record_relay_failure_async(
                     channel.channel_id,
                     channel.account_id,
@@ -621,7 +631,9 @@ pub async fn chat_completions(
                         0,
                         error.to_string(),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream request",
                         error,
@@ -631,7 +643,9 @@ pub async fn chat_completions(
         }
     }
 
-    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+    }
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))
@@ -639,7 +653,7 @@ pub async fn chat_completions(
 
 #[derive(Default)]
 struct ResponsesStreamTracker {
-    buffer: String,
+    buffer: Vec<u8>,
     usage: Option<Usage>,
     upstream_model: String,
     response_id: String,
@@ -652,11 +666,16 @@ impl ResponsesStreamTracker {
         start: &std::time::Instant,
         first_token_time: &mut Option<i64>,
     ) {
-        self.buffer.push_str(&String::from_utf8_lossy(chunk));
+        self.buffer.extend_from_slice(chunk);
 
-        while let Some(pos) = self.buffer.find("\n\n") {
-            let event_block = self.buffer[..pos].to_string();
-            self.buffer = self.buffer[pos + 2..].to_string();
+        while let Some(pos) = find_double_newline(&self.buffer) {
+            let event_bytes = self.buffer[..pos].to_vec();
+            self.buffer = self.buffer[pos + 2..].to_vec();
+
+            let event_block = match std::str::from_utf8(&event_bytes) {
+                Ok(s) => s.to_string(),
+                Err(_) => String::from_utf8_lossy(&event_bytes).into_owned(),
+            };
 
             let mut data = String::new();
             for line in event_block.lines() {
@@ -699,6 +718,93 @@ impl ResponsesStreamTracker {
     }
 }
 
+/// Find the position of `\n\n` in a byte slice.
+fn find_double_newline(buf: &[u8]) -> Option<usize> {
+    buf.windows(2).position(|w| w == b"\n\n")
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn settle_usage_accounting(
+    billing: BillingEngine,
+    rate_limiter: RateLimitEngine,
+    log_svc: LogService,
+    channel_svc: ChannelService,
+    token_info: crate::service::token::TokenInfo,
+    channel: crate::relay::channel_router::SelectedChannel,
+    model_config: ModelConfigInfo,
+    group_ratio: f64,
+    pre_consumed: i64,
+    usage: Usage,
+    request_id: String,
+    upstream_request_id: String,
+    requested_model: String,
+    upstream_model: String,
+    client_ip: String,
+    user_agent: String,
+    endpoint: &'static str,
+    request_format: &'static str,
+    elapsed: i64,
+    first_token_time: i32,
+    is_stream: bool,
+) {
+    let logged_quota = BillingEngine::calculate_actual_quota(&usage, &model_config, group_ratio);
+    let actual_quota = match billing
+        .post_consume_with_retry(
+            &request_id,
+            &token_info,
+            pre_consumed,
+            &usage,
+            &model_config,
+            group_ratio,
+        )
+        .await
+    {
+        Ok(quota) => quota,
+        Err(error) => {
+            tracing::error!("failed to settle usage asynchronously: {error}");
+            logged_quota
+        }
+    };
+
+    log_svc.record_usage_async(
+        &token_info,
+        &channel,
+        &usage,
+        AiUsageLogRecord {
+            endpoint: endpoint.into(),
+            request_format: request_format.into(),
+            request_id: request_id.clone(),
+            upstream_request_id,
+            requested_model,
+            upstream_model,
+            model_name: model_config.model_name.clone(),
+            quota: actual_quota,
+            elapsed_time: elapsed as i32,
+            first_token_time,
+            is_stream,
+            client_ip,
+            user_agent,
+            status_code: 200,
+            content: String::new(),
+            status: LogStatus::Success,
+        },
+    );
+
+    if let Err(error) = rate_limiter
+        .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
+        .await
+    {
+        tracing::warn!("failed to finalize rate limit success: {error}");
+    }
+
+    if let Err(error) = channel_svc
+        .record_relay_success(channel.channel_id, channel.account_id, elapsed)
+        .await
+    {
+        tracing::warn!("failed to update relay success health state: {error}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_usage_accounting_task(
     billing: BillingEngine,
@@ -724,63 +830,30 @@ pub(crate) fn spawn_usage_accounting_task(
     is_stream: bool,
 ) {
     tokio::spawn(async move {
-        let logged_quota =
-            BillingEngine::calculate_actual_quota(&usage, &model_config, group_ratio);
-        let actual_quota = match billing
-            .post_consume_with_retry(
-                &request_id,
-                &token_info,
-                pre_consumed,
-                &usage,
-                &model_config,
-                group_ratio,
-            )
-            .await
-        {
-            Ok(quota) => quota,
-            Err(error) => {
-                tracing::error!("failed to settle usage asynchronously: {error}");
-                logged_quota
-            }
-        };
-
-        log_svc.record_usage_async(
-            &token_info,
-            &channel,
-            &usage,
-            AiUsageLogRecord {
-                endpoint: endpoint.into(),
-                request_format: request_format.into(),
-                request_id: request_id.clone(),
-                upstream_request_id,
-                requested_model,
-                upstream_model,
-                model_name: model_config.model_name.clone(),
-                quota: actual_quota,
-                elapsed_time: elapsed as i32,
-                first_token_time,
-                is_stream,
-                client_ip,
-                user_agent,
-                status_code: 200,
-                content: String::new(),
-                status: LogStatus::Success,
-            },
-        );
-
-        if let Err(error) = rate_limiter
-            .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
-            .await
-        {
-            tracing::warn!("failed to finalize rate limit success: {error}");
-        }
-
-        if let Err(error) = channel_svc
-            .record_relay_success(channel.channel_id, channel.account_id, elapsed)
-            .await
-        {
-            tracing::warn!("failed to update relay success health state: {error}");
-        }
+        settle_usage_accounting(
+            billing,
+            rate_limiter,
+            log_svc,
+            channel_svc,
+            token_info,
+            channel,
+            model_config,
+            group_ratio,
+            pre_consumed,
+            usage,
+            request_id,
+            upstream_request_id,
+            requested_model,
+            upstream_model,
+            client_ip,
+            user_agent,
+            endpoint,
+            request_format,
+            elapsed,
+            first_token_time,
+            is_stream,
+        )
+        .await;
     });
 }
 
@@ -802,7 +875,7 @@ pub(crate) fn build_json_bytes_response(
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .body(body.into())
-        .unwrap();
+        .unwrap_or_else(|_| Response::new(Body::empty()));
     response.headers_mut().insert(
         CONTENT_TYPE,
         content_type.unwrap_or_else(|| HeaderValue::from_static("application/json")),
@@ -977,7 +1050,7 @@ fn build_responses_stream_response(
     let mut response = Response::builder()
         .status(status)
         .body(Body::from_stream(stream))
-        .unwrap();
+        .unwrap_or_else(|_| Response::new(Body::empty()));
     response.headers_mut().insert(
         CONTENT_TYPE,
         content_type.unwrap_or_else(|| HeaderValue::from_static("text/event-stream")),
@@ -1164,7 +1237,7 @@ fn build_chat_bridged_responses_stream_response(
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .body(Body::from_stream(stream))
-        .unwrap();
+        .unwrap_or_else(|_| Response::new(Body::empty()));
     response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
@@ -1190,6 +1263,7 @@ pub async fn responses(
     Component(token_svc): Component<TokenService>,
     Component(response_bridge): Component<ResponseBridgeService>,
     Component(resource_affinity): Component<ResourceAffinityService>,
+    Component(runtime_ops): Component<RuntimeOpsService>,
     ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     Json(req): Json<ResponsesRequest>,
@@ -1242,8 +1316,13 @@ pub async fn responses(
         .map_err(|e| OpenAiErrorResponse::from_quota_error(&e))?;
 
     for attempt in 0..max_retries {
+        if attempt > 0 {
+            runtime_ops.record_fallback_async();
+        }
         let Some(channel) = route_plan.next() else {
-            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+            if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                tracing::warn!(error = %e, "failed to finalize rate limit failure (no channel)");
+            }
             return Err(OpenAiErrorResponse::no_available_channel(
                 "no available channel",
             ));
@@ -1268,7 +1347,9 @@ pub async fn responses(
         {
             Ok(pre_consumed) => pre_consumed,
             Err(error) => {
-                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                    tracing::warn!(error = %e, "failed to finalize rate limit failure (quota error)");
+                }
                 return Err(OpenAiErrorResponse::from_quota_error(&error));
             }
         };
@@ -1284,9 +1365,12 @@ pub async fn responses(
         ) {
             Ok(builder) => builder,
             Err(error) => {
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota");
+                }
                 channel_svc.record_relay_failure_async(
                     channel.channel_id,
                     channel.account_id,
@@ -1314,7 +1398,9 @@ pub async fn responses(
                         0,
                         format!("failed to build upstream responses request: {error}"),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(map_adapter_build_error(
                         "failed to build upstream responses request",
                         error,
@@ -1335,13 +1421,16 @@ pub async fn responses(
                         let stream = match adapter.parse_stream(resp, &actual_model) {
                             Ok(stream) => stream,
                             Err(error) => {
-                                let _ = billing
+                                if let Err(e) = billing
                                     .refund_with_retry(
                                         &request_id,
                                         token_info.token_id,
                                         pre_consumed,
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    tracing::warn!(error = %e, "failed to refund quota");
+                                }
                                 channel_svc.record_relay_failure_async(
                                     channel.channel_id,
                                     channel.account_id,
@@ -1373,8 +1462,11 @@ pub async fn responses(
                                             "failed to parse upstream bridged responses stream: {error}"
                                         ),
                                     );
-                                    let _ =
-                                        rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                    if let Err(e) =
+                                        rate_limiter.finalize_failure_with_retry(&request_id).await
+                                    {
+                                        tracing::warn!(error = %e, "failed to finalize rate limit failure (bridged stream parse error)");
+                                    }
                                     return Err(OpenAiErrorResponse::internal_with(
                                         "failed to parse upstream bridged responses stream",
                                         error,
@@ -1431,9 +1523,12 @@ pub async fn responses(
                 let body = match resp.bytes().await {
                     Ok(body) => body,
                     Err(error) => {
-                        let _ = billing
+                        if let Err(e) = billing
                             .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(error = %e, "failed to refund quota");
+                        }
                         channel_svc.record_relay_failure_async(
                             channel.channel_id,
                             channel.account_id,
@@ -1461,7 +1556,11 @@ pub async fn responses(
                                 0,
                                 format!("failed to read upstream responses response: {error}"),
                             );
-                            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                            if let Err(e) =
+                                rate_limiter.finalize_failure_with_retry(&request_id).await
+                            {
+                                tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                            }
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to read upstream responses response",
                                 error,
@@ -1473,9 +1572,12 @@ pub async fn responses(
                 if let Some(message) =
                     unusable_success_response_message(status, &body, "responses", false)
                 {
-                    let _ = billing
+                    if let Err(e) = billing
                         .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to refund quota");
+                    }
                     channel_svc.record_relay_failure_async(
                         channel.channel_id,
                         channel.account_id,
@@ -1503,7 +1605,10 @@ pub async fn responses(
                             status.as_u16() as i32,
                             message.clone(),
                         );
-                        let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                        if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await
+                        {
+                            tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                        }
                         return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                     }
                     continue;
@@ -1512,9 +1617,12 @@ pub async fn responses(
                     ResponsesRuntimeMode::Native => match serde_json::from_slice(&body) {
                         Ok(parsed) => parsed,
                         Err(error) => {
-                            let _ = billing
+                            if let Err(e) = billing
                                 .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                                .await;
+                                .await
+                            {
+                                tracing::warn!(error = %e, "failed to refund quota");
+                            }
                             channel_svc.record_relay_failure_async(
                                 channel.channel_id,
                                 channel.account_id,
@@ -1542,7 +1650,11 @@ pub async fn responses(
                                     0,
                                     format!("failed to parse upstream responses response: {error}"),
                                 );
-                                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                if let Err(e) =
+                                    rate_limiter.finalize_failure_with_retry(&request_id).await
+                                {
+                                    tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                                }
                                 return Err(OpenAiErrorResponse::internal_with(
                                     "failed to parse upstream responses response",
                                     error,
@@ -1556,9 +1668,12 @@ pub async fn responses(
                     {
                         Ok(parsed) => bridge_chat_completion_to_response(parsed),
                         Err(error) => {
-                            let _ = billing
+                            if let Err(e) = billing
                                 .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                                .await;
+                                .await
+                            {
+                                tracing::warn!(error = %e, "failed to refund quota");
+                            }
                             channel_svc.record_relay_failure_async(
                                 channel.channel_id,
                                 channel.account_id,
@@ -1586,7 +1701,11 @@ pub async fn responses(
                                     0,
                                     format!("failed to parse bridged responses response: {error}"),
                                 );
-                                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                                if let Err(e) =
+                                    rate_limiter.finalize_failure_with_retry(&request_id).await
+                                {
+                                    tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                                }
                                 return Err(OpenAiErrorResponse::internal_with(
                                     "failed to parse bridged responses response",
                                     error,
@@ -1668,9 +1787,12 @@ pub async fn responses(
                 let status = resp.status();
                 let headers = resp.headers().clone();
                 let body = resp.bytes().await.unwrap_or_default();
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota");
+                }
                 let failure = classify_upstream_provider_failure(
                     channel.channel_type,
                     status,
@@ -1704,15 +1826,20 @@ pub async fn responses(
                         status_code,
                         failure.message.clone(),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(failure.error);
                 }
             }
             Err(error) => {
                 let elapsed = start.elapsed().as_millis() as i64;
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota");
+                }
                 channel_svc.record_relay_failure_async(
                     channel.channel_id,
                     channel.account_id,
@@ -1740,7 +1867,9 @@ pub async fn responses(
                         0,
                         error.to_string(),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream responses request",
                         error,
@@ -1750,7 +1879,9 @@ pub async fn responses(
         }
     }
 
-    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+    }
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))
@@ -1768,6 +1899,7 @@ pub async fn embeddings(
     Component(log_svc): Component<LogService>,
     Component(channel_svc): Component<ChannelService>,
     Component(token_svc): Component<TokenService>,
+    Component(runtime_ops): Component<RuntimeOpsService>,
     ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     Json(req): Json<EmbeddingRequest>,
@@ -1816,8 +1948,13 @@ pub async fn embeddings(
         .map_err(|e| OpenAiErrorResponse::from_quota_error(&e))?;
 
     for attempt in 0..max_retries {
+        if attempt > 0 {
+            runtime_ops.record_fallback_async();
+        }
         let Some(channel) = route_plan.next() else {
-            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+            if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                tracing::warn!(error = %e, "failed to finalize rate limit failure (no channel)");
+            }
             return Err(OpenAiErrorResponse::no_available_channel(
                 "no available channel",
             ));
@@ -1842,7 +1979,9 @@ pub async fn embeddings(
         {
             Ok(pre_consumed) => pre_consumed,
             Err(error) => {
-                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                    tracing::warn!(error = %e, "failed to finalize rate limit failure (quota error)");
+                }
                 return Err(OpenAiErrorResponse::from_quota_error(&error));
             }
         };
@@ -1857,9 +1996,12 @@ pub async fn embeddings(
         ) {
             Ok(builder) => builder,
             Err(error) => {
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota");
+                }
                 channel_svc.record_relay_failure_async(
                     channel.channel_id,
                     channel.account_id,
@@ -1887,7 +2029,9 @@ pub async fn embeddings(
                         0,
                         format!("failed to build upstream embeddings request: {error}"),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(map_adapter_build_error(
                         "failed to build upstream embeddings request",
                         error,
@@ -1905,9 +2049,12 @@ pub async fn embeddings(
                 let body = match resp.bytes().await {
                     Ok(body) => body,
                     Err(error) => {
-                        let _ = billing
+                        if let Err(e) = billing
                             .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(error = %e, "failed to refund quota");
+                        }
                         channel_svc.record_relay_failure_async(
                             channel.channel_id,
                             channel.account_id,
@@ -1935,7 +2082,11 @@ pub async fn embeddings(
                                 0,
                                 format!("failed to read upstream embeddings response: {error}"),
                             );
-                            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                            if let Err(e) =
+                                rate_limiter.finalize_failure_with_retry(&request_id).await
+                            {
+                                tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                            }
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to read upstream embeddings response",
                                 error,
@@ -1947,9 +2098,12 @@ pub async fn embeddings(
                 if let Some(message) =
                     unusable_success_response_message(status, &body, "embeddings", false)
                 {
-                    let _ = billing
+                    if let Err(e) = billing
                         .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to refund quota");
+                    }
                     channel_svc.record_relay_failure_async(
                         channel.channel_id,
                         channel.account_id,
@@ -1977,7 +2131,10 @@ pub async fn embeddings(
                             status.as_u16() as i32,
                             message.clone(),
                         );
-                        let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                        if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await
+                        {
+                            tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                        }
                         return Err(OpenAiErrorResponse::unsupported_endpoint(message));
                     }
                     continue;
@@ -1989,9 +2146,12 @@ pub async fn embeddings(
                 ) {
                     Ok(parsed) => parsed,
                     Err(error) => {
-                        let _ = billing
+                        if let Err(e) = billing
                             .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(error = %e, "failed to refund quota");
+                        }
                         channel_svc.record_relay_failure_async(
                             channel.channel_id,
                             channel.account_id,
@@ -2019,7 +2179,11 @@ pub async fn embeddings(
                                 0,
                                 format!("failed to parse upstream embeddings response: {error}"),
                             );
-                            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                            if let Err(e) =
+                                rate_limiter.finalize_failure_with_retry(&request_id).await
+                            {
+                                tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                            }
                             return Err(OpenAiErrorResponse::internal_with(
                                 "failed to parse upstream embeddings response",
                                 error,
@@ -2069,9 +2233,12 @@ pub async fn embeddings(
                 let status = resp.status();
                 let headers = resp.headers().clone();
                 let body = resp.bytes().await.unwrap_or_default();
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota");
+                }
                 let failure = classify_upstream_provider_failure(
                     channel.channel_type,
                     status,
@@ -2105,15 +2272,20 @@ pub async fn embeddings(
                         status_code,
                         failure.message.clone(),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(failure.error);
                 }
             }
             Err(error) => {
                 let elapsed = start.elapsed().as_millis() as i64;
-                let _ = billing
+                if let Err(e) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to refund quota");
+                }
                 channel_svc.record_relay_failure_async(
                     channel.channel_id,
                     channel.account_id,
@@ -2141,7 +2313,9 @@ pub async fn embeddings(
                         0,
                         error.to_string(),
                     );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
                     return Err(OpenAiErrorResponse::internal_with(
                         "failed to send upstream embeddings request",
                         error,
@@ -2151,7 +2325,9 @@ pub async fn embeddings(
         }
     }
 
-    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
+    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+    }
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))
@@ -2215,7 +2391,7 @@ pub(crate) fn classify_upstream_provider_failure(
     headers: &HeaderMap,
     body: &[u8],
 ) -> UpstreamProviderFailure {
-    let info = get_adapter(channel_type).parse_error(status, headers, body);
+    let info = get_adapter(channel_type).parse_error(status.as_u16(), headers, body);
     let scope = match info.kind {
         ProviderErrorKind::InvalidRequest => UpstreamFailureScope::Channel,
         ProviderErrorKind::Authentication
@@ -2286,7 +2462,7 @@ fn provider_error_to_openai_response(
     };
 
     OpenAiErrorResponse {
-        status: normalized_status,
+        status: normalized_status.into(),
         error: OpenAiError {
             error: OpenAiErrorBody {
                 message: info.message.clone(),

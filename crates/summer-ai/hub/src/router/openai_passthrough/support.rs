@@ -3,7 +3,7 @@ use serde_json::Value;
 use summer_web::axum::http::{
     HeaderMap, HeaderName, HeaderValue, StatusCode, header::CONTENT_TYPE,
 };
-use summer_web::axum::response::Response;
+use summer_web::axum::response::{IntoResponse, Response};
 
 use crate::router::openai::insert_request_id_header;
 
@@ -13,10 +13,7 @@ pub(crate) fn build_bytes_response(
     content_type: Option<HeaderValue>,
     request_id: &str,
 ) -> Response {
-    let mut response = Response::builder()
-        .status(status)
-        .body(body.into())
-        .unwrap();
+    let mut response = (status, body).into_response();
     if let Some(content_type) = content_type {
         response.headers_mut().insert(CONTENT_TYPE, content_type);
     }

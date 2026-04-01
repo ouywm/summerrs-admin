@@ -16,13 +16,16 @@ pub struct TenantRouteAdjustment {
 
 #[derive(Debug, Clone)]
 pub struct TenantRouter {
-    config: Arc<ShardingConfig>,
+    config: ShardingConfig,
     metadata: Arc<TenantMetadataStore>,
 }
 
 impl TenantRouter {
     pub fn new(config: Arc<ShardingConfig>, metadata: Arc<TenantMetadataStore>) -> Self {
-        Self { config, metadata }
+        Self {
+            config: config.as_ref().clone(),
+            metadata,
+        }
     }
 
     pub fn resolve_context(&self, mut context: TenantContext) -> TenantContext {

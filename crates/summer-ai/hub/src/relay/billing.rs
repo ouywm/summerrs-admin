@@ -10,6 +10,7 @@ use summer_ai_model::entity::token;
 use summer_common::error::{ApiErrors, ApiResult};
 
 use crate::service::runtime_cache::RuntimeCacheService;
+use crate::service::runtime_ops::RuntimeOpsService;
 use crate::service::token::TokenInfo;
 
 const MODEL_CONFIG_CACHE_TTL_SECONDS: u64 = 300;
@@ -29,6 +30,9 @@ pub struct ModelConfigInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 enum BillingReservationStatus {
+    /// Intent recorded in Redis; DB deduction has NOT yet been confirmed.
+    Pending,
+    /// DB deduction succeeded and Redis record is authoritative.
     Reserved,
     Settled,
     Refunded,
@@ -49,13 +53,21 @@ pub struct BillingEngine {
     db: DbConn,
     #[inject(component)]
     cache: RuntimeCacheService,
+    #[inject(component)]
+    runtime_ops: RuntimeOpsService,
 }
 
 impl BillingEngine {
     /// Reserve quota synchronously before sending the upstream request.
     ///
-    /// Atomic operation:
-    /// `UPDATE ai.token SET remain_quota = remain_quota - ? WHERE id = ? AND remain_quota >= ?`
+    /// Uses a three-phase approach to prevent quota loss on crash:
+    ///   1. Write a **Pending** record to Redis (intent to deduct)
+    ///   2. Execute atomic DB deduction:
+    ///      `UPDATE ai.token SET remain_quota = remain_quota - ? WHERE id = ? AND remain_quota >= ?`
+    ///   3. Upgrade the Redis record to **Reserved**
+    ///
+    /// If the process crashes between steps 2 and 3, the Pending record
+    /// remains in Redis and can be reconciled on startup.
     pub async fn pre_consume(
         &self,
         request_id: &str,
@@ -65,12 +77,22 @@ impl BillingEngine {
         group_ratio: f64,
     ) -> ApiResult<i64> {
         let record_key = billing_record_key(request_id);
+
+        // Idempotency: if a record already exists, return its pre_consumed value.
         if let Some(record) = self
             .cache
             .get_json::<BillingReservationRecord>(&record_key)
             .await?
         {
-            return Ok(record.pre_consumed);
+            // If we find a Pending record from an earlier attempt that crashed
+            // before completing the DB deduction, clean it up and proceed.
+            if record.status != BillingReservationStatus::Pending {
+                return Ok(record.pre_consumed);
+            }
+            // Pending record exists from a prior crash — delete it and retry below.
+            if let Err(e) = self.cache.delete(&record_key).await {
+                tracing::warn!(error = %e, "failed to delete stale pending billing record");
+            }
         }
 
         if token_info.unlimited_quota {
@@ -90,6 +112,34 @@ impl BillingEngine {
         let quota = (estimated_tokens as f64 * model_input_ratio * group_ratio).ceil() as i64;
         let quota = Ord::max(quota, 1);
 
+        // Phase 1: Write Pending record to Redis (marks intent to deduct).
+        let pending_record = BillingReservationRecord {
+            request_id: request_id.to_string(),
+            token_id: token_info.token_id,
+            pre_consumed: quota,
+            status: BillingReservationStatus::Pending,
+            actual_quota: None,
+        };
+        let inserted = self
+            .cache
+            .set_json_if_absent(&record_key, &pending_record, BILLING_RECORD_TTL_SECONDS)
+            .await
+            .map_err(|e| {
+                tracing::error!("failed to write billing pending record: {e}");
+                e
+            })?;
+        if !inserted {
+            // Another request with the same ID is in flight — read its state.
+            if let Some(existing) = self
+                .cache
+                .get_json::<BillingReservationRecord>(&record_key)
+                .await?
+            {
+                return Ok(existing.pre_consumed);
+            }
+        }
+
+        // Phase 2: Atomic DB deduction.
         use sea_orm::sea_query::Expr;
         let result = token::Entity::update_many()
             .col_expr(
@@ -101,40 +151,45 @@ impl BillingEngine {
             .exec(&self.db)
             .await
             .context("failed to reserve quota")
-            .map_err(ApiErrors::Internal)?;
+            .map_err(|e| {
+                // DB failed — clean up the Pending record so quota is not orphaned.
+                let cache = self.cache.clone();
+                let key = record_key.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = cache.delete(&key).await {
+                        tracing::warn!(error = %e, "failed to delete billing record after DB error");
+                    }
+                });
+                ApiErrors::Internal(e)
+            })?;
 
         if result.rows_affected == 0 {
+            // Insufficient quota — remove the Pending record.
+            if let Err(e) = self.cache.delete(&record_key).await {
+                tracing::warn!(error = %e, "failed to delete pending billing record after insufficient quota");
+            }
             return Err(ApiErrors::Forbidden("quota exceeded".into()));
         }
 
-        let record = BillingReservationRecord {
+        // Phase 3: Upgrade to Reserved (DB already deducted).
+        let reserved_record = BillingReservationRecord {
             request_id: request_id.to_string(),
             token_id: token_info.token_id,
             pre_consumed: quota,
             status: BillingReservationStatus::Reserved,
             actual_quota: None,
         };
-
-        let inserted = match self
+        if let Err(error) = self
             .cache
-            .set_json_if_absent(&record_key, &record, BILLING_RECORD_TTL_SECONDS)
+            .set_json(&record_key, &reserved_record, BILLING_RECORD_TTL_SECONDS)
             .await
         {
-            Ok(inserted) => inserted,
-            Err(error) => {
-                let _ = self.apply_refund_amount(token_info.token_id, quota).await;
-                return Err(error);
-            }
-        };
-        if !inserted {
-            let _ = self.apply_refund_amount(token_info.token_id, quota).await;
-            if let Some(existing) = self
-                .cache
-                .get_json::<BillingReservationRecord>(&record_key)
-                .await?
-            {
-                return Ok(existing.pre_consumed);
-            }
+            // Redis failed to upgrade Pending→Reserved. The DB deduction is
+            // already committed. Log a critical warning — the Pending record
+            // will remain and can be reconciled on startup or by post_consume.
+            tracing::error!(
+                "CRITICAL: DB quota deducted but failed to upgrade billing record to Reserved: {error}"
+            );
         }
 
         Ok(quota)
@@ -194,7 +249,9 @@ impl BillingEngine {
 
         if !token_info.unlimited_quota {
             let quota_delta = match record.status {
-                BillingReservationStatus::Reserved => actual_quota - record.pre_consumed,
+                BillingReservationStatus::Pending | BillingReservationStatus::Reserved => {
+                    actual_quota - record.pre_consumed
+                }
                 BillingReservationStatus::Refunded => actual_quota,
                 BillingReservationStatus::Settled => 0,
             };
@@ -231,17 +288,22 @@ impl BillingEngine {
         model_config: &ModelConfigInfo,
         group_ratio: f64,
     ) -> ApiResult<i64> {
-        retry_async(|| {
-            self.post_consume(
-                request_id,
-                token_info,
-                pre_consumed,
-                usage,
-                model_config,
-                group_ratio,
-            )
-        })
-        .await
+        let result = self
+            .retry_async(|| {
+                self.post_consume(
+                    request_id,
+                    token_info,
+                    pre_consumed,
+                    usage,
+                    model_config,
+                    group_ratio,
+                )
+            })
+            .await;
+        if result.is_err() {
+            self.runtime_ops.record_settlement_failure_async();
+        }
+        result
     }
 
     /// Schedule a refund after a terminal failure.
@@ -293,6 +355,7 @@ impl BillingEngine {
         self.cache
             .set_json(&record_key, &record, BILLING_RECORD_TTL_SECONDS)
             .await?;
+        self.runtime_ops.record_refund_async();
         Ok(())
     }
 
@@ -302,7 +365,13 @@ impl BillingEngine {
         token_id: i64,
         pre_consumed: i64,
     ) -> ApiResult<()> {
-        retry_async(|| self.refund(request_id, token_id, pre_consumed)).await
+        let result = self
+            .retry_async(|| self.refund(request_id, token_id, pre_consumed))
+            .await;
+        if result.is_err() {
+            self.runtime_ops.record_settlement_failure_async();
+        }
+        result
     }
 
     /// Load pricing ratios for one model.
@@ -321,9 +390,8 @@ impl BillingEngine {
 
         let config = match cfg {
             Some(c) => {
-                use std::str::FromStr;
-                let to_f64 = |bd: sea_orm::entity::prelude::BigDecimal| {
-                    f64::from_str(&bd.to_string()).unwrap_or(1.0)
+                let to_f64 = |bd: sea_orm::entity::prelude::BigDecimal| -> f64 {
+                    bd.to_string().parse().unwrap_or(1.0)
                 };
                 ModelConfigInfo {
                     model_name: c.model_name,
@@ -341,10 +409,13 @@ impl BillingEngine {
             }
         };
 
-        let _ = self
+        if let Err(e) = self
             .cache
             .set_json(&cache_key, &config, MODEL_CONFIG_CACHE_TTL_SECONDS)
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, "failed to cache model config");
+        }
 
         Ok(config)
     }
@@ -377,17 +448,17 @@ impl BillingEngine {
             .map_err(ApiErrors::Internal)?;
 
         let ratio = match gr {
-            Some(g) => {
-                use std::str::FromStr;
-                f64::from_str(&g.ratio.to_string()).unwrap_or(1.0)
-            }
+            Some(g) => g.ratio.to_string().parse().unwrap_or(1.0),
             None => 1.0,
         };
 
-        let _ = self
+        if let Err(e) = self
             .cache
             .set_json(&cache_key, &ratio, GROUP_RATIO_CACHE_TTL_SECONDS)
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, "failed to cache group ratio");
+        }
 
         Ok(ratio)
     }
@@ -409,6 +480,32 @@ impl BillingEngine {
             .context("refund reserved quota failed")
             .map_err(ApiErrors::Internal)?;
         Ok(())
+    }
+
+    async fn retry_async<T, F, Fut>(&self, mut f: F) -> ApiResult<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = ApiResult<T>>,
+    {
+        let mut backoff_ms = 200_u64;
+
+        for attempt in 0..3 {
+            match f().await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    if attempt == 2 {
+                        return Err(error);
+                    }
+                    self.runtime_ops.record_retry_async();
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    backoff_ms *= 2;
+                }
+            }
+        }
+
+        Err(ApiErrors::Internal(anyhow::anyhow!(
+            "retry operation failed without a captured error"
+        )))
     }
 }
 
@@ -432,15 +529,16 @@ impl ModelConfigInfo {
 
 /// Roughly estimate prompt tokens for pre-reservation.
 pub fn estimate_prompt_tokens(messages: &[summer_ai_core::types::common::Message]) -> i32 {
-    // A simple approximation: about 1 token per 4 characters.
+    // Heuristic: ~3 characters per token on average (balances ASCII ~4:1 and CJK ~1.5:1).
+    // Uses char count instead of byte count for consistent cross-language estimation.
     let total_chars: usize = messages
         .iter()
         .map(|m| match &m.content {
-            serde_json::Value::String(s) => s.len(),
-            other => other.to_string().len(),
+            serde_json::Value::String(s) => s.chars().count(),
+            other => other.to_string().chars().count(),
         })
         .sum();
-    (total_chars as f64 / 4.0).ceil() as i32
+    (total_chars as f64 / 3.0).ceil() as i32
 }
 
 pub fn estimate_total_tokens_for_rate_limit(
@@ -473,32 +571,6 @@ fn json_string_list(value: &serde_json::Value) -> Vec<String> {
 
 fn billing_record_key(request_id: &str) -> String {
     format!("ai:billing:req:{request_id}")
-}
-
-async fn retry_async<T, F, Fut>(mut f: F) -> ApiResult<T>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = ApiResult<T>>,
-{
-    let mut backoff_ms = 200_u64;
-    let mut last_error = None;
-
-    for _ in 0..3 {
-        match f().await {
-            Ok(value) => return Ok(value),
-            Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                backoff_ms *= 2;
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        ApiErrors::Internal(anyhow::anyhow!(
-            "retry operation failed without a captured error"
-        ))
-    }))
 }
 
 #[cfg(test)]

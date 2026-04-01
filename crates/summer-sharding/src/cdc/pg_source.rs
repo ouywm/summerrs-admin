@@ -118,6 +118,35 @@ pub struct PgCdcSource {
 }
 
 impl PgCdcSource {
+    async fn connect_replication_client(
+        &self,
+        request: &CdcSubscribeRequest,
+        start_lsn: Lsn,
+    ) -> Result<ReplicationClient> {
+        const RETRY_ATTEMPTS: usize = 5;
+        const RETRY_DELAY_MS: u64 = 100;
+
+        let config = self.endpoint.to_replication_config(
+            request.slot.as_str(),
+            request.publication.as_str(),
+            start_lsn,
+        );
+
+        for attempt in 0..RETRY_ATTEMPTS {
+            match ReplicationClient::connect(config.clone()).await {
+                Ok(client) => return Ok(client),
+                Err(error)
+                    if attempt + 1 < RETRY_ATTEMPTS && replication_artifact_not_ready(&error) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                }
+                Err(error) => return Err(pgwire_error(error)),
+            }
+        }
+
+        unreachable!("replication client connect loop must return on success or terminal error");
+    }
+
     pub fn new(
         snapshot_connection: Arc<DatabaseConnection>,
         replication_database_url: &str,
@@ -378,13 +407,7 @@ impl CdcSource for PgCdcSource {
             Lsn::ZERO
         };
 
-        let client = ReplicationClient::connect(self.endpoint.to_replication_config(
-            request.slot.as_str(),
-            request.publication.as_str(),
-            start_lsn,
-        ))
-        .await
-        .map_err(pgwire_error)?;
+        let client = self.connect_replication_client(&request, start_lsn).await?;
 
         Ok(Box::new(PgReplicationSubscription {
             client,
@@ -614,6 +637,12 @@ fn escape_literal(value: &str) -> String {
 
 fn pgwire_error(error: PgWireError) -> ShardingError {
     ShardingError::Db(sea_orm::DbErr::Custom(error.to_string()))
+}
+
+fn replication_artifact_not_ready(error: &PgWireError) -> bool {
+    let message = error.to_string();
+    message.contains("does not exist")
+        && (message.contains("publication") || message.contains("replication slot"))
 }
 
 #[cfg(test)]

@@ -5,8 +5,12 @@ version = "0.0.1"
 
 [features]
 default = []
+hotpath = ["dep:hotpath", "hotpath/hotpath"]
+hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 web = [
     "summer-auth",
+    "summer-sql-rewrite/web",
+    "summer-sql-rewrite/summer-auth",
     "summer-web",
     "summer-web/openapi",
     "tower-layer",
@@ -20,12 +24,14 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+hotpath = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pgwire-replication = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
 ring = { workspace = true }
+rustc-hash = { workspace = true }
 schemars = { workspace = true }
 sea-orm = { workspace = true, features = [
     "sqlx-postgres",
@@ -40,6 +46,7 @@ serde_json = { workspace = true }
 sqlparser = { workspace = true }
 summer = { workspace = true }
 summer-auth = { workspace = true, optional = true, features = ["web"] }
+summer-sql-rewrite = { workspace = true, features = ["summer"] }
 summer-web = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }

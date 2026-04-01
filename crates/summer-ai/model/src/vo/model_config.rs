@@ -29,10 +29,8 @@ pub struct ModelConfigVo {
 
 impl ModelConfigVo {
     pub fn from_model(m: model_config::Model) -> Self {
-        use std::str::FromStr;
-        let to_f64 = |bd: sea_orm::entity::prelude::BigDecimal| {
-            f64::from_str(&bd.to_string()).unwrap_or(0.0)
-        };
+        use num_traits::ToPrimitive;
+        let to_f64 = |bd: sea_orm::entity::prelude::BigDecimal| bd.to_f64().unwrap_or(0.0);
         Self {
             id: m.id,
             model_name: m.model_name,

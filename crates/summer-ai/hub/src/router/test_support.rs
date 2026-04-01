@@ -1,9 +1,11 @@
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum_client_ip::ClientIpSource;
 use sea_orm::prelude::BigDecimal;
-use sea_orm::{ActiveModelTrait, ColumnTrait, Database, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, Database, EntityTrait, PaginatorTrait, QueryFilter, Set,
+};
 use summer::App;
 use summer::plugin::MutableComponentRegistry;
 use summer_ai_model::entity::{ability, channel, channel_account, log, model_config, token};
@@ -25,9 +27,6 @@ use crate::service::log_batch::AiLogBatchQueue;
 const DEFAULT_DATABASE_URL: &str =
     "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai";
 const DEFAULT_REDIS_URL: &str = "redis://127.0.0.1/";
-
-static TEST_DB: OnceLock<summer_sea_orm::DbConn> = OnceLock::new();
-static TEST_REDIS: OnceLock<summer_redis::Redis> = OnceLock::new();
 
 #[derive(Clone)]
 pub(crate) struct MockRoute {
@@ -369,6 +368,131 @@ impl TestHarness {
         .await
     }
 
+    pub(crate) async fn moderations_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture(
+            "moderations-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["moderations"],
+            vec!["moderations"],
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn rerank_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture(
+            "rerank-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["rerank"],
+            vec!["rerank"],
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn files_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "files-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["files"],
+            vec!["files"],
+            false,
+            channel::ChannelType::OpenAi,
+            "openai",
+            model_config::ModelType::Chat,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn anthropic_files_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "anthropic-files-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["files"],
+            vec!["files"],
+            false,
+            channel::ChannelType::Anthropic,
+            "anthropic",
+            model_config::ModelType::Chat,
+            Some("claude-sonnet-4-20250514"),
+        )
+        .await
+    }
+
+    pub(crate) async fn anthropic_images_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "anthropic-images-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["images"],
+            vec!["images"],
+            false,
+            channel::ChannelType::Anthropic,
+            "anthropic",
+            model_config::ModelType::Image,
+            Some("claude-sonnet-4-20250514"),
+        )
+        .await
+    }
+
+    pub(crate) async fn audio_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "audio-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["audio"],
+            vec!["audio"],
+            false,
+            channel::ChannelType::OpenAi,
+            "openai",
+            model_config::ModelType::Audio,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn anthropic_audio_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "anthropic-audio-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["audio"],
+            vec!["audio"],
+            false,
+            channel::ChannelType::Anthropic,
+            "anthropic",
+            model_config::ModelType::Audio,
+            Some("claude-sonnet-4-20250514"),
+        )
+        .await
+    }
+
     pub(crate) async fn assistants_threads_affinity_fixture(
         primary_base_url: &str,
         fallback_base_url: &str,
@@ -522,6 +646,63 @@ impl TestHarness {
             fallback_base_url,
             vec!["responses"],
             vec!["responses"],
+            false,
+            channel::ChannelType::Anthropic,
+            "anthropic",
+            model_config::ModelType::Chat,
+            Some("claude-sonnet-4-20250514"),
+        )
+        .await
+    }
+
+    pub(crate) async fn anthropic_completions_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "anthropic-completions-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["completions"],
+            vec!["completions"],
+            false,
+            channel::ChannelType::Anthropic,
+            "anthropic",
+            model_config::ModelType::Chat,
+            Some("claude-sonnet-4-20250514"),
+        )
+        .await
+    }
+
+    pub(crate) async fn anthropic_moderations_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "anthropic-moderations-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["moderations"],
+            vec!["moderations"],
+            false,
+            channel::ChannelType::Anthropic,
+            "anthropic",
+            model_config::ModelType::Chat,
+            Some("claude-sonnet-4-20250514"),
+        )
+        .await
+    }
+
+    pub(crate) async fn anthropic_rerank_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "anthropic-rerank-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["rerank"],
+            vec!["rerank"],
             false,
             channel::ChannelType::Anthropic,
             "anthropic",
@@ -824,6 +1005,45 @@ impl TestHarness {
             .expect("primary account exists")
     }
 
+    pub(crate) async fn reset_primary_persistent_route_state(&self) {
+        let primary_channel = self.primary_channel_model().await;
+        let mut primary_channel_active: channel::ActiveModel = primary_channel.into();
+        primary_channel_active.status = Set(channel::ChannelStatus::Enabled);
+        primary_channel_active.failure_streak = Set(0);
+        primary_channel_active.last_health_status = Set(1);
+        primary_channel_active.last_error_at = Set(None);
+        primary_channel_active.last_error_code = Set(String::new());
+        primary_channel_active.last_error_message = Set(None);
+        primary_channel_active
+            .update(&self.db)
+            .await
+            .expect("reset primary channel route state");
+
+        let primary_account = self.primary_account_model().await;
+        let mut primary_account_active: channel_account::ActiveModel = primary_account.into();
+        primary_account_active.status = Set(channel_account::AccountStatus::Enabled);
+        primary_account_active.schedulable = Set(true);
+        primary_account_active.failure_streak = Set(0);
+        primary_account_active.rate_limited_until = Set(None);
+        primary_account_active.overload_until = Set(None);
+        primary_account_active.last_error_at = Set(None);
+        primary_account_active.last_error_code = Set(String::new());
+        primary_account_active.last_error_message = Set(None);
+        primary_account_active
+            .update(&self.db)
+            .await
+            .expect("reset primary account route state");
+
+        let mut redis = self.redis.clone();
+        let _: i64 = redis
+            .incr(
+                crate::relay::channel_router::route_cache_version_key(),
+                1_i64,
+            )
+            .await
+            .expect("bump route cache version");
+    }
+
     pub(crate) async fn wait_for_token_used_quota(&self, expected_used_quota: i64) -> token::Model {
         for _ in 0..50 {
             let model = self.token_model().await;
@@ -850,6 +1070,27 @@ impl TestHarness {
         }
 
         panic!("timed out waiting for log request_id={request_id}");
+    }
+
+    pub(crate) async fn insert_log(&self, active: log::ActiveModel) -> log::Model {
+        let desired_create_time = match &active.create_time {
+            sea_orm::ActiveValue::Set(value) | sea_orm::ActiveValue::Unchanged(value) => {
+                Some(*value)
+            }
+            sea_orm::ActiveValue::NotSet => None,
+        };
+
+        let model = active.insert(&self.db).await.expect("insert log");
+        if let Some(create_time) = desired_create_time {
+            let mut active: log::ActiveModel = model.into();
+            active.create_time = Set(create_time);
+            return active
+                .update(&self.db)
+                .await
+                .expect("update log create_time");
+        }
+
+        model
     }
 
     pub(crate) async fn assert_no_log_by_request_id(&self, request_id: &str) {
@@ -902,6 +1143,28 @@ impl TestHarness {
         panic!("timed out waiting for primary account to become disabled");
     }
 
+    pub(crate) async fn count_failed_logs_in_window(
+        &self,
+        start_time: chrono::DateTime<chrono::FixedOffset>,
+        end_time: chrono::DateTime<chrono::FixedOffset>,
+    ) -> u64 {
+        log::Entity::find()
+            .filter(log::Column::TokenId.eq(self.cleanup_ids.token_id))
+            .filter(log::Column::Status.eq(log::LogStatus::Failed))
+            .filter(log::Column::CreateTime.gte(start_time))
+            .filter(log::Column::CreateTime.lte(end_time))
+            .count(&self.db)
+            .await
+            .expect("count failed logs in window")
+    }
+
+    pub(crate) async fn delete_logs_by_request_id(&self, request_id: &str) {
+        let _ = log::Entity::delete_many()
+            .filter(log::Column::RequestId.eq(request_id))
+            .exec(&self.db)
+            .await;
+    }
+
     pub(crate) async fn cleanup(self) {
         tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -939,29 +1202,17 @@ impl TestHarness {
 }
 
 async fn shared_test_db() -> summer_sea_orm::DbConn {
-    if let Some(db) = TEST_DB.get() {
-        return db.clone();
-    }
-
-    let db = Database::connect(default_database_url())
+    Database::connect(default_database_url())
         .await
-        .expect("connect test db");
-    let _ = TEST_DB.set(db.clone());
-    TEST_DB.get().expect("test db initialized").clone()
+        .expect("connect test db")
 }
 
 async fn shared_test_redis() -> summer_redis::Redis {
-    if let Some(redis) = TEST_REDIS.get() {
-        return redis.clone();
-    }
-
-    let redis = summer_redis::redis::Client::open(default_redis_url())
+    summer_redis::redis::Client::open(default_redis_url())
         .expect("create redis client")
         .get_connection_manager()
         .await
-        .expect("connect redis");
-    let _ = TEST_REDIS.set(redis.clone());
-    TEST_REDIS.get().expect("test redis initialized").clone()
+        .expect("connect redis")
 }
 
 pub(crate) async fn response_json(response: Response) -> serde_json::Value {
@@ -1071,7 +1322,7 @@ async fn seed_fixture(db: &summer_sea_orm::DbConn, seed: FixtureSeed) -> Cleanup
         last_used_at: Set(None),
         last_error_at: Set(None),
         last_error_code: Set(String::new()),
-        last_error_message: Set(String::new()),
+        last_error_message: Set(None),
         last_health_status: Set(1),
         deleted_at: Set(None),
         remark: Set(String::new()),
@@ -1110,7 +1361,7 @@ async fn seed_fixture(db: &summer_sea_orm::DbConn, seed: FixtureSeed) -> Cleanup
         last_used_at: Set(None),
         last_error_at: Set(None),
         last_error_code: Set(String::new()),
-        last_error_message: Set(String::new()),
+        last_error_message: Set(None),
         last_health_status: Set(1),
         deleted_at: Set(None),
         remark: Set(String::new()),
@@ -1145,7 +1396,7 @@ async fn seed_fixture(db: &summer_sea_orm::DbConn, seed: FixtureSeed) -> Cleanup
         last_used_at: Set(None),
         last_error_at: Set(None),
         last_error_code: Set(String::new()),
-        last_error_message: Set(String::new()),
+        last_error_message: Set(None),
         rate_limited_until: Set(None),
         overload_until: Set(None),
         expires_at: Set(None),
@@ -1185,7 +1436,7 @@ async fn seed_fixture(db: &summer_sea_orm::DbConn, seed: FixtureSeed) -> Cleanup
         last_used_at: Set(None),
         last_error_at: Set(None),
         last_error_code: Set(String::new()),
-        last_error_message: Set(String::new()),
+        last_error_message: Set(None),
         rate_limited_until: Set(None),
         overload_until: Set(None),
         expires_at: Set(None),

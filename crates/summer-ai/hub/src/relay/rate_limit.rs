@@ -3,6 +3,7 @@ use summer::plugin::Service;
 use summer_common::error::{ApiErrors, ApiResult};
 
 use crate::service::runtime_cache::RuntimeCacheService;
+use crate::service::runtime_ops::RuntimeOpsService;
 use crate::service::token::TokenInfo;
 
 const REQUEST_RECORD_TTL_SECONDS: u64 = 24 * 60 * 60;
@@ -27,6 +28,8 @@ struct RateLimitRequestRecord {
 pub struct RateLimitEngine {
     #[inject(component)]
     cache: RuntimeCacheService,
+    #[inject(component)]
+    runtime_ops: RuntimeOpsService,
 }
 
 impl RateLimitEngine {
@@ -62,12 +65,10 @@ impl RateLimitEngine {
 
         if token_info.rpm_limit > 0 {
             let key = rpm_key(token_info.token_id, window);
-            let current = self.cache.incr(&key).await?;
-            if current == 1 {
-                self.cache
-                    .expire(&key, RATE_LIMIT_BUCKET_TTL_SECONDS)
-                    .await?;
-            }
+            let current = self
+                .cache
+                .incr_with_expire(&key, RATE_LIMIT_BUCKET_TTL_SECONDS)
+                .await?;
             if current > i64::from(token_info.rpm_limit) {
                 let _ = self.cache.decr_by(&key, 1).await;
                 return Err(ApiErrors::TooManyRequests("RPM limit exceeded".into()));
@@ -79,12 +80,10 @@ impl RateLimitEngine {
         if token_info.tpm_limit > 0 {
             let reserved_tokens = estimated_total_tokens.max(1);
             let key = tpm_key(token_info.token_id, window);
-            let current = self.cache.incr_by(&key, reserved_tokens).await?;
-            if current == reserved_tokens {
-                self.cache
-                    .expire(&key, RATE_LIMIT_BUCKET_TTL_SECONDS)
-                    .await?;
-            }
+            let current = self
+                .cache
+                .incr_by_with_expire(&key, reserved_tokens, RATE_LIMIT_BUCKET_TTL_SECONDS)
+                .await?;
             if current > token_info.tpm_limit {
                 let _ = self.cache.decr_by(&key, reserved_tokens).await;
                 if let Some(rpm_key) = record.rpm_key.as_ref() {
@@ -98,8 +97,10 @@ impl RateLimitEngine {
 
         if token_info.concurrency_limit > 0 {
             let key = concurrency_key(token_info.token_id);
-            let current = self.cache.incr(&key).await?;
-            self.cache.expire(&key, CONCURRENCY_KEY_TTL_SECONDS).await?;
+            let current = self
+                .cache
+                .incr_with_expire(&key, CONCURRENCY_KEY_TTL_SECONDS)
+                .await?;
             if current > i64::from(token_info.concurrency_limit) {
                 let _ = self.cache.decr_by(&key, 1).await;
                 if let Some(tpm_key) = record.tpm_key.as_ref() {
@@ -156,12 +157,10 @@ impl RateLimitEngine {
         if let Some(tpm_key) = record.tpm_key.as_ref() {
             let delta = actual_total_tokens - record.tpm_reserved;
             if delta > 0 {
-                let current = self.cache.incr_by(tpm_key, delta).await?;
-                if current == delta {
-                    self.cache
-                        .expire(tpm_key, RATE_LIMIT_BUCKET_TTL_SECONDS)
-                        .await?;
-                }
+                let _ = self
+                    .cache
+                    .incr_by_with_expire(tpm_key, delta, RATE_LIMIT_BUCKET_TTL_SECONDS)
+                    .await?;
             } else if delta < 0 {
                 let _ = self.cache.decr_by(tpm_key, delta.abs()).await;
             }
@@ -224,11 +223,21 @@ impl RateLimitEngine {
         request_id: &str,
         actual_total_tokens: i64,
     ) -> ApiResult<()> {
-        retry_async(|| self.finalize_success(request_id, actual_total_tokens)).await
+        let result = self
+            .retry_async(|| self.finalize_success(request_id, actual_total_tokens))
+            .await;
+        if result.is_err() {
+            self.runtime_ops.record_settlement_failure_async();
+        }
+        result
     }
 
     pub async fn finalize_failure_with_retry(&self, request_id: &str) -> ApiResult<()> {
-        retry_async(|| self.finalize_failure(request_id)).await
+        let result = self.retry_async(|| self.finalize_failure(request_id)).await;
+        if result.is_err() {
+            self.runtime_ops.record_settlement_failure_async();
+        }
+        result
     }
 
     async fn rollback_reservation(&self, record: &RateLimitRequestRecord) {
@@ -250,6 +259,32 @@ impl RateLimitEngine {
         {
             let _ = self.cache.decr_by(rpm_key, record.rpm_reserved).await;
         }
+    }
+
+    async fn retry_async<T, F, Fut>(&self, mut f: F) -> ApiResult<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = ApiResult<T>>,
+    {
+        let mut backoff_ms = 200_u64;
+
+        for attempt in 0..3 {
+            match f().await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    if attempt == 2 {
+                        return Err(error);
+                    }
+                    self.runtime_ops.record_retry_async();
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    backoff_ms *= 2;
+                }
+            }
+        }
+
+        Err(ApiErrors::Internal(anyhow::anyhow!(
+            "retry operation failed without a captured error"
+        )))
     }
 }
 
@@ -273,28 +308,174 @@ fn current_minute_window() -> i64 {
     chrono::Utc::now().timestamp() / 60
 }
 
-async fn retry_async<T, F, Fut>(mut f: F) -> ApiResult<T>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = ApiResult<T>>,
-{
-    let mut backoff_ms = 200_u64;
-    let mut last_error = None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use summer_redis::redis::AsyncCommands;
 
-    for _ in 0..3 {
-        match f().await {
-            Ok(value) => return Ok(value),
-            Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                backoff_ms *= 2;
-            }
+    const TEST_REDIS_URL: &str = "redis://127.0.0.1/";
+
+    fn test_token_info(token_id: i64) -> TokenInfo {
+        TokenInfo {
+            token_id,
+            user_id: 7,
+            name: "rate-limit-test".into(),
+            group: "default".into(),
+            remain_quota: 1_000_000,
+            unlimited_quota: false,
+            rpm_limit: 10,
+            tpm_limit: 100,
+            concurrency_limit: 5,
+            allowed_models: Vec::new(),
+            endpoint_scopes: vec!["chat".into()],
         }
     }
 
-    Err(last_error.unwrap_or_else(|| {
-        ApiErrors::Internal(anyhow::anyhow!(
-            "retry operation failed without a captured error"
-        ))
-    }))
+    async fn test_engine() -> (RateLimitEngine, RuntimeCacheService, summer_redis::Redis) {
+        let redis = summer_redis::redis::Client::open(
+            std::env::var("REDIS_URL").unwrap_or_else(|_| TEST_REDIS_URL.to_string()),
+        )
+        .expect("create redis client")
+        .get_connection_manager()
+        .await
+        .expect("connect redis");
+        let cache = RuntimeCacheService::new(redis.clone());
+        let runtime_ops = RuntimeOpsService::new(cache.clone());
+        (
+            RateLimitEngine {
+                cache: cache.clone(),
+                runtime_ops,
+            },
+            cache,
+            redis,
+        )
+    }
+
+    async fn ttl(redis: &summer_redis::Redis, key: &str) -> i64 {
+        let mut conn = redis.clone();
+        conn.ttl(key).await.expect("query ttl")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local redis"]
+    async fn reserve_reapplies_ttl_to_existing_rpm_and_tpm_keys_without_expiry() {
+        let (engine, cache, redis) = test_engine().await;
+        let token_info = test_token_info(42);
+        let window = current_minute_window();
+        let rpm = rpm_key(token_info.token_id, window);
+        let rpm_next = rpm_key(token_info.token_id, window + 1);
+        let tpm = tpm_key(token_info.token_id, window);
+        let tpm_next = tpm_key(token_info.token_id, window + 1);
+        let concurrency = concurrency_key(token_info.token_id);
+        let request_id = "rate-limit-reserve-existing-ttl";
+
+        let mut conn = redis.clone();
+        conn.set::<_, _, ()>(&rpm, 1_i64)
+            .await
+            .expect("seed rpm key");
+        conn.set::<_, _, ()>(&rpm_next, 1_i64)
+            .await
+            .expect("seed next rpm key");
+        conn.set::<_, _, ()>(&tpm, 5_i64)
+            .await
+            .expect("seed tpm key");
+        conn.set::<_, _, ()>(&tpm_next, 5_i64)
+            .await
+            .expect("seed next tpm key");
+        conn.set::<_, _, ()>(&concurrency, 1_i64)
+            .await
+            .expect("seed concurrency key");
+
+        cache
+            .delete(&request_record_key(request_id))
+            .await
+            .expect("cleanup request record");
+
+        engine
+            .reserve(&token_info, request_id, 3)
+            .await
+            .expect("reserve rate limit");
+
+        let record = cache
+            .get_json::<RateLimitRequestRecord>(&request_record_key(request_id))
+            .await
+            .expect("load request record")
+            .expect("request record exists");
+
+        let actual_rpm = record.rpm_key.expect("rpm key in record");
+        let actual_tpm = record.tpm_key.expect("tpm key in record");
+        assert!(
+            ttl(&redis, &actual_rpm).await > 0,
+            "rpm key should have ttl"
+        );
+        assert!(
+            ttl(&redis, &actual_tpm).await > 0,
+            "tpm key should have ttl"
+        );
+        assert!(
+            ttl(&redis, &concurrency).await > 0,
+            "concurrency key should have ttl"
+        );
+
+        cache.delete(&rpm).await.expect("delete rpm key");
+        cache.delete(&rpm_next).await.expect("delete next rpm key");
+        cache.delete(&tpm).await.expect("delete tpm key");
+        cache.delete(&tpm_next).await.expect("delete next tpm key");
+        cache
+            .delete(&concurrency)
+            .await
+            .expect("delete concurrency key");
+        cache
+            .delete(&request_record_key(request_id))
+            .await
+            .expect("delete request record");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local redis"]
+    async fn finalize_success_reapplies_ttl_to_existing_tpm_key_without_expiry() {
+        let (engine, cache, redis) = test_engine().await;
+        let token_info = test_token_info(43);
+        let window = current_minute_window();
+        let tpm = tpm_key(token_info.token_id, window);
+        let request_id = "rate-limit-finalize-success-existing-ttl";
+
+        let mut conn = redis.clone();
+        conn.set::<_, _, ()>(&tpm, 5_i64)
+            .await
+            .expect("seed tpm key");
+
+        cache
+            .set_json(
+                &request_record_key(request_id),
+                &RateLimitRequestRecord {
+                    request_id: request_id.into(),
+                    token_id: token_info.token_id,
+                    rpm_key: None,
+                    rpm_reserved: 0,
+                    tpm_key: Some(tpm.clone()),
+                    tpm_reserved: 2,
+                    concurrency_key: None,
+                    concurrency_reserved: 0,
+                    finalized: false,
+                    final_total_tokens: None,
+                },
+                0,
+            )
+            .await
+            .expect("seed request record");
+
+        engine
+            .finalize_success(request_id, 6)
+            .await
+            .expect("finalize success");
+
+        assert!(ttl(&redis, &tpm).await > 0, "tpm key should have ttl");
+
+        cache.delete(&tpm).await.expect("delete tpm key");
+        cache
+            .delete(&request_record_key(request_id))
+            .await
+            .expect("delete request record");
+    }
 }

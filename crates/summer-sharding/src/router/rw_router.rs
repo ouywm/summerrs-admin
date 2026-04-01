@@ -1,9 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crate::{
@@ -14,12 +11,12 @@ use crate::{
 
 #[derive(Debug)]
 pub struct ReadWriteRouter {
-    config: Arc<ShardingConfig>,
-    counters: Arc<BTreeMap<String, AtomicUsize>>,
+    config: ShardingConfig,
+    counters: BTreeMap<String, AtomicUsize>,
 }
 
 impl ReadWriteRouter {
-    pub fn new(config: Arc<ShardingConfig>) -> Self {
+    pub fn new(config: &ShardingConfig) -> Self {
         let counters = config
             .read_write_splitting
             .rules
@@ -27,8 +24,8 @@ impl ReadWriteRouter {
             .map(|rule| (rule.name.clone(), AtomicUsize::new(0)))
             .collect();
         Self {
-            config,
-            counters: Arc::new(counters),
+            config: config.clone(),
+            counters,
         }
     }
 
@@ -172,7 +169,7 @@ mod tests {
         router::{ReadWriteRouter, SqlOperation},
     };
 
-    fn build_config() -> Arc<ShardingConfig> {
+    fn build_config() -> ShardingConfig {
         let mut datasources = BTreeMap::new();
         datasources.insert(
             "ds_ai_primary".to_string(),
@@ -196,7 +193,7 @@ mod tests {
             },
         );
 
-        Arc::new(ShardingConfig {
+        ShardingConfig {
             datasources,
             read_write_splitting: ReadWriteSplittingConfig {
                 enabled: true,
@@ -208,7 +205,7 @@ mod tests {
                 }],
             },
             ..Default::default()
-        })
+        }
     }
 
     fn runtime_state_test_lock() -> &'static Mutex<()> {
@@ -220,7 +217,8 @@ mod tests {
     fn route_uses_discovery_failover_for_reads_and_writes() {
         let _guard = runtime_state_test_lock().lock().unwrap();
         clear_route_states();
-        let router = ReadWriteRouter::new(build_config());
+        let config = build_config();
+        let router = ReadWriteRouter::new(&config);
         set_route_state(
             "ds_ai_primary",
             DataSourceRouteState {
@@ -248,7 +246,8 @@ mod tests {
         let recorder = Arc::new(InMemoryRuntimeRecorder::default());
         set_runtime_recorder(recorder.clone());
 
-        let router = ReadWriteRouter::new(build_config());
+        let config = build_config();
+        let router = ReadWriteRouter::new(&config);
         let _ = router.route("ds_ai_primary", SqlOperation::Select, false);
 
         let snapshot = recorder.snapshot();

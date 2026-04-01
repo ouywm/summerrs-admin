@@ -147,7 +147,7 @@ impl LookupStore for InMemoryLookupStore {
 
 pub struct LookupIndex {
     cache: RwLock<BTreeMap<LookupCacheKey, ShardingValue>>,
-    definitions: RwLock<BTreeMap<(String, String), Arc<LookupDefinition>>>,
+    definitions: RwLock<BTreeMap<(String, String), LookupDefinition>>,
     store: Arc<dyn LookupStore>,
 }
 
@@ -161,19 +161,11 @@ impl LookupIndex {
     }
 
     pub fn register(&self, definition: LookupDefinition) {
-        let definition = Arc::new(definition);
         let key = definition.key();
-        self.definitions
-            .write()
-            .entry(key)
-            .or_insert_with(|| definition.clone());
+        self.definitions.write().entry(key).or_insert(definition);
     }
 
-    fn definition_for(
-        &self,
-        logic_table: &str,
-        lookup_column: &str,
-    ) -> Option<Arc<LookupDefinition>> {
+    fn definition_for(&self, logic_table: &str, lookup_column: &str) -> Option<LookupDefinition> {
         let key = (normalize(logic_table), normalize(lookup_column));
         self.definitions.read().get(&key).cloned()
     }
@@ -190,10 +182,11 @@ impl LookupIndex {
             return Some(value.clone());
         }
 
-        self.store.resolve(&definition, lookup_value).map(|value| {
-            self.cache.write().insert(cache_key, value.clone());
-            value
-        })
+        self.store
+            .resolve(&definition, lookup_value)
+            .inspect(|value| {
+                self.cache.write().insert(cache_key, value.clone());
+            })
     }
 
     pub fn insert(
@@ -289,17 +282,16 @@ pub fn query_result_to_sharding_value(row: &QueryResult, column: &str) -> Option
     if let Ok(Some(value)) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>>("", column) {
         return Some(ShardingValue::DateTime(value.fixed_offset()));
     }
-    if let Ok(Some(value)) = row.try_get::<Option<chrono::NaiveDateTime>>("", column) {
-        if let Some(datetime) =
+    if let Ok(Some(value)) = row.try_get::<Option<chrono::NaiveDateTime>>("", column)
+        && let Some(datetime) =
             FixedOffset::east_opt(0).and_then(|offset| offset.from_local_datetime(&value).single())
-        {
-            return Some(ShardingValue::DateTime(datetime));
-        }
+    {
+        return Some(ShardingValue::DateTime(datetime));
     }
     if let Ok(Some(value)) = row.try_get::<Option<String>>("", column) {
         return parse_datetime_string(value.as_str())
             .map(ShardingValue::DateTime)
-            .or_else(|| Some(ShardingValue::Str(value)));
+            .or(Some(ShardingValue::Str(value)));
     }
     if let Ok(None) = row.try_get::<Option<String>>("", column) {
         return Some(ShardingValue::Null);

@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 summer = { workspace = true }
 summer-admin-macros = { workspace = true }
-summer-ai-core = { workspace = true }
+summer-ai-core = { workspace = true, features = ["axum"] }
 summer-ai-model = { workspace = true }
 summer-auth = { workspace = true, features = ["web", "openapi"] }
 summer-common = { workspace = true }

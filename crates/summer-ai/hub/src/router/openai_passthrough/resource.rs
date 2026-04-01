@@ -230,6 +230,7 @@ fn push_referenced_resource_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
 
     fn sample_channel(channel_id: i64, account_id: i64) -> SelectedChannel {
         SelectedChannel {
@@ -265,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn select_uses_default_plan_when_model_was_not_requested() {
+    fn select_uses_default_plan_when_model_was_not_requested() -> anyhow::Result<()> {
         let mut state = ResourceRouteState {
             exclusions: RouteSelectionExclusions::default(),
             model_plan: None,
@@ -278,8 +279,10 @@ mod tests {
 
         let selected = state
             .select_without_affinity()
-            .expect("expected default plan channel");
+            .ok_or_else(|| anyhow!("expected default plan channel"))?;
 
         assert_eq!(selected.channel_id, 22);
+
+        Ok(())
     }
 }

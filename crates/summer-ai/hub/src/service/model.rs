@@ -355,7 +355,7 @@ mod tests {
             last_used_at: None,
             last_error_at: None,
             last_error_code: String::new(),
-            last_error_message: String::new(),
+            last_error_message: None,
             rate_limited_until: None,
             overload_until: None,
             expires_at: Some(now + chrono::Duration::minutes(10)),

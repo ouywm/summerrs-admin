@@ -2,7 +2,7 @@ use super::*;
 use summer_ai_core::types::audio::AudioSpeechRequest;
 use summer_ai_core::types::batch::BatchCreateRequest;
 use summer_ai_core::types::chat::ChatCompletionResponse;
-use summer_ai_core::types::completion::CompletionRequest;
+use summer_ai_core::types::completion::{CompletionRequest, CompletionResponse};
 use summer_ai_core::types::file::FileObject;
 use summer_ai_core::types::image::ImageGenerationRequest;
 use summer_ai_core::types::moderation::ModerationRequest;
@@ -415,6 +415,100 @@ fn bridge_chat_completion_to_response_preserves_usage_and_text() {
             .map(|details| details.reasoning_tokens),
         Some(5)
     );
+}
+
+#[test]
+fn completion_request_to_chat_request_maps_prompt_and_sampling_fields() {
+    let request: CompletionRequest = serde_json::from_value(serde_json::json!({
+        "model": "gpt-3.5-turbo-instruct",
+        "prompt": ["hello", "world"],
+        "stream": true,
+        "max_tokens": 256,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "presence_penalty": 0.2,
+        "frequency_penalty": 0.1,
+        "stop": ["END"],
+        "user": "demo-user"
+    }))
+    .unwrap();
+
+    let bridged = completion_request_to_chat_request(&request).unwrap();
+    assert_eq!(bridged.model, "gpt-3.5-turbo-instruct");
+    assert_eq!(bridged.messages.len(), 1);
+    assert_eq!(bridged.messages[0].role, "user");
+    assert_eq!(
+        bridged.messages[0].content,
+        serde_json::json!("hello\nworld")
+    );
+    assert!(bridged.stream);
+    assert_eq!(bridged.max_tokens, Some(256));
+    assert_eq!(bridged.temperature, Some(0.7));
+    assert_eq!(bridged.top_p, Some(0.9));
+    assert_eq!(bridged.presence_penalty, Some(0.2));
+    assert_eq!(bridged.frequency_penalty, Some(0.1));
+    assert_eq!(bridged.stop, Some(serde_json::json!(["END"])));
+    assert_eq!(
+        bridged.extra.get("user"),
+        Some(&serde_json::json!("demo-user"))
+    );
+}
+
+#[test]
+fn bridge_chat_completion_to_completion_preserves_usage_and_text() {
+    let response: ChatCompletionResponse = serde_json::from_value(serde_json::json!({
+        "id": "chatcmpl_completion_123",
+        "object": "chat.completion",
+        "created": 1_774_427_062,
+        "model": "claude-sonnet-4",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Hello from completion bridge"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 7,
+            "total_tokens": 19
+        }
+    }))
+    .unwrap();
+
+    let bridged: CompletionResponse = bridge_chat_completion_to_completion(response);
+    assert_eq!(bridged.id, "chatcmpl_completion_123");
+    assert_eq!(bridged.object, "text_completion");
+    assert_eq!(bridged.model, "claude-sonnet-4");
+    assert_eq!(bridged.choices.len(), 1);
+    assert_eq!(bridged.choices[0].text, "Hello from completion bridge");
+    assert_eq!(
+        serde_json::to_value(&bridged).unwrap()["usage"]["total_tokens"],
+        serde_json::json!(19)
+    );
+}
+
+#[test]
+fn extend_limited_buffer_rejects_payload_over_limit() {
+    let mut buffer = Vec::new();
+    let error = extend_limited_buffer(&mut buffer, b"abcdef", 4, "file").unwrap_err();
+
+    assert_eq!(
+        error.status,
+        summer_web::axum::http::StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(error.error.error.code.as_deref(), Some("payload_too_large"));
+}
+
+#[test]
+fn extend_limited_buffer_accepts_payload_within_limit() {
+    let mut buffer = Vec::new();
+
+    extend_limited_buffer(&mut buffer, b"ab", 4, "file").unwrap();
+    extend_limited_buffer(&mut buffer, b"cd", 4, "file").unwrap();
+
+    assert_eq!(buffer, b"abcd");
 }
 
 mod mock_upstream;

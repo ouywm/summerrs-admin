@@ -53,11 +53,11 @@ fn default_true() -> bool {
 
 impl CreateModelConfigDto {
     pub fn into_active_model(self, operator: &str) -> Result<model_config::ActiveModel, String> {
+        use num_traits::FromPrimitive;
         use sea_orm::entity::prelude::BigDecimal;
-        use std::str::FromStr;
 
         let now = chrono::Utc::now().fixed_offset();
-        let bd = |v: f64| BigDecimal::from_str(&v.to_string()).unwrap_or_default();
+        let bd = |v: f64| BigDecimal::from_f64(v).unwrap_or_default();
         let supported_endpoints =
             normalize_endpoint_scope_value(self.supported_endpoints, "supportedEndpoints")?;
 
@@ -112,10 +112,10 @@ impl UpdateModelConfigDto {
         active: &mut model_config::ActiveModel,
         operator: &str,
     ) -> Result<(), String> {
+        use num_traits::FromPrimitive;
         use sea_orm::entity::prelude::BigDecimal;
-        use std::str::FromStr;
 
-        let bd = |v: f64| BigDecimal::from_str(&v.to_string()).unwrap_or_default();
+        let bd = |v: f64| BigDecimal::from_f64(v).unwrap_or_default();
 
         if let Some(v) = self.display_name {
             active.display_name = Set(v);

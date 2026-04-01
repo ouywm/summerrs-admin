@@ -99,6 +99,14 @@ pub struct MigrationExecutor {
     pipeline: CdcPipeline,
 }
 
+pub struct MigrationExecutionResources<'a> {
+    pub source: &'a dyn CdcSource,
+    pub transformer: &'a dyn RowTransform,
+    pub sink: &'a dyn CdcSink,
+    pub cutover: Option<&'a dyn CdcCutover>,
+    pub cleanup: Option<&'a dyn MigrationCleanup>,
+}
+
 impl MigrationExecutor {
     pub fn new() -> Self {
         Self::default()
@@ -142,11 +150,13 @@ impl MigrationExecutor {
     ) -> Result<MigrationExecutionReport> {
         self.execute_with_options(
             plan,
-            source,
-            transformer,
-            sink,
-            cutover,
-            cleanup,
+            MigrationExecutionResources {
+                source,
+                transformer,
+                sink,
+                cutover,
+                cleanup,
+            },
             &MigrationExecutionOptions::default(),
         )
         .await
@@ -155,18 +165,20 @@ impl MigrationExecutor {
     pub async fn execute_with_options(
         &self,
         plan: &MigrationExecutionPlan,
-        source: &dyn CdcSource,
-        transformer: &dyn RowTransform,
-        sink: &dyn CdcSink,
-        cutover: Option<&dyn CdcCutover>,
-        cleanup: Option<&dyn MigrationCleanup>,
+        resources: MigrationExecutionResources<'_>,
         options: &MigrationExecutionOptions,
     ) -> Result<MigrationExecutionReport> {
-        validate_plan_runtime(plan, transformer, sink)?;
+        validate_plan_runtime(plan, resources.transformer, resources.sink)?;
         let task = self.build_cdc_task(plan, options);
         let report = self
             .pipeline
-            .run(&task, source, transformer, sink, cutover)
+            .run(
+                &task,
+                resources.source,
+                resources.transformer,
+                resources.sink,
+                resources.cutover,
+            )
             .await?;
 
         let mut phases = report
@@ -180,7 +192,7 @@ impl MigrationExecutor {
             .collect::<Vec<_>>();
 
         let cleanup_statements = if plan.cleanup_delete_source {
-            let cleanup = cleanup.ok_or_else(|| {
+            let cleanup = resources.cleanup.ok_or_else(|| {
                 ShardingError::Unsupported(format!(
                     "migration plan `{}` requires cleanup handler",
                     plan.name

@@ -393,12 +393,12 @@ impl ShardingConfig {
             ));
         }
 
-        if let Some(default_datasource) = self.sharding.global.default_datasource.as_deref() {
-            if !self.datasources.contains_key(default_datasource) {
-                return Err(ShardingError::Config(format!(
-                    "default datasource `{default_datasource}` is not defined"
-                )));
-            }
+        if let Some(default_datasource) = self.sharding.global.default_datasource.as_deref()
+            && !self.datasources.contains_key(default_datasource)
+        {
+            return Err(ShardingError::Config(format!(
+                "default datasource `{default_datasource}` is not defined"
+            )));
         }
 
         let mut seen_logic_tables = BTreeSet::new();

@@ -86,7 +86,7 @@ impl CreateChannelDto {
             last_used_at: Set(None),
             last_error_at: Set(None),
             last_error_code: Set(String::new()),
-            last_error_message: Set(String::new()),
+            last_error_message: Set(None),
             last_health_status: Set(0),
             deleted_at: Set(None),
             remark: Set(self.remark),
@@ -105,7 +105,6 @@ impl CreateChannelDto {
 pub struct UpdateChannelDto {
     #[validate(length(min = 1, max = 128))]
     pub name: Option<String>,
-    pub channel_type: Option<ChannelType>,
     pub vendor_code: Option<String>,
     pub base_url: Option<String>,
     pub status: Option<ChannelStatus>,
@@ -127,9 +126,7 @@ impl UpdateChannelDto {
         if let Some(v) = self.name {
             active.name = Set(v);
         }
-        if let Some(v) = self.channel_type {
-            active.channel_type = Set(v);
-        }
+
         if let Some(v) = self.vendor_code {
             active.vendor_code = Set(v);
         }

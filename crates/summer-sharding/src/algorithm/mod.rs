@@ -5,8 +5,6 @@ mod inline;
 mod tenant;
 mod time_range;
 
-use std::sync::Arc;
-
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -66,14 +64,14 @@ pub trait ShardingAlgorithm: Send + Sync + 'static {
 pub struct AlgorithmRegistry;
 
 impl AlgorithmRegistry {
-    pub fn build(&self, rule: &TableRuleConfig) -> Result<Arc<dyn ShardingAlgorithm>> {
+    pub fn build(&self, rule: &TableRuleConfig) -> Result<Box<dyn ShardingAlgorithm>> {
         match rule.algorithm.as_str() {
-            "hash_mod" => Ok(Arc::new(HashModShardingAlgorithm::from_rule(rule)?)),
-            "time_range" => Ok(Arc::new(TimeRangeShardingAlgorithm::from_rule(rule)?)),
-            "hash_range" => Ok(Arc::new(HashRangeShardingAlgorithm::default())),
-            "inline" => Ok(Arc::new(InlineShardingAlgorithm::from_rule(rule)?)),
-            "tenant" => Ok(Arc::new(TenantShardingAlgorithm::default())),
-            "complex" => Ok(Arc::new(ComplexShardingAlgorithm::from_rule(rule)?)),
+            "hash_mod" => Ok(Box::new(HashModShardingAlgorithm::from_rule(rule)?)),
+            "time_range" => Ok(Box::new(TimeRangeShardingAlgorithm::from_rule(rule)?)),
+            "hash_range" => Ok(Box::new(HashRangeShardingAlgorithm)),
+            "inline" => Ok(Box::new(InlineShardingAlgorithm::from_rule(rule)?)),
+            "tenant" => Ok(Box::new(TenantShardingAlgorithm)),
+            "complex" => Ok(Box::new(ComplexShardingAlgorithm::from_rule(rule)?)),
             other => Err(ShardingError::Config(format!(
                 "unsupported sharding algorithm `{other}`"
             ))),

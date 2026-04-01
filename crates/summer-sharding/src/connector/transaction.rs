@@ -6,7 +6,7 @@ use sea_orm::{
 };
 
 use crate::{
-    connector::connection::{ShardingConnection, ShardingConnectionInner},
+    connector::connection::{ExecutionOverrides, ShardingConnection, ShardingConnectionInner},
     error::{Result, ShardingError},
     execute::RawStatementExecutor,
 };
@@ -71,6 +71,15 @@ impl std::fmt::Debug for PreparedTwoPhaseTransaction {
 }
 
 impl ShardingTransaction {
+    fn execution_overrides(&self) -> ExecutionOverrides {
+        ExecutionOverrides {
+            hint: None,
+            access_context: self.access_context_override.clone(),
+            tenant: self.tenant_override.clone(),
+            shadow_headers: self.shadow_headers_override.clone(),
+        }
+    }
+
     async fn begin_from_connection(
         connection: &ShardingConnection,
         options: TransactionOptions,
@@ -287,10 +296,10 @@ impl TwoPhaseShardingTransaction {
                 for (_, remaining) in iter {
                     let _ = remaining.rollback().await;
                 }
+                let mut rollback_errors = Vec::new();
                 for (prepared_datasource, prepared_branch_id) in &prepared {
                     if let Ok(connection) = self.inner.pool.connection(prepared_datasource.as_str())
-                    {
-                        let _ = connection
+                        && let Err(rollback_err) = connection
                             .execute_unprepared(
                                 format!(
                                     "ROLLBACK PREPARED '{}'",
@@ -298,8 +307,19 @@ impl TwoPhaseShardingTransaction {
                                 )
                                 .as_str(),
                             )
-                            .await;
+                            .await
+                    {
+                        rollback_errors.push(format!(
+                            "ROLLBACK PREPARED '{}' on `{}` failed: {}",
+                            prepared_branch_id, prepared_datasource, rollback_err
+                        ));
                     }
+                }
+                if !rollback_errors.is_empty() {
+                    return Err(ShardingError::Route(format!(
+                        "PREPARE TRANSACTION failed ({error}) and rollback of prepared branches also failed, orphaned transactions may exist: {}",
+                        rollback_errors.join("; ")
+                    )));
                 }
                 return Err(ShardingError::Db(error));
             }
@@ -315,7 +335,7 @@ impl TwoPhaseShardingTransaction {
 
 impl PreparedTwoPhaseTransaction {
     async fn commit(self) -> Result<()> {
-        let mut errors = Vec::new();
+        let mut committed = Vec::new();
         for (datasource, branch_id) in &self.branch_ids {
             let connection = self.inner.pool.connection(datasource.as_str())?;
             if let Err(error) = connection
@@ -324,18 +344,31 @@ impl PreparedTwoPhaseTransaction {
                 )
                 .await
             {
-                errors.push(format!("{datasource}: {error}"));
+                // A partial commit has occurred: some branches committed, others
+                // did not.  We must NOT continue committing remaining branches
+                // blindly.  Instead, report the failure with details of what was
+                // committed and what remains so an operator can resolve manually.
+                let remaining: Vec<String> = self
+                    .branch_ids
+                    .iter()
+                    .filter(|(ds, _)| !committed.contains(ds))
+                    .map(|(ds, bid)| format!("{ds}:{bid}"))
+                    .collect();
+                return Err(ShardingError::Route(format!(
+                    "two-phase COMMIT PREPARED failed on `{datasource}` ({error}); \
+                     committed branches: [{}]; \
+                     uncommitted branches requiring manual resolution: [{}]",
+                    committed
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    remaining.join(", ")
+                )));
             }
+            committed.push(datasource);
         }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(ShardingError::Route(format!(
-                "two-phase commit left unresolved branches: {}",
-                errors.join(", ")
-            )))
-        }
+        Ok(())
     }
 }
 
@@ -407,15 +440,7 @@ impl ConnectionTrait for ShardingTransaction {
         stmt: sea_orm::Statement,
     ) -> std::result::Result<ExecResult, DbErr> {
         self.inner
-            .execute_with_raw(
-                self,
-                stmt,
-                true,
-                None,
-                self.access_context_override.clone(),
-                self.tenant_override.clone(),
-                self.shadow_headers_override.clone(),
-            )
+            .execute_with_raw(self, stmt, true, self.execution_overrides())
             .await
     }
 
@@ -429,15 +454,7 @@ impl ConnectionTrait for ShardingTransaction {
         stmt: sea_orm::Statement,
     ) -> std::result::Result<Option<QueryResult>, DbErr> {
         self.inner
-            .query_one_with_raw(
-                self,
-                stmt,
-                true,
-                None,
-                self.access_context_override.clone(),
-                self.tenant_override.clone(),
-                self.shadow_headers_override.clone(),
-            )
+            .query_one_with_raw(self, stmt, true, self.execution_overrides())
             .await
     }
 
@@ -446,15 +463,7 @@ impl ConnectionTrait for ShardingTransaction {
         stmt: sea_orm::Statement,
     ) -> std::result::Result<Vec<QueryResult>, DbErr> {
         self.inner
-            .query_all_with_raw(
-                self,
-                stmt,
-                true,
-                None,
-                self.access_context_override.clone(),
-                self.tenant_override.clone(),
-                self.shadow_headers_override.clone(),
-            )
+            .query_all_with_raw(self, stmt, true, self.execution_overrides())
             .await
     }
 }

@@ -21,12 +21,14 @@ pub enum ShadowCondition {
 
 #[derive(Debug, Clone)]
 pub struct ShadowRouter {
-    config: Arc<ShardingConfig>,
+    config: ShardingConfig,
 }
 
 impl ShadowRouter {
     pub fn new(config: Arc<ShardingConfig>) -> Self {
-        Self { config }
+        Self {
+            config: config.as_ref().clone(),
+        }
     }
 
     pub fn should_route(&self, analysis: &StatementContext) -> bool {
@@ -65,18 +67,13 @@ impl ShadowRouter {
                     .column
                     .as_ref()
                     .and_then(|column| analysis.exact_condition_value(column))
-                    .and_then(|value| {
-                        let string = match value {
-                            crate::algorithm::ShardingValue::Str(text) => Some(text.clone()),
-                            crate::algorithm::ShardingValue::Int(number) => {
-                                Some(number.to_string())
-                            }
-                            crate::algorithm::ShardingValue::DateTime(datetime) => {
-                                Some(datetime.to_rfc3339())
-                            }
-                            crate::algorithm::ShardingValue::Null => None,
-                        };
-                        string
+                    .and_then(|value| match value {
+                        crate::algorithm::ShardingValue::Str(text) => Some(text.clone()),
+                        crate::algorithm::ShardingValue::Int(number) => Some(number.to_string()),
+                        crate::algorithm::ShardingValue::DateTime(datetime) => {
+                            Some(datetime.to_rfc3339())
+                        }
+                        crate::algorithm::ShardingValue::Null => None,
                     })
                     .is_some_and(|actual| {
                         condition

@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
-use summer_web::axum::http::{HeaderMap, StatusCode};
 
 use crate::types::chat::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
@@ -15,6 +15,7 @@ use crate::types::common::{
     Delta, FinishReason, FunctionCall, FunctionCallDelta, Message, Tool, ToolCall, ToolCallDelta,
     Usage,
 };
+use crate::types::sse_parser::SseParser;
 
 use super::{
     ProviderAdapter, ProviderErrorInfo, ProviderErrorKind, ProviderStreamError,
@@ -256,7 +257,7 @@ impl ProviderAdapter for AnthropicAdapter {
     ) -> Result<BoxStream<'static, Result<ChatCompletionChunk>>> {
         let stream = async_stream::stream! {
             let mut byte_stream = response.bytes_stream();
-            let mut buffer = String::new();
+            let mut parser = SseParser::new();
             let mut state = AnthropicStreamState {
                 created: unix_timestamp(),
                 ..Default::default()
@@ -271,12 +272,15 @@ impl ProviderAdapter for AnthropicAdapter {
                     }
                 };
 
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                let events = match parser.feed(&chunk) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        yield Err(error.context("failed to parse anthropic SSE event bytes"));
+                        break;
+                    }
+                };
 
-                while let Some(pos) = buffer.find("\n\n") {
-                    let event_text = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
-
+                for event_text in events {
                     let Some((event_name, data)) = parse_sse_event(&event_text) else {
                         continue;
                     };
@@ -479,12 +483,7 @@ impl ProviderAdapter for AnthropicAdapter {
         ResponsesRuntimeMode::ChatBridge
     }
 
-    fn parse_error(
-        &self,
-        status: StatusCode,
-        _headers: &HeaderMap,
-        body: &[u8],
-    ) -> ProviderErrorInfo {
+    fn parse_error(&self, status: u16, _headers: &HeaderMap, body: &[u8]) -> ProviderErrorInfo {
         let payload: serde_json::Value =
             serde_json::from_slice(body).unwrap_or_else(|_| serde_json::json!({}));
         let error_obj = payload.get("error").unwrap_or(&payload);
@@ -515,7 +514,7 @@ fn build_anthropic_url(base_url: &str) -> String {
     }
 }
 
-fn default_anthropic_error_code(status: StatusCode) -> &'static str {
+fn default_anthropic_error_code(status: u16) -> &'static str {
     match status_to_provider_error_kind(status) {
         ProviderErrorKind::InvalidRequest => "invalid_request_error",
         ProviderErrorKind::Authentication => "authentication_error",
@@ -785,7 +784,10 @@ fn convert_tool_result_content(content: &serde_json::Value) -> Option<serde_json
 }
 
 fn parse_function_arguments(arguments: &str) -> serde_json::Value {
-    serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::Value::String(arguments.into()))
+    serde_json::from_str(arguments).unwrap_or_else(|e| {
+        tracing::warn!(arguments, error = %e, "failed to parse tool call arguments as JSON, passing as raw string");
+        serde_json::Value::String(arguments.into())
+    })
 }
 
 fn serialize_arguments(arguments: serde_json::Value) -> String {
@@ -918,6 +920,8 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
+    use http::StatusCode;
 
     fn sample_request() -> ChatCompletionRequest {
         serde_json::from_value(serde_json::json!({
@@ -1385,6 +1389,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parse_stream_preserves_utf8_when_sse_chunk_splits_multibyte_boundary() {
+        let adapter = AnthropicAdapter;
+        let event = concat!(
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,",
+            "\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n"
+        );
+        let bytes = event.as_bytes();
+        let split_at = bytes
+            .windows("你".len())
+            .position(|window| window == "你".as_bytes())
+            .expect("utf8 boundary")
+            + 1;
+        let chunks = vec![
+            Ok::<_, std::io::Error>(Bytes::copy_from_slice(&bytes[..split_at])),
+            Ok::<_, std::io::Error>(Bytes::copy_from_slice(&bytes[split_at..])),
+        ];
+        let mock_response = http::Response::builder()
+            .status(200)
+            .body(reqwest::Body::wrap_stream(stream::iter(chunks)))
+            .unwrap();
+        let response = reqwest::Response::from(mock_response);
+
+        let chunks: Vec<_> = adapter
+            .parse_stream(response, "claude-sonnet-4-20250514")
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.choices[0].delta.content.as_deref() == Some("你好"))
+        );
+    }
+
+    #[tokio::test]
     async fn parse_stream_emits_reasoning_content_for_thinking_delta() {
         let adapter = AnthropicAdapter;
         let sse_body = concat!(
@@ -1704,7 +1748,7 @@ mod tests {
     #[test]
     fn parse_error_maps_authentication_error_to_authentication() {
         let info = AnthropicAdapter.parse_error(
-            StatusCode::UNAUTHORIZED,
+            StatusCode::UNAUTHORIZED.as_u16(),
             &HeaderMap::new(),
             br#"{"type":"error","error":{"type":"authentication_error","message":"invalid api key"}}"#,
         );
@@ -1717,7 +1761,7 @@ mod tests {
     #[test]
     fn parse_error_maps_overloaded_error_to_server() {
         let info = AnthropicAdapter.parse_error(
-            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::SERVICE_UNAVAILABLE.as_u16(),
             &HeaderMap::new(),
             br#"{"type":"error","error":{"type":"overloaded_error","message":"upstream overloaded"}}"#,
         );

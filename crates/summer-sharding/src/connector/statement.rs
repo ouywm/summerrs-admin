@@ -164,11 +164,13 @@ pub fn analyze_statement(stmt: &Statement) -> Result<StatementContext> {
                 );
             }
         }
-        AstStatement::Update { selection, .. } => {
-            if let Some(selection) = selection {
-                collect_expr_conditions(selection, stmt.values.as_ref(), &mut sharding_conditions);
-            }
-        }
+        AstStatement::Update {
+            selection: Some(selection),
+            ..
+        } => collect_expr_conditions(selection, stmt.values.as_ref(), &mut sharding_conditions),
+        AstStatement::Update {
+            selection: None, ..
+        } => {}
         AstStatement::Delete(delete) => {
             if let Some(selection) = &delete.selection {
                 collect_expr_conditions(selection, stmt.values.as_ref(), &mut sharding_conditions);
@@ -684,8 +686,12 @@ fn placeholder_value(name: &str, values: Option<&Values>) -> Option<ShardingValu
             .get(index.saturating_sub(1))
             .and_then(sea_value_to_sharding_value);
     }
+    // For positional `?` placeholders (MySQL/SQLite), we cannot determine the
+    // correct index without scanning the full AST in source order.  Returning
+    // the first value would silently route to the wrong shard, so we return
+    // None which causes a safe full-scatter query instead.
     if name == "?" {
-        return values.0.first().and_then(sea_value_to_sharding_value);
+        return None;
     }
     None
 }

@@ -8,6 +8,7 @@ use reqwest::multipart::{Form, Part};
 use serde_json::Value;
 use summer_ai_core::types::common::Usage;
 use summer_ai_core::types::error::{OpenAiApiResult, OpenAiErrorResponse};
+use summer_ai_model::entity::channel::ChannelType;
 use summer_ai_model::entity::log::LogStatus;
 use summer_common::extractor::{ClientIp, Multipart, Path};
 use summer_common::response::Json;
@@ -32,7 +33,7 @@ use crate::relay::rate_limit::RateLimitEngine;
 use crate::router::openai::{
     apply_upstream_failure_scope, classify_upstream_provider_failure, extract_request_id,
     extract_upstream_request_id, fallback_usage, insert_request_id_header,
-    insert_upstream_request_id_header,
+    insert_upstream_request_id_header, read_multipart_field_bytes_limited,
 };
 use crate::service::channel::ChannelService;
 use crate::service::log::{AiFailureLogRecord, AiUsageLogRecord, LogService};
@@ -56,17 +57,9 @@ pub(crate) use self::support::{
 #[cfg(test)]
 use summer_web::axum::http::StatusCode;
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct JsonModelRelaySpec {
-    endpoint_scope: &'static str,
-    upstream_path: &'static str,
-    endpoint: &'static str,
-    request_format: &'static str,
-    default_model: Option<&'static str>,
-}
-
-#[derive(Clone, Copy)]
-struct MultipartModelRelaySpec {
     endpoint_scope: &'static str,
     upstream_path: &'static str,
     endpoint: &'static str,
@@ -92,7 +85,6 @@ enum MultipartField {
 struct ParsedMultipartPayload {
     fields: Vec<MultipartField>,
     model: Option<String>,
-    estimated_tokens: i32,
 }
 
 #[derive(Default)]
@@ -215,366 +207,6 @@ fn map_response_bridge_error(
     error: impl std::error::Error + Send + Sync + 'static,
 ) -> OpenAiErrorResponse {
     OpenAiErrorResponse::internal_with(action, error)
-}
-
-/// POST /v1/completions
-#[post_api("/v1/completions")]
-pub async fn completions(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> OpenAiApiResult<Response> {
-    relay_json_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        body,
-        JsonModelRelaySpec {
-            endpoint_scope: "completions",
-            upstream_path: "/v1/completions",
-            endpoint: "completions",
-            request_format: "openai/completions",
-            default_model: None,
-        },
-    )
-    .await
-}
-
-/// POST /v1/images/generations
-#[post_api("/v1/images/generations")]
-pub async fn image_generations(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> OpenAiApiResult<Response> {
-    relay_json_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        body,
-        JsonModelRelaySpec {
-            endpoint_scope: "images",
-            upstream_path: "/v1/images/generations",
-            endpoint: "images/generations",
-            request_format: "openai/images_generations",
-            default_model: Some("gpt-image-1"),
-        },
-    )
-    .await
-}
-
-/// POST /v1/images/edits
-#[post_api("/v1/images/edits")]
-pub async fn image_edits(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Multipart(multipart): Multipart,
-) -> OpenAiApiResult<Response> {
-    relay_multipart_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        multipart,
-        MultipartModelRelaySpec {
-            endpoint_scope: "images",
-            upstream_path: "/v1/images/edits",
-            endpoint: "images/edits",
-            request_format: "openai/images_edits",
-            default_model: Some("gpt-image-1"),
-        },
-    )
-    .await
-}
-
-/// POST /v1/images/variations
-#[post_api("/v1/images/variations")]
-pub async fn image_variations(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Multipart(multipart): Multipart,
-) -> OpenAiApiResult<Response> {
-    relay_multipart_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        multipart,
-        MultipartModelRelaySpec {
-            endpoint_scope: "images",
-            upstream_path: "/v1/images/variations",
-            endpoint: "images/variations",
-            request_format: "openai/images_variations",
-            default_model: Some("gpt-image-1"),
-        },
-    )
-    .await
-}
-
-/// POST /v1/audio/transcriptions
-#[post_api("/v1/audio/transcriptions")]
-pub async fn audio_transcriptions(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Multipart(multipart): Multipart,
-) -> OpenAiApiResult<Response> {
-    relay_multipart_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        multipart,
-        MultipartModelRelaySpec {
-            endpoint_scope: "audio",
-            upstream_path: "/v1/audio/transcriptions",
-            endpoint: "audio/transcriptions",
-            request_format: "openai/audio_transcriptions",
-            default_model: None,
-        },
-    )
-    .await
-}
-
-/// POST /v1/audio/translations
-#[post_api("/v1/audio/translations")]
-pub async fn audio_translations(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Multipart(multipart): Multipart,
-) -> OpenAiApiResult<Response> {
-    relay_multipart_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        multipart,
-        MultipartModelRelaySpec {
-            endpoint_scope: "audio",
-            upstream_path: "/v1/audio/translations",
-            endpoint: "audio/translations",
-            request_format: "openai/audio_translations",
-            default_model: None,
-        },
-    )
-    .await
-}
-
-/// POST /v1/audio/speech
-#[post_api("/v1/audio/speech")]
-pub async fn audio_speech(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> OpenAiApiResult<Response> {
-    relay_json_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        body,
-        JsonModelRelaySpec {
-            endpoint_scope: "audio",
-            upstream_path: "/v1/audio/speech",
-            endpoint: "audio/speech",
-            request_format: "openai/audio_speech",
-            default_model: None,
-        },
-    )
-    .await
-}
-
-/// POST /v1/moderations
-#[post_api("/v1/moderations")]
-pub async fn moderations(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> OpenAiApiResult<Response> {
-    relay_json_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        body,
-        JsonModelRelaySpec {
-            endpoint_scope: "moderations",
-            upstream_path: "/v1/moderations",
-            endpoint: "moderations",
-            request_format: "openai/moderations",
-            default_model: Some("omni-moderation-latest"),
-        },
-    )
-    .await
-}
-
-/// POST /v1/rerank
-#[post_api("/v1/rerank")]
-pub async fn rerank(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> OpenAiApiResult<Response> {
-    relay_json_model_request(
-        token_info,
-        router_svc,
-        billing,
-        rate_limiter,
-        http_client,
-        log_svc,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        body,
-        JsonModelRelaySpec {
-            endpoint_scope: "rerank",
-            upstream_path: "/v1/rerank",
-            endpoint: "rerank",
-            request_format: "openai/rerank",
-            default_model: None,
-        },
-    )
-    .await
 }
 
 /// GET /v1/responses/{response_id}
@@ -728,173 +360,6 @@ pub async fn cancel_response(
             delete_resource_kind: None,
         },
         vec![("response", response_id)],
-    )
-    .await
-}
-
-/// GET /v1/files
-#[get_api("/v1/files")]
-pub async fn list_files(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    req: Request,
-) -> OpenAiApiResult<Response> {
-    relay_resource_get(
-        token_info,
-        router_svc,
-        http_client,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        req,
-        "/v1/files".into(),
-        ResourceRequestSpec {
-            endpoint_scope: "files",
-            bind_resource_kind: None,
-            delete_resource_kind: None,
-        },
-        Vec::new(),
-    )
-    .await
-}
-
-/// POST /v1/files
-#[post_api("/v1/files")]
-pub async fn create_file(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    headers: HeaderMap,
-    Multipart(multipart): Multipart,
-) -> OpenAiApiResult<Response> {
-    relay_resource_multipart_post(
-        token_info,
-        router_svc,
-        http_client,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        headers,
-        multipart,
-        "/v1/files".into(),
-        ResourceRequestSpec {
-            endpoint_scope: "files",
-            bind_resource_kind: Some("file"),
-            delete_resource_kind: None,
-        },
-        Vec::new(),
-        None,
-    )
-    .await
-}
-
-/// GET /v1/files/{file_id}
-#[get_api("/v1/files/{file_id}")]
-pub async fn get_file(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    Path(file_id): Path<String>,
-    req: Request,
-) -> OpenAiApiResult<Response> {
-    relay_resource_get(
-        token_info,
-        router_svc,
-        http_client,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        req,
-        format!("/v1/files/{file_id}"),
-        ResourceRequestSpec {
-            endpoint_scope: "files",
-            bind_resource_kind: None,
-            delete_resource_kind: None,
-        },
-        vec![("file", file_id)],
-    )
-    .await
-}
-
-/// DELETE /v1/files/{file_id}
-#[delete_api("/v1/files/{file_id}")]
-pub async fn delete_file(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    Path(file_id): Path<String>,
-    req: Request,
-) -> OpenAiApiResult<Response> {
-    relay_resource_delete(
-        token_info,
-        router_svc,
-        http_client,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        req,
-        format!("/v1/files/{file_id}"),
-        ResourceRequestSpec {
-            endpoint_scope: "files",
-            bind_resource_kind: None,
-            delete_resource_kind: Some("file"),
-        },
-        vec![("file", file_id.clone())],
-        Some(("file", file_id)),
-    )
-    .await
-}
-
-/// GET /v1/files/{file_id}/content
-#[get_api("/v1/files/{file_id}/content")]
-pub async fn get_file_content(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    ClientIp(client_ip): ClientIp,
-    Path(file_id): Path<String>,
-    req: Request,
-) -> OpenAiApiResult<Response> {
-    relay_resource_get(
-        token_info,
-        router_svc,
-        http_client,
-        channel_svc,
-        token_svc,
-        resource_affinity,
-        client_ip.to_string(),
-        req,
-        format!("/v1/files/{file_id}/content"),
-        ResourceRequestSpec {
-            endpoint_scope: "files",
-            bind_resource_kind: None,
-            delete_resource_kind: None,
-        },
-        vec![("file", file_id)],
     )
     .await
 }
@@ -2701,6 +2166,7 @@ pub async fn delete_model(
     .await
 }
 
+#[allow(dead_code)]
 async fn relay_json_model_request(
     token_info: TokenInfo,
     router_svc: ChannelRouter,
@@ -3052,342 +2518,7 @@ async fn relay_json_model_request(
     ))
 }
 
-async fn relay_multipart_model_request(
-    token_info: TokenInfo,
-    router_svc: ChannelRouter,
-    billing: BillingEngine,
-    rate_limiter: RateLimitEngine,
-    http_client: UpstreamHttpClient,
-    log_svc: LogService,
-    channel_svc: ChannelService,
-    token_svc: TokenService,
-    _resource_affinity: ResourceAffinityService,
-    client_ip: String,
-    headers: HeaderMap,
-    multipart: summer_web::axum::extract::Multipart,
-    spec: MultipartModelRelaySpec,
-) -> OpenAiApiResult<Response> {
-    let request_id = extract_request_id(&headers);
-    let user_agent = UserAgentInfo::from_headers(&headers).raw;
-    let payload = parse_multipart_payload(multipart).await.map_err(|error| {
-        OpenAiErrorResponse::internal_with("failed to parse multipart body", error)
-    })?;
-    let requested_model = payload
-        .model
-        .clone()
-        .or_else(|| spec.default_model.map(ToOwned::to_owned))
-        .ok_or_else(|| OpenAiErrorResponse::invalid_request("missing model"))?;
-
-    token_info
-        .ensure_endpoint_allowed(spec.endpoint_scope)
-        .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
-    token_info
-        .ensure_model_allowed(&requested_model)
-        .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
-    token_svc.update_last_used_ip_async(token_info.token_id, client_ip.clone());
-
-    let model_config = billing
-        .get_model_config_for_endpoint(&requested_model, spec.endpoint_scope)
-        .await
-        .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
-    let group_ratio = billing
-        .get_group_ratio(&token_info.group)
-        .await
-        .map_err(|error| {
-            OpenAiErrorResponse::internal_with("failed to load group pricing", error)
-        })?;
-
-    let estimated_tokens = payload.estimated_tokens.max(1);
-    rate_limiter
-        .reserve(&token_info, &request_id, i64::from(estimated_tokens))
-        .await
-        .map_err(|error| OpenAiErrorResponse::from_quota_error(&error))?;
-
-    let route_exclusions = RouteSelectionExclusions::default();
-    let mut route_plan = router_svc
-        .build_channel_plan_with_exclusions(
-            &token_info.group,
-            &requested_model,
-            spec.endpoint_scope,
-            &route_exclusions,
-        )
-        .await
-        .map_err(|error| {
-            OpenAiErrorResponse::internal_with("failed to build channel plan", error)
-        })?;
-    let max_retries = 3;
-    let start = std::time::Instant::now();
-
-    for attempt in 0..max_retries {
-        let Some(channel) = route_plan.next() else {
-            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-            return Err(OpenAiErrorResponse::no_available_channel(
-                "no available channel",
-            ));
-        };
-
-        let actual_model = mapped_model(&channel, &requested_model);
-        let pre_consumed = match billing
-            .pre_consume(
-                &request_id,
-                &token_info,
-                estimated_tokens,
-                model_config.input_ratio,
-                group_ratio,
-            )
-            .await
-        {
-            Ok(pre_consumed) => pre_consumed,
-            Err(error) => {
-                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-                return Err(OpenAiErrorResponse::from_quota_error(&error));
-            }
-        };
-
-        let form = match payload.to_form(&actual_model) {
-            Ok(form) => form,
-            Err(error) => {
-                let _ = billing
-                    .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
-                let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-                return Err(error);
-            }
-        };
-
-        let mut request_builder = http_client
-            .client()
-            .post(build_upstream_url(
-                &channel.base_url,
-                spec.upstream_path,
-                None,
-            ))
-            .multipart(form);
-        request_builder =
-            apply_upstream_auth(request_builder, channel.channel_type, &channel.api_key);
-        request_builder = apply_forward_headers(request_builder, &headers, false);
-
-        match request_builder.send().await {
-            Ok(resp) if resp.status().is_success() => {
-                let elapsed = start.elapsed().as_millis() as i64;
-                let status = resp.status();
-                let upstream_request_id = extract_upstream_request_id(resp.headers());
-                let content_type = resp.headers().get(CONTENT_TYPE).cloned();
-                let body_bytes = match resp.bytes().await {
-                    Ok(body) => body,
-                    Err(error) => {
-                        let _ = billing
-                            .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                            .await;
-                        channel_svc.record_relay_failure_async(
-                            channel.channel_id,
-                            channel.account_id,
-                            elapsed,
-                            0,
-                            format!("failed to read upstream response: {error}"),
-                        );
-                        route_plan.exclude_selected_account(&channel);
-                        if attempt == max_retries - 1 {
-                            record_passthrough_failure(
-                                &log_svc,
-                                &token_info,
-                                &channel,
-                                spec.endpoint,
-                                spec.request_format,
-                                &requested_model,
-                                &actual_model,
-                                &model_config.model_name,
-                                &request_id,
-                                &upstream_request_id,
-                                elapsed,
-                                false,
-                                &client_ip,
-                                &user_agent,
-                                0,
-                                format!("failed to read upstream response: {error}"),
-                            );
-                            let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-                            return Err(OpenAiErrorResponse::internal_with(
-                                "failed to read upstream response",
-                                error,
-                            ));
-                        }
-                        continue;
-                    }
-                };
-                let json_value = serde_json::from_slice::<Value>(&body_bytes).ok();
-                if let Some(message) =
-                    unusable_success_response_message(status, &body_bytes, spec.endpoint, false)
-                {
-                    let _ = billing
-                        .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                        .await;
-                    channel_svc.record_relay_failure_async(
-                        channel.channel_id,
-                        channel.account_id,
-                        elapsed,
-                        status.as_u16() as i32,
-                        message.clone(),
-                    );
-                    route_plan.exclude_selected_channel(&channel);
-                    if attempt == max_retries - 1 {
-                        record_passthrough_failure(
-                            &log_svc,
-                            &token_info,
-                            &channel,
-                            spec.endpoint,
-                            spec.request_format,
-                            &requested_model,
-                            &actual_model,
-                            &model_config.model_name,
-                            &request_id,
-                            &upstream_request_id,
-                            elapsed,
-                            false,
-                            &client_ip,
-                            &user_agent,
-                            status.as_u16() as i32,
-                            message.clone(),
-                        );
-                        let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-                        return Err(OpenAiErrorResponse::unsupported_endpoint(message));
-                    }
-                    continue;
-                }
-                let usage = json_value
-                    .as_ref()
-                    .and_then(extract_usage_from_value)
-                    .unwrap_or_else(|| fallback_usage(estimated_tokens));
-                let upstream_model = json_value
-                    .as_ref()
-                    .and_then(extract_model_from_response_value)
-                    .unwrap_or(actual_model.clone());
-
-                spawn_resource_usage_accounting_task(
-                    billing,
-                    rate_limiter,
-                    log_svc,
-                    channel_svc,
-                    token_info,
-                    channel,
-                    Some(model_config),
-                    group_ratio,
-                    pre_consumed,
-                    usage,
-                    request_id.clone(),
-                    upstream_request_id.clone(),
-                    Some(requested_model),
-                    upstream_model,
-                    client_ip,
-                    user_agent,
-                    spec.endpoint,
-                    spec.request_format,
-                    elapsed,
-                    0,
-                    false,
-                    spec.endpoint_scope,
-                );
-
-                let mut response =
-                    build_bytes_response(status, body_bytes, content_type, &request_id);
-                insert_upstream_request_id_header(&mut response, &upstream_request_id);
-                return Ok(response);
-            }
-            Ok(resp) => {
-                let elapsed = start.elapsed().as_millis() as i64;
-                let status_code = resp.status().as_u16() as i32;
-                let status = resp.status();
-                let headers = resp.headers().clone();
-                let body = resp.bytes().await.unwrap_or_default();
-                let _ = billing
-                    .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
-                let failure = classify_upstream_provider_failure(
-                    channel.channel_type,
-                    status,
-                    &headers,
-                    &body,
-                );
-                channel_svc.record_relay_failure_async(
-                    channel.channel_id,
-                    channel.account_id,
-                    elapsed,
-                    status_code,
-                    failure.message.clone(),
-                );
-                apply_upstream_failure_scope(&mut route_plan, &channel, failure.scope);
-                if attempt == max_retries - 1 {
-                    record_passthrough_failure(
-                        &log_svc,
-                        &token_info,
-                        &channel,
-                        spec.endpoint,
-                        spec.request_format,
-                        &requested_model,
-                        &actual_model,
-                        &model_config.model_name,
-                        &request_id,
-                        &extract_upstream_request_id(&headers),
-                        elapsed,
-                        false,
-                        &client_ip,
-                        &user_agent,
-                        status_code,
-                        failure.message.clone(),
-                    );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-                    return Err(failure.error);
-                }
-            }
-            Err(error) => {
-                let elapsed = start.elapsed().as_millis() as i64;
-                let _ = billing
-                    .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
-                    .await;
-                channel_svc.record_relay_failure_async(
-                    channel.channel_id,
-                    channel.account_id,
-                    elapsed,
-                    0,
-                    error.to_string(),
-                );
-                route_plan.exclude_selected_account(&channel);
-                if attempt == max_retries - 1 {
-                    record_passthrough_failure(
-                        &log_svc,
-                        &token_info,
-                        &channel,
-                        spec.endpoint,
-                        spec.request_format,
-                        &requested_model,
-                        &actual_model,
-                        &model_config.model_name,
-                        &request_id,
-                        "",
-                        elapsed,
-                        false,
-                        &client_ip,
-                        &user_agent,
-                        0,
-                        error.to_string(),
-                    );
-                    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-                    return Err(OpenAiErrorResponse::internal_with(
-                        "failed to send upstream request",
-                        error,
-                    ));
-                }
-            }
-        }
-    }
-
-    let _ = rate_limiter.finalize_failure_with_retry(&request_id).await;
-    Err(OpenAiErrorResponse::no_available_channel(
-        "all channels failed",
-    ))
-}
-
-async fn relay_resource_get(
+pub(crate) async fn relay_resource_get(
     token_info: TokenInfo,
     router_svc: ChannelRouter,
     http_client: UpstreamHttpClient,
@@ -3421,7 +2552,7 @@ async fn relay_resource_get(
     .await
 }
 
-async fn relay_resource_delete(
+pub(crate) async fn relay_resource_delete(
     token_info: TokenInfo,
     router_svc: ChannelRouter,
     http_client: UpstreamHttpClient,
@@ -3932,7 +3063,7 @@ async fn relay_usage_resource_json_post(
     ))
 }
 
-async fn relay_resource_multipart_post(
+pub(crate) async fn relay_resource_multipart_post(
     token_info: TokenInfo,
     router_svc: ChannelRouter,
     http_client: UpstreamHttpClient,
@@ -3947,9 +3078,7 @@ async fn relay_resource_multipart_post(
     affinity_keys: Vec<(&'static str, String)>,
     delete_affinity: Option<(&'static str, String)>,
 ) -> OpenAiApiResult<Response> {
-    let payload = parse_multipart_payload(multipart).await.map_err(|error| {
-        OpenAiErrorResponse::internal_with("failed to parse multipart body", error)
-    })?;
+    let payload = parse_multipart_payload(multipart).await?;
     if let Some(model) = payload.model.as_ref() {
         token_info
             .ensure_model_allowed(model)
@@ -3996,6 +3125,7 @@ async fn relay_resource_request(
     delete_affinity: Option<(&'static str, String)>,
 ) -> OpenAiApiResult<Response> {
     let request_id = extract_request_id(&headers);
+    let mut last_unsupported_message: Option<String> = None;
     let requested_model = json_body
         .as_deref()
         .and_then(|body| model_from_json_body(body, None));
@@ -4032,11 +3162,28 @@ async fn relay_resource_request(
             )
             .await?
         else {
-            return Err(OpenAiErrorResponse::no_available_channel(if attempt == 0 {
-                "no available channel"
-            } else {
-                "all channels failed"
-            }));
+            return Err(match last_unsupported_message.clone() {
+                Some(message) => OpenAiErrorResponse::unsupported_endpoint(message),
+                None => OpenAiErrorResponse::no_available_channel(if attempt == 0 {
+                    "no available channel"
+                } else {
+                    "all channels failed"
+                }),
+            });
+        };
+
+        if !resource_endpoint_supported(channel.channel_type) {
+            let message = format!("{upstream_path} endpoint is not supported for this provider");
+            channel_svc.record_relay_failure_async(
+                channel.channel_id,
+                channel.account_id,
+                start.elapsed().as_millis() as i64,
+                0,
+                message.clone(),
+            );
+            route_state.exclude_selected_channel(&channel);
+            last_unsupported_message = Some(message);
+            continue;
         };
 
         let mut request_builder = http_client.client().request(
@@ -4194,9 +3341,17 @@ async fn relay_resource_request(
         }
     }
 
-    Err(OpenAiErrorResponse::no_available_channel(
-        "all channels failed",
-    ))
+    Err(match last_unsupported_message {
+        Some(message) => OpenAiErrorResponse::unsupported_endpoint(message),
+        None => OpenAiErrorResponse::no_available_channel("all channels failed"),
+    })
+}
+
+fn resource_endpoint_supported(channel_type: i16) -> bool {
+    matches!(
+        channel_type,
+        value if value == ChannelType::OpenAi as i16 || value == ChannelType::Azure as i16
+    )
 }
 
 fn build_generic_stream_response(
@@ -4277,7 +3432,7 @@ fn build_generic_stream_response(
                 tracker.upstream_model
             };
 
-            spawn_resource_usage_accounting_task(
+            settle_resource_usage_accounting(
                 billing,
                 rate_limiter,
                 log_svc,
@@ -4300,25 +3455,33 @@ fn build_generic_stream_response(
                 first_token_time.unwrap_or(0) as i32,
                 true,
                 endpoint_scope,
-            );
+            )
+            .await;
         } else {
-            billing.refund_later(request_id.clone(), token_info.token_id, pre_consumed);
-            let rl = rate_limiter.clone();
-            let request_id_for_task = request_id.clone();
-            tokio::spawn(async move {
-                if let Err(error) = rl.finalize_failure_with_retry(&request_id_for_task).await {
-                    tracing::warn!("failed to finalize rate limit failure: {error}");
-                }
+            if let Err(error) = billing
+                .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
+                .await
+            {
+                tracing::warn!("failed to refund resource stream reservation: {error}");
+            }
+            if let Err(error) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                tracing::warn!("failed to finalize rate limit failure: {error}");
+            }
+            let failure_message = stream_error.unwrap_or_else(|| {
+                format!("stream ended without usage; estimated_prompt_tokens={estimated_prompt_tokens}")
             });
-            channel_svc.record_relay_failure_async(
-                channel.channel_id,
-                channel.account_id,
-                total_elapsed,
-                0,
-                stream_error.unwrap_or_else(|| {
-                    format!("stream ended without usage; estimated_prompt_tokens={estimated_prompt_tokens}")
-                }),
-            );
+            if let Err(error) = channel_svc
+                .record_relay_failure(
+                    channel.channel_id,
+                    channel.account_id,
+                    total_elapsed,
+                    0,
+                    &failure_message,
+                )
+                .await
+            {
+                tracing::warn!("failed to update relay failure health state: {error}");
+            }
         }
     };
 
@@ -4428,6 +3591,134 @@ fn build_resource_passthrough_stream_response(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn settle_resource_usage_accounting(
+    billing: BillingEngine,
+    rate_limiter: RateLimitEngine,
+    log_svc: LogService,
+    channel_svc: ChannelService,
+    token_info: TokenInfo,
+    channel: SelectedChannel,
+    model_config: Option<ModelConfigInfo>,
+    group_ratio: f64,
+    pre_consumed: i64,
+    usage: Usage,
+    request_id: String,
+    upstream_request_id: String,
+    requested_model: Option<String>,
+    upstream_model: String,
+    client_ip: String,
+    user_agent: String,
+    endpoint: &'static str,
+    request_format: &'static str,
+    elapsed: i64,
+    first_token_time: i32,
+    is_stream: bool,
+    endpoint_scope: &'static str,
+) {
+    let Some(accounting_model) =
+        usage_accounting_model(requested_model.as_deref(), &upstream_model)
+    else {
+        tracing::warn!("failed to determine usage accounting model for endpoint {endpoint}");
+        if let Err(error) = rate_limiter
+            .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
+            .await
+        {
+            tracing::warn!("failed to finalize rate limit success: {error}");
+        }
+        if let Err(error) = channel_svc
+            .record_relay_success(channel.channel_id, channel.account_id, elapsed)
+            .await
+        {
+            tracing::warn!("failed to update relay success health state: {error}");
+        }
+        return;
+    };
+
+    let model_config = match model_config {
+        Some(model_config) => model_config,
+        None => match billing
+            .get_model_config_for_endpoint(&accounting_model, endpoint_scope)
+            .await
+        {
+            Ok(model_config) => model_config,
+            Err(error) => {
+                tracing::warn!("failed to load model config for usage accounting: {error}");
+                if let Err(error) = rate_limiter
+                    .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
+                    .await
+                {
+                    tracing::warn!("failed to finalize rate limit success: {error}");
+                }
+                if let Err(error) = channel_svc
+                    .record_relay_success(channel.channel_id, channel.account_id, elapsed)
+                    .await
+                {
+                    tracing::warn!("failed to update relay success health state: {error}");
+                }
+                return;
+            }
+        },
+    };
+
+    let logged_quota = BillingEngine::calculate_actual_quota(&usage, &model_config, group_ratio);
+    let actual_quota = match billing
+        .post_consume_with_retry(
+            &request_id,
+            &token_info,
+            pre_consumed,
+            &usage,
+            &model_config,
+            group_ratio,
+        )
+        .await
+    {
+        Ok(quota) => quota,
+        Err(error) => {
+            tracing::error!("failed to settle usage asynchronously: {error}");
+            logged_quota
+        }
+    };
+
+    log_svc.record_usage_async(
+        &token_info,
+        &channel,
+        &usage,
+        AiUsageLogRecord {
+            endpoint: endpoint.into(),
+            request_format: request_format.into(),
+            request_id: request_id.clone(),
+            upstream_request_id,
+            requested_model: requested_model.unwrap_or_else(|| accounting_model.clone()),
+            upstream_model,
+            model_name: model_config.model_name.clone(),
+            quota: actual_quota,
+            elapsed_time: elapsed as i32,
+            first_token_time,
+            is_stream,
+            client_ip,
+            user_agent,
+            status_code: 200,
+            content: String::new(),
+            status: LogStatus::Success,
+        },
+    );
+
+    if let Err(error) = rate_limiter
+        .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
+        .await
+    {
+        tracing::warn!("failed to finalize rate limit success: {error}");
+    }
+
+    if let Err(error) = channel_svc
+        .record_relay_success(channel.channel_id, channel.account_id, elapsed)
+        .await
+    {
+        tracing::warn!("failed to update relay success health state: {error}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_resource_usage_accounting_task(
     billing: BillingEngine,
     rate_limiter: RateLimitEngine,
@@ -4453,108 +3744,31 @@ fn spawn_resource_usage_accounting_task(
     endpoint_scope: &'static str,
 ) {
     tokio::spawn(async move {
-        let Some(accounting_model) =
-            usage_accounting_model(requested_model.as_deref(), &upstream_model)
-        else {
-            tracing::warn!("failed to determine usage accounting model for endpoint {endpoint}");
-            if let Err(error) = rate_limiter
-                .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
-                .await
-            {
-                tracing::warn!("failed to finalize rate limit success: {error}");
-            }
-            if let Err(error) = channel_svc
-                .record_relay_success(channel.channel_id, channel.account_id, elapsed)
-                .await
-            {
-                tracing::warn!("failed to update relay success health state: {error}");
-            }
-            return;
-        };
-
-        let model_config = match model_config {
-            Some(model_config) => model_config,
-            None => match billing
-                .get_model_config_for_endpoint(&accounting_model, endpoint_scope)
-                .await
-            {
-                Ok(model_config) => model_config,
-                Err(error) => {
-                    tracing::warn!("failed to load model config for usage accounting: {error}");
-                    if let Err(error) = rate_limiter
-                        .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
-                        .await
-                    {
-                        tracing::warn!("failed to finalize rate limit success: {error}");
-                    }
-                    if let Err(error) = channel_svc
-                        .record_relay_success(channel.channel_id, channel.account_id, elapsed)
-                        .await
-                    {
-                        tracing::warn!("failed to update relay success health state: {error}");
-                    }
-                    return;
-                }
-            },
-        };
-
-        let logged_quota =
-            BillingEngine::calculate_actual_quota(&usage, &model_config, group_ratio);
-        let actual_quota = match billing
-            .post_consume_with_retry(
-                &request_id,
-                &token_info,
-                pre_consumed,
-                &usage,
-                &model_config,
-                group_ratio,
-            )
-            .await
-        {
-            Ok(quota) => quota,
-            Err(error) => {
-                tracing::error!("failed to settle usage asynchronously: {error}");
-                logged_quota
-            }
-        };
-
-        log_svc.record_usage_async(
-            &token_info,
-            &channel,
-            &usage,
-            AiUsageLogRecord {
-                endpoint: endpoint.into(),
-                request_format: request_format.into(),
-                request_id: request_id.clone(),
-                upstream_request_id,
-                requested_model: requested_model.unwrap_or_else(|| accounting_model.clone()),
-                upstream_model,
-                model_name: model_config.model_name.clone(),
-                quota: actual_quota,
-                elapsed_time: elapsed as i32,
-                first_token_time,
-                is_stream,
-                client_ip,
-                user_agent,
-                status_code: 200,
-                content: String::new(),
-                status: LogStatus::Success,
-            },
-        );
-
-        if let Err(error) = rate_limiter
-            .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
-            .await
-        {
-            tracing::warn!("failed to finalize rate limit success: {error}");
-        }
-
-        if let Err(error) = channel_svc
-            .record_relay_success(channel.channel_id, channel.account_id, elapsed)
-            .await
-        {
-            tracing::warn!("failed to update relay success health state: {error}");
-        }
+        settle_resource_usage_accounting(
+            billing,
+            rate_limiter,
+            log_svc,
+            channel_svc,
+            token_info,
+            channel,
+            model_config,
+            group_ratio,
+            pre_consumed,
+            usage,
+            request_id,
+            upstream_request_id,
+            requested_model,
+            upstream_model,
+            client_ip,
+            user_agent,
+            endpoint,
+            request_format,
+            elapsed,
+            first_token_time,
+            is_stream,
+            endpoint_scope,
+        )
+        .await;
     });
 }
 
@@ -4752,19 +3966,20 @@ fn payload_has_text_delta(payload: &Value) -> bool {
 
 async fn parse_multipart_payload(
     mut multipart: summer_web::axum::extract::Multipart,
-) -> anyhow::Result<ParsedMultipartPayload> {
+) -> OpenAiApiResult<ParsedMultipartPayload> {
     let mut fields = Vec::new();
     let mut model = None;
-    let mut estimated_tokens = 0_i32;
 
-    while let Some(field) = multipart.next_field().await? {
+    while let Some(mut field) = multipart.next_field().await.map_err(|error| {
+        OpenAiErrorResponse::internal_with("failed to read multipart field", error)
+    })? {
         let Some(name) = field.name().map(ToOwned::to_owned) else {
             continue;
         };
 
         if let Some(file_name) = field.file_name().map(ToOwned::to_owned) {
             let content_type = field.content_type().map(ToOwned::to_owned);
-            let bytes = field.bytes().await?;
+            let bytes = read_multipart_field_bytes_limited(&mut field, &name).await?;
             fields.push(MultipartField::File {
                 name,
                 file_name,
@@ -4774,19 +3989,19 @@ async fn parse_multipart_payload(
             continue;
         }
 
-        let value = field.text().await?;
+        let bytes = read_multipart_field_bytes_limited(&mut field, &name).await?;
+        let value = String::from_utf8(bytes.to_vec()).map_err(|error| {
+            OpenAiErrorResponse::invalid_request(format!(
+                "multipart field '{name}' is not valid UTF-8: {error}"
+            ))
+        })?;
         if name == "model" && !value.trim().is_empty() {
             model = Some(value.clone());
         }
-        estimated_tokens += (((value.len() as f64) / 4.0).ceil() as i32).max(1);
         fields.push(MultipartField::Text { name, value });
     }
 
-    Ok(ParsedMultipartPayload {
-        fields,
-        model,
-        estimated_tokens: estimated_tokens.max(1),
-    })
+    Ok(ParsedMultipartPayload { fields, model })
 }
 
 impl ParsedMultipartPayload {
@@ -7863,25 +7078,28 @@ mod tests {
         let primary = MockUpstreamServer::spawn(vec![
             MockRoute::json(
                 Method::POST,
-                "/v1/completions",
+                "/v1/chat/completions",
                 Some("Bearer sk-primary"),
                 Some("tell me a joke"),
                 StatusCode::OK,
                 serde_json::json!({
-                    "id": "cmpl_primary",
-                    "object": "text_completion",
+                    "id": "chatcmpl_primary",
+                    "object": "chat.completion",
+                    "created": 1,
                     "model": "__MODEL__",
                     "choices": [{
                         "index": 0,
-                        "text": "primary",
+                        "message": {
+                            "role": "assistant",
+                            "content": "primary"
+                        },
                         "finish_reason": "stop"
                     }],
                     "usage": {
                         "prompt_tokens": 2,
                         "completion_tokens": 1,
                         "total_tokens": 3
-                    },
-                    "route": "primary"
+                    }
                 }),
             ),
             MockRoute::json(
@@ -7991,25 +7209,28 @@ mod tests {
         let fallback = MockUpstreamServer::spawn(vec![
             MockRoute::json(
                 Method::POST,
-                "/v1/completions",
+                "/v1/chat/completions",
                 Some("Bearer sk-fallback"),
                 Some("tell me a joke"),
                 StatusCode::OK,
                 serde_json::json!({
-                    "id": "cmpl_fallback",
-                    "object": "text_completion",
+                    "id": "chatcmpl_fallback",
+                    "object": "chat.completion",
+                    "created": 1,
                     "model": "__MODEL__",
                     "choices": [{
                         "index": 0,
-                        "text": "fallback",
+                        "message": {
+                            "role": "assistant",
+                            "content": "fallback"
+                        },
                         "finish_reason": "stop"
                     }],
                     "usage": {
                         "prompt_tokens": 2,
                         "completion_tokens": 1,
                         "total_tokens": 3
-                    },
-                    "route": "fallback"
+                    }
                 }),
             ),
             MockRoute::json(
@@ -8136,7 +7357,7 @@ mod tests {
                 .await,
         )
         .await;
-        assert_eq!(completions_primary_payload["route"], "primary");
+        assert_eq!(completions_primary_payload["choices"][0]["text"], "primary");
 
         harness
             .promote_fallback_for_scopes(&[
@@ -8162,7 +7383,10 @@ mod tests {
                 .await,
         )
         .await;
-        assert_eq!(completions_fallback_payload["route"], "fallback");
+        assert_eq!(
+            completions_fallback_payload["choices"][0]["text"],
+            "fallback"
+        );
 
         let image_generations_payload = response_json(
             harness
@@ -8294,8 +7518,8 @@ mod tests {
         .await;
         assert_eq!(rerank_payload["results"][0]["route"], "fallback");
 
-        assert_eq!(primary.hit_count("/v1/completions"), 1);
-        assert_eq!(fallback.hit_count("/v1/completions"), 1);
+        assert_eq!(primary.hit_count("/v1/chat/completions"), 1);
+        assert_eq!(fallback.hit_count("/v1/chat/completions"), 1);
         assert_eq!(fallback.hit_count("/v1/images/generations"), 1);
         assert_eq!(fallback.hit_count("/v1/images/edits"), 1);
         assert_eq!(fallback.hit_count("/v1/images/variations"), 1);

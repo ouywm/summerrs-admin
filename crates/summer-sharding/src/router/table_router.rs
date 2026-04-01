@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use regex::Regex;
 
 use crate::{
@@ -10,13 +8,11 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct TableRouter {
-    _config: Arc<ShardingConfig>,
-}
+pub struct TableRouter;
 
 impl TableRouter {
-    pub fn new(config: Arc<ShardingConfig>) -> Self {
-        Self { _config: config }
+    pub fn new(_config: &ShardingConfig) -> Self {
+        Self
     }
 
     pub fn available_targets(

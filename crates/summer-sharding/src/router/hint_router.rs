@@ -34,7 +34,6 @@ impl HintRouter {
             ShardingHint::Broadcast => Ok(Some(
                 all_targets
                     .iter()
-                    .cloned()
                     .map(|actual_table| RouteTarget {
                         datasource: datasource.to_string(),
                         table_rewrites: logic_table
@@ -42,7 +41,7 @@ impl HintRouter {
                             .map(|logic_table| {
                                 vec![crate::router::TableRewrite {
                                     logic_table,
-                                    actual_table,
+                                    actual_table: actual_table.clone(),
                                 }]
                             })
                             .unwrap_or_default(),

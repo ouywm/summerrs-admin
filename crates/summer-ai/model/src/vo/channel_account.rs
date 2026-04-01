@@ -11,6 +11,8 @@ pub struct ChannelAccountVo {
     pub channel_id: i64,
     pub name: String,
     pub credential_type: String,
+    #[serde(skip_serializing)]
+    #[schemars(skip)]
     pub credentials: serde_json::Value,
     pub secret_ref: String,
     pub status: AccountStatus,
@@ -34,10 +36,9 @@ pub struct ChannelAccountVo {
 
 impl ChannelAccountVo {
     pub fn from_model(model: channel_account::Model) -> Self {
-        use std::str::FromStr;
+        use num_traits::ToPrimitive;
 
-        let to_f64 =
-            |value: sea_orm::prelude::BigDecimal| f64::from_str(&value.to_string()).unwrap_or(0.0);
+        let to_f64 = |value: sea_orm::prelude::BigDecimal| value.to_f64().unwrap_or(0.0);
 
         Self {
             id: model.id,
@@ -64,5 +65,45 @@ impl ChannelAccountVo {
             create_time: model.create_time,
             update_time: model.update_time,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn channel_account_vo_does_not_serialize_credentials() {
+        let now = Utc::now().fixed_offset();
+        let vo = ChannelAccountVo {
+            id: 1,
+            channel_id: 10,
+            name: "primary".into(),
+            credential_type: "api_key".into(),
+            credentials: serde_json::json!({"api_key":"sk-secret"}),
+            secret_ref: "vault://ai/openai".into(),
+            status: AccountStatus::Enabled,
+            schedulable: true,
+            priority: 1,
+            weight: 100,
+            rate_multiplier: 1.0,
+            concurrency_limit: 10,
+            quota_limit: "100".into(),
+            quota_used: "1".into(),
+            balance: "99".into(),
+            response_time: 120,
+            failure_streak: 0,
+            last_used_at: None,
+            expires_at: None,
+            test_model: "gpt-5.4".into(),
+            remark: String::new(),
+            create_time: now,
+            update_time: now,
+        };
+
+        let json = serde_json::to_value(&vo).expect("serialize channel account vo");
+        assert!(json.get("credentials").is_none());
+        assert_eq!(json["secretRef"], "vault://ai/openai");
     }
 }

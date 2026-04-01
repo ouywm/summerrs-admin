@@ -1,6 +1,8 @@
 use anyhow::Context;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 use summer::plugin::Service;
 use summer_sea_orm::DbConn;
 use summer_sea_orm::pagination::{Page, Pagination, PaginationExt};
@@ -13,6 +15,8 @@ use summer_ai_model::vo::token::{TokenCreatedVo, TokenVo};
 use summer_common::error::{ApiErrors, ApiResult};
 
 use crate::service::runtime_cache::RuntimeCacheService;
+
+const VALIDATED_TOKEN_CACHE_TTL_SECONDS: u64 = 10;
 
 /// Token 验证后的信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,11 +47,17 @@ pub struct TokenService {
     db: DbConn,
     #[inject(component)]
     cache: RuntimeCacheService,
+    #[inject(component)]
+    ip_batch_sender: Option<Arc<tokio::sync::mpsc::Sender<(i64, String)>>>,
 }
 
 impl TokenService {
     pub fn new(db: DbConn, cache: RuntimeCacheService) -> Self {
-        Self { db, cache }
+        Self {
+            db,
+            cache,
+            ip_batch_sender: None,
+        }
     }
 
     /// 验证 Bearer token，返回 TokenInfo
@@ -78,7 +88,9 @@ impl TokenService {
             if let Some(expire_time) = entry.expire_time
                 && expire_time < chrono::Utc::now().fixed_offset()
             {
-                let _ = self.cache.delete(&cache_key).await;
+                if let Err(e) = self.cache.delete(&cache_key).await {
+                    tracing::warn!(error = %e, "failed to delete expired token from cache");
+                }
                 return Err(ApiErrors::Unauthorized("token has expired".into()));
             }
             return Ok(entry.token_info);
@@ -137,14 +149,17 @@ impl TokenService {
         let token_id = tk.id;
         tokio::spawn(async move {
             let now = chrono::Utc::now().fixed_offset();
-            let _ = token::Entity::update_many()
+            if let Err(e) = token::Entity::update_many()
                 .col_expr(
                     token::Column::AccessTime,
                     sea_orm::sea_query::Expr::value(now),
                 )
                 .filter(token::Column::Id.eq(token_id))
                 .exec(&db)
-                .await;
+                .await
+            {
+                tracing::warn!(error = %e, "failed to update token access time");
+            }
         });
 
         // 7. 确定分组
@@ -186,7 +201,10 @@ impl TokenService {
                 status,
                 expire_time,
             };
-            if let Err(error) = cache.set_json(&cache_key, &entry, 60).await {
+            if let Err(error) = cache
+                .set_json(&cache_key, &entry, VALIDATED_TOKEN_CACHE_TTL_SECONDS)
+                .await
+            {
                 tracing::warn!("failed to cache validated token info: {error}");
             }
         });
@@ -211,19 +229,42 @@ impl TokenService {
     }
 
     pub fn update_last_used_ip_async(&self, token_id: i64, client_ip: impl Into<String>) {
+        if let Some(ref sender) = self.ip_batch_sender {
+            let _ = sender.try_send((token_id, client_ip.into()));
+        }
+    }
+
+    /// Start the background batch writer for last-used IP updates.
+    ///
+    /// Deduplicates by token_id (keeps the latest IP) and flushes to DB
+    /// every 10 seconds or when the batch reaches 64 entries.
+    pub fn start_ip_batch_writer(&mut self) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(i64, String)>(512);
         let db = self.db.clone();
-        let client_ip = client_ip.into();
 
         tokio::spawn(async move {
-            let _ = token::Entity::update_many()
-                .col_expr(
-                    token::Column::LastUsedIp,
-                    sea_orm::sea_query::Expr::value(client_ip),
-                )
-                .filter(token::Column::Id.eq(token_id))
-                .exec(&db)
-                .await;
+            let mut pending: HashMap<i64, String> = HashMap::new();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    Some((token_id, ip)) = rx.recv() => {
+                        pending.insert(token_id, ip);
+                        if pending.len() >= 64 {
+                            flush_ip_batch(&db, &mut pending).await;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if !pending.is_empty() {
+                            flush_ip_batch(&db, &mut pending).await;
+                        }
+                    }
+                }
+            }
         });
+
+        self.ip_batch_sender = Some(Arc::new(tx));
     }
 
     pub async fn list_tokens(
@@ -355,6 +396,22 @@ impl TokenInfo {
 
 fn token_cache_key(key_hash: &str) -> String {
     format!("ai:cache:token:{key_hash}")
+}
+
+async fn flush_ip_batch(db: &DbConn, pending: &mut HashMap<i64, String>) {
+    for (token_id, ip) in pending.drain() {
+        if let Err(e) = token::Entity::update_many()
+            .col_expr(
+                token::Column::LastUsedIp,
+                sea_orm::sea_query::Expr::value(ip),
+            )
+            .filter(token::Column::Id.eq(token_id))
+            .exec(db)
+            .await
+        {
+            tracing::warn!(error = %e, token_id, "failed to batch-update token last used ip");
+        }
+    }
 }
 
 #[cfg(test)]

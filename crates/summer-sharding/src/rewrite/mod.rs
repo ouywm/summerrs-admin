@@ -7,12 +7,13 @@ mod table_rewrite;
 use std::sync::Arc;
 
 use sea_orm::Statement;
+use summer_sql_rewrite::SqlRewriteContext;
 
 use crate::{
     config::ShardingConfig,
     connector::statement::StatementContext,
     error::{Result, ShardingError},
-    rewrite_plugin::{PluginRegistry, context::RewriteContext},
+    rewrite_plugin::{PluginRegistry, ShardingRouteInfo, TableRewritePair},
     router::RoutePlan,
     tenant::apply_tenant_rewrite,
 };
@@ -35,16 +36,19 @@ pub trait SqlRewriter: Send + Sync + 'static {
 
 #[derive(Debug, Clone)]
 pub struct DefaultSqlRewriter {
-    config: Arc<ShardingConfig>,
+    config: ShardingConfig,
 }
 
 impl DefaultSqlRewriter {
     pub fn new(config: Arc<ShardingConfig>) -> Self {
-        Self { config }
+        Self {
+            config: config.as_ref().clone(),
+        }
     }
 }
 
 impl SqlRewriter for DefaultSqlRewriter {
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn rewrite(
         &self,
         stmt: &Statement,
@@ -74,25 +78,44 @@ impl SqlRewriter for DefaultSqlRewriter {
             }
             apply_encrypt_rewrite(&mut statement, &mut parsed, analysis, &self.config)?;
 
-            // 插件链改写：在内置改写完成后执行
             let mut comments = Vec::new();
             if let Some(registry) = plugin_registry {
-                let mut ctx = RewriteContext {
+                let mut extensions = analysis
+                    .access_context
+                    .as_ref()
+                    .map(|ctx| ctx.extensions.clone())
+                    .unwrap_or_default();
+                extensions.insert(ShardingRouteInfo {
+                    datasource: target.datasource.clone(),
+                    table_rewrites: target
+                        .table_rewrites
+                        .iter()
+                        .map(|rewrite| TableRewritePair {
+                            logic: rewrite.logic_table.full_name(),
+                            actual: rewrite.actual_table.full_name(),
+                        })
+                        .collect(),
+                    is_fanout: plan.targets.len() > 1,
+                });
+
+                let mut ctx = SqlRewriteContext {
                     statement: &mut parsed,
-                    analysis,
-                    route: plan,
-                    target,
-                    access_ctx: analysis.access_context.as_ref(),
+                    operation: analysis.operation,
+                    tables: analysis
+                        .tables
+                        .iter()
+                        .map(|table| table.full_name())
+                        .collect(),
+                    original_sql: &stmt.sql,
+                    extensions: &mut extensions,
                     comments: Vec::new(),
                 };
                 registry.rewrite_all(&mut ctx)?;
                 comments = ctx.comments;
             }
 
-            statement.sql = crate::rewrite_plugin::helpers::format_with_comments(
-                &parsed.to_string(),
-                &comments,
-            );
+            statement.sql =
+                summer_sql_rewrite::helpers::format_with_comments(&parsed.to_string(), &comments);
             rewritten.push(statement);
         }
 
@@ -195,5 +218,47 @@ mod tests {
 
         assert_eq!(rewritten.len(), 1);
         assert!(rewritten[0].sql.contains("ALTER TABLE ai.log_202603"));
+    }
+
+    #[test]
+    fn rewriter_keeps_logic_table_alias_for_entity_qualified_columns() {
+        let stmt = Statement::from_string(
+            DbBackend::Postgres,
+            r#"SELECT "tenant_case_isolated"."id", "tenant_case_isolated"."title" FROM "test"."tenant_case_isolated" WHERE "tenant_case_isolated"."id" = $1"#,
+        );
+        let analysis = analyze_statement(&stmt).expect("analysis");
+        let plan = RoutePlan {
+            operation: SqlOperation::Select,
+            logic_tables: vec![QualifiedTableName::parse("test.tenant_case_isolated")],
+            targets: vec![RouteTarget {
+                datasource: "ds_test".to_string(),
+                table_rewrites: vec![TableRewrite {
+                    logic_table: QualifiedTableName::parse("test.tenant_case_isolated"),
+                    actual_table: QualifiedTableName::parse("test.tenant_case_isolated_tseedtable"),
+                }],
+            }],
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
+            broadcast: false,
+        };
+
+        let rewritten = DefaultSqlRewriter::new(Arc::new(ShardingConfig::default()))
+            .rewrite(&stmt, &analysis, &plan, None)
+            .expect("rewrite");
+
+        assert_eq!(rewritten.len(), 1);
+        assert!(
+            rewritten[0]
+                .sql
+                .contains("FROM test.tenant_case_isolated_tseedtable AS tenant_case_isolated"),
+            "rewritten sql: {}",
+            rewritten[0].sql
+        );
+        assert!(
+            rewritten[0]
+                .sql
+                .contains(r#"WHERE "tenant_case_isolated"."id" = $1"#)
+        );
     }
 }

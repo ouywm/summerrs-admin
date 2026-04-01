@@ -78,6 +78,8 @@ pub struct ChannelDetailVo {
     pub capabilities: serde_json::Value,
     pub weight: i32,
     pub priority: i32,
+    #[serde(skip_serializing)]
+    #[schemars(skip)]
     pub config: serde_json::Value,
     pub auto_ban: bool,
     pub test_model: String,
@@ -89,7 +91,7 @@ pub struct ChannelDetailVo {
     pub last_used_at: Option<DateTime<FixedOffset>>,
     pub last_error_at: Option<DateTime<FixedOffset>>,
     pub last_error_code: String,
-    pub last_error_message: String,
+    pub last_error_message: Option<String>,
     pub remark: String,
     pub create_by: String,
     pub create_time: DateTime<FixedOffset>,
@@ -141,4 +143,51 @@ pub struct ChannelTestVo {
     pub status_code: i32,
     pub elapsed_ms: i64,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn channel_detail_vo_does_not_serialize_config() {
+        let now = Utc::now().fixed_offset();
+        let vo = ChannelDetailVo {
+            id: 1,
+            name: "openai-primary".into(),
+            channel_type: ChannelType::OpenAi,
+            vendor_code: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            status: ChannelStatus::Enabled,
+            models: serde_json::json!(["gpt-5.4"]),
+            model_mapping: serde_json::json!({}),
+            channel_group: "default".into(),
+            endpoint_scopes: serde_json::json!(["chat"]),
+            capabilities: serde_json::json!(["stream"]),
+            weight: 100,
+            priority: 1,
+            config: serde_json::json!({"api_key":"sk-secret"}),
+            auto_ban: true,
+            test_model: "gpt-5.4".into(),
+            used_quota: 0,
+            balance: "0".into(),
+            response_time: 120,
+            success_rate: "99.9".into(),
+            failure_streak: 0,
+            last_used_at: None,
+            last_error_at: None,
+            last_error_code: String::new(),
+            last_error_message: None,
+            remark: String::new(),
+            create_by: "admin".into(),
+            create_time: now,
+            update_by: "admin".into(),
+            update_time: now,
+        };
+
+        let json = serde_json::to_value(&vo).expect("serialize channel detail vo");
+        assert!(json.get("config").is_none());
+        assert_eq!(json["baseUrl"], "https://api.openai.com/v1");
+    }
 }

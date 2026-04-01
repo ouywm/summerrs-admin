@@ -40,24 +40,47 @@ pub fn apply_tenant_rewrite(
 }
 
 fn inject_query_filter(query: &mut Query, tenant: &TenantContext, config: &ShardingConfig) {
-    match query.body.as_mut() {
+    inject_set_expr_filter(query.body.as_mut(), tenant, config);
+}
+
+fn inject_set_expr_filter(body: &mut SetExpr, tenant: &TenantContext, config: &ShardingConfig) {
+    match body {
         SetExpr::Select(select) => {
-            let qualifier = select.from.first().and_then(resolve_qualifier);
-            inject_selection(&mut select.selection, tenant, config, qualifier);
+            // Inject tenant filter for every FROM table and every JOIN table
+            for table_with_joins in &select.from {
+                inject_table_factor_filter(
+                    &table_with_joins.relation,
+                    &mut select.selection,
+                    tenant,
+                    config,
+                );
+                for join in &table_with_joins.joins {
+                    inject_table_factor_filter(
+                        &join.relation,
+                        &mut select.selection,
+                        tenant,
+                        config,
+                    );
+                }
+            }
         }
         SetExpr::Query(inner) => inject_query_filter(inner, tenant, config),
         SetExpr::SetOperation { left, right, .. } => {
-            if let SetExpr::Select(select) = left.as_mut() {
-                let qualifier = select.from.first().and_then(resolve_qualifier);
-                inject_selection(&mut select.selection, tenant, config, qualifier);
-            }
-            if let SetExpr::Select(select) = right.as_mut() {
-                let qualifier = select.from.first().and_then(resolve_qualifier);
-                inject_selection(&mut select.selection, tenant, config, qualifier);
-            }
+            inject_set_expr_filter(left.as_mut(), tenant, config);
+            inject_set_expr_filter(right.as_mut(), tenant, config);
         }
         _ => {}
     }
+}
+
+fn inject_table_factor_filter(
+    factor: &TableFactor,
+    selection: &mut Option<Expr>,
+    tenant: &TenantContext,
+    config: &ShardingConfig,
+) {
+    let qualifier = resolve_table_factor_qualifier(factor);
+    inject_selection(selection, tenant, config, qualifier);
 }
 
 fn inject_delete_filter(delete: &mut Delete, tenant: &TenantContext, config: &ShardingConfig) {
@@ -100,13 +123,13 @@ fn inject_insert_tenant(insert: &mut Insert, tenant: &TenantContext, config: &Sh
     }
 
     insert.columns.push(Ident::new(tenant_column));
-    if let Some(source) = &mut insert.source {
-        if let SetExpr::Values(values) = source.body.as_mut() {
-            for row in &mut values.rows {
-                row.push(Expr::Value(Value::SingleQuotedString(
-                    tenant.tenant_id.clone(),
-                )));
-            }
+    if let Some(source) = &mut insert.source
+        && let SetExpr::Values(values) = source.body.as_mut()
+    {
+        for row in &mut values.rows {
+            row.push(Expr::Value(Value::SingleQuotedString(
+                tenant.tenant_id.clone(),
+            )));
         }
     }
 }

@@ -17,9 +17,3 @@
 - 配置与字典：`sys.config_group`、`sys.config`、`sys.dict_type`、`sys.dict_data`
 - 日志与文件：`sys.login_log`、`sys.operation_log`、`sys.notice`、`sys.notice_target`、`sys.notice_user`、`sys.file`
 - 认证层：`sys.verification_token`、`sys.two_factor`、`sys.two_factor_backup_code`、`sys.custom_oauth_provider`、`sys.user_oauth_binding`、`sys.passkey_credential`
-
-说明：
-
-- 认证层归 `sys`，不归 `ai`
-- 菜单种子数据统一写入 `sys.menu`
-- 老库迁移时，需要把原来的 `public.sys_*` 表移动到 `sys` schema 并去掉重复前缀

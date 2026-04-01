@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, env, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
+use futures::future::try_join_all;
 use sea_orm::{
     ColumnTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend,
     EntityTrait, QueryFilter, QueryOrder, QueryResult, QuerySelect, Statement,
@@ -7,7 +8,7 @@ use sea_orm::{
 use serde::Deserialize;
 use summer_sharding::{
     CurrentTenant, DataSourcePool, ShardingConfig, ShardingConnection, SummerShardingConfig,
-    TenantContextLayer, TenantShardingConnection,
+    TenantContext, TenantContextLayer, TenantIsolationLevel, TenantShardingConnection,
 };
 use summer_web::axum::{
     Extension, Router, extract::Query, http::HeaderMap, response::IntoResponse, routing::get,
@@ -18,13 +19,13 @@ const SEED_ROWS: i64 = 20_000;
 const TENANT_A: &str = "T-BENCH-A";
 const TENANT_B: &str = "T-BENCH-B";
 const DEFAULT_DATABASE_URL: &str =
-    "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai";
+    "postgres://admin:123456@127.0.0.1/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai";
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:38080";
 const DEFAULT_MAX_CONNECTIONS: u32 = 64;
 const DEFAULT_MIN_CONNECTIONS: u32 = 8;
 const DEFAULT_ACQUIRE_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 3_000;
-
+const DEFAULT_PREWARM_CONNECTIONS: u32 = 8;
 mod bench_tenant_probe_entity {
     use sea_orm::entity::prelude::*;
 
@@ -55,8 +56,32 @@ struct RangeQuery {
     end: i64,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[cfg_attr(
+    feature = "hotpath",
+    hotpath::main(limit = 40, percentiles = [50, 95, 99])
+)]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    build_runtime()?.block_on(run())
+}
+
+fn build_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+    #[cfg(feature = "hotpath-alloc")]
+    {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+    }
+
+    #[cfg(not(feature = "hotpath-alloc"))]
+    {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+    }
+}
+
+#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = env::var("SUMMER_SHARDING_BENCH_DATABASE_URL")
         .or_else(|_| env::var("SUMMER_SHARDING_E2E_DATABASE_URL"))
         .or_else(|_| env::var("DATABASE_URL"))
@@ -79,9 +104,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let sharding = ShardingConnection::with_pool(runtime_config, pool)?;
     sharding.reload_tenant_metadata(&raw).await?;
+    prewarm_benchmark_paths(&raw, &sharding, &connect_options).await?;
 
     let raw_router = Router::new()
         .route("/select", get(http_raw_select_handler))
+        .route("/select_direct", get(http_raw_select_direct_handler))
         .route("/limit", get(http_raw_limit_handler))
         .route("/entity/select", get(http_raw_entity_select_handler))
         .route("/entity/limit", get(http_raw_entity_limit_handler))
@@ -99,6 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("summer-sharding wrk bench server listening on http://{bind_addr}");
     println!("raw select:    http://{bind_addr}/raw/select?id=1024");
+    println!("raw direct:    http://{bind_addr}/raw/select_direct?id=1024");
     println!("tenant select: http://{bind_addr}/tenant/select?id=1024");
     println!("raw entity:    http://{bind_addr}/raw/entity/select?id=1024");
     println!("tenant entity: http://{bind_addr}/tenant/entity/select?id=1024");
@@ -141,13 +169,31 @@ async fn http_raw_select_handler(
     Query(IdQuery { id }): Query<IdQuery>,
 ) -> impl IntoResponse {
     let row = raw
-        .query_one_raw(tenant_probe_select_by_id_raw_stmt(
+        .query_all_raw(tenant_probe_select_by_id_raw_stmt(
             tenant_id_from_headers(&headers),
             id,
         ))
         .await
         .expect("raw http tenant select")
+        .into_iter()
+        .next()
         .expect("raw http tenant row");
+    payload_from_row(row)
+}
+
+async fn http_raw_select_direct_handler(
+    Extension(raw): Extension<DatabaseConnection>,
+    headers: HeaderMap,
+    Query(IdQuery { id }): Query<IdQuery>,
+) -> impl IntoResponse {
+    let row = raw
+        .query_one_raw(tenant_probe_select_by_id_raw_stmt(
+            tenant_id_from_headers(&headers),
+            id,
+        ))
+        .await
+        .expect("raw http tenant select direct")
+        .expect("raw http tenant row direct");
     payload_from_row(row)
 }
 
@@ -197,9 +243,8 @@ async fn http_raw_entity_select_handler(
     headers: HeaderMap,
     Query(IdQuery { id }): Query<IdQuery>,
 ) -> impl IntoResponse {
-    let row = bench_tenant_probe_entity::Entity::find()
+    let row = bench_tenant_probe_entity::Entity::find_by_id(id)
         .filter(bench_tenant_probe_entity::Column::TenantId.eq(tenant_id_from_headers(&headers)))
-        .filter(bench_tenant_probe_entity::Column::Id.eq(id))
         .one(&raw)
         .await
         .expect("raw entity select")
@@ -287,6 +332,55 @@ fn build_connect_options(database_url: &str) -> ConnectOptions {
     ));
     options.sqlx_logging(false);
     options
+}
+
+async fn prewarm_benchmark_paths(
+    raw: &DatabaseConnection,
+    sharding: &ShardingConnection,
+    connect_options: &ConnectOptions,
+) -> Result<(), sea_orm::DbErr> {
+    let prewarm_connections = read_u32_env(
+        "SUMMER_SHARDING_BENCH_PREWARM_CONNECTIONS",
+        connect_options
+            .get_min_connections()
+            .unwrap_or(DEFAULT_PREWARM_CONNECTIONS),
+    )
+    .max(1);
+
+    try_join_all((0..prewarm_connections).map(|offset| {
+        let raw = raw.clone();
+        async move {
+            raw.query_one_raw(tenant_probe_select_by_id_raw_stmt(
+                TENANT_A,
+                benchmark_probe_id(offset),
+            ))
+            .await?;
+            Ok::<_, sea_orm::DbErr>(())
+        }
+    }))
+    .await?;
+
+    try_join_all((0..prewarm_connections).map(|offset| {
+        let sharding = sharding.with_tenant_context(TenantContext::new(
+            TENANT_A,
+            TenantIsolationLevel::SharedRow,
+        ));
+        async move {
+            sharding
+                .query_one_raw(tenant_probe_select_by_id_sharding_stmt(benchmark_probe_id(
+                    offset,
+                )))
+                .await?;
+            Ok::<_, sea_orm::DbErr>(())
+        }
+    }))
+    .await?;
+
+    Ok(())
+}
+
+fn benchmark_probe_id(offset: u32) -> i64 {
+    1 + (offset as i64 % SEED_ROWS.max(1))
 }
 
 fn read_u32_env(key: &str, default: u32) -> u32 {

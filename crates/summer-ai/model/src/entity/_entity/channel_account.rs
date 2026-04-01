@@ -91,8 +91,8 @@ pub struct Model {
     /// 最后错误码
     pub last_error_code: String,
     /// 最后错误信息
-    #[sea_orm(column_type = "Text")]
-    pub last_error_message: String,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub last_error_message: Option<String>,
     /// 限速恢复时间
     pub rate_limited_until: Option<DateTimeWithTimeZone>,
     /// 过载恢复时间

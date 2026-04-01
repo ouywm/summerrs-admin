@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use summer_web::axum::http::{HeaderMap, StatusCode};
+use reqwest::header::HeaderMap;
 
 use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
 use crate::types::common::{Message, Tool};
@@ -91,12 +91,7 @@ pub trait ProviderAdapter: Send + Sync {
     }
 
     /// Parse a provider-specific error payload into normalized routing semantics.
-    fn parse_error(
-        &self,
-        status: StatusCode,
-        _headers: &HeaderMap,
-        body: &[u8],
-    ) -> ProviderErrorInfo {
+    fn parse_error(&self, status: u16, _headers: &HeaderMap, body: &[u8]) -> ProviderErrorInfo {
         parse_openai_compatible_error(status, body)
     }
 }
@@ -137,7 +132,14 @@ pub(crate) fn responses_request_to_chat_request(req: &ResponsesRequest) -> ChatC
         tools: req
             .tools
             .as_ref()
-            .and_then(|tools| serde_json::from_value::<Vec<Tool>>(tools.clone()).ok()),
+            .and_then(|tools| {
+                serde_json::from_value::<Vec<Tool>>(tools.clone())
+                    .map_err(|e| {
+                        tracing::warn!(error = %e, "failed to parse tools from request, ignoring tools");
+                        e
+                    })
+                    .ok()
+            }),
         tool_choice: req.tool_choice.clone(),
         response_format: req
             .text
@@ -241,9 +243,15 @@ impl std::fmt::Display for ProviderStreamError {
 
 impl std::error::Error for ProviderStreamError {}
 
-fn parse_openai_compatible_error(status: StatusCode, body: &[u8]) -> ProviderErrorInfo {
-    let payload: serde_json::Value =
-        serde_json::from_slice(body).unwrap_or_else(|_| serde_json::json!({}));
+fn parse_openai_compatible_error(status: u16, body: &[u8]) -> ProviderErrorInfo {
+    let payload: serde_json::Value = serde_json::from_slice(body).unwrap_or_else(|e| {
+        tracing::warn!(
+            error = %e,
+            body_preview = %String::from_utf8_lossy(&body[..body.len().min(200)]),
+            "failed to parse upstream error response as JSON"
+        );
+        serde_json::json!({})
+    });
     let error_obj = payload.get("error").unwrap_or(&payload);
     let message = error_obj
         .get("message")
@@ -261,8 +269,8 @@ fn parse_openai_compatible_error(status: StatusCode, body: &[u8]) -> ProviderErr
     ProviderErrorInfo::new(status_to_provider_error_kind(status), message, code)
 }
 
-pub fn status_to_provider_error_kind(status: StatusCode) -> ProviderErrorKind {
-    match status.as_u16() {
+pub fn status_to_provider_error_kind(status: u16) -> ProviderErrorKind {
+    match status {
         400 | 404 | 413 | 422 => ProviderErrorKind::InvalidRequest,
         401 | 403 => ProviderErrorKind::Authentication,
         429 => ProviderErrorKind::RateLimit,
@@ -271,7 +279,7 @@ pub fn status_to_provider_error_kind(status: StatusCode) -> ProviderErrorKind {
     }
 }
 
-fn default_error_code(status: StatusCode) -> &'static str {
+fn default_error_code(status: u16) -> &'static str {
     match status_to_provider_error_kind(status) {
         ProviderErrorKind::InvalidRequest => "invalid_request_error",
         ProviderErrorKind::Authentication => "authentication_error",
@@ -321,7 +329,6 @@ pub fn provider_scope_allowlist(channel_type: i16) -> Option<&'static [&'static 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use summer_web::axum::http::StatusCode;
 
     #[test]
     fn get_adapter_openai() {
@@ -536,7 +543,7 @@ mod tests {
     #[test]
     fn anthropic_parse_error_maps_rate_limit_error() {
         let info = get_adapter(3).parse_error(
-            StatusCode::TOO_MANY_REQUESTS,
+            429,
             &HeaderMap::new(),
             br#"{"type":"error","error":{"type":"rate_limit_error","message":"too many requests"}}"#,
         );
@@ -549,7 +556,7 @@ mod tests {
     #[test]
     fn anthropic_parse_error_preserves_new_api_error_payload() {
         let info = get_adapter(3).parse_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
+            500,
             &HeaderMap::new(),
             br#"{"error":{"type":"new_api_error","message":"invalid claude code request"},"type":"error"}"#,
         );
@@ -562,7 +569,7 @@ mod tests {
     #[test]
     fn gemini_parse_error_maps_invalid_argument() {
         let info = get_adapter(24).parse_error(
-            StatusCode::BAD_REQUEST,
+            400,
             &HeaderMap::new(),
             br#"{"error":{"status":"INVALID_ARGUMENT","message":"bad request"}}"#,
         );
@@ -575,7 +582,7 @@ mod tests {
     #[test]
     fn openai_parse_error_uses_openai_compatible_shape() {
         let info = get_adapter(1).parse_error(
-            StatusCode::UNAUTHORIZED,
+            401,
             &HeaderMap::new(),
             br#"{"error":{"message":"bad key","type":"invalid_request_error","code":"invalid_api_key"}}"#,
         );

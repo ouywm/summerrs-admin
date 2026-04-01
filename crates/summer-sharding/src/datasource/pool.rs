@@ -21,7 +21,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct DataSourcePool {
-    config: Arc<ShardingConfig>,
+    config: ShardingConfig,
     connections: Arc<RwLock<BTreeMap<String, DatabaseConnection>>>,
 }
 
@@ -44,7 +44,7 @@ impl DataSourcePool {
             connections.insert(name.clone(), connection);
         }
         Ok(Self {
-            config,
+            config: config.as_ref().clone(),
             connections: Arc::new(RwLock::new(connections)),
         })
     }
@@ -59,7 +59,7 @@ impl DataSourcePool {
             }
         }
         Ok(Self {
-            config,
+            config: config.as_ref().clone(),
             connections: Arc::new(RwLock::new(connections)),
         })
     }

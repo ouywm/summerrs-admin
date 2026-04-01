@@ -1,0 +1,39 @@
+[package]
+edition = "2024"
+name = "summer-sql-rewrite"
+version = "0.0.1"
+
+[features]
+default = []
+summer = ["dep:summer"]
+summer-auth = ["web", "summer", "dep:summer-auth"]
+web = [
+    "dep:http",
+    "dep:summer-web",
+    "dep:tower-layer",
+    "dep:tower-service",
+]
+
+[dependencies]
+async-trait = { workspace = true }
+http = { workspace = true, optional = true }
+sea-orm = { workspace = true, features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "with-chrono",
+    "with-json",
+    "mock",
+    "proxy",
+] }
+sqlparser = { workspace = true, features = ["visitor"] }
+summer = { workspace = true, optional = true }
+summer-auth = { workspace = true, optional = true, features = ["web"] }
+summer-web = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tower-layer = { workspace = true, optional = true }
+tower-service = { workspace = true, optional = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

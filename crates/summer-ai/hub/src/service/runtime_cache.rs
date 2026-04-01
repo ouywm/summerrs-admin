@@ -1,11 +1,57 @@
 use anyhow::Context;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::collections::HashMap;
 use summer::plugin::Service;
 use summer_common::error::{ApiErrors, ApiResult};
 use summer_redis::Redis;
 use summer_redis::redis;
 use summer_redis::redis::AsyncCommands;
+
+const HASH_COUNTER_MUTATION_LUA: &str = r#"
+local ttl = tonumber(ARGV[1])
+local changed = 0
+local index = 2
+local values = {}
+
+while index <= #ARGV do
+    local field = ARGV[index]
+    local delta = tonumber(ARGV[index + 1])
+    local current = tonumber(redis.call('HGET', KEYS[1], field) or '0')
+    local next_value = current + delta
+    if next_value < 0 then
+        next_value = 0
+    end
+    if next_value ~= current then
+        changed = 1
+    end
+    if next_value == 0 then
+        redis.call('HDEL', KEYS[1], field)
+    else
+        redis.call('HSET', KEYS[1], field, next_value)
+    end
+    table.insert(values, next_value)
+    index = index + 2
+end
+
+if redis.call('HLEN', KEYS[1]) == 0 then
+    redis.call('DEL', KEYS[1])
+elseif ttl > 0 then
+    redis.call('EXPIRE', KEYS[1], ttl)
+end
+
+local result = { changed }
+for i = 1, #values do
+    table.insert(result, values[i])
+end
+return result
+"#;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HashCounterMutationResult {
+    pub changed: bool,
+    pub values: Vec<i64>,
+}
 
 #[derive(Clone, Service)]
 pub struct RuntimeCacheService {
@@ -16,6 +62,10 @@ pub struct RuntimeCacheService {
 impl RuntimeCacheService {
     pub fn new(redis: Redis) -> Self {
         Self { redis }
+    }
+
+    pub fn connection(&self) -> Redis {
+        self.redis.clone()
     }
 
     pub async fn get_json<T>(&self, key: &str) -> ApiResult<Option<T>>
@@ -137,5 +187,148 @@ impl RuntimeCacheService {
             .with_context(|| format!("failed to expire cache key {key}"))
             .map_err(ApiErrors::Internal)?;
         Ok(())
+    }
+
+    /// Atomically increment a key by 1 and set TTL if the key is new.
+    ///
+    /// Uses a Lua script to ensure INCR and EXPIRE are executed atomically,
+    /// preventing keys from persisting forever if a crash occurs between the
+    /// two operations.
+    pub async fn incr_with_expire(&self, key: &str, ttl_seconds: i64) -> ApiResult<i64> {
+        const LUA: &str = r#"
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return current
+"#;
+        let mut conn = self.redis.clone();
+        redis::cmd("EVAL")
+            .arg(LUA)
+            .arg(1)
+            .arg(key)
+            .arg(ttl_seconds)
+            .query_async(&mut conn)
+            .await
+            .with_context(|| format!("failed to atomic incr+expire cache key {key}"))
+            .map_err(ApiErrors::Internal)
+    }
+
+    /// Atomically increment a key by `value` and set TTL if the key is new.
+    pub async fn incr_by_with_expire(
+        &self,
+        key: &str,
+        value: i64,
+        ttl_seconds: i64,
+    ) -> ApiResult<i64> {
+        const LUA: &str = r#"
+local current = redis.call('INCRBY', KEYS[1], ARGV[1])
+if current == tonumber(ARGV[1]) then
+    redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return current
+"#;
+        let mut conn = self.redis.clone();
+        redis::cmd("EVAL")
+            .arg(LUA)
+            .arg(1)
+            .arg(key)
+            .arg(value)
+            .arg(ttl_seconds)
+            .query_async(&mut conn)
+            .await
+            .with_context(|| format!("failed to atomic incr_by+expire cache key {key}"))
+            .map_err(ApiErrors::Internal)
+    }
+
+    pub async fn hash_get_all_i64(&self, key: &str) -> ApiResult<HashMap<String, i64>> {
+        let mut conn = self.redis.clone();
+        conn.hgetall(key)
+            .await
+            .with_context(|| format!("failed to load hash cache key {key}"))
+            .map_err(ApiErrors::Internal)
+    }
+
+    pub async fn mutate_hash_counters(
+        &self,
+        key: &str,
+        ttl_seconds: u64,
+        deltas: &[(&str, i64)],
+    ) -> ApiResult<HashCounterMutationResult> {
+        if deltas.is_empty() {
+            return Ok(HashCounterMutationResult {
+                changed: false,
+                values: Vec::new(),
+            });
+        }
+
+        let mut conn = self.redis.clone();
+        let mut cmd = redis::cmd("EVAL");
+        cmd.arg(HASH_COUNTER_MUTATION_LUA)
+            .arg(1)
+            .arg(key)
+            .arg(ttl_seconds);
+        for (field, delta) in deltas {
+            cmd.arg(field).arg(*delta);
+        }
+
+        let raw: Vec<i64> = cmd
+            .query_async(&mut conn)
+            .await
+            .with_context(|| format!("failed to mutate hash counters for key {key}"))
+            .map_err(ApiErrors::Internal)?;
+
+        let changed = raw.first().copied().unwrap_or_default() != 0;
+        Ok(HashCounterMutationResult {
+            changed,
+            values: raw.into_iter().skip(1).collect(),
+        })
+    }
+
+    pub async fn sorted_set_add(&self, key: &str, score: i64, member: &str) -> ApiResult<()> {
+        let mut conn = self.redis.clone();
+        redis::cmd("ZADD")
+            .arg(key)
+            .arg(score)
+            .arg(member)
+            .query_async::<()>(&mut conn)
+            .await
+            .with_context(|| format!("failed to add sorted-set member for key {key}"))
+            .map_err(ApiErrors::Internal)?;
+        Ok(())
+    }
+
+    pub async fn sorted_set_count_by_score(
+        &self,
+        key: &str,
+        min_score: i64,
+        max_score: i64,
+    ) -> ApiResult<i64> {
+        let mut conn = self.redis.clone();
+        redis::cmd("ZCOUNT")
+            .arg(key)
+            .arg(min_score)
+            .arg(max_score)
+            .query_async(&mut conn)
+            .await
+            .with_context(|| format!("failed to count sorted-set members for key {key}"))
+            .map_err(ApiErrors::Internal)
+    }
+
+    pub async fn sorted_set_remove_by_score(
+        &self,
+        key: &str,
+        min_score: i64,
+        max_score: i64,
+    ) -> ApiResult<i64> {
+        let mut conn = self.redis.clone();
+        redis::cmd("ZREMRANGEBYSCORE")
+            .arg(key)
+            .arg(min_score)
+            .arg(max_score)
+            .query_async(&mut conn)
+            .await
+            .with_context(|| format!("failed to trim sorted-set members for key {key}"))
+            .map_err(ApiErrors::Internal)
     }
 }

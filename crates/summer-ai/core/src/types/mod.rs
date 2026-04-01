@@ -10,3 +10,4 @@ pub mod image;
 pub mod model;
 pub mod moderation;
 pub mod responses;
+pub mod sse_parser;

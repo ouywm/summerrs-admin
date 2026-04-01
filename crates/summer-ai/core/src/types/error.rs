@@ -3,8 +3,11 @@ use std::fmt::Display;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use summer_common::error::ApiErrors;
-use summer_web::axum::http::StatusCode;
-use summer_web::axum::response::{IntoResponse, Response};
+#[cfg(feature = "axum")]
+use summer_web::axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 
 pub type OpenAiApiResult<T, E = OpenAiErrorResponse> = Result<T, E>;
 
@@ -28,15 +31,15 @@ pub struct OpenAiErrorBody {
 /// AI 接口专用错误返回类型
 #[derive(Debug, Clone)]
 pub struct OpenAiErrorResponse {
-    pub status: StatusCode,
+    pub status: u16,
     pub error: OpenAiError,
 }
 
 impl OpenAiError {
     /// 构造 400 invalid_request_error
-    pub fn invalid_request(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn invalid_request(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::BAD_REQUEST,
+            400,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -49,9 +52,9 @@ impl OpenAiError {
     }
 
     /// 构造 401 invalid_api_key
-    pub fn invalid_api_key(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn invalid_api_key(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::UNAUTHORIZED,
+            401,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -64,9 +67,9 @@ impl OpenAiError {
     }
 
     /// 构造 429 insufficient_quota
-    pub fn insufficient_quota(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn insufficient_quota(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::TOO_MANY_REQUESTS,
+            429,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -79,9 +82,9 @@ impl OpenAiError {
     }
 
     /// 构造 403 model_not_available
-    pub fn model_not_available(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn model_not_available(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::FORBIDDEN,
+            403,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -94,9 +97,9 @@ impl OpenAiError {
     }
 
     /// 构造 404 not_found
-    pub fn not_found(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn not_found(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::NOT_FOUND,
+            404,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -108,10 +111,25 @@ impl OpenAiError {
         )
     }
 
-    /// 构造 503 no_available_channel
-    pub fn no_available_channel(msg: impl Into<String>) -> (StatusCode, Self) {
+    /// 构造 413 payload_too_large
+    pub fn payload_too_large(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::SERVICE_UNAVAILABLE,
+            413,
+            Self {
+                error: OpenAiErrorBody {
+                    message: msg.into(),
+                    r#type: "invalid_request_error".into(),
+                    param: None,
+                    code: Some("payload_too_large".into()),
+                },
+            },
+        )
+    }
+
+    /// 构造 503 no_available_channel
+    pub fn no_available_channel(msg: impl Into<String>) -> (u16, Self) {
+        (
+            503,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -124,9 +142,9 @@ impl OpenAiError {
     }
 
     /// 构造 504 upstream_timeout
-    pub fn upstream_timeout(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn upstream_timeout(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::GATEWAY_TIMEOUT,
+            504,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -139,9 +157,9 @@ impl OpenAiError {
     }
 
     /// 构造 502 unsupported_endpoint
-    pub fn unsupported_endpoint(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn unsupported_endpoint(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::BAD_GATEWAY,
+            502,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -154,9 +172,9 @@ impl OpenAiError {
     }
 
     /// 构造 429 rate_limit_exceeded
-    pub fn rate_limit_exceeded(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn rate_limit_exceeded(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::TOO_MANY_REQUESTS,
+            429,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -169,9 +187,9 @@ impl OpenAiError {
     }
 
     /// 构造 500 internal_error
-    pub fn internal_error(msg: impl Into<String>) -> (StatusCode, Self) {
+    pub fn internal_error(msg: impl Into<String>) -> (u16, Self) {
         (
-            StatusCode::INTERNAL_SERVER_ERROR,
+            500,
             Self {
                 error: OpenAiErrorBody {
                     message: msg.into(),
@@ -184,7 +202,7 @@ impl OpenAiError {
     }
 
     /// 将 (StatusCode, OpenAiError) 工厂方法结果转为可直接响应的类型
-    pub fn into_response_with_status(pair: (StatusCode, Self)) -> OpenAiErrorResponse {
+    pub fn into_response_with_status(pair: (u16, Self)) -> OpenAiErrorResponse {
         OpenAiErrorResponse {
             status: pair.0,
             error: pair.1,
@@ -192,16 +210,16 @@ impl OpenAiError {
     }
 }
 
+#[cfg(feature = "axum")]
 impl IntoResponse for OpenAiError {
     fn into_response(self) -> Response {
         OpenAiErrorResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
+            status: 500,
             error: self,
         }
         .into_response()
     }
 }
-
 impl OpenAiErrorResponse {
     pub fn invalid_request(msg: impl Into<String>) -> Self {
         OpenAiError::into_response_with_status(OpenAiError::invalid_request(msg))
@@ -221,6 +239,10 @@ impl OpenAiErrorResponse {
 
     pub fn not_found(msg: impl Into<String>) -> Self {
         OpenAiError::into_response_with_status(OpenAiError::not_found(msg))
+    }
+
+    pub fn payload_too_large(msg: impl Into<String>) -> Self {
+        OpenAiError::into_response_with_status(OpenAiError::payload_too_large(msg))
     }
 
     pub fn no_available_channel(msg: impl Into<String>) -> Self {
@@ -283,17 +305,25 @@ impl From<&ApiErrors> for OpenAiErrorResponse {
     }
 }
 
+#[cfg(feature = "axum")]
 impl IntoResponse for OpenAiErrorResponse {
     fn into_response(self) -> Response {
         let body = serde_json::to_string(&self.error).unwrap_or_default();
+        let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         Response::builder()
-            .status(self.status)
+            .status(status)
             .header("content-type", "application/json")
             .body(body.into())
-            .unwrap()
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body("{\"error\":{\"message\":\"failed to construct error response\",\"type\":\"server_error\",\"code\":\"internal_error\"}}".into())
+                    .expect("static fallback response")
+            })
     }
 }
 
+#[cfg(feature = "axum")]
 impl summer_web::aide::OperationOutput for OpenAiErrorResponse {
     type Inner = OpenAiError;
 
@@ -326,7 +356,7 @@ mod tests {
     #[test]
     fn unsupported_endpoint_error_uses_bad_gateway_contract() {
         let error = OpenAiErrorResponse::unsupported_endpoint("endpoint disabled");
-        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(error.status, 502);
         assert_eq!(error.error.error.r#type, "upstream_error");
         assert_eq!(
             error.error.error.code.as_deref(),
@@ -338,7 +368,7 @@ mod tests {
     #[test]
     fn invalid_api_key_error() {
         let err = OpenAiErrorResponse::invalid_api_key("bad key");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status, 401);
         assert_eq!(err.error.error.r#type, "invalid_request_error");
         assert_eq!(err.error.error.code.as_deref(), Some("invalid_api_key"));
         assert_eq!(err.error.error.message, "bad key");
@@ -347,14 +377,14 @@ mod tests {
     #[test]
     fn insufficient_quota_error() {
         let err = OpenAiErrorResponse::insufficient_quota("no quota");
-        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.status, 429);
         assert_eq!(err.error.error.code.as_deref(), Some("insufficient_quota"));
     }
 
     #[test]
     fn model_not_available_error() {
         let err = OpenAiErrorResponse::model_not_available("gpt-5 not found");
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.status, 403);
         assert_eq!(err.error.error.code.as_deref(), Some("model_not_available"));
     }
 

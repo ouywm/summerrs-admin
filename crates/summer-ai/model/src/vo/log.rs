@@ -24,6 +24,8 @@ pub struct LogVo {
     pub cached_tokens: i32,
     pub reasoning_tokens: i32,
     pub quota: i64,
+    /// 总费用（BigDecimal 序列化为字符串以保持精度）
+    pub cost_total: String,
     pub elapsed_time: i32,
     pub first_token_time: i32,
     pub is_stream: bool,
@@ -54,6 +56,7 @@ impl LogVo {
             cached_tokens: m.cached_tokens,
             reasoning_tokens: m.reasoning_tokens,
             quota: m.quota,
+            cost_total: m.cost_total.to_string(),
             elapsed_time: m.elapsed_time,
             first_token_time: m.first_token_time,
             is_stream: m.is_stream,

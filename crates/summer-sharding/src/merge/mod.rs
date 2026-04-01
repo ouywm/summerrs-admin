@@ -27,16 +27,19 @@ pub trait ResultMerger: Send + Sync + 'static {
 
 #[derive(Debug, Clone)]
 pub struct DefaultResultMerger {
-    config: Arc<ShardingConfig>,
+    config: ShardingConfig,
 }
 
 impl DefaultResultMerger {
     pub fn new(config: Arc<ShardingConfig>) -> Self {
-        Self { config }
+        Self {
+            config: config.as_ref().clone(),
+        }
     }
 }
 
 impl ResultMerger for DefaultResultMerger {
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn merge(
         &self,
         shards: Vec<Vec<QueryResult>>,
@@ -50,6 +53,6 @@ impl ResultMerger for DefaultResultMerger {
         };
         let rows = order_by::merge(rows, plan.order_by.as_slice());
         let rows = limit::apply(rows, plan.limit, plan.offset);
-        post_process::apply(rows, analysis, self.config.as_ref())
+        post_process::apply(rows, analysis, &self.config)
     }
 }

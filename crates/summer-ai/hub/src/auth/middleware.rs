@@ -57,6 +57,7 @@ where
         Box::pin(async move {
             let path = req.uri().path().to_string();
             if !requires_ai_auth(&path) {
+                tracing::debug!(path = %path, "request bypassed AI auth (not an AI relay path)");
                 return inner.call(req).await;
             }
 

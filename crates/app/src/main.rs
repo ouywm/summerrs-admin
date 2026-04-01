@@ -18,9 +18,9 @@ use summer_web::axum::body::Body;
 use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
 
-use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
-
 use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
+use summer_sql_rewrite::SummerSqlRewritePlugin;
+use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 
 fn app_path_auth_builder() -> PathAuthBuilder {
     PathAuthBuilder::new()
@@ -37,13 +37,14 @@ async fn main() {
     App::new()
         .add_plugin(WebPlugin)
         .add_plugin(SeaOrmPlugin)
+        .add_plugin(RedisPlugin)
+        .add_plugin(SummerAuthPlugin)
         .add_plugin(SummerShardingPlugin)
+        .add_plugin(SummerSqlRewritePlugin)
         // .add_plugin(EntitySchemaSyncPlugin)
         .add_plugin(SummerAiHubPlugin)
-        .add_plugin(RedisPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
-        .add_plugin(SummerAuthPlugin)
         .add_plugin(PermBitmapPlugin)
         .add_plugin(SocketGatewayPlugin)
         .add_plugin(Ip2RegionPlugin)

@@ -20,6 +20,13 @@ pub type DdlTaskId = u64;
 const DDL_CATCH_UP_MAX_POLLS: usize = 64;
 const DDL_FINAL_DRAIN_IDLE_ROUNDS: usize = 3;
 
+struct DdlDrainOptions {
+    batch_size: usize,
+    from_position: Option<String>,
+    max_polls: usize,
+    idle_rounds_to_stop: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DdlTaskStatus {
     Pending,
@@ -149,10 +156,10 @@ impl InMemoryOnlineDdlEngine {
         batch: &[DdlShardPlan],
         statements: fn(&DdlShardPlan) -> &Vec<String>,
     ) -> Result<()> {
-        try_join_all(batch.iter().cloned().map(|plan| {
+        try_join_all(batch.iter().map(|plan| {
             let connection = connection.clone();
             async move {
-                for statement in statements(&plan) {
+                for statement in statements(plan) {
                     connection.execute_unprepared(statement).await?;
                 }
                 Ok::<(), ShardingError>(())
@@ -168,9 +175,9 @@ impl InMemoryOnlineDdlEngine {
         batch: &[DdlShardPlan],
         batch_size: usize,
     ) -> Result<()> {
-        try_join_all(batch.iter().cloned().map(|plan| {
+        try_join_all(batch.iter().map(|plan| {
             let connection = connection.clone();
-            async move { Self::execute_snapshot_plan(&connection, &plan, batch_size).await }
+            async move { Self::execute_snapshot_plan(&connection, plan, batch_size).await }
         }))
         .await?;
         Ok(())
@@ -259,19 +266,21 @@ impl InMemoryOnlineDdlEngine {
             return Ok(BTreeMap::new());
         };
 
-        Ok(try_join_all(batch.iter().cloned().map(|plan| async move {
+        Ok(try_join_all(batch.iter().map(|plan| async move {
             let last_position = Self::drain_cdc_changes(
                 source,
                 transformer,
                 sink,
                 plan.table.as_str(),
-                batch_size,
-                None,
-                DDL_CATCH_UP_MAX_POLLS,
-                1,
+                DdlDrainOptions {
+                    batch_size,
+                    from_position: None,
+                    max_polls: DDL_CATCH_UP_MAX_POLLS,
+                    idle_rounds_to_stop: 1,
+                },
             )
             .await?;
-            Ok::<(String, Option<String>), ShardingError>((plan.table, last_position))
+            Ok::<(String, Option<String>), ShardingError>((plan.table.clone(), last_position))
         }))
         .await?
         .into_iter()
@@ -286,7 +295,7 @@ impl InMemoryOnlineDdlEngine {
         cdc: Option<(&dyn CdcSource, &dyn RowTransform, &dyn CdcSink)>,
         resume_positions: &BTreeMap<String, Option<String>>,
     ) -> Result<()> {
-        try_join_all(batch.iter().cloned().map(|plan| {
+        try_join_all(batch.iter().map(|plan| {
             let connection = connection.clone();
             let start_position = resume_positions.get(plan.table.as_str()).cloned().flatten();
             async move {
@@ -303,10 +312,12 @@ impl InMemoryOnlineDdlEngine {
                         transformer,
                         sink,
                         table.as_str(),
-                        batch_size,
-                        start_position,
-                        DDL_CATCH_UP_MAX_POLLS,
-                        DDL_FINAL_DRAIN_IDLE_ROUNDS,
+                        DdlDrainOptions {
+                            batch_size,
+                            from_position: start_position,
+                            max_polls: DDL_CATCH_UP_MAX_POLLS,
+                            idle_rounds_to_stop: DDL_FINAL_DRAIN_IDLE_ROUNDS,
+                        },
                     )
                     .await?;
                 }
@@ -325,10 +336,7 @@ impl InMemoryOnlineDdlEngine {
         transformer: &dyn RowTransform,
         sink: &dyn CdcSink,
         table: &str,
-        batch_size: usize,
-        from_position: Option<String>,
-        max_polls: usize,
-        idle_rounds_to_stop: usize,
+        options: DdlDrainOptions,
     ) -> Result<Option<String>> {
         let names = ghost_table_names(table);
         let mut subscription = source
@@ -336,18 +344,18 @@ impl InMemoryOnlineDdlEngine {
                 slot: names.slot,
                 publication: names.publication,
                 source_tables: vec![table.to_string()],
-                from_position,
+                from_position: options.from_position,
             })
             .await?;
         let mut last_position = subscription.position();
         let mut idle_rounds = 0usize;
 
-        for _ in 0..max_polls.max(1) {
-            let batch = subscription.next_batch(batch_size.max(1)).await?;
+        for _ in 0..options.max_polls.max(1) {
+            let batch = subscription.next_batch(options.batch_size.max(1)).await?;
             if batch.records.is_empty() {
                 idle_rounds += 1;
                 last_position = batch.next_position.or_else(|| subscription.position());
-                if idle_rounds >= idle_rounds_to_stop.max(1) {
+                if idle_rounds >= options.idle_rounds_to_stop.max(1) {
                     break;
                 }
                 continue;
@@ -375,8 +383,6 @@ impl InMemoryOnlineDdlEngine {
         source: &dyn CdcSource,
         transformer: &dyn RowTransform,
         sink: &dyn CdcSink,
-        _slot: &str,
-        _publication: &str,
     ) -> Result<()> {
         self.execute_internal(connection, id, Some((source, transformer, sink)))
             .await
@@ -444,7 +450,6 @@ impl OnlineDdlEngine for InMemoryOnlineDdlEngine {
         let shard_plans = task
             .actual_tables
             .iter()
-            .cloned()
             .map(|table| {
                 let staged_plan =
                     self.planner
@@ -715,15 +720,7 @@ mod tests {
             .into_connection();
 
         engine
-            .execute_task_with_cdc(
-                &connection,
-                id,
-                &source,
-                &RowTransformer,
-                &sink,
-                "ddl_slot",
-                "ddl_pub",
-            )
+            .execute_task_with_cdc(&connection, id, &source, &RowTransformer, &sink)
             .await
             .expect("execute");
 
@@ -810,15 +807,7 @@ mod tests {
             .into_connection();
 
         engine
-            .execute_task_with_cdc(
-                &connection,
-                id,
-                &source,
-                &RowTransformer,
-                &sink,
-                "ddl_slot",
-                "ddl_pub",
-            )
+            .execute_task_with_cdc(&connection, id, &source, &RowTransformer, &sink)
             .await
             .expect("execute");
 
@@ -912,15 +901,7 @@ mod tests {
             let connection = connection.clone();
             async move {
                 engine
-                    .execute_task_with_cdc(
-                        &connection,
-                        task_id,
-                        &source,
-                        &RowTransformer,
-                        &sink,
-                        "summer_online_ddl_slot",
-                        "summer_online_ddl_pub",
-                    )
+                    .execute_task_with_cdc(&connection, task_id, &source, &RowTransformer, &sink)
                     .await
             }
         };

@@ -205,12 +205,12 @@ fn rewrite_update(
         if let AssignmentTarget::ColumnName(target) = &mut assignment.target {
             *target = rewrite_column_object_name(target.clone(), rule.cipher_column.as_str());
         }
-        if let Some(sql_values) = &mut statement.values {
-            if let Expr::Value(SqlValue::Placeholder(placeholder)) = &assignment.value {
-                rewrite_placeholder_value(placeholder, sql_values, |plain| {
-                    encryptor.encrypt(plain.as_str())
-                })?;
-            }
+        if let Some(sql_values) = &mut statement.values
+            && let Expr::Value(SqlValue::Placeholder(placeholder)) = &assignment.value
+        {
+            rewrite_placeholder_value(placeholder, sql_values, |plain| {
+                encryptor.encrypt(plain.as_str())
+            })?;
         }
         rewrite_expr_value(&mut assignment.value, &encryptor)?;
 
@@ -334,21 +334,33 @@ fn rewrite_comparison_side(
     values: &mut Option<sea_orm::Values>,
     rule: &EncryptRuleConfig,
 ) -> Result<()> {
+    if *op == BinaryOperator::Eq
+        && let Some(assisted_query_column) = &rule.assisted_query_column
+    {
+        rewrite_expr_for_digest(value_expr, values, rule)?;
+        *column_expr = rewrite_column_expr(column_expr.clone(), assisted_query_column.as_str());
+        return Ok(());
+    }
+
+    // AES-GCM uses a random nonce, so encrypting the same plaintext twice
+    // produces different ciphertexts.  Equality comparisons (`=`) against a
+    // non-deterministic cipher will NEVER match.  Require an
+    // `assisted_query_column` (deterministic digest) for equality queries.
     if *op == BinaryOperator::Eq {
-        if let Some(assisted_query_column) = &rule.assisted_query_column {
-            rewrite_expr_for_digest(value_expr, values, rule)?;
-            *column_expr = rewrite_column_expr(column_expr.clone(), assisted_query_column.as_str());
-            return Ok(());
-        }
+        return Err(crate::error::ShardingError::Rewrite(format!(
+            "encrypt rule for column `{}` uses non-deterministic AES-GCM encryption; \
+             equality queries require `assisted_query_column` to be configured",
+            rule.column
+        )));
     }
 
     let encryptor = AesGcmEncryptor::from_env(rule.key_env.as_str())?;
-    if let Some(sql_values) = values.as_mut() {
-        if let Expr::Value(SqlValue::Placeholder(placeholder)) = value_expr {
-            rewrite_placeholder_value(placeholder, sql_values, |plain| {
-                encryptor.encrypt(plain.as_str())
-            })?;
-        }
+    if let Some(sql_values) = values.as_mut()
+        && let Expr::Value(SqlValue::Placeholder(placeholder)) = value_expr
+    {
+        rewrite_placeholder_value(placeholder, sql_values, |plain| {
+            encryptor.encrypt(plain.as_str())
+        })?;
     }
     rewrite_expr_value(value_expr, &encryptor)?;
     *column_expr = rewrite_column_expr(column_expr.clone(), rule.cipher_column.as_str());
@@ -360,12 +372,12 @@ fn rewrite_expr_for_digest(
     values: &mut Option<sea_orm::Values>,
     rule: &EncryptRuleConfig,
 ) -> Result<()> {
-    if let Some(sql_values) = values.as_mut() {
-        if let Expr::Value(SqlValue::Placeholder(placeholder)) = expr {
-            rewrite_placeholder_value(placeholder, sql_values, |plain| {
-                Ok(DigestAlgorithm::Sha256.digest(plain.as_str()))
-            })?;
-        }
+    if let Some(sql_values) = values.as_mut()
+        && let Expr::Value(SqlValue::Placeholder(placeholder)) = expr
+    {
+        rewrite_placeholder_value(placeholder, sql_values, |plain| {
+            Ok(DigestAlgorithm::Sha256.digest(plain.as_str()))
+        })?;
     }
     if let Some(plain) = plaintext_for_expr(Some(expr), None) {
         *expr = Expr::Value(SqlValue::SingleQuotedString(

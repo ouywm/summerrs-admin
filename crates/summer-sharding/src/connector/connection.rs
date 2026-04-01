@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -40,13 +40,21 @@ pub struct ShardingConnection {
     pub(crate) shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct ExecutionOverrides {
+    pub(crate) hint: Option<ShardingHint>,
+    pub(crate) access_context: Option<ShardingAccessContext>,
+    pub(crate) tenant: Option<crate::tenant::TenantContext>,
+    pub(crate) shadow_headers: Option<Arc<BTreeMap<String, String>>>,
+}
+
 pub(crate) struct ShardingConnectionInner {
     pub(crate) config: Arc<ShardingConfig>,
     pub(crate) pool: DataSourcePool,
-    pub(crate) router: Arc<dyn SqlRouter>,
-    pub(crate) rewriter: Arc<dyn SqlRewriter>,
-    pub(crate) executor: Arc<dyn Executor>,
-    pub(crate) merger: Arc<dyn ResultMerger>,
+    pub(crate) router: Box<dyn SqlRouter>,
+    pub(crate) rewriter: Box<dyn SqlRewriter>,
+    pub(crate) executor: Box<dyn Executor>,
+    pub(crate) merger: Box<dyn ResultMerger>,
     pub(crate) key_generators: BTreeMap<String, Arc<dyn KeyGenerator>>,
     pub(crate) lookup_index: Arc<LookupIndex>,
     pub(crate) tenant_metadata: Arc<TenantMetadataStore>,
@@ -54,7 +62,7 @@ pub(crate) struct ShardingConnectionInner {
     pub(crate) shadow_router: ShadowRouter,
     pub(crate) auditor: Arc<dyn SqlAuditor>,
     /// SQL 改写插件注册表（可选，由应用层通过 ShardingRewriteConfigurator 注入）
-    pub(crate) plugin_registry: Option<Arc<PluginRegistry>>,
+    pub(crate) plugin_registry: OnceLock<PluginRegistry>,
 }
 
 impl std::fmt::Debug for ShardingConnection {
@@ -72,6 +80,15 @@ impl std::fmt::Debug for ShardingConnectionInner {
 }
 
 impl ShardingConnection {
+    fn execution_overrides(&self) -> ExecutionOverrides {
+        ExecutionOverrides {
+            hint: self.hint_override.clone(),
+            access_context: self.access_context_override.clone(),
+            tenant: self.tenant_override.clone(),
+            shadow_headers: self.shadow_headers_override.clone(),
+        }
+    }
+
     pub async fn build(config: ShardingConfig) -> Result<Self> {
         let config = Arc::new(config);
         let pool = DataSourcePool::build(config.clone()).await?;
@@ -90,20 +107,20 @@ impl ShardingConnection {
         for definition in &config.sharding.lookup_indexes {
             lookup_index.register(LookupDefinition::from_config(definition));
         }
-        let tenant_metadata = TenantMetadataStore::new();
+        let tenant_metadata = Arc::new(TenantMetadataStore::new());
 
         let inner = ShardingConnectionInner {
-            router: Arc::new(DefaultSqlRouter::new(config.clone(), lookup_index.clone())),
-            rewriter: Arc::new(DefaultSqlRewriter::new(config.clone())),
-            executor: Arc::new(ScatterGatherExecutor),
-            merger: Arc::new(DefaultResultMerger::new(config.clone())),
+            router: Box::new(DefaultSqlRouter::new(config.clone(), lookup_index.clone())),
+            rewriter: Box::new(DefaultSqlRewriter::new(config.clone())),
+            executor: Box::new(ScatterGatherExecutor),
+            merger: Box::new(DefaultResultMerger::new(config.clone())),
             key_generators,
             lookup_index,
             tenant_router: TenantRouter::new(config.clone(), tenant_metadata.clone()),
             shadow_router: ShadowRouter::new(config.clone()),
             tenant_metadata,
             auditor: Arc::new(DefaultSqlAuditor::default()),
-            plugin_registry: None,
+            plugin_registry: OnceLock::new(),
             config,
             pool,
         };
@@ -123,20 +140,17 @@ impl ShardingConnection {
     /// 设置 SQL 改写插件注册表。
     /// 由 `SummerShardingPlugin::build()` 调用，将应用层注册的插件注入到连接中。
     ///
-    /// # Panics
-    /// 如果 `ShardingConnection` 的内部 `Arc` 已被克隆（强引用计数 > 1），则 panic。
-    /// 请确保在连接被共享之前调用此方法。
-    pub fn set_plugin_registry(&mut self, registry: PluginRegistry) {
-        let inner = Arc::get_mut(&mut self.inner)
-            .expect("set_plugin_registry must be called before the connection is shared");
-        inner.plugin_registry = Some(Arc::new(registry));
+    pub fn set_plugin_registry(&self, registry: PluginRegistry) {
+        if self.inner.plugin_registry.set(registry).is_err() {
+            tracing::warn!("sql rewrite plugin registry was already initialized");
+        }
     }
 
     /// 获取已注册插件的摘要信息（用于日志）
     pub fn plugin_summary(&self) -> String {
         self.inner
             .plugin_registry
-            .as_ref()
+            .get()
             .map(|r| r.summary())
             .unwrap_or_else(|| "none".to_string())
     }
@@ -159,6 +173,10 @@ impl ShardingConnection {
             tenant_override: Some(self.resolve_tenant_context(tenant)),
             shadow_headers_override: self.shadow_headers_override.clone(),
         }
+    }
+
+    pub fn tenant_context(&self) -> Option<&crate::tenant::TenantContext> {
+        self.tenant_override.as_ref()
     }
 
     pub fn with_access_context(&self, context: ShardingAccessContext) -> Self {
@@ -274,6 +292,7 @@ impl ShardingConnection {
     }
 
     #[allow(dead_code)]
+    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn prepare_statement(
         &self,
         stmt: &Statement,
@@ -284,14 +303,12 @@ impl ShardingConnection {
                 &self.inner.pool,
                 stmt,
                 force_primary,
-                self.hint_override.clone(),
-                self.access_context_override.clone(),
-                self.tenant_override.clone(),
-                self.shadow_headers_override.clone(),
+                self.execution_overrides(),
             )
             .await
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn execute_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -299,18 +316,11 @@ impl ShardingConnection {
         force_primary: bool,
     ) -> std::result::Result<ExecResult, DbErr> {
         self.inner
-            .execute_with_raw(
-                raw,
-                stmt,
-                force_primary,
-                self.hint_override.clone(),
-                self.access_context_override.clone(),
-                self.tenant_override.clone(),
-                self.shadow_headers_override.clone(),
-            )
+            .execute_with_raw(raw, stmt, force_primary, self.execution_overrides())
             .await
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn query_one_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -318,18 +328,11 @@ impl ShardingConnection {
         force_primary: bool,
     ) -> std::result::Result<Option<QueryResult>, DbErr> {
         self.inner
-            .query_one_with_raw(
-                raw,
-                stmt,
-                force_primary,
-                self.hint_override.clone(),
-                self.access_context_override.clone(),
-                self.tenant_override.clone(),
-                self.shadow_headers_override.clone(),
-            )
+            .query_one_with_raw(raw, stmt, force_primary, self.execution_overrides())
             .await
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn query_all_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -337,15 +340,7 @@ impl ShardingConnection {
         force_primary: bool,
     ) -> std::result::Result<Vec<QueryResult>, DbErr> {
         self.inner
-            .query_all_with_raw(
-                raw,
-                stmt,
-                force_primary,
-                self.hint_override.clone(),
-                self.access_context_override.clone(),
-                self.tenant_override.clone(),
-                self.shadow_headers_override.clone(),
-            )
+            .query_all_with_raw(raw, stmt, force_primary, self.execution_overrides())
             .await
     }
 }
@@ -368,21 +363,20 @@ impl ShardingConnectionInner {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn prepare_statement(
         &self,
         raw: &dyn RawStatementExecutor,
         stmt: &Statement,
         force_primary: bool,
-        hint_override: Option<ShardingHint>,
-        access_context_override: Option<ShardingAccessContext>,
-        tenant_override: Option<crate::tenant::TenantContext>,
-        shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
+        overrides: ExecutionOverrides,
     ) -> Result<(StatementContext, RoutePlan, Vec<ExecutionUnit>)> {
         let mut analysis = analyze_statement(stmt)?;
-        analysis.hint = hint_override;
-        analysis.access_context = access_context_override;
-        analysis.tenant = tenant_override;
-        analysis.shadow_headers = shadow_headers_override
+        analysis.hint = overrides.hint;
+        analysis.access_context = overrides.access_context;
+        analysis.tenant = overrides.tenant;
+        analysis.shadow_headers = overrides
+            .shadow_headers
             .as_deref()
             .cloned()
             .unwrap_or_default();
@@ -394,12 +388,9 @@ impl ShardingConnectionInner {
         let mut plan = self.router.route(&analysis, force_primary)?;
         self.apply_tenant_route(&mut plan, analysis.tenant.as_ref());
         self.shadow_router.apply(&mut plan, &analysis);
-        let statements = self.rewriter.rewrite(
-            stmt,
-            &analysis,
-            &plan,
-            self.plugin_registry.as_deref(),
-        )?;
+        let statements =
+            self.rewriter
+                .rewrite(stmt, &analysis, &plan, self.plugin_registry.get())?;
         if statements.len() != plan.targets.len() {
             return Err(ShardingError::Rewrite(format!(
                 "rewritten statement count {} does not match route target count {}",
@@ -497,27 +488,17 @@ impl ShardingConnectionInner {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn execute_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
         stmt: Statement,
         force_primary: bool,
-        hint_override: Option<ShardingHint>,
-        access_context_override: Option<ShardingAccessContext>,
-        tenant_override: Option<crate::tenant::TenantContext>,
-        shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
+        overrides: ExecutionOverrides,
     ) -> std::result::Result<ExecResult, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(
-                raw,
-                &stmt,
-                force_primary,
-                hint_override,
-                access_context_override,
-                tenant_override,
-                shadow_headers_override,
-            )
+            .prepare_statement(raw, &stmt, force_primary, overrides)
             .await?;
         let result = self.executor.execute(raw, units).await.map_err(DbErr::from);
         if result.is_ok() {
@@ -528,27 +509,17 @@ impl ShardingConnectionInner {
         result
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn query_one_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
         stmt: Statement,
         force_primary: bool,
-        hint_override: Option<ShardingHint>,
-        access_context_override: Option<ShardingAccessContext>,
-        tenant_override: Option<crate::tenant::TenantContext>,
-        shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
+        overrides: ExecutionOverrides,
     ) -> std::result::Result<Option<QueryResult>, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(
-                raw,
-                &stmt,
-                force_primary,
-                hint_override,
-                access_context_override,
-                tenant_override,
-                shadow_headers_override,
-            )
+            .prepare_statement(raw, &stmt, force_primary, overrides)
             .await?;
         let result = self
             .executor
@@ -559,27 +530,17 @@ impl ShardingConnectionInner {
         result
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn query_all_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
         stmt: Statement,
         force_primary: bool,
-        hint_override: Option<ShardingHint>,
-        access_context_override: Option<ShardingAccessContext>,
-        tenant_override: Option<crate::tenant::TenantContext>,
-        shadow_headers_override: Option<Arc<BTreeMap<String, String>>>,
+        overrides: ExecutionOverrides,
     ) -> std::result::Result<Vec<QueryResult>, DbErr> {
         let started_at = Instant::now();
         let (analysis, plan, units) = self
-            .prepare_statement(
-                raw,
-                &stmt,
-                force_primary,
-                hint_override,
-                access_context_override,
-                tenant_override,
-                shadow_headers_override,
-            )
+            .prepare_statement(raw, &stmt, force_primary, overrides)
             .await?;
         let result = self
             .executor
@@ -734,26 +695,25 @@ impl ShardingConnectionInner {
                             .exact_condition_value(index.sharding_column.as_str())
                             .cloned()
                     });
-                    if sharding_value.is_none() {
-                        if let Some(old_lookup) = old_lookup_value.as_ref() {
-                            sharding_value = self
-                                .query_lookup_sharding_value(
-                                    raw,
-                                    &definition,
-                                    primary_table.schema.as_deref(),
-                                    old_lookup,
-                                )
-                                .await?;
-                        }
+                    if sharding_value.is_none()
+                        && let Some(old_lookup) = old_lookup_value.as_ref()
+                    {
+                        sharding_value = self
+                            .query_lookup_sharding_value(
+                                raw,
+                                &definition,
+                                primary_table.schema.as_deref(),
+                                old_lookup,
+                            )
+                            .await?;
                     }
 
                     if let (Some(old_lookup), Some(next_lookup)) =
                         (old_lookup_value.as_ref(), next_lookup_value.as_ref())
+                        && old_lookup != next_lookup
                     {
-                        if old_lookup != next_lookup {
-                            self.delete_lookup_entry(raw, &primary_table, &definition, old_lookup)
-                                .await?;
-                        }
+                        self.delete_lookup_entry(raw, &primary_table, &definition, old_lookup)
+                            .await?;
                     }
 
                     if let (Some(lookup_value), Some(sharding_value)) = (
@@ -969,10 +929,32 @@ mod tests {
             set_runtime_recorder,
         },
         encrypt::{AesGcmEncryptor, EncryptAlgorithm},
+        rewrite_plugin::{PluginRegistry, ShardingRouteInfo},
         tenant::{TenantContext, test_support},
     };
+    use summer_sql_rewrite::{SqlRewriteContext, SqlRewritePlugin};
 
     use super::ShardingConnection;
+
+    struct RouteCommentPlugin;
+
+    impl SqlRewritePlugin for RouteCommentPlugin {
+        fn name(&self) -> &str {
+            "route_comment"
+        }
+
+        fn matches(&self, _ctx: &SqlRewriteContext) -> bool {
+            true
+        }
+
+        fn rewrite(&self, ctx: &mut SqlRewriteContext) -> summer_sql_rewrite::Result<()> {
+            let route = ctx
+                .extension::<ShardingRouteInfo>()
+                .expect("sharding route info extension");
+            ctx.append_comment(format!("ds={}", route.datasource).as_str());
+            Ok(())
+        }
+    }
 
     #[test]
     fn sharding_connection_routes_query_to_month_shards() {
@@ -1080,6 +1062,84 @@ mod tests {
         let logs = log_connection.into_transaction_log();
         assert_eq!(logs.len(), 1);
         assert!(logs[0].statements()[0].sql.contains("ai.log_202601"));
+    }
+
+    #[test]
+    fn sharding_connection_exposes_bound_tenant_context() {
+        let config = std::sync::Arc::new(
+            ShardingConfig::from_test_str(
+                r#"
+                [datasources.ds_test]
+                uri = "mock://test"
+                schema = "test"
+                role = "primary"
+
+                [tenant]
+                enabled = true
+                default_isolation = "shared_row"
+                "#,
+            )
+            .expect("config"),
+        );
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([(
+                "ds_test".to_string(),
+                MockDatabase::new(DbBackend::Postgres).into_connection(),
+            )]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool).expect("connection");
+
+        assert!(sharding.tenant_context().is_none());
+
+        let tenant_bound = sharding.with_tenant_context(TenantContext::new(
+            "T-BOUND",
+            TenantIsolationLevel::SharedRow,
+        ));
+
+        let tenant = tenant_bound.tenant_context().expect("bound tenant");
+        assert_eq!(tenant.tenant_id, "T-BOUND");
+        assert_eq!(tenant.isolation_level, TenantIsolationLevel::SharedRow);
+    }
+
+    #[test]
+    fn sharding_connection_allows_setting_plugin_registry_after_connection_is_cloned() {
+        let config = std::sync::Arc::new(
+            ShardingConfig::from_test_str(
+                r#"
+                [datasources.ds_test]
+                uri = "mock://test"
+                schema = "test"
+                role = "primary"
+                "#,
+            )
+            .expect("config"),
+        );
+        let connection = MockDatabase::new(DbBackend::Postgres)
+            .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+            .into_connection();
+        let log_connection = connection.clone();
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([("ds_test".to_string(), connection)]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool).expect("connection");
+        let cloned = sharding.clone();
+
+        let mut registry = PluginRegistry::new();
+        registry.register(RouteCommentPlugin);
+        sharding.set_plugin_registry(registry);
+
+        block_on(cloned.query_all_raw(Statement::from_string(DbBackend::Postgres, "SELECT 1")))
+            .expect("query");
+
+        let logs = log_connection.into_transaction_log();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].statements()[0].sql.contains("ds=ds_test"));
+        assert!(sharding.plugin_summary().contains("route_comment"));
+        assert!(cloned.plugin_summary().contains("route_comment"));
     }
 
     #[test]

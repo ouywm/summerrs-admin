@@ -288,16 +288,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_affinity_record_without_snapshot_metadata_is_rejected() {
+    fn legacy_affinity_record_without_snapshot_metadata_is_rejected() -> anyhow::Result<()> {
         let record: ResourceAffinityRecord = serde_json::from_value(serde_json::json!({
             "token_id": 7,
             "group": "default",
             "channel_id": 11,
             "account_id": 22
-        }))
-        .expect("legacy affinity record");
+        }))?;
 
         assert!(!record.matches_channel_snapshot(3, "https://upstream.example"));
+
+        Ok(())
     }
 
     #[test]

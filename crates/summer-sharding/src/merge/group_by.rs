@@ -145,6 +145,37 @@ fn merge_sum_like(values: &mut BTreeMap<String, Value>, column: &str, incoming: 
     let Some(incoming) = incoming else {
         return;
     };
+
+    // Prefer integer accumulation to avoid precision loss for large i64 values
+    // (f64 can only represent integers exactly up to 2^53).  Fall back to f64
+    // only when one of the operands is a floating-point type.
+    if let Some(next_i) = value_as_i64(&incoming) {
+        match values.get(column) {
+            Some(existing) if is_float_value(existing) => {
+                // existing is float, must use f64
+                if let Some(current) = value_as_f64(existing) {
+                    values.insert(
+                        column.to_string(),
+                        Value::Double(Some(current + next_i as f64)),
+                    );
+                }
+            }
+            Some(existing) => {
+                if let Some(current) = value_as_i64(existing) {
+                    values.insert(
+                        column.to_string(),
+                        Value::BigInt(Some(current.wrapping_add(next_i))),
+                    );
+                }
+            }
+            None => {
+                values.insert(column.to_string(), incoming);
+            }
+        }
+        return;
+    }
+
+    // Floating-point path (original behavior)
     let Some(next) = value_as_f64(&incoming) else {
         return;
     };
@@ -156,6 +187,10 @@ fn merge_sum_like(values: &mut BTreeMap<String, Value>, column: &str, incoming: 
             values.insert(column.to_string(), incoming);
         }
     }
+}
+
+fn is_float_value(value: &Value) -> bool {
+    matches!(value, Value::Float(_) | Value::Double(_))
 }
 
 fn merge_min_max(

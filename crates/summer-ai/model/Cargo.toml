@@ -8,6 +8,7 @@ async-trait = { workspace = true }
 axum-valid = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 ipnetwork = { workspace = true, features = ["serde"] }
+num-traits = "0.2"
 schemars = { workspace = true, features = ["derive", "chrono04"] }
 sea-orm = { workspace = true, features = [
     "with-chrono",

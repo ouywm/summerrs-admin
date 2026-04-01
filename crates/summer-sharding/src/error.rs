@@ -35,6 +35,17 @@ impl From<sqlparser::parser::ParserError> for ShardingError {
     }
 }
 
+impl From<summer_sql_rewrite::SqlRewriteError> for ShardingError {
+    fn from(value: summer_sql_rewrite::SqlRewriteError) -> Self {
+        match value {
+            summer_sql_rewrite::SqlRewriteError::Plugin { plugin, message } => {
+                Self::Plugin { plugin, message }
+            }
+            other => Self::Rewrite(other.to_string()),
+        }
+    }
+}
+
 impl From<ShardingError> for DbErr {
     fn from(value: ShardingError) -> Self {
         DbErr::Custom(value.to_string())

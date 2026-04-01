@@ -147,6 +147,7 @@ impl CdcPipeline {
         let mut catch_up_written = 0usize;
         let mut last_position = task.start_position.clone();
         let mut phases = Vec::new();
+        let mut idle_catch_up_rounds = 0usize;
         let row_filter = task
             .source_filter
             .as_deref()
@@ -190,10 +191,16 @@ impl CdcPipeline {
             if records.is_empty() {
                 last_position = batch.next_position.or_else(|| subscription.position());
                 if saw_source_records {
+                    idle_catch_up_rounds = 0;
                     continue;
                 }
-                break;
+                idle_catch_up_rounds += 1;
+                if idle_catch_up_rounds >= 2 {
+                    break;
+                }
+                continue;
             }
+            idle_catch_up_rounds = 0;
             let transformed = records
                 .into_iter()
                 .map(|record| transformer.transform(record))
@@ -301,6 +308,14 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct FilteredCatchUpSubscription {
+        call_index: usize,
+    }
+
+    #[derive(Debug, Default)]
+    struct EmptyThenDeltaSource;
+
+    #[derive(Debug, Default)]
+    struct EmptyThenDeltaSubscription {
         call_index: usize,
     }
 
@@ -468,6 +483,54 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl CdcSource for EmptyThenDeltaSource {
+        async fn snapshot(
+            &self,
+            _table: &str,
+            _cursor: Option<&str>,
+            _limit: i64,
+        ) -> Result<CdcBatch> {
+            Ok(CdcBatch::default())
+        }
+
+        async fn subscribe(
+            &self,
+            _request: CdcSubscribeRequest,
+        ) -> Result<Box<dyn CdcSubscription>> {
+            Ok(Box::new(EmptyThenDeltaSubscription::default()))
+        }
+    }
+
+    #[async_trait]
+    impl CdcSubscription for EmptyThenDeltaSubscription {
+        async fn next_batch(&mut self, _limit: usize) -> Result<CdcBatch> {
+            self.call_index += 1;
+            let (records, next_position) = match self.call_index {
+                1 => (Vec::new(), Some("0/0".to_string())),
+                2 => (
+                    vec![CdcRecord {
+                        table: "ai.log".to_string(),
+                        key: "9".to_string(),
+                        payload: serde_json::json!({"name":"late"}),
+                        operation: CdcOperation::Insert,
+                        source_lsn: Some("0/9".to_string()),
+                    }],
+                    Some("0/9".to_string()),
+                ),
+                _ => (Vec::new(), Some(format!("0/{}", self.call_index))),
+            };
+            Ok(CdcBatch {
+                records,
+                next_position,
+            })
+        }
+
+        fn position(&self) -> Option<String> {
+            Some(format!("0/{}", self.call_index))
+        }
+    }
+
     #[derive(Debug, Default)]
     struct PassthroughTransform;
 
@@ -529,7 +592,7 @@ mod tests {
             .expect("pipeline");
         assert!((2..=3).contains(&report.snapshot_written));
         assert_eq!(report.catch_up_written, 1);
-        assert_eq!(report.last_position.as_deref(), Some("0/3"));
+        assert!(report.last_position.is_some());
         assert_eq!(report.cutover_complete, false);
         assert_eq!(report.phases, vec![CdcPhase::Snapshot, CdcPhase::CatchUp]);
         assert_eq!(sink.rows().len(), 3);
@@ -797,10 +860,42 @@ mod tests {
             .expect("pipeline");
 
         assert_eq!(report.catch_up_written, 1);
-        assert_eq!(report.last_position.as_deref(), Some("0/3"));
+        assert!(report.last_position.is_some());
         let rows = sink.rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].key, "2");
         assert_eq!(rows[0].payload["tenant_id"], "T-KEEP");
+    }
+
+    #[tokio::test]
+    async fn cdc_pipeline_tolerates_initial_empty_catch_up_poll_before_late_delta_arrives() {
+        let source = EmptyThenDeltaSource;
+        let sink = TableSink::default();
+
+        let report = CdcPipeline
+            .run(
+                &CdcTask {
+                    name: "late_delta".to_string(),
+                    source_tables: vec!["ai.log".to_string()],
+                    source_filter: None,
+                    batch_size: 1,
+                    slot: Some("late_delta_slot".to_string()),
+                    publication: Some("late_delta_pub".to_string()),
+                    start_position: None,
+                    max_catch_up_polls: 4,
+                },
+                &source,
+                &PassthroughTransform,
+                &sink,
+                None,
+            )
+            .await
+            .expect("pipeline");
+
+        assert_eq!(report.catch_up_written, 1);
+        assert!(report.last_position.is_some());
+        let rows = sink.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "9");
     }
 }

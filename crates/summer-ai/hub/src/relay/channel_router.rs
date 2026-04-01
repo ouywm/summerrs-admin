@@ -10,6 +10,7 @@ use summer_ai_model::entity::channel::{self, ChannelStatus};
 use summer_ai_model::entity::channel_account::{self, AccountStatus};
 use summer_common::error::{ApiErrors, ApiResult};
 
+use crate::service::route_health::{RouteHealthService, RouteHealthSnapshot};
 use crate::service::runtime_cache::RuntimeCacheService;
 use summer_ai_core::provider::provider_scope_allowlist;
 
@@ -140,6 +141,18 @@ struct CachedRouteCandidate {
     model_mapping: serde_json::Value,
     priority: i32,
     weight: i32,
+    #[serde(default)]
+    channel_failure_streak: i32,
+    #[serde(default)]
+    channel_response_time: i32,
+    #[serde(default = "default_route_health_status")]
+    last_health_status: i16,
+    #[serde(default)]
+    recent_penalty_count: i32,
+    #[serde(default)]
+    recent_rate_limit_count: i32,
+    #[serde(default)]
+    recent_overload_count: i32,
     accounts: Vec<CachedRouteAccount>,
 }
 
@@ -149,11 +162,22 @@ struct CachedRouteAccount {
     account_name: String,
     weight: i32,
     priority: i32,
+    #[serde(default)]
+    failure_streak: i32,
+    #[serde(default)]
+    response_time: i32,
+    #[serde(default)]
+    recent_penalty_count: i32,
+    #[serde(default)]
+    recent_rate_limit_count: i32,
+    #[serde(default)]
+    recent_overload_count: i32,
     api_key: String,
 }
 
 struct LoadedSchedulableAccounts {
     grouped: std::collections::HashMap<i64, Vec<CachedRouteAccount>>,
+    channel_health: std::collections::HashMap<i64, RouteHealthSnapshot>,
     ttl_seconds: u64,
 }
 
@@ -163,11 +187,17 @@ pub struct ChannelRouter {
     db: DbConn,
     #[inject(component)]
     cache: RuntimeCacheService,
+    #[inject(component)]
+    route_health: RouteHealthService,
 }
 
 impl ChannelRouter {
-    pub fn new(db: DbConn, cache: RuntimeCacheService) -> Self {
-        Self { db, cache }
+    pub fn new(db: DbConn, cache: RuntimeCacheService, route_health: RouteHealthService) -> Self {
+        Self {
+            db,
+            cache,
+            route_health,
+        }
     }
 
     pub async fn select_channel(
@@ -315,6 +345,11 @@ impl ChannelRouter {
                 if accounts.is_empty() {
                     return None;
                 }
+                let route_health = loaded_accounts
+                    .channel_health
+                    .get(&ability.channel_id)
+                    .cloned()
+                    .unwrap_or_default();
 
                 Some(CachedRouteCandidate {
                     channel_id: channel.id,
@@ -324,6 +359,12 @@ impl ChannelRouter {
                     model_mapping: channel.model_mapping.clone(),
                     priority: ability.priority,
                     weight: ability.weight,
+                    channel_failure_streak: channel.failure_streak,
+                    channel_response_time: channel.response_time,
+                    last_health_status: channel.last_health_status,
+                    recent_penalty_count: route_health.recent_penalty_count,
+                    recent_rate_limit_count: route_health.recent_rate_limit_count,
+                    recent_overload_count: route_health.recent_overload_count,
                     accounts,
                 })
             })
@@ -416,6 +457,11 @@ impl ChannelRouter {
                 if accounts.is_empty() {
                     return None;
                 }
+                let route_health = loaded_accounts
+                    .channel_health
+                    .get(&ability.channel_id)
+                    .cloned()
+                    .unwrap_or_default();
 
                 Some(CachedRouteCandidate {
                     channel_id: channel.id,
@@ -425,6 +471,12 @@ impl ChannelRouter {
                     model_mapping: channel.model_mapping.clone(),
                     priority: ability.priority,
                     weight: ability.weight,
+                    channel_failure_streak: channel.failure_streak,
+                    channel_response_time: channel.response_time,
+                    last_health_status: channel.last_health_status,
+                    recent_penalty_count: route_health.recent_penalty_count,
+                    recent_rate_limit_count: route_health.recent_rate_limit_count,
+                    recent_overload_count: route_health.recent_overload_count,
                     accounts,
                 })
             })
@@ -482,6 +534,11 @@ impl ChannelRouter {
                 if accounts.is_empty() {
                     return None;
                 }
+                let route_health = loaded_accounts
+                    .channel_health
+                    .get(&channel.id)
+                    .cloned()
+                    .unwrap_or_default();
 
                 Some(CachedRouteCandidate {
                     channel_id: channel.id,
@@ -491,6 +548,12 @@ impl ChannelRouter {
                     model_mapping: channel.model_mapping,
                     priority: channel.priority,
                     weight: channel.weight,
+                    channel_failure_streak: channel.failure_streak,
+                    channel_response_time: channel.response_time,
+                    last_health_status: channel.last_health_status,
+                    recent_penalty_count: route_health.recent_penalty_count,
+                    recent_rate_limit_count: route_health.recent_rate_limit_count,
+                    recent_overload_count: route_health.recent_overload_count,
                     accounts,
                 })
             })
@@ -506,6 +569,7 @@ impl ChannelRouter {
         if channel_ids.is_empty() {
             return Ok(LoadedSchedulableAccounts {
                 grouped: std::collections::HashMap::new(),
+                channel_health: std::collections::HashMap::new(),
                 ttl_seconds: ROUTE_CACHE_TTL_SECONDS,
             });
         }
@@ -525,7 +589,22 @@ impl ChannelRouter {
 
         let mut grouped: std::collections::HashMap<i64, Vec<CachedRouteAccount>> =
             std::collections::HashMap::new();
+        let mut channel_health = std::collections::HashMap::new();
         let mut next_refresh_at = None;
+
+        // First pass: filter eligible accounts and collect IDs for batch health load.
+        struct EligibleAccount {
+            id: i64,
+            channel_id: i64,
+            name: String,
+            weight: i32,
+            priority: i32,
+            failure_streak: i32,
+            response_time: i32,
+            api_key: String,
+        }
+
+        let mut eligible = Vec::new();
         for account in accounts {
             next_refresh_at =
                 pick_earlier_route_refresh_at(next_refresh_at, account.expires_at, now);
@@ -553,6 +632,49 @@ impl ChannelRouter {
                 continue;
             }
 
+            eligible.push(EligibleAccount {
+                id: account.id,
+                channel_id: account.channel_id,
+                name: account.name,
+                weight: account.weight,
+                priority: account.priority,
+                failure_streak: account.failure_streak,
+                response_time: account.response_time,
+                api_key,
+            });
+        }
+
+        // Batch-load all health snapshots in a single Redis pipeline.
+        let account_ids: Vec<i64> = eligible.iter().map(|a| a.id).collect();
+        let unique_channel_ids: Vec<i64> = {
+            let mut ids: Vec<i64> = eligible.iter().map(|a| a.channel_id).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        };
+        let batch_health = self
+            .route_health
+            .batch_load_snapshots(&account_ids, &unique_channel_ids)
+            .await?;
+
+        for ch_id in &unique_channel_ids {
+            channel_health.insert(
+                *ch_id,
+                batch_health
+                    .channels
+                    .get(ch_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+
+        for account in eligible {
+            let account_health = batch_health
+                .accounts
+                .get(&account.id)
+                .cloned()
+                .unwrap_or_default();
+
             grouped
                 .entry(account.channel_id)
                 .or_default()
@@ -561,12 +683,18 @@ impl ChannelRouter {
                     account_name: account.name,
                     weight: account.weight,
                     priority: account.priority,
-                    api_key,
+                    failure_streak: account.failure_streak,
+                    response_time: account.response_time,
+                    recent_penalty_count: account_health.recent_penalty_count,
+                    recent_rate_limit_count: account_health.recent_rate_limit_count,
+                    recent_overload_count: account_health.recent_overload_count,
+                    api_key: account.api_key,
                 });
         }
 
         Ok(LoadedSchedulableAccounts {
             grouped,
+            channel_health,
             ttl_seconds: compute_route_cache_ttl_seconds(now, next_refresh_at),
         })
     }
@@ -651,12 +779,20 @@ fn select_from_route_candidates(
 
     let max_priority = available_candidates
         .iter()
-        .map(|(candidate, _)| candidate.priority)
+        .map(|(candidate, _)| effective_candidate_priority(candidate))
         .max()?;
+    let best_health = available_candidates
+        .iter()
+        .filter(|(candidate, _)| effective_candidate_priority(candidate) == max_priority)
+        .map(|(candidate, accounts)| candidate_health_key(candidate, accounts))
+        .min()?;
     let weighted_candidates: Vec<(usize, i32)> = available_candidates
         .iter()
         .enumerate()
-        .filter(|(_, (candidate, _))| candidate.priority == max_priority)
+        .filter(|(_, (candidate, _))| effective_candidate_priority(candidate) == max_priority)
+        .filter(|(_, (candidate, accounts))| {
+            candidate_health_key(candidate, accounts) == best_health
+        })
         .map(|(index, (candidate, _))| (index, candidate.weight))
         .collect();
     let channel_index = weighted_random_select(&weighted_candidates)?;
@@ -693,15 +829,97 @@ fn build_route_plan_from_candidates(
 fn pick_schedulable_account<'a>(
     accounts: &'a [&'a CachedRouteAccount],
 ) -> Option<&'a CachedRouteAccount> {
-    let max_priority = accounts.iter().map(|account| account.priority).max()?;
+    let max_priority = accounts
+        .iter()
+        .map(|account| effective_account_priority(account))
+        .max()?;
+    let best_health = accounts
+        .iter()
+        .filter(|account| effective_account_priority(account) == max_priority)
+        .map(|account| account_health_key(account))
+        .min()?;
     let weighted_candidates: Vec<(usize, i32)> = accounts
         .iter()
         .enumerate()
-        .filter(|(_, account)| account.priority == max_priority)
+        .filter(|(_, account)| effective_account_priority(account) == max_priority)
+        .filter(|(_, account)| account_health_key(account) == best_health)
         .map(|(index, account)| (index, account.weight))
         .collect();
     let index = weighted_random_select(&weighted_candidates)?;
     accounts.get(index).copied()
+}
+
+type AccountHealthKey = (i32, i32, i32, i32, i32);
+type CandidateHealthKey = (i32, i32, i32, i32, i16, i32, AccountHealthKey);
+
+fn effective_candidate_priority(candidate: &CachedRouteCandidate) -> i32 {
+    candidate.priority.saturating_sub(route_priority_penalty(
+        candidate.recent_penalty_count,
+        candidate.recent_rate_limit_count,
+        candidate.recent_overload_count,
+    ))
+}
+
+fn effective_account_priority(account: &CachedRouteAccount) -> i32 {
+    account.priority.saturating_sub(route_priority_penalty(
+        account.recent_penalty_count,
+        account.recent_rate_limit_count,
+        account.recent_overload_count,
+    ))
+}
+
+fn route_priority_penalty(
+    recent_penalty_count: i32,
+    recent_rate_limit_count: i32,
+    recent_overload_count: i32,
+) -> i32 {
+    recent_penalty_count
+        .saturating_mul(10)
+        .saturating_add(recent_rate_limit_count.saturating_mul(5))
+        .saturating_add(recent_overload_count.saturating_mul(3))
+}
+
+fn candidate_health_key(
+    candidate: &CachedRouteCandidate,
+    accounts: &[&CachedRouteAccount],
+) -> CandidateHealthKey {
+    let best_account = accounts
+        .iter()
+        .map(|account| account_health_key(account))
+        .min()
+        .unwrap_or((i32::MAX, i32::MAX, i32::MAX, i32::MAX, i32::MAX));
+    (
+        candidate.recent_penalty_count,
+        candidate.recent_rate_limit_count,
+        candidate.recent_overload_count,
+        candidate.channel_failure_streak,
+        route_health_status_rank(candidate.last_health_status),
+        candidate.channel_response_time.max(0),
+        best_account,
+    )
+}
+
+fn account_health_key(account: &CachedRouteAccount) -> AccountHealthKey {
+    (
+        account.recent_penalty_count,
+        account.recent_rate_limit_count,
+        account.recent_overload_count,
+        account.failure_streak,
+        account.response_time.max(0),
+    )
+}
+
+fn route_health_status_rank(status: i16) -> i16 {
+    match status {
+        1 => 0,
+        2 => 1,
+        3 => 2,
+        _ => 3,
+    }
+}
+
+fn default_route_health_status() -> i16 {
+    1
 }
 
 fn merge_default_route_candidates(
@@ -906,11 +1124,22 @@ mod tests {
                 model_mapping: serde_json::json!({}),
                 priority: 10,
                 weight: 2,
+                channel_failure_streak: 0,
+                channel_response_time: 0,
+                last_health_status: 1,
+                recent_penalty_count: 0,
+                recent_rate_limit_count: 0,
+                recent_overload_count: 0,
                 accounts: vec![CachedRouteAccount {
                     account_id: 101,
                     account_name: "ability-account".into(),
                     weight: 1,
                     priority: 10,
+                    failure_streak: 0,
+                    response_time: 0,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
                     api_key: "sk-ability".into(),
                 }],
             }],
@@ -923,11 +1152,22 @@ mod tests {
                     model_mapping: serde_json::json!({}),
                     priority: 1,
                     weight: 1,
+                    channel_failure_streak: 0,
+                    channel_response_time: 0,
+                    last_health_status: 1,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
                     accounts: vec![CachedRouteAccount {
                         account_id: 111,
                         account_name: "fallback-dup-account".into(),
                         weight: 1,
                         priority: 1,
+                        failure_streak: 0,
+                        response_time: 0,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
                         api_key: "sk-fallback-dup".into(),
                     }],
                 },
@@ -939,11 +1179,22 @@ mod tests {
                     model_mapping: serde_json::json!({}),
                     priority: 5,
                     weight: 1,
+                    channel_failure_streak: 0,
+                    channel_response_time: 0,
+                    last_health_status: 1,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
                     accounts: vec![CachedRouteAccount {
                         account_id: 201,
                         account_name: "fallback-account".into(),
                         weight: 1,
                         priority: 10,
+                        failure_streak: 0,
+                        response_time: 0,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
                         api_key: "sk-fallback".into(),
                     }],
                 },
@@ -975,11 +1226,22 @@ mod tests {
                     model_mapping: serde_json::json!({}),
                     priority: 10,
                     weight: -5,
+                    channel_failure_streak: 0,
+                    channel_response_time: 0,
+                    last_health_status: 1,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
                     accounts: vec![CachedRouteAccount {
                         account_id: 101,
                         account_name: "primary-account".into(),
                         weight: 1,
                         priority: 10,
+                        failure_streak: 0,
+                        response_time: 0,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
                         api_key: "sk-primary".into(),
                     }],
                 },
@@ -991,11 +1253,22 @@ mod tests {
                     model_mapping: serde_json::json!({}),
                     priority: 10,
                     weight: -1,
+                    channel_failure_streak: 0,
+                    channel_response_time: 0,
+                    last_health_status: 1,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
                     accounts: vec![CachedRouteAccount {
                         account_id: 201,
                         account_name: "fallback-account".into(),
                         weight: 1,
                         priority: 10,
+                        failure_streak: 0,
+                        response_time: 0,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
                         api_key: "sk-fallback".into(),
                     }],
                 },
@@ -1006,6 +1279,206 @@ mod tests {
 
         assert_eq!(selected.channel_id, 11);
         assert_eq!(selected.account_id, 101);
+    }
+
+    #[test]
+    fn select_from_route_candidates_prefers_healthier_channel_when_priority_matches() {
+        let selected = select_from_route_candidates(
+            &[
+                CachedRouteCandidate {
+                    channel_id: 11,
+                    channel_name: "degraded".into(),
+                    channel_type: 1,
+                    base_url: "https://degraded.example".into(),
+                    model_mapping: serde_json::json!({}),
+                    priority: 10,
+                    weight: 0,
+                    channel_failure_streak: 4,
+                    channel_response_time: 800,
+                    last_health_status: 3,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
+                    accounts: vec![CachedRouteAccount {
+                        account_id: 101,
+                        account_name: "degraded-account".into(),
+                        weight: 0,
+                        priority: 10,
+                        failure_streak: 3,
+                        response_time: 500,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
+                        api_key: "sk-degraded".into(),
+                    }],
+                },
+                CachedRouteCandidate {
+                    channel_id: 12,
+                    channel_name: "healthy".into(),
+                    channel_type: 1,
+                    base_url: "https://healthy.example".into(),
+                    model_mapping: serde_json::json!({}),
+                    priority: 10,
+                    weight: 0,
+                    channel_failure_streak: 0,
+                    channel_response_time: 80,
+                    last_health_status: 1,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
+                    accounts: vec![CachedRouteAccount {
+                        account_id: 201,
+                        account_name: "healthy-account".into(),
+                        weight: 0,
+                        priority: 10,
+                        failure_streak: 0,
+                        response_time: 80,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
+                        api_key: "sk-healthy".into(),
+                    }],
+                },
+            ],
+            &RouteSelectionExclusions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(selected.channel_id, 12);
+        assert_eq!(selected.account_id, 201);
+    }
+
+    #[test]
+    fn pick_schedulable_account_prefers_healthier_account_when_priority_matches() {
+        let first = CachedRouteAccount {
+            account_id: 101,
+            account_name: "degraded-account".into(),
+            weight: 0,
+            priority: 10,
+            failure_streak: 5,
+            response_time: 600,
+            recent_penalty_count: 0,
+            recent_rate_limit_count: 0,
+            recent_overload_count: 0,
+            api_key: "sk-degraded".into(),
+        };
+        let second = CachedRouteAccount {
+            account_id: 102,
+            account_name: "healthy-account".into(),
+            weight: 0,
+            priority: 10,
+            failure_streak: 0,
+            response_time: 90,
+            recent_penalty_count: 0,
+            recent_rate_limit_count: 0,
+            recent_overload_count: 0,
+            api_key: "sk-healthy".into(),
+        };
+
+        let accounts = [&first, &second];
+        let selected = pick_schedulable_account(&accounts).expect("selected account");
+
+        assert_eq!(selected.account_id, 102);
+    }
+
+    #[test]
+    fn select_from_route_candidates_prefers_lower_recent_penalty_when_persistent_health_ties() {
+        let selected = select_from_route_candidates(
+            &[
+                CachedRouteCandidate {
+                    channel_id: 11,
+                    channel_name: "flaky".into(),
+                    channel_type: 1,
+                    base_url: "https://flaky.example".into(),
+                    model_mapping: serde_json::json!({}),
+                    priority: 10,
+                    weight: 0,
+                    channel_failure_streak: 0,
+                    channel_response_time: 90,
+                    last_health_status: 1,
+                    recent_penalty_count: 3,
+                    recent_rate_limit_count: 1,
+                    recent_overload_count: 0,
+                    accounts: vec![CachedRouteAccount {
+                        account_id: 101,
+                        account_name: "flaky-account".into(),
+                        weight: 0,
+                        priority: 10,
+                        failure_streak: 0,
+                        response_time: 90,
+                        recent_penalty_count: 2,
+                        recent_rate_limit_count: 1,
+                        recent_overload_count: 0,
+                        api_key: "sk-flaky".into(),
+                    }],
+                },
+                CachedRouteCandidate {
+                    channel_id: 12,
+                    channel_name: "stable".into(),
+                    channel_type: 1,
+                    base_url: "https://stable.example".into(),
+                    model_mapping: serde_json::json!({}),
+                    priority: 10,
+                    weight: 0,
+                    channel_failure_streak: 0,
+                    channel_response_time: 90,
+                    last_health_status: 1,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
+                    accounts: vec![CachedRouteAccount {
+                        account_id: 201,
+                        account_name: "stable-account".into(),
+                        weight: 0,
+                        priority: 10,
+                        failure_streak: 0,
+                        response_time: 90,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
+                        api_key: "sk-stable".into(),
+                    }],
+                },
+            ],
+            &RouteSelectionExclusions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(selected.channel_id, 12);
+        assert_eq!(selected.account_id, 201);
+    }
+
+    #[test]
+    fn pick_schedulable_account_prefers_lower_recent_penalty_when_persistent_health_ties() {
+        let first = CachedRouteAccount {
+            account_id: 101,
+            account_name: "flaky-account".into(),
+            weight: 0,
+            priority: 10,
+            failure_streak: 0,
+            response_time: 90,
+            recent_penalty_count: 3,
+            recent_rate_limit_count: 1,
+            recent_overload_count: 0,
+            api_key: "sk-flaky".into(),
+        };
+        let second = CachedRouteAccount {
+            account_id: 102,
+            account_name: "stable-account".into(),
+            weight: 0,
+            priority: 10,
+            failure_streak: 0,
+            response_time: 90,
+            recent_penalty_count: 0,
+            recent_rate_limit_count: 0,
+            recent_overload_count: 0,
+            api_key: "sk-stable".into(),
+        };
+
+        let accounts = [&first, &second];
+        let selected = pick_schedulable_account(&accounts).expect("selected account");
+
+        assert_eq!(selected.account_id, 102);
     }
 
     #[test]
@@ -1084,12 +1557,23 @@ mod tests {
                 model_mapping: serde_json::json!({}),
                 priority: 10,
                 weight: 1,
+                channel_failure_streak: 0,
+                channel_response_time: 0,
+                last_health_status: 1,
+                recent_penalty_count: 0,
+                recent_rate_limit_count: 0,
+                recent_overload_count: 0,
                 accounts: vec![
                     CachedRouteAccount {
                         account_id: 101,
                         account_name: "primary-a".into(),
                         weight: 1,
                         priority: 10,
+                        failure_streak: 0,
+                        response_time: 0,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
                         api_key: "sk-primary-a".into(),
                     },
                     CachedRouteAccount {
@@ -1097,6 +1581,11 @@ mod tests {
                         account_name: "primary-b".into(),
                         weight: 1,
                         priority: 8,
+                        failure_streak: 0,
+                        response_time: 0,
+                        recent_penalty_count: 0,
+                        recent_rate_limit_count: 0,
+                        recent_overload_count: 0,
                         api_key: "sk-primary-b".into(),
                     },
                 ],
@@ -1109,11 +1598,22 @@ mod tests {
                 model_mapping: serde_json::json!({}),
                 priority: 5,
                 weight: 0,
+                channel_failure_streak: 0,
+                channel_response_time: 0,
+                last_health_status: 1,
+                recent_penalty_count: 0,
+                recent_rate_limit_count: 0,
+                recent_overload_count: 0,
                 accounts: vec![CachedRouteAccount {
                     account_id: 201,
                     account_name: "secondary-a".into(),
                     weight: 1,
                     priority: 10,
+                    failure_streak: 0,
+                    response_time: 0,
+                    recent_penalty_count: 0,
+                    recent_rate_limit_count: 0,
+                    recent_overload_count: 0,
                     api_key: "sk-secondary-a".into(),
                 }],
             },

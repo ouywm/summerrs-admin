@@ -9,8 +9,9 @@ use summer_ai_core::types::common::Usage;
 use crate::relay::billing::{BillingEngine, ModelConfigInfo};
 use crate::relay::channel_router::SelectedChannel;
 use crate::relay::rate_limit::RateLimitEngine;
+use crate::router::openai::settle_usage_accounting;
 use crate::service::channel::ChannelService;
-use crate::service::log::{ChatCompletionLogRecord, LogService};
+use crate::service::log::LogService;
 use crate::service::token::TokenInfo;
 
 /// Convert the upstream chunk stream into an axum SSE response.
@@ -89,79 +90,54 @@ pub fn build_sse_response(
             stream_error.as_ref(),
         ) {
             StreamSettlement::Success { usage } => {
-            let usage_clone = usage.clone();
-            tokio::spawn(async move {
-                let logged_quota =
-                    BillingEngine::calculate_actual_quota(&usage_clone, &model_config, group_ratio);
-                let actual_quota = match billing
-                    .post_consume_with_retry(
-                        &request_id,
-                        &token_info,
-                        pre_consumed,
-                        &usage_clone,
-                        &model_config,
-                        group_ratio,
+                settle_usage_accounting(
+                    billing,
+                    rate_limiter,
+                    log_svc,
+                    channel_svc,
+                    token_info,
+                    channel,
+                    model_config,
+                    group_ratio,
+                    pre_consumed,
+                    usage,
+                    request_id,
+                    upstream_request_id,
+                    requested_model,
+                    upstream_model,
+                    client_ip,
+                    user_agent,
+                    "chat/completions",
+                    "openai/chat_completions",
+                    total_elapsed,
+                    ftt,
+                    true,
+                )
+                .await;
+            }
+            StreamSettlement::Failure { status_code, message } => {
+                if let Err(error) = billing
+                    .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
+                    .await
+                {
+                    tracing::warn!("failed to refund stream reservation: {error}");
+                }
+                if let Err(error) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                    tracing::warn!("failed to finalize stream rate limit failure: {error}");
+                }
+                if let Err(error) = channel_svc
+                    .record_relay_failure(
+                        channel.channel_id,
+                        channel.account_id,
+                        total_elapsed,
+                        status_code,
+                        &message,
                     )
                     .await
                 {
-                    Ok(quota) => quota,
-                    Err(error) => {
-                        tracing::error!("failed to settle stream usage asynchronously: {error}");
-                        logged_quota
-                    }
-                };
-
-                log_svc.record_chat_completion_async(
-                    &token_info,
-                    &channel,
-                    &usage,
-                    ChatCompletionLogRecord {
-                        request_id: request_id.clone(),
-                        upstream_request_id,
-                        requested_model,
-                        upstream_model,
-                        model_name: model_config.model_name,
-                        quota: actual_quota,
-                        elapsed_time: total_elapsed as i32,
-                        first_token_time: ftt,
-                        is_stream: true,
-                        client_ip,
-                        user_agent,
-                    },
-                );
-
-                if let Err(error) = rate_limiter
-                    .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
-                    .await
-                {
-                    tracing::warn!("failed to finalize stream rate limit success: {error}");
+                    tracing::warn!("failed to update stream relay failure health state: {error}");
                 }
-
-                if let Err(error) = channel_svc
-                    .record_relay_success(channel.channel_id, channel.account_id, total_elapsed)
-                    .await
-                {
-                    tracing::warn!("failed to update stream relay success health state: {error}");
-                }
-            });
             }
-            StreamSettlement::Failure { status_code, message } => {
-            billing.refund_later(request_id.clone(), token_info.token_id, pre_consumed);
-            let rl = rate_limiter.clone();
-            let request_id_for_task = request_id.clone();
-            tokio::spawn(async move {
-                if let Err(error) = rl.finalize_failure_with_retry(&request_id_for_task).await {
-                    tracing::warn!("failed to finalize stream rate limit failure: {error}");
-                }
-            });
-            channel_svc.record_relay_failure_async(
-                channel.channel_id,
-                channel.account_id,
-                total_elapsed,
-                status_code,
-                message,
-            );
-        }
         }
     };
 
@@ -213,10 +189,27 @@ fn resolve_stream_settlement(
 
     match (last_usage, saw_terminal_finish_reason) {
         (Some(usage), true) => StreamSettlement::Success { usage },
-        (Some(_), false) => StreamSettlement::Failure {
-            status_code: 0,
-            message: "stream ended before terminal finish_reason".into(),
-        },
+        (Some(usage), false) if usage.completion_tokens > 0 => {
+            // Some providers (Ollama, certain OpenAI-compatible proxies) omit
+            // finish_reason but still deliver complete content.  If we received
+            // usage with completion tokens, treat the stream as successful.
+            tracing::debug!(
+                "stream settled without finish_reason but completion_tokens={}, treating as success",
+                usage.completion_tokens
+            );
+            StreamSettlement::Success { usage }
+        }
+        (Some(usage), false) => {
+            // Usage was reported but no finish_reason arrived — likely a provider quirk
+            // or a client-side disconnect after the final content chunk.  Bill for the
+            // actual usage instead of triggering a full refund.
+            tracing::info!(
+                "stream settled with usage (prompt={}, completion={}) but no finish_reason; billing actual usage",
+                usage.prompt_tokens,
+                usage.completion_tokens,
+            );
+            StreamSettlement::Success { usage }
+        }
         (None, _) => StreamSettlement::Failure {
             status_code: 0,
             message: "stream ended without usage".into(),
@@ -265,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_stream_settlement_requires_terminal_finish_reason() {
+    fn resolve_stream_settlement_succeeds_without_finish_reason_when_completion_tokens_present() {
         let settlement = resolve_stream_settlement(
             Some(Usage {
                 prompt_tokens: 10,
@@ -278,10 +271,26 @@ mod tests {
             None,
         );
 
-        assert!(matches!(
-            settlement,
-            StreamSettlement::Failure { status_code: 0, .. }
-        ));
+        assert!(matches!(settlement, StreamSettlement::Success { .. }));
+    }
+
+    #[test]
+    fn resolve_stream_settlement_succeeds_with_usage_but_no_finish_reason_and_zero_completion() {
+        let settlement = resolve_stream_settlement(
+            Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 0,
+                total_tokens: 10,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+            }),
+            false,
+            None,
+        );
+
+        // Even with zero completion tokens, if usage is reported we bill for actual usage
+        // instead of triggering a full refund + overload penalty.
+        assert!(matches!(settlement, StreamSettlement::Success { .. }));
     }
 
     #[test]

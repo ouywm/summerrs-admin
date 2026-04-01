@@ -56,11 +56,10 @@ fn default_rate_multiplier() -> f64 {
 
 impl CreateChannelAccountDto {
     pub fn into_active_model(self, operator: &str) -> channel_account::ActiveModel {
+        use num_traits::FromPrimitive;
         use sea_orm::prelude::BigDecimal;
-        use std::str::FromStr;
 
-        let decimal =
-            |value: f64| BigDecimal::from_str(&value.to_string()).unwrap_or_else(|_| 0.into());
+        let decimal = |value: f64| BigDecimal::from_f64(value).unwrap_or_else(|| 0.into());
 
         channel_account::ActiveModel {
             channel_id: Set(self.channel_id),
@@ -83,7 +82,7 @@ impl CreateChannelAccountDto {
             last_used_at: Set(None),
             last_error_at: Set(None),
             last_error_code: Set(String::new()),
-            last_error_message: Set(String::new()),
+            last_error_message: Set(None),
             rate_limited_until: Set(None),
             overload_until: Set(None),
             expires_at: Set(self.expires_at),
@@ -125,11 +124,10 @@ pub struct UpdateChannelAccountDto {
 
 impl UpdateChannelAccountDto {
     pub fn apply_to(self, active: &mut channel_account::ActiveModel, operator: &str) {
+        use num_traits::FromPrimitive;
         use sea_orm::prelude::BigDecimal;
-        use std::str::FromStr;
 
-        let decimal =
-            |value: f64| BigDecimal::from_str(&value.to_string()).unwrap_or_else(|_| 0.into());
+        let decimal = |value: f64| BigDecimal::from_f64(value).unwrap_or_else(|| 0.into());
 
         if let Some(value) = self.channel_id {
             active.channel_id = Set(value);

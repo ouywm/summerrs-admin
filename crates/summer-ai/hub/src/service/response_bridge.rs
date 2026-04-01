@@ -154,6 +154,7 @@ fn normalize_input_item(item: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
 
     #[test]
     fn build_input_items_payload_wraps_string_input_as_user_message() {
@@ -173,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn response_bridge_record_defaults_upstream_request_id_for_legacy_cache() {
+    fn response_bridge_record_defaults_upstream_request_id_for_legacy_cache() -> Result<()> {
         let record: ResponseBridgeRecord = serde_json::from_value(serde_json::json!({
             "response": {
                 "id": "resp_legacy",
@@ -186,9 +187,10 @@ mod tests {
                 "object": "list",
                 "data": []
             }
-        }))
-        .expect("deserialize legacy cache record");
+        }))?;
 
         assert_eq!(record.upstream_request_id, "");
+
+        Ok(())
     }
 }

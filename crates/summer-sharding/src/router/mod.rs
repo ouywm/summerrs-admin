@@ -5,8 +5,6 @@ mod table_router;
 
 use std::sync::Arc;
 
-use sqlparser::ast::{Ident, ObjectName};
-
 use crate::{
     algorithm::{AlgorithmRegistry, ShardingCondition, now_fixed_offset},
     config::ShardingConfig,
@@ -18,22 +16,8 @@ use crate::{
 pub use hint_router::HintRouter;
 pub use rw_router::ReadWriteRouter;
 pub use schema_router::SchemaRouter;
+pub use summer_sql_rewrite::{QualifiedTableName, SqlOperation};
 pub use table_router::TableRouter;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlOperation {
-    Select,
-    Insert,
-    Update,
-    Delete,
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct QualifiedTableName {
-    pub schema: Option<String>,
-    pub table: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderByItem {
@@ -70,7 +54,7 @@ pub trait SqlRouter: Send + Sync + 'static {
 
 #[derive(Debug)]
 pub struct DefaultSqlRouter {
-    config: Arc<ShardingConfig>,
+    config: ShardingConfig,
     algorithms: AlgorithmRegistry,
     hint_router: HintRouter,
     schema_router: SchemaRouter,
@@ -81,11 +65,12 @@ pub struct DefaultSqlRouter {
 
 impl DefaultSqlRouter {
     pub fn new(config: Arc<ShardingConfig>, lookup_index: Arc<LookupIndex>) -> Self {
+        let config = config.as_ref().clone();
         Self {
             hint_router: HintRouter,
-            schema_router: SchemaRouter::new(config.clone()),
-            table_router: TableRouter::new(config.clone()),
-            read_write_router: ReadWriteRouter::new(config.clone()),
+            schema_router: SchemaRouter::new(&config),
+            table_router: TableRouter::new(&config),
+            read_write_router: ReadWriteRouter::new(&config),
             algorithms: AlgorithmRegistry,
             lookup_index,
             config,
@@ -94,6 +79,7 @@ impl DefaultSqlRouter {
 }
 
 impl SqlRouter for DefaultSqlRouter {
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn route(&self, analysis: &StatementContext, force_primary: bool) -> Result<RoutePlan> {
         let Some(primary_table) = analysis.primary_table().cloned() else {
             let datasource = self
@@ -137,8 +123,8 @@ impl SqlRouter for DefaultSqlRouter {
         if let Some(rule) = self.config.table_rule(logic_table.full_name().as_str()) {
             let algorithm = self.algorithms.build(rule)?;
             let available_targets = self.table_router.available_targets(rule, analysis)?;
-            if let Some(hint) = &analysis.hint {
-                if let Some(targets) = self.hint_router.route(
+            if let Some(hint) = &analysis.hint
+                && let Some(targets) = self.hint_router.route(
                     hint,
                     default_datasource.as_str(),
                     Some(&logic_table),
@@ -146,17 +132,17 @@ impl SqlRouter for DefaultSqlRouter {
                         .iter()
                         .map(|value| QualifiedTableName::parse(value))
                         .collect::<Vec<_>>(),
-                )? {
-                    return Ok(RoutePlan {
-                        operation: analysis.operation,
-                        logic_tables: analysis.tables.clone(),
-                        targets: self.apply_binding_group(targets, &logic_table, analysis),
-                        order_by: analysis.order_by.clone(),
-                        limit: analysis.limit,
-                        offset: analysis.offset,
-                        broadcast: self.hint_router.requires_broadcast(hint),
-                    });
-                }
+                )?
+            {
+                return Ok(RoutePlan {
+                    operation: analysis.operation,
+                    logic_tables: analysis.tables.clone(),
+                    targets: self.apply_binding_group(targets, &logic_table, analysis),
+                    order_by: analysis.order_by.clone(),
+                    limit: analysis.limit,
+                    offset: analysis.offset,
+                    broadcast: self.hint_router.requires_broadcast(hint),
+                });
             }
             let actual_targets = match analysis.operation {
                 SqlOperation::Insert => {
@@ -349,44 +335,16 @@ impl DefaultSqlRouter {
     }
 }
 
-impl QualifiedTableName {
-    pub fn parse(value: &str) -> Self {
-        match value.split_once('.') {
-            Some((schema, table)) => Self {
-                schema: Some(schema.to_string()),
-                table: table.to_string(),
-            },
-            None => Self {
-                schema: None,
-                table: value.to_string(),
-            },
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use super::{QualifiedTableName, SqlOperation};
 
-    pub fn full_name(&self) -> String {
-        match &self.schema {
-            Some(schema) => format!("{schema}.{}", self.table),
-            None => self.table.clone(),
-        }
-    }
+    #[test]
+    fn router_exports_shared_sql_rewrite_types() {
+        let table: summer_sql_rewrite::QualifiedTableName = QualifiedTableName::parse("sys.user");
+        let operation: summer_sql_rewrite::SqlOperation = SqlOperation::Select;
 
-    pub fn to_object_name(&self) -> ObjectName {
-        match &self.schema {
-            Some(schema) => ObjectName(vec![Ident::new(schema), Ident::new(&self.table)]),
-            None => ObjectName(vec![Ident::new(&self.table)]),
-        }
-    }
-
-    pub fn matches_object_name(&self, name: &ObjectName) -> bool {
-        match name.0.as_slice() {
-            [table] => table.value.eq_ignore_ascii_case(self.table.as_str()),
-            [schema, table] => {
-                self.schema
-                    .as_deref()
-                    .is_some_and(|value| value.eq_ignore_ascii_case(schema.value.as_str()))
-                    && table.value.eq_ignore_ascii_case(self.table.as_str())
-            }
-            _ => false,
-        }
+        assert_eq!(table.full_name(), "sys.user");
+        assert_eq!(operation, summer_sql_rewrite::SqlOperation::Select);
     }
 }
