@@ -1,22 +1,13 @@
-pub mod alert;
-pub mod billing;
-pub mod channel;
-pub mod channel_account;
-pub mod channel_model_price;
-pub mod conversation;
-pub mod dashboard;
-pub mod file_storage;
-pub mod guardrail;
-pub mod log;
-pub mod model_config;
-pub mod multi_tenant;
+pub mod management;
 pub mod openai;
 pub mod openai_passthrough;
-pub mod platform_config;
-pub mod request;
-pub mod runtime;
-pub mod token;
-pub mod vendor;
+pub use management::{
+    alert, billing, channel, channel_account, channel_model_price, conversation, dashboard,
+    file_storage, guardrail, log, model_config, multi_tenant, platform_config, request, runtime,
+    token, vendor,
+};
 
 #[cfg(test)]
 pub(crate) mod test_support;
+#[cfg(test)]
+mod tests;
