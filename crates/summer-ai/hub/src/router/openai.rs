@@ -1443,6 +1443,8 @@ fn build_responses_stream_response(
     upstream_request_id: String,
     user_agent: String,
     resource_affinity: ResourceAffinityService,
+    request_svc: RequestService,
+    tracking: RequestTrackingIds,
 ) -> Response {
     let status = upstream.status();
     let content_type = upstream.headers().get(CONTENT_TYPE).cloned();
@@ -1485,6 +1487,34 @@ fn build_responses_stream_response(
             } else {
                 tracker.upstream_model
             };
+            request_svc
+                .try_update_execution_status(
+                    tracking.execution_id,
+                    ExecutionStatusUpdate {
+                        status: ExecutionStatus::Success,
+                        error_message: None,
+                        duration_ms: Some(total_elapsed as i32),
+                        first_token_ms: Some(first_token_time.unwrap_or(0) as i32),
+                        response_status_code: Some(200),
+                        response_body: None,
+                        upstream_request_id: Some(upstream_request_id.clone()),
+                    },
+                )
+                .await;
+            request_svc
+                .try_update_request_status(
+                    tracking.request_id,
+                    RequestStatusUpdate {
+                        status: RequestStatus::Success,
+                        error_message: None,
+                        duration_ms: Some(total_elapsed as i32),
+                        first_token_ms: Some(first_token_time.unwrap_or(0) as i32),
+                        response_status_code: Some(200),
+                        response_body: None,
+                        upstream_model: Some(upstream_model.clone()),
+                    },
+                )
+                .await;
 
             spawn_usage_accounting_task(
                 billing,
@@ -1511,6 +1541,35 @@ fn build_responses_stream_response(
             );
         } else {
             let fallback_reason = stream_error.unwrap_or_else(|| "response stream ended without usage".into());
+            request_svc
+                .try_update_execution_status(
+                    tracking.execution_id,
+                    ExecutionStatusUpdate {
+                        status: ExecutionStatus::Failed,
+                        error_message: Some(fallback_reason.clone()),
+                        duration_ms: Some(total_elapsed as i32),
+                        first_token_ms: Some(first_token_time.unwrap_or(0) as i32),
+                        response_status_code: Some(0),
+                        response_body: None,
+                        upstream_request_id: Some(upstream_request_id.clone()),
+                    },
+                )
+                .await;
+            request_svc
+                .try_update_request_status(
+                    tracking.request_id,
+                    RequestStatusUpdate {
+                        status: RequestStatus::Failed,
+                        error_message: Some(fallback_reason.clone()),
+                        duration_ms: Some(total_elapsed as i32),
+                        first_token_ms: Some(first_token_time.unwrap_or(0) as i32),
+                        response_status_code: Some(0),
+                        response_body: None,
+                        upstream_model: (!tracker.upstream_model.is_empty())
+                            .then(|| tracker.upstream_model.clone()),
+                    },
+                )
+                .await;
             billing.refund_later(request_id.clone(), token_info.token_id, pre_consumed);
             let rl = rate_limiter.clone();
             let request_id_for_task = request_id.clone();
@@ -1570,6 +1629,8 @@ fn build_chat_bridged_responses_stream_response(
     user_agent: String,
     response_bridge: ResponseBridgeService,
     input_snapshot: serde_json::Value,
+    request_svc: RequestService,
+    tracking: RequestTrackingIds,
 ) -> Response {
     let response_request_id = request_id.clone();
     let response_upstream_request_id = upstream_request_id.clone();
@@ -1672,6 +1733,40 @@ fn build_chat_bridged_responses_stream_response(
                 "response": bridged_response
             })));
             yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+            request_svc
+                .try_update_execution_status(
+                    tracking.execution_id,
+                    ExecutionStatusUpdate {
+                        status: ExecutionStatus::Success,
+                        error_message: None,
+                        duration_ms: Some(total_elapsed as i32),
+                        first_token_ms: Some(first_token_time.unwrap_or(0) as i32),
+                        response_status_code: Some(200),
+                        response_body: Some(
+                            serde_json::to_value(&bridged_response)
+                                .unwrap_or(serde_json::Value::Null),
+                        ),
+                        upstream_request_id: Some(upstream_request_id.clone()),
+                    },
+                )
+                .await;
+            request_svc
+                .try_update_request_status(
+                    tracking.request_id,
+                    RequestStatusUpdate {
+                        status: RequestStatus::Success,
+                        error_message: None,
+                        duration_ms: Some(total_elapsed as i32),
+                        first_token_ms: Some(first_token_time.unwrap_or(0) as i32),
+                        response_status_code: Some(200),
+                        response_body: Some(
+                            serde_json::to_value(&bridged_response)
+                                .unwrap_or(serde_json::Value::Null),
+                        ),
+                        upstream_model: Some(completed_model.clone()),
+                    },
+                )
+                .await;
 
             spawn_usage_accounting_task(
                 billing,
@@ -1698,6 +1793,34 @@ fn build_chat_bridged_responses_stream_response(
             );
         } else {
             let fallback_reason = stream_error.unwrap_or_else(|| "response bridge stream ended without usage".into());
+            request_svc
+                .try_update_execution_status(
+                    tracking.execution_id,
+                    ExecutionStatusUpdate {
+                        status: ExecutionStatus::Failed,
+                        error_message: Some(fallback_reason.clone()),
+                        duration_ms: Some(total_elapsed as i32),
+                        first_token_ms: Some(first_token_time.unwrap_or(0) as i32),
+                        response_status_code: Some(0),
+                        response_body: None,
+                        upstream_request_id: Some(upstream_request_id.clone()),
+                    },
+                )
+                .await;
+            request_svc
+                .try_update_request_status(
+                    tracking.request_id,
+                    RequestStatusUpdate {
+                        status: RequestStatus::Failed,
+                        error_message: Some(fallback_reason.clone()),
+                        duration_ms: Some(total_elapsed as i32),
+                        first_token_ms: Some(first_token_time.unwrap_or(0) as i32),
+                        response_status_code: Some(0),
+                        response_body: None,
+                        upstream_model: (!completed_model.is_empty()).then_some(completed_model),
+                    },
+                )
+                .await;
             billing.refund_later(request_id.clone(), token_info.token_id, pre_consumed);
             let rl = rate_limiter.clone();
             let request_id_for_task = request_id.clone();
@@ -1750,6 +1873,7 @@ pub async fn responses(
     Component(response_bridge): Component<ResponseBridgeService>,
     Component(resource_affinity): Component<ResourceAffinityService>,
     Component(runtime_ops): Component<RuntimeOpsService>,
+    Component(request_svc): Component<RequestService>,
     ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     Json(req): Json<ResponsesRequest>,
@@ -1795,11 +1919,48 @@ pub async fn responses(
     let raw_request = serde_json::to_value(&req).map_err(|e| {
         OpenAiErrorResponse::internal_with("failed to serialize responses request", e)
     })?;
+    let request_record_id = match request_svc
+        .create_request(build_request_active_model(RequestSnapshotInput {
+            request_id: &request_id,
+            token_info: &token_info,
+            endpoint: "responses",
+            request_format: "openai/responses",
+            requested_model: &requested_model,
+            is_stream,
+            client_ip: &client_ip,
+            user_agent: &user_agent,
+            headers: &headers,
+            request_body: raw_request.clone(),
+        }))
+        .await
+    {
+        Ok(record) => Some(record.id),
+        Err(error) => {
+            tracing::warn!(error = %error, request_id = %request_id, "failed to persist AI request snapshot");
+            None
+        }
+    };
 
-    rate_limiter
+    if let Err(error) = rate_limiter
         .reserve(&token_info, &request_id, estimated_total_tokens)
         .await
-        .map_err(|e| OpenAiErrorResponse::from_quota_error(&e))?;
+    {
+        request_svc
+            .try_update_request_status(
+                request_record_id,
+                RequestStatusUpdate {
+                    status: RequestStatus::Failed,
+                    error_message: Some(error.to_string()),
+                    duration_ms: Some(start.elapsed().as_millis() as i32),
+                    first_token_ms: Some(0),
+                    response_status_code: Some(0),
+                    response_body: None,
+                    upstream_model: None,
+                },
+            )
+            .await;
+        return Err(OpenAiErrorResponse::from_quota_error(&error));
+    }
 
     for attempt in 0..max_retries {
         if attempt > 0 {
@@ -1809,6 +1970,20 @@ pub async fn responses(
             if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                 tracing::warn!(error = %e, "failed to finalize rate limit failure (no channel)");
             }
+            request_svc
+                .try_update_request_status(
+                    request_record_id,
+                    RequestStatusUpdate {
+                        status: RequestStatus::Failed,
+                        error_message: Some("no available channel".to_string()),
+                        duration_ms: Some(start.elapsed().as_millis() as i32),
+                        first_token_ms: Some(0),
+                        response_status_code: Some(0),
+                        response_body: None,
+                        upstream_model: None,
+                    },
+                )
+                .await;
             return Err(OpenAiErrorResponse::no_available_channel(
                 "no available channel",
             ));
@@ -1836,6 +2011,20 @@ pub async fn responses(
                 if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                     tracing::warn!(error = %e, "failed to finalize rate limit failure (quota error)");
                 }
+                request_svc
+                    .try_update_request_status(
+                        request_record_id,
+                        RequestStatusUpdate {
+                            status: RequestStatus::Failed,
+                            error_message: Some(error.to_string()),
+                            duration_ms: Some(start.elapsed().as_millis() as i32),
+                            first_token_ms: Some(0),
+                            response_status_code: Some(0),
+                            response_body: None,
+                            upstream_model: Some(actual_model.clone()),
+                        },
+                    )
+                    .await;
                 return Err(OpenAiErrorResponse::from_quota_error(&error));
             }
         };
@@ -1866,6 +2055,7 @@ pub async fn responses(
                 );
                 route_plan.exclude_selected_channel(&channel);
                 if attempt == max_retries - 1 {
+                    let message = format!("failed to build upstream responses request: {error}");
                     record_terminal_failure(
                         &log_svc,
                         &token_info,
@@ -1882,8 +2072,24 @@ pub async fn responses(
                         &client_ip,
                         &user_agent,
                         0,
-                        format!("failed to build upstream responses request: {error}"),
+                        message.clone(),
                     );
+                    update_request_failure_tracking(
+                        &request_svc,
+                        RequestTrackingIds {
+                            request_id: request_record_id,
+                            execution_id: None,
+                        },
+                        FailureTrackingUpdate {
+                            status_code: 0,
+                            message,
+                            elapsed_ms: start.elapsed().as_millis() as i64,
+                            upstream_model: Some(actual_model.clone()),
+                            upstream_request_id: None,
+                            response_body: None,
+                        },
+                    )
+                    .await;
                     if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                         tracing::warn!(error = %e, "failed to finalize rate limit failure");
                     }
@@ -1895,8 +2101,106 @@ pub async fn responses(
                 continue;
             }
         };
+        let mut tracking = RequestTrackingIds {
+            request_id: request_record_id,
+            execution_id: None,
+        };
+        let attempt_started_at = chrono::Utc::now().fixed_offset();
+        let upstream_request = match request_builder.build() {
+            Ok(request) => request,
+            Err(error) => {
+                if let Err(e) = billing
+                    .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to refund quota (build request object error)"
+                    );
+                }
+                channel_svc.record_relay_failure_async(
+                    channel.channel_id,
+                    channel.account_id,
+                    start.elapsed().as_millis() as i64,
+                    0,
+                    format!("failed to materialize upstream responses request: {error}"),
+                );
+                route_plan.exclude_selected_channel(&channel);
+                if attempt == max_retries - 1 {
+                    let message =
+                        format!("failed to materialize upstream responses request: {error}");
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "responses",
+                        "openai/responses",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        start.elapsed().as_millis() as i64,
+                        is_stream,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        message.clone(),
+                    );
+                    update_request_failure_tracking(
+                        &request_svc,
+                        tracking,
+                        FailureTrackingUpdate {
+                            status_code: 0,
+                            message,
+                            elapsed_ms: start.elapsed().as_millis() as i64,
+                            upstream_model: Some(actual_model.clone()),
+                            upstream_request_id: None,
+                            response_body: None,
+                        },
+                    )
+                    .await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
+                    return Err(OpenAiErrorResponse::internal_with(
+                        "failed to materialize upstream responses request",
+                        error,
+                    ));
+                }
+                continue;
+            }
+        };
 
-        match request_builder.send().await {
+        if let Some(ai_request_id) = request_record_id {
+            match request_svc
+                .record_execution(build_execution_active_model(ExecutionSnapshotInput {
+                    ai_request_id,
+                    request_id: &request_id,
+                    attempt_no: attempt + 1,
+                    channel: &channel,
+                    endpoint: "responses",
+                    request_format: "openai/responses",
+                    requested_model: &requested_model,
+                    upstream_model: &actual_model,
+                    request: &upstream_request,
+                    started_at: attempt_started_at,
+                }))
+                .await
+            {
+                Ok(record) => tracking.execution_id = Some(record.id),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        request_id = %request_id,
+                        attempt = attempt + 1,
+                        "failed to persist AI request execution snapshot"
+                    );
+                }
+            }
+        }
+
+        match http_client.client().execute(upstream_request).await {
             Ok(resp) if resp.status().is_success() => {
                 let status = resp.status();
                 let elapsed = start.elapsed().as_millis() as i64;
@@ -1927,7 +2231,26 @@ pub async fn responses(
                                     ),
                                 );
                                 route_plan.exclude_selected_channel(&channel);
+                                request_svc
+                                    .try_update_execution_status(
+                                        tracking.execution_id,
+                                        ExecutionStatusUpdate {
+                                            status: ExecutionStatus::Failed,
+                                            error_message: Some(format!(
+                                                "failed to parse upstream bridged responses stream: {error}"
+                                            )),
+                                            duration_ms: Some(elapsed as i32),
+                                            first_token_ms: Some(0),
+                                            response_status_code: Some(0),
+                                            response_body: None,
+                                            upstream_request_id: Some(upstream_request_id.clone()),
+                                        },
+                                    )
+                                    .await;
                                 if attempt == max_retries - 1 {
+                                    let message = format!(
+                                        "failed to parse upstream bridged responses stream: {error}"
+                                    );
                                     record_terminal_failure(
                                         &log_svc,
                                         &token_info,
@@ -1944,10 +2267,21 @@ pub async fn responses(
                                         &client_ip,
                                         &user_agent,
                                         0,
-                                        format!(
-                                            "failed to parse upstream bridged responses stream: {error}"
-                                        ),
+                                        message.clone(),
                                     );
+                                    update_request_failure_tracking(
+                                        &request_svc,
+                                        tracking,
+                                        FailureTrackingUpdate {
+                                            status_code: 0,
+                                            message,
+                                            elapsed_ms: elapsed,
+                                            upstream_model: Some(actual_model.clone()),
+                                            upstream_request_id: Some(upstream_request_id.clone()),
+                                            response_body: None,
+                                        },
+                                    )
+                                    .await;
                                     if let Err(e) =
                                         rate_limiter.finalize_failure_with_retry(&request_id).await
                                     {
@@ -1981,6 +2315,8 @@ pub async fn responses(
                             user_agent,
                             response_bridge,
                             input_snapshot.clone(),
+                            request_svc,
+                            tracking,
                         ));
                     }
                     return Ok(build_responses_stream_response(
@@ -2002,6 +2338,8 @@ pub async fn responses(
                         upstream_request_id,
                         user_agent,
                         resource_affinity,
+                        request_svc,
+                        tracking,
                     ));
                 }
 
@@ -2023,7 +2361,25 @@ pub async fn responses(
                             format!("failed to read upstream responses response: {error}"),
                         );
                         route_plan.exclude_selected_account(&channel);
+                        request_svc
+                            .try_update_execution_status(
+                                tracking.execution_id,
+                                ExecutionStatusUpdate {
+                                    status: ExecutionStatus::Failed,
+                                    error_message: Some(format!(
+                                        "failed to read upstream responses response: {error}"
+                                    )),
+                                    duration_ms: Some(elapsed as i32),
+                                    first_token_ms: Some(0),
+                                    response_status_code: Some(0),
+                                    response_body: None,
+                                    upstream_request_id: Some(upstream_request_id.clone()),
+                                },
+                            )
+                            .await;
                         if attempt == max_retries - 1 {
+                            let message =
+                                format!("failed to read upstream responses response: {error}");
                             record_terminal_failure(
                                 &log_svc,
                                 &token_info,
@@ -2040,8 +2396,21 @@ pub async fn responses(
                                 &client_ip,
                                 &user_agent,
                                 0,
-                                format!("failed to read upstream responses response: {error}"),
+                                message.clone(),
                             );
+                            update_request_failure_tracking(
+                                &request_svc,
+                                tracking,
+                                FailureTrackingUpdate {
+                                    status_code: 0,
+                                    message,
+                                    elapsed_ms: elapsed,
+                                    upstream_model: Some(actual_model.clone()),
+                                    upstream_request_id: Some(upstream_request_id.clone()),
+                                    response_body: None,
+                                },
+                            )
+                            .await;
                             if let Err(e) =
                                 rate_limiter.finalize_failure_with_retry(&request_id).await
                             {
@@ -2072,6 +2441,20 @@ pub async fn responses(
                         message.clone(),
                     );
                     route_plan.exclude_selected_channel(&channel);
+                    request_svc
+                        .try_update_execution_status(
+                            tracking.execution_id,
+                            ExecutionStatusUpdate {
+                                status: ExecutionStatus::Failed,
+                                error_message: Some(message.clone()),
+                                duration_ms: Some(elapsed as i32),
+                                first_token_ms: Some(0),
+                                response_status_code: Some(status.as_u16() as i32),
+                                response_body: Some(snapshot_response_body_bytes(&body)),
+                                upstream_request_id: Some(upstream_request_id.clone()),
+                            },
+                        )
+                        .await;
                     if attempt == max_retries - 1 {
                         record_terminal_failure(
                             &log_svc,
@@ -2091,6 +2474,19 @@ pub async fn responses(
                             status.as_u16() as i32,
                             message.clone(),
                         );
+                        update_request_failure_tracking(
+                            &request_svc,
+                            tracking,
+                            FailureTrackingUpdate {
+                                status_code: status.as_u16() as i32,
+                                message: message.clone(),
+                                elapsed_ms: elapsed,
+                                upstream_model: Some(actual_model.clone()),
+                                upstream_request_id: Some(upstream_request_id.clone()),
+                                response_body: Some(snapshot_response_body_bytes(&body)),
+                            },
+                        )
+                        .await;
                         if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await
                         {
                             tracing::warn!(error = %e, "failed to finalize rate limit failure");
@@ -2103,6 +2499,7 @@ pub async fn responses(
                     ResponsesRuntimeMode::Native => match serde_json::from_slice(&body) {
                         Ok(parsed) => parsed,
                         Err(error) => {
+                            let response_body = snapshot_response_body_bytes(&body);
                             if let Err(e) = billing
                                 .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
                                 .await
@@ -2117,7 +2514,25 @@ pub async fn responses(
                                 format!("failed to parse upstream responses response: {error}"),
                             );
                             route_plan.exclude_selected_account(&channel);
+                            request_svc
+                                .try_update_execution_status(
+                                    tracking.execution_id,
+                                    ExecutionStatusUpdate {
+                                        status: ExecutionStatus::Failed,
+                                        error_message: Some(format!(
+                                            "failed to parse upstream responses response: {error}"
+                                        )),
+                                        duration_ms: Some(elapsed as i32),
+                                        first_token_ms: Some(0),
+                                        response_status_code: Some(0),
+                                        response_body: Some(response_body.clone()),
+                                        upstream_request_id: Some(upstream_request_id.clone()),
+                                    },
+                                )
+                                .await;
                             if attempt == max_retries - 1 {
+                                let message =
+                                    format!("failed to parse upstream responses response: {error}");
                                 record_terminal_failure(
                                     &log_svc,
                                     &token_info,
@@ -2134,8 +2549,21 @@ pub async fn responses(
                                     &client_ip,
                                     &user_agent,
                                     0,
-                                    format!("failed to parse upstream responses response: {error}"),
+                                    message.clone(),
                                 );
+                                update_request_failure_tracking(
+                                    &request_svc,
+                                    tracking,
+                                    FailureTrackingUpdate {
+                                        status_code: 0,
+                                        message,
+                                        elapsed_ms: elapsed,
+                                        upstream_model: Some(actual_model.clone()),
+                                        upstream_request_id: Some(upstream_request_id.clone()),
+                                        response_body: Some(response_body),
+                                    },
+                                )
+                                .await;
                                 if let Err(e) =
                                     rate_limiter.finalize_failure_with_retry(&request_id).await
                                 {
@@ -2154,6 +2582,7 @@ pub async fn responses(
                     {
                         Ok(parsed) => bridge_chat_completion_to_response(parsed),
                         Err(error) => {
+                            let response_body = snapshot_response_body_bytes(&body);
                             if let Err(e) = billing
                                 .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
                                 .await
@@ -2168,7 +2597,25 @@ pub async fn responses(
                                 format!("failed to parse bridged responses response: {error}"),
                             );
                             route_plan.exclude_selected_account(&channel);
+                            request_svc
+                                .try_update_execution_status(
+                                    tracking.execution_id,
+                                    ExecutionStatusUpdate {
+                                        status: ExecutionStatus::Failed,
+                                        error_message: Some(format!(
+                                            "failed to parse bridged responses response: {error}"
+                                        )),
+                                        duration_ms: Some(elapsed as i32),
+                                        first_token_ms: Some(0),
+                                        response_status_code: Some(0),
+                                        response_body: Some(response_body.clone()),
+                                        upstream_request_id: Some(upstream_request_id.clone()),
+                                    },
+                                )
+                                .await;
                             if attempt == max_retries - 1 {
+                                let message =
+                                    format!("failed to parse bridged responses response: {error}");
                                 record_terminal_failure(
                                     &log_svc,
                                     &token_info,
@@ -2185,8 +2632,21 @@ pub async fn responses(
                                     &client_ip,
                                     &user_agent,
                                     0,
-                                    format!("failed to parse bridged responses response: {error}"),
+                                    message.clone(),
                                 );
+                                update_request_failure_tracking(
+                                    &request_svc,
+                                    tracking,
+                                    FailureTrackingUpdate {
+                                        status_code: 0,
+                                        message,
+                                        elapsed_ms: elapsed,
+                                        upstream_model: Some(actual_model.clone()),
+                                        upstream_request_id: Some(upstream_request_id.clone()),
+                                        response_body: Some(response_body),
+                                    },
+                                )
+                                .await;
                                 if let Err(e) =
                                     rate_limiter.finalize_failure_with_retry(&request_id).await
                                 {
@@ -2231,6 +2691,16 @@ pub async fn responses(
                 } else {
                     parsed.model.clone()
                 };
+                update_request_success_tracking(
+                    &request_svc,
+                    tracking,
+                    elapsed,
+                    0,
+                    upstream_model.clone(),
+                    upstream_request_id.clone(),
+                    Some(serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null)),
+                )
+                .await;
 
                 spawn_usage_accounting_task(
                     billing,
@@ -2293,6 +2763,21 @@ pub async fn responses(
                     failure.message.clone(),
                 );
                 apply_upstream_failure_scope(&mut route_plan, &channel, failure.scope);
+                let upstream_request_id = extract_upstream_request_id(&headers);
+                request_svc
+                    .try_update_execution_status(
+                        tracking.execution_id,
+                        ExecutionStatusUpdate {
+                            status: ExecutionStatus::Failed,
+                            error_message: Some(failure.message.clone()),
+                            duration_ms: Some(elapsed as i32),
+                            first_token_ms: Some(0),
+                            response_status_code: Some(status_code),
+                            response_body: Some(snapshot_response_body_bytes(&body)),
+                            upstream_request_id: Some(upstream_request_id.clone()),
+                        },
+                    )
+                    .await;
                 if attempt == max_retries - 1 {
                     record_terminal_failure(
                         &log_svc,
@@ -2304,7 +2789,7 @@ pub async fn responses(
                         &actual_model,
                         &model_config.model_name,
                         &request_id,
-                        &extract_upstream_request_id(&headers),
+                        &upstream_request_id,
                         elapsed,
                         is_stream,
                         &client_ip,
@@ -2312,6 +2797,19 @@ pub async fn responses(
                         status_code,
                         failure.message.clone(),
                     );
+                    update_request_failure_tracking(
+                        &request_svc,
+                        tracking,
+                        FailureTrackingUpdate {
+                            status_code,
+                            message: failure.message.clone(),
+                            elapsed_ms: elapsed,
+                            upstream_model: Some(actual_model.clone()),
+                            upstream_request_id: Some(upstream_request_id),
+                            response_body: Some(snapshot_response_body_bytes(&body)),
+                        },
+                    )
+                    .await;
                     if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                         tracing::warn!(error = %e, "failed to finalize rate limit failure");
                     }
@@ -2334,7 +2832,22 @@ pub async fn responses(
                     error.to_string(),
                 );
                 route_plan.exclude_selected_account(&channel);
+                request_svc
+                    .try_update_execution_status(
+                        tracking.execution_id,
+                        ExecutionStatusUpdate {
+                            status: ExecutionStatus::Failed,
+                            error_message: Some(error.to_string()),
+                            duration_ms: Some(elapsed as i32),
+                            first_token_ms: Some(0),
+                            response_status_code: Some(0),
+                            response_body: None,
+                            upstream_request_id: None,
+                        },
+                    )
+                    .await;
                 if attempt == max_retries - 1 {
+                    let message = error.to_string();
                     record_terminal_failure(
                         &log_svc,
                         &token_info,
@@ -2351,8 +2864,21 @@ pub async fn responses(
                         &client_ip,
                         &user_agent,
                         0,
-                        error.to_string(),
+                        message.clone(),
                     );
+                    update_request_failure_tracking(
+                        &request_svc,
+                        tracking,
+                        FailureTrackingUpdate {
+                            status_code: 0,
+                            message,
+                            elapsed_ms: elapsed,
+                            upstream_model: Some(actual_model.clone()),
+                            upstream_request_id: None,
+                            response_body: None,
+                        },
+                    )
+                    .await;
                     if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                         tracing::warn!(error = %e, "failed to finalize rate limit failure");
                     }
@@ -2368,6 +2894,20 @@ pub async fn responses(
     if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
         tracing::warn!(error = %e, "failed to finalize rate limit failure");
     }
+    request_svc
+        .try_update_request_status(
+            request_record_id,
+            RequestStatusUpdate {
+                status: RequestStatus::Failed,
+                error_message: Some("all channels failed".to_string()),
+                duration_ms: Some(start.elapsed().as_millis() as i32),
+                first_token_ms: Some(0),
+                response_status_code: Some(0),
+                response_body: None,
+                upstream_model: None,
+            },
+        )
+        .await;
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))
@@ -2386,6 +2926,7 @@ pub async fn embeddings(
     Component(channel_svc): Component<ChannelService>,
     Component(token_svc): Component<TokenService>,
     Component(runtime_ops): Component<RuntimeOpsService>,
+    Component(request_svc): Component<RequestService>,
     ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     Json(req): Json<EmbeddingRequest>,
@@ -2427,11 +2968,48 @@ pub async fn embeddings(
     let raw_request = serde_json::to_value(&req).map_err(|e| {
         OpenAiErrorResponse::internal_with("failed to serialize embeddings request", e)
     })?;
+    let request_record_id = match request_svc
+        .create_request(build_request_active_model(RequestSnapshotInput {
+            request_id: &request_id,
+            token_info: &token_info,
+            endpoint: "embeddings",
+            request_format: "openai/embeddings",
+            requested_model: &requested_model,
+            is_stream: false,
+            client_ip: &client_ip,
+            user_agent: &user_agent,
+            headers: &headers,
+            request_body: raw_request.clone(),
+        }))
+        .await
+    {
+        Ok(record) => Some(record.id),
+        Err(error) => {
+            tracing::warn!(error = %error, request_id = %request_id, "failed to persist AI request snapshot");
+            None
+        }
+    };
 
-    rate_limiter
+    if let Err(error) = rate_limiter
         .reserve(&token_info, &request_id, i64::from(estimated_tokens))
         .await
-        .map_err(|e| OpenAiErrorResponse::from_quota_error(&e))?;
+    {
+        request_svc
+            .try_update_request_status(
+                request_record_id,
+                RequestStatusUpdate {
+                    status: RequestStatus::Failed,
+                    error_message: Some(error.to_string()),
+                    duration_ms: Some(start.elapsed().as_millis() as i32),
+                    first_token_ms: Some(0),
+                    response_status_code: Some(0),
+                    response_body: None,
+                    upstream_model: None,
+                },
+            )
+            .await;
+        return Err(OpenAiErrorResponse::from_quota_error(&error));
+    }
 
     for attempt in 0..max_retries {
         if attempt > 0 {
@@ -2441,6 +3019,20 @@ pub async fn embeddings(
             if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                 tracing::warn!(error = %e, "failed to finalize rate limit failure (no channel)");
             }
+            request_svc
+                .try_update_request_status(
+                    request_record_id,
+                    RequestStatusUpdate {
+                        status: RequestStatus::Failed,
+                        error_message: Some("no available channel".to_string()),
+                        duration_ms: Some(start.elapsed().as_millis() as i32),
+                        first_token_ms: Some(0),
+                        response_status_code: Some(0),
+                        response_body: None,
+                        upstream_model: None,
+                    },
+                )
+                .await;
             return Err(OpenAiErrorResponse::no_available_channel(
                 "no available channel",
             ));
@@ -2468,6 +3060,20 @@ pub async fn embeddings(
                 if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                     tracing::warn!(error = %e, "failed to finalize rate limit failure (quota error)");
                 }
+                request_svc
+                    .try_update_request_status(
+                        request_record_id,
+                        RequestStatusUpdate {
+                            status: RequestStatus::Failed,
+                            error_message: Some(error.to_string()),
+                            duration_ms: Some(start.elapsed().as_millis() as i32),
+                            first_token_ms: Some(0),
+                            response_status_code: Some(0),
+                            response_body: None,
+                            upstream_model: Some(actual_model.clone()),
+                        },
+                    )
+                    .await;
                 return Err(OpenAiErrorResponse::from_quota_error(&error));
             }
         };
@@ -2497,6 +3103,7 @@ pub async fn embeddings(
                 );
                 route_plan.exclude_selected_channel(&channel);
                 if attempt == max_retries - 1 {
+                    let message = format!("failed to build upstream embeddings request: {error}");
                     record_terminal_failure(
                         &log_svc,
                         &token_info,
@@ -2513,8 +3120,24 @@ pub async fn embeddings(
                         &client_ip,
                         &user_agent,
                         0,
-                        format!("failed to build upstream embeddings request: {error}"),
+                        message.clone(),
                     );
+                    update_request_failure_tracking(
+                        &request_svc,
+                        RequestTrackingIds {
+                            request_id: request_record_id,
+                            execution_id: None,
+                        },
+                        FailureTrackingUpdate {
+                            status_code: 0,
+                            message,
+                            elapsed_ms: start.elapsed().as_millis() as i64,
+                            upstream_model: Some(actual_model.clone()),
+                            upstream_request_id: None,
+                            response_body: None,
+                        },
+                    )
+                    .await;
                     if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                         tracing::warn!(error = %e, "failed to finalize rate limit failure");
                     }
@@ -2526,8 +3149,106 @@ pub async fn embeddings(
                 continue;
             }
         };
+        let mut tracking = RequestTrackingIds {
+            request_id: request_record_id,
+            execution_id: None,
+        };
+        let attempt_started_at = chrono::Utc::now().fixed_offset();
+        let upstream_request = match request_builder.build() {
+            Ok(request) => request,
+            Err(error) => {
+                if let Err(e) = billing
+                    .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to refund quota (build request object error)"
+                    );
+                }
+                channel_svc.record_relay_failure_async(
+                    channel.channel_id,
+                    channel.account_id,
+                    start.elapsed().as_millis() as i64,
+                    0,
+                    format!("failed to materialize upstream embeddings request: {error}"),
+                );
+                route_plan.exclude_selected_channel(&channel);
+                if attempt == max_retries - 1 {
+                    let message =
+                        format!("failed to materialize upstream embeddings request: {error}");
+                    record_terminal_failure(
+                        &log_svc,
+                        &token_info,
+                        &channel,
+                        "embeddings",
+                        "openai/embeddings",
+                        &requested_model,
+                        &actual_model,
+                        &model_config.model_name,
+                        &request_id,
+                        "",
+                        start.elapsed().as_millis() as i64,
+                        false,
+                        &client_ip,
+                        &user_agent,
+                        0,
+                        message.clone(),
+                    );
+                    update_request_failure_tracking(
+                        &request_svc,
+                        tracking,
+                        FailureTrackingUpdate {
+                            status_code: 0,
+                            message,
+                            elapsed_ms: start.elapsed().as_millis() as i64,
+                            upstream_model: Some(actual_model.clone()),
+                            upstream_request_id: None,
+                            response_body: None,
+                        },
+                    )
+                    .await;
+                    if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
+                        tracing::warn!(error = %e, "failed to finalize rate limit failure");
+                    }
+                    return Err(OpenAiErrorResponse::internal_with(
+                        "failed to materialize upstream embeddings request",
+                        error,
+                    ));
+                }
+                continue;
+            }
+        };
 
-        match request_builder.send().await {
+        if let Some(ai_request_id) = request_record_id {
+            match request_svc
+                .record_execution(build_execution_active_model(ExecutionSnapshotInput {
+                    ai_request_id,
+                    request_id: &request_id,
+                    attempt_no: attempt + 1,
+                    channel: &channel,
+                    endpoint: "embeddings",
+                    request_format: "openai/embeddings",
+                    requested_model: &requested_model,
+                    upstream_model: &actual_model,
+                    request: &upstream_request,
+                    started_at: attempt_started_at,
+                }))
+                .await
+            {
+                Ok(record) => tracking.execution_id = Some(record.id),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        request_id = %request_id,
+                        attempt = attempt + 1,
+                        "failed to persist AI request execution snapshot"
+                    );
+                }
+            }
+        }
+
+        match http_client.client().execute(upstream_request).await {
             Ok(resp) if resp.status().is_success() => {
                 let status = resp.status();
                 let elapsed = start.elapsed().as_millis() as i64;
@@ -2549,7 +3270,25 @@ pub async fn embeddings(
                             format!("failed to read upstream embeddings response: {error}"),
                         );
                         route_plan.exclude_selected_account(&channel);
+                        request_svc
+                            .try_update_execution_status(
+                                tracking.execution_id,
+                                ExecutionStatusUpdate {
+                                    status: ExecutionStatus::Failed,
+                                    error_message: Some(format!(
+                                        "failed to read upstream embeddings response: {error}"
+                                    )),
+                                    duration_ms: Some(elapsed as i32),
+                                    first_token_ms: Some(0),
+                                    response_status_code: Some(0),
+                                    response_body: None,
+                                    upstream_request_id: Some(upstream_request_id.clone()),
+                                },
+                            )
+                            .await;
                         if attempt == max_retries - 1 {
+                            let message =
+                                format!("failed to read upstream embeddings response: {error}");
                             record_terminal_failure(
                                 &log_svc,
                                 &token_info,
@@ -2566,8 +3305,21 @@ pub async fn embeddings(
                                 &client_ip,
                                 &user_agent,
                                 0,
-                                format!("failed to read upstream embeddings response: {error}"),
+                                message.clone(),
                             );
+                            update_request_failure_tracking(
+                                &request_svc,
+                                tracking,
+                                FailureTrackingUpdate {
+                                    status_code: 0,
+                                    message,
+                                    elapsed_ms: elapsed,
+                                    upstream_model: Some(actual_model.clone()),
+                                    upstream_request_id: Some(upstream_request_id.clone()),
+                                    response_body: None,
+                                },
+                            )
+                            .await;
                             if let Err(e) =
                                 rate_limiter.finalize_failure_with_retry(&request_id).await
                             {
@@ -2598,6 +3350,20 @@ pub async fn embeddings(
                         message.clone(),
                     );
                     route_plan.exclude_selected_channel(&channel);
+                    request_svc
+                        .try_update_execution_status(
+                            tracking.execution_id,
+                            ExecutionStatusUpdate {
+                                status: ExecutionStatus::Failed,
+                                error_message: Some(message.clone()),
+                                duration_ms: Some(elapsed as i32),
+                                first_token_ms: Some(0),
+                                response_status_code: Some(status.as_u16() as i32),
+                                response_body: Some(snapshot_response_body_bytes(&body)),
+                                upstream_request_id: Some(upstream_request_id.clone()),
+                            },
+                        )
+                        .await;
                     if attempt == max_retries - 1 {
                         record_terminal_failure(
                             &log_svc,
@@ -2617,6 +3383,19 @@ pub async fn embeddings(
                             status.as_u16() as i32,
                             message.clone(),
                         );
+                        update_request_failure_tracking(
+                            &request_svc,
+                            tracking,
+                            FailureTrackingUpdate {
+                                status_code: status.as_u16() as i32,
+                                message: message.clone(),
+                                elapsed_ms: elapsed,
+                                upstream_model: Some(actual_model.clone()),
+                                upstream_request_id: Some(upstream_request_id.clone()),
+                                response_body: Some(snapshot_response_body_bytes(&body)),
+                            },
+                        )
+                        .await;
                         if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await
                         {
                             tracing::warn!(error = %e, "failed to finalize rate limit failure");
@@ -2632,6 +3411,7 @@ pub async fn embeddings(
                 ) {
                     Ok(parsed) => parsed,
                     Err(error) => {
+                        let response_body = snapshot_response_body_bytes(&body);
                         if let Err(e) = billing
                             .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
                             .await
@@ -2646,7 +3426,25 @@ pub async fn embeddings(
                             format!("failed to parse upstream embeddings response: {error}"),
                         );
                         route_plan.exclude_selected_account(&channel);
+                        request_svc
+                            .try_update_execution_status(
+                                tracking.execution_id,
+                                ExecutionStatusUpdate {
+                                    status: ExecutionStatus::Failed,
+                                    error_message: Some(format!(
+                                        "failed to parse upstream embeddings response: {error}"
+                                    )),
+                                    duration_ms: Some(elapsed as i32),
+                                    first_token_ms: Some(0),
+                                    response_status_code: Some(0),
+                                    response_body: Some(response_body.clone()),
+                                    upstream_request_id: Some(upstream_request_id.clone()),
+                                },
+                            )
+                            .await;
                         if attempt == max_retries - 1 {
+                            let message =
+                                format!("failed to parse upstream embeddings response: {error}");
                             record_terminal_failure(
                                 &log_svc,
                                 &token_info,
@@ -2663,8 +3461,21 @@ pub async fn embeddings(
                                 &client_ip,
                                 &user_agent,
                                 0,
-                                format!("failed to parse upstream embeddings response: {error}"),
+                                message.clone(),
                             );
+                            update_request_failure_tracking(
+                                &request_svc,
+                                tracking,
+                                FailureTrackingUpdate {
+                                    status_code: 0,
+                                    message,
+                                    elapsed_ms: elapsed,
+                                    upstream_model: Some(actual_model.clone()),
+                                    upstream_request_id: Some(upstream_request_id.clone()),
+                                    response_body: Some(response_body),
+                                },
+                            )
+                            .await;
                             if let Err(e) =
                                 rate_limiter.finalize_failure_with_retry(&request_id).await
                             {
@@ -2684,6 +3495,16 @@ pub async fn embeddings(
                 } else {
                     fallback_usage(estimated_tokens)
                 };
+                update_request_success_tracking(
+                    &request_svc,
+                    tracking,
+                    elapsed,
+                    0,
+                    actual_model.clone(),
+                    upstream_request_id.clone(),
+                    Some(serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null)),
+                )
+                .await;
                 spawn_usage_accounting_task(
                     billing,
                     rate_limiter,
@@ -2739,6 +3560,21 @@ pub async fn embeddings(
                     failure.message.clone(),
                 );
                 apply_upstream_failure_scope(&mut route_plan, &channel, failure.scope);
+                let upstream_request_id = extract_upstream_request_id(&headers);
+                request_svc
+                    .try_update_execution_status(
+                        tracking.execution_id,
+                        ExecutionStatusUpdate {
+                            status: ExecutionStatus::Failed,
+                            error_message: Some(failure.message.clone()),
+                            duration_ms: Some(elapsed as i32),
+                            first_token_ms: Some(0),
+                            response_status_code: Some(status_code),
+                            response_body: Some(snapshot_response_body_bytes(&body)),
+                            upstream_request_id: Some(upstream_request_id.clone()),
+                        },
+                    )
+                    .await;
                 if attempt == max_retries - 1 {
                     record_terminal_failure(
                         &log_svc,
@@ -2750,7 +3586,7 @@ pub async fn embeddings(
                         &actual_model,
                         &model_config.model_name,
                         &request_id,
-                        &extract_upstream_request_id(&headers),
+                        &upstream_request_id,
                         elapsed,
                         false,
                         &client_ip,
@@ -2758,6 +3594,19 @@ pub async fn embeddings(
                         status_code,
                         failure.message.clone(),
                     );
+                    update_request_failure_tracking(
+                        &request_svc,
+                        tracking,
+                        FailureTrackingUpdate {
+                            status_code,
+                            message: failure.message.clone(),
+                            elapsed_ms: elapsed,
+                            upstream_model: Some(actual_model.clone()),
+                            upstream_request_id: Some(upstream_request_id),
+                            response_body: Some(snapshot_response_body_bytes(&body)),
+                        },
+                    )
+                    .await;
                     if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                         tracing::warn!(error = %e, "failed to finalize rate limit failure");
                     }
@@ -2780,7 +3629,22 @@ pub async fn embeddings(
                     error.to_string(),
                 );
                 route_plan.exclude_selected_account(&channel);
+                request_svc
+                    .try_update_execution_status(
+                        tracking.execution_id,
+                        ExecutionStatusUpdate {
+                            status: ExecutionStatus::Failed,
+                            error_message: Some(error.to_string()),
+                            duration_ms: Some(elapsed as i32),
+                            first_token_ms: Some(0),
+                            response_status_code: Some(0),
+                            response_body: None,
+                            upstream_request_id: None,
+                        },
+                    )
+                    .await;
                 if attempt == max_retries - 1 {
+                    let message = error.to_string();
                     record_terminal_failure(
                         &log_svc,
                         &token_info,
@@ -2797,8 +3661,21 @@ pub async fn embeddings(
                         &client_ip,
                         &user_agent,
                         0,
-                        error.to_string(),
+                        message.clone(),
                     );
+                    update_request_failure_tracking(
+                        &request_svc,
+                        tracking,
+                        FailureTrackingUpdate {
+                            status_code: 0,
+                            message,
+                            elapsed_ms: elapsed,
+                            upstream_model: Some(actual_model.clone()),
+                            upstream_request_id: None,
+                            response_body: None,
+                        },
+                    )
+                    .await;
                     if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
                         tracing::warn!(error = %e, "failed to finalize rate limit failure");
                     }
@@ -2814,6 +3691,20 @@ pub async fn embeddings(
     if let Err(e) = rate_limiter.finalize_failure_with_retry(&request_id).await {
         tracing::warn!(error = %e, "failed to finalize rate limit failure");
     }
+    request_svc
+        .try_update_request_status(
+            request_record_id,
+            RequestStatusUpdate {
+                status: RequestStatus::Failed,
+                error_message: Some("all channels failed".to_string()),
+                duration_ms: Some(start.elapsed().as_millis() as i32),
+                first_token_ms: Some(0),
+                response_status_code: Some(0),
+                response_body: None,
+                upstream_model: None,
+            },
+        )
+        .await;
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))

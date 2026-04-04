@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 use super::super::*;
 use crate::router::test_support::{MultipartRequestSpec, TestHarness};
 use summer_ai_model::entity::log::LogStatus;
+use summer_ai_model::entity::request::RequestStatus;
+use summer_ai_model::entity::request_execution::ExecutionStatus;
 use summer_web::axum::{
     Router,
     body::{Body, to_bytes},
@@ -3044,6 +3046,91 @@ async fn responses_non_stream_mock_upstream_success() {
 }
 
 #[tokio::test]
+#[ignore = "requires local postgres and redis"]
+async fn responses_route_persists_request_and_execution_snapshots() {
+    let actual_model = "gpt-5.4-mini";
+    let primary = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/responses".into(),
+        expected_header_name: "authorization".into(),
+        expected_header_value: "Bearer sk-primary".into(),
+        expected_body_substring: Some(format!("\"model\":\"{actual_model}\"")),
+        additional_expected_headers: vec![],
+        additional_expected_body_substrings: vec!["\"input\":\"Hello\"".into()],
+        response_status: StatusCode::OK,
+        response_content_type: "application/json".into(),
+        response_headers: vec![("x-request-id".into(), "responses-upstream-123".into())],
+        response_body: serde_json::json!({
+            "id": "resp_123",
+            "object": "response",
+            "model": actual_model,
+            "status": "completed",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "total_tokens": 19
+            },
+            "output_text": "hello"
+        })
+        .to_string(),
+    })
+    .await;
+    let harness =
+        TestHarness::responses_affinity_fixture(&primary.base_url, "http://127.0.0.1:9").await;
+    let request_id = format!("responses-request-tracking-{}", harness.model_name);
+
+    let response = harness
+        .json_request(
+            Method::POST,
+            "/v1/responses",
+            &request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "input": "Hello"
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let upstream_request_id = response
+        .headers()
+        .get("x-upstream-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("responses upstream request id")
+        .to_string();
+    let payload = crate::router::test_support::response_json(response).await;
+    assert_eq!(payload["id"], "resp_123");
+    assert_eq!(upstream_request_id, "responses-upstream-123");
+
+    let request = harness.wait_for_request_by_request_id(&request_id).await;
+    assert_eq!(request.endpoint, "responses");
+    assert_eq!(request.request_format, "openai/responses");
+    assert_eq!(request.requested_model, harness.model_name);
+    assert_eq!(request.upstream_model, actual_model);
+    assert_eq!(request.status, RequestStatus::Success);
+    assert_eq!(request.response_status_code, 200);
+    assert!(!request.is_stream);
+    assert_eq!(request.request_body["input"], "Hello");
+    assert_eq!(request.request_headers["authorization"], "***");
+
+    let executions = harness
+        .wait_for_request_executions_by_request_id(&request_id)
+        .await;
+    assert_eq!(executions.len(), 1);
+    let execution = &executions[0];
+    assert_eq!(execution.attempt_no, 1);
+    assert_eq!(execution.status, ExecutionStatus::Success);
+    assert_eq!(execution.endpoint, "responses");
+    assert_eq!(execution.request_format, "openai/responses");
+    assert_eq!(execution.requested_model, harness.model_name);
+    assert_eq!(execution.upstream_model, actual_model);
+    assert_eq!(execution.response_status_code, 200);
+    assert_eq!(execution.upstream_request_id, "responses-upstream-123");
+    assert_eq!(execution.request_body["model"], actual_model);
+    assert_eq!(execution.request_headers["authorization"], "***");
+
+    harness.cleanup().await;
+}
+
+#[tokio::test]
 async fn responses_stream_tracker_parses_completed_event_from_mock_upstream() {
     let req = sample_mock_responses_request(true);
     let actual_model = "gpt-5.4-mini";
@@ -3086,6 +3173,70 @@ async fn responses_stream_tracker_parses_completed_event_from_mock_upstream() {
         Some(19)
     );
     assert!(first_token_time.is_some());
+}
+
+#[tokio::test]
+#[ignore = "requires local postgres and redis"]
+async fn responses_stream_route_persists_request_and_execution_snapshots() {
+    let primary = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/responses".into(),
+        expected_header_name: "authorization".into(),
+        expected_header_value: "Bearer sk-primary".into(),
+        expected_body_substring: Some("\"stream\":true".into()),
+        additional_expected_headers: vec![],
+        additional_expected_body_substrings: vec!["\"input\":\"Hello stream\"".into()],
+        response_status: StatusCode::OK,
+        response_content_type: "text/event-stream".into(),
+        response_headers: vec![("x-request-id".into(), "responses-stream-upstream-123".into())],
+        response_body: concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_123\",\"model\":\"gpt-5.4-mini\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_123\",\"model\":\"gpt-5.4-mini\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
+            "data: [DONE]\n\n"
+        )
+        .into(),
+    })
+    .await;
+    let harness =
+        TestHarness::responses_affinity_fixture(&primary.base_url, "http://127.0.0.1:9").await;
+    let request_id = format!("responses-stream-request-tracking-{}", harness.model_name);
+
+    let response = harness
+        .json_request(
+            Method::POST,
+            "/v1/responses",
+            &request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "input": "Hello stream",
+                "stream": true
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = crate::router::test_support::response_text(response).await;
+    assert!(body.contains("response.completed"));
+
+    let request = harness.wait_for_request_by_request_id(&request_id).await;
+    assert_eq!(request.endpoint, "responses");
+    assert_eq!(request.status, RequestStatus::Success);
+    assert_eq!(request.response_status_code, 200);
+    assert!(request.is_stream);
+    assert_eq!(request.upstream_model, "gpt-5.4-mini");
+
+    let executions = harness
+        .wait_for_request_executions_by_request_id(&request_id)
+        .await;
+    assert_eq!(executions.len(), 1);
+    let execution = &executions[0];
+    assert_eq!(execution.status, ExecutionStatus::Success);
+    assert_eq!(
+        execution.upstream_request_id,
+        "responses-stream-upstream-123"
+    );
+    assert_eq!(execution.response_status_code, 200);
+
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -3906,6 +4057,88 @@ async fn embeddings_non_stream_mock_upstream_success() {
         serde_json::from_slice(&response.bytes().await.expect("body")).expect("embeddings json");
     assert_eq!(parsed.data.len(), 1);
     assert_eq!(parsed.usage.total_tokens, 8);
+}
+
+#[tokio::test]
+#[ignore = "requires local postgres and redis"]
+async fn embeddings_route_persists_request_and_execution_snapshots() {
+    let primary = spawn_mock_upstream(MockUpstreamSpec {
+        expected_path_and_query: "/v1/embeddings".into(),
+        expected_header_name: "authorization".into(),
+        expected_header_value: "Bearer sk-primary".into(),
+        expected_body_substring: Some("\"model\":\"text-embedding-3-small\"".into()),
+        additional_expected_headers: vec![],
+        additional_expected_body_substrings: vec!["\"input\":\"hello\"".into()],
+        response_status: StatusCode::OK,
+        response_content_type: "application/json".into(),
+        response_headers: vec![("x-request-id".into(), "embeddings-upstream-123".into())],
+        response_body: serde_json::json!({
+            "object": "list",
+            "data": [{
+                "object": "embedding",
+                "index": 0,
+                "embedding": [0.1, 0.2]
+            }],
+            "usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 0,
+                "total_tokens": 8
+            }
+        })
+        .to_string(),
+    })
+    .await;
+    let harness =
+        TestHarness::embeddings_affinity_fixture(&primary.base_url, "http://127.0.0.1:9").await;
+    let request_id = format!("embeddings-request-tracking-{}", harness.model_name);
+
+    let response = harness
+        .json_request(
+            Method::POST,
+            "/v1/embeddings",
+            &request_id,
+            serde_json::json!({
+                "model": harness.model_name,
+                "input": "hello"
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let upstream_request_id = response
+        .headers()
+        .get("x-upstream-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("embeddings upstream request id")
+        .to_string();
+    let payload = crate::router::test_support::response_json(response).await;
+    assert_eq!(payload["data"][0]["embedding"][0], 0.1);
+    assert_eq!(upstream_request_id, "embeddings-upstream-123");
+
+    let request = harness.wait_for_request_by_request_id(&request_id).await;
+    assert_eq!(request.endpoint, "embeddings");
+    assert_eq!(request.request_format, "openai/embeddings");
+    assert_eq!(request.requested_model, harness.model_name);
+    assert_eq!(request.upstream_model, "text-embedding-3-small");
+    assert_eq!(request.status, RequestStatus::Success);
+    assert_eq!(request.response_status_code, 200);
+    assert!(!request.is_stream);
+    assert_eq!(request.request_body["input"], "hello");
+
+    let executions = harness
+        .wait_for_request_executions_by_request_id(&request_id)
+        .await;
+    assert_eq!(executions.len(), 1);
+    let execution = &executions[0];
+    assert_eq!(execution.status, ExecutionStatus::Success);
+    assert_eq!(execution.endpoint, "embeddings");
+    assert_eq!(execution.request_format, "openai/embeddings");
+    assert_eq!(execution.requested_model, harness.model_name);
+    assert_eq!(execution.upstream_model, "text-embedding-3-small");
+    assert_eq!(execution.response_status_code, 200);
+    assert_eq!(execution.upstream_request_id, "embeddings-upstream-123");
+    assert_eq!(execution.request_body["model"], "text-embedding-3-small");
+
+    harness.cleanup().await;
 }
 
 #[tokio::test]

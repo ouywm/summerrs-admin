@@ -4,11 +4,14 @@ use std::time::Duration;
 use axum_client_ip::ClientIpSource;
 use sea_orm::prelude::BigDecimal;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Database, EntityTrait, PaginatorTrait, QueryFilter, Set,
+    ActiveModelTrait, ColumnTrait, Database, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    Set,
 };
 use summer::App;
 use summer::plugin::MutableComponentRegistry;
-use summer_ai_model::entity::{ability, channel, channel_account, log, model_config, token};
+use summer_ai_model::entity::{
+    ability, channel, channel_account, log, model_config, request, request_execution, token,
+};
 use summer_redis::redis::AsyncCommands;
 use summer_web::axum::Extension;
 use summer_web::axum::Router as AxumRouter;
@@ -364,6 +367,25 @@ impl TestHarness {
             vec!["responses"],
             vec!["responses"],
             false,
+        )
+        .await
+    }
+
+    pub(crate) async fn embeddings_affinity_fixture(
+        primary_base_url: &str,
+        fallback_base_url: &str,
+    ) -> Self {
+        Self::scoped_affinity_fixture_with_provider(
+            "embeddings-affinity",
+            primary_base_url,
+            fallback_base_url,
+            vec!["embeddings"],
+            vec!["embeddings"],
+            false,
+            channel::ChannelType::OpenAi,
+            "openai",
+            model_config::ModelType::Embedding,
+            None,
         )
         .await
     }
@@ -1072,6 +1094,42 @@ impl TestHarness {
         panic!("timed out waiting for log request_id={request_id}");
     }
 
+    pub(crate) async fn wait_for_request_by_request_id(&self, request_id: &str) -> request::Model {
+        for _ in 0..50 {
+            if let Some(model) = request::Entity::find()
+                .filter(request::Column::RequestId.eq(request_id))
+                .one(&self.db)
+                .await
+                .expect("query request by request id")
+            {
+                return model;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        panic!("timed out waiting for request request_id={request_id}");
+    }
+
+    pub(crate) async fn wait_for_request_executions_by_request_id(
+        &self,
+        request_id: &str,
+    ) -> Vec<request_execution::Model> {
+        for _ in 0..50 {
+            let models = request_execution::Entity::find()
+                .filter(request_execution::Column::RequestId.eq(request_id))
+                .order_by_asc(request_execution::Column::AttemptNo)
+                .all(&self.db)
+                .await
+                .expect("query request executions by request id");
+            if !models.is_empty() {
+                return models;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        panic!("timed out waiting for request executions request_id={request_id}");
+    }
+
     pub(crate) async fn insert_log(&self, active: log::ActiveModel) -> log::Model {
         let desired_create_time = match &active.create_time {
             sea_orm::ActiveValue::Set(value) | sea_orm::ActiveValue::Unchanged(value) => {
@@ -1167,6 +1225,25 @@ impl TestHarness {
 
     pub(crate) async fn cleanup(self) {
         tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let request_ids = request::Entity::find()
+            .filter(request::Column::TokenId.eq(self.cleanup_ids.token_id))
+            .all(&self.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|model| model.id)
+            .collect::<Vec<_>>();
+        if !request_ids.is_empty() {
+            let _ = request_execution::Entity::delete_many()
+                .filter(request_execution::Column::AiRequestId.is_in(request_ids.clone()))
+                .exec(&self.db)
+                .await;
+            let _ = request::Entity::delete_many()
+                .filter(request::Column::Id.is_in(request_ids))
+                .exec(&self.db)
+                .await;
+        }
 
         let _ = log::Entity::delete_many()
             .filter(log::Column::TokenId.eq(self.cleanup_ids.token_id))
