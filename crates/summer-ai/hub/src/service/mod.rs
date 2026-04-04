@@ -37,3 +37,6 @@ pub mod runtime_cache;
 pub mod runtime_ops;
 pub mod token;
 pub mod vendor;
+
+#[cfg(test)]
+mod tests;

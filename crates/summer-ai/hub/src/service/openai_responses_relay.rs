@@ -4,7 +4,6 @@ use summer_web::axum::body::Body;
 use summer_web::axum::http::{HeaderMap, StatusCode};
 use summer_web::axum::http::{HeaderValue, header::CONTENT_TYPE};
 use summer_web::axum::response::{IntoResponse, Response};
-use summer_web::extractor::Component;
 
 use summer_ai_core::provider::{ResponsesRuntimeMode, get_adapter};
 use summer_ai_core::types::common::Usage;
@@ -16,11 +15,9 @@ use summer_ai_core::types::responses::{
 use summer_ai_model::entity::log::LogStatus;
 use summer_ai_model::entity::request::RequestStatus;
 use summer_ai_model::entity::request_execution::ExecutionStatus;
-use summer_common::extractor::ClientIp;
 use summer_common::response::Json;
 use summer_common::user_agent::UserAgentInfo;
 
-use crate::auth::extractor::AiToken;
 use crate::relay::billing::{BillingEngine, ModelConfigInfo};
 use crate::relay::channel_router::{ChannelRouter, RouteSelectionExclusions};
 use crate::relay::http_client::UpstreamHttpClient;
@@ -85,21 +82,21 @@ impl OpenAiResponsesRelayService {
         req: ResponsesRequest,
     ) -> OpenAiApiResult<Response> {
         relay_impl(
-            AiToken(token_info),
-            Component(self.router_svc.clone()),
-            Component(self.billing.clone()),
-            Component(self.rate_limiter.clone()),
-            Component(self.http_client.clone()),
-            Component(self.log_svc.clone()),
-            Component(self.channel_svc.clone()),
-            Component(self.token_svc.clone()),
-            Component(self.response_bridge.clone()),
-            Component(self.resource_affinity.clone()),
-            Component(self.runtime_ops.clone()),
-            Component(self.request_svc.clone()),
-            ClientIp(client_ip),
+            token_info,
+            self.router_svc.clone(),
+            self.billing.clone(),
+            self.rate_limiter.clone(),
+            self.http_client.clone(),
+            self.log_svc.clone(),
+            self.channel_svc.clone(),
+            self.token_svc.clone(),
+            self.response_bridge.clone(),
+            self.resource_affinity.clone(),
+            self.runtime_ops.clone(),
+            self.request_svc.clone(),
+            client_ip,
             headers,
-            Json(req),
+            req,
         )
         .await
     }
@@ -269,21 +266,21 @@ pub(crate) fn build_json_bytes_response(
 
 #[allow(clippy::too_many_arguments)]
 async fn relay_impl(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(response_bridge): Component<ResponseBridgeService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    Component(runtime_ops): Component<RuntimeOpsService>,
-    Component(request_svc): Component<RequestService>,
-    ClientIp(client_ip): ClientIp,
+    token_info: crate::service::token::TokenInfo,
+    router_svc: ChannelRouter,
+    billing: BillingEngine,
+    rate_limiter: RateLimitEngine,
+    http_client: UpstreamHttpClient,
+    log_svc: LogService,
+    channel_svc: ChannelService,
+    token_svc: TokenService,
+    response_bridge: ResponseBridgeService,
+    resource_affinity: ResourceAffinityService,
+    runtime_ops: RuntimeOpsService,
+    request_svc: RequestService,
+    client_ip: std::net::IpAddr,
     headers: HeaderMap,
-    Json(req): Json<ResponsesRequest>,
+    req: ResponsesRequest,
 ) -> OpenAiApiResult<Response> {
     let request_id = extract_request_id(&headers);
     let user_agent = UserAgentInfo::from_headers(&headers).raw;

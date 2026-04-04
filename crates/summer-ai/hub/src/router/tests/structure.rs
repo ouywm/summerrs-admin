@@ -62,3 +62,17 @@ fn router_root_keeps_tests_in_dedicated_directories() {
         "router/test_support.rs should be folded into router/tests/support/"
     );
 }
+
+#[test]
+fn openai_router_uses_directory_module_layout() {
+    let router_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/router");
+
+    assert!(
+        router_dir.join("openai/mod.rs").is_file(),
+        "router/openai/mod.rs should exist"
+    );
+    assert!(
+        !router_dir.join("openai.rs").exists(),
+        "router/openai.rs should be folded into router/openai/mod.rs"
+    );
+}

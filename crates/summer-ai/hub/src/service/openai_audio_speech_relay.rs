@@ -1,16 +1,3 @@
-use anyhow::Context;
-use summer::plugin::Service;
-use summer_ai_core::types::audio::AudioSpeechRequest;
-use summer_ai_core::types::error::{OpenAiApiResult, OpenAiErrorResponse};
-use summer_ai_model::entity::channel::ChannelType;
-use summer_common::extractor::ClientIp;
-use summer_common::response::Json;
-use summer_common::user_agent::UserAgentInfo;
-use summer_web::axum::http::{HeaderMap, header::CONTENT_TYPE};
-use summer_web::axum::response::Response;
-use summer_web::extractor::Component;
-
-use crate::auth::extractor::AiToken;
 use crate::relay::billing::BillingEngine;
 use crate::relay::channel_router::{ChannelRouter, RouteSelectionExclusions};
 use crate::relay::http_client::UpstreamHttpClient;
@@ -24,6 +11,14 @@ use crate::service::openai_responses_relay::{
 use crate::service::openai_tracking::{map_adapter_build_error, record_terminal_failure};
 use crate::service::runtime_ops::RuntimeOpsService;
 use crate::service::token::TokenService;
+use anyhow::Context;
+use summer::plugin::Service;
+use summer_ai_core::types::audio::AudioSpeechRequest;
+use summer_ai_core::types::error::{OpenAiApiResult, OpenAiErrorResponse};
+use summer_ai_model::entity::channel::ChannelType;
+use summer_common::user_agent::UserAgentInfo;
+use summer_web::axum::http::{HeaderMap, header::CONTENT_TYPE};
+use summer_web::axum::response::Response;
 
 use crate::router::openai::{
     apply_upstream_failure_scope, classify_upstream_provider_failure, extract_request_id,
@@ -60,18 +55,18 @@ impl OpenAiAudioSpeechRelayService {
         body: serde_json::Value,
     ) -> OpenAiApiResult<Response> {
         relay_impl(
-            AiToken(token_info),
-            Component(self.router_svc.clone()),
-            Component(self.billing.clone()),
-            Component(self.rate_limiter.clone()),
-            Component(self.http_client.clone()),
-            Component(self.log_svc.clone()),
-            Component(self.channel_svc.clone()),
-            Component(self.token_svc.clone()),
-            Component(self.runtime_ops.clone()),
-            ClientIp(client_ip),
+            token_info,
+            self.router_svc.clone(),
+            self.billing.clone(),
+            self.rate_limiter.clone(),
+            self.http_client.clone(),
+            self.log_svc.clone(),
+            self.channel_svc.clone(),
+            self.token_svc.clone(),
+            self.runtime_ops.clone(),
+            client_ip,
             headers,
-            Json(body),
+            body,
         )
         .await
     }
@@ -79,18 +74,18 @@ impl OpenAiAudioSpeechRelayService {
 
 #[allow(clippy::too_many_arguments)]
 async fn relay_impl(
-    AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(runtime_ops): Component<RuntimeOpsService>,
-    ClientIp(client_ip): ClientIp,
+    token_info: crate::service::token::TokenInfo,
+    router_svc: ChannelRouter,
+    billing: BillingEngine,
+    rate_limiter: RateLimitEngine,
+    http_client: UpstreamHttpClient,
+    log_svc: LogService,
+    channel_svc: ChannelService,
+    token_svc: TokenService,
+    runtime_ops: RuntimeOpsService,
+    client_ip: std::net::IpAddr,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    body: serde_json::Value,
 ) -> OpenAiApiResult<Response> {
     let request_id = extract_request_id(&headers);
     let user_agent = UserAgentInfo::from_headers(&headers).raw;

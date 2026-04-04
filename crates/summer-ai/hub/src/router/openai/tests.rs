@@ -502,11 +502,11 @@ fn bridge_chat_completion_to_completion_preserves_usage_and_text() {
 
 #[test]
 fn chat_relay_impl_is_not_defined_in_router_module() {
-    let source = route_source("openai.rs");
+    let source = route_source("openai/mod.rs");
 
     assert!(
         !source.contains("pub(crate) async fn relay_chat_completions_impl("),
-        "chat relay implementation should live in a service module, not router/openai.rs"
+        "chat relay implementation should live in a service module, not router/openai/mod.rs"
     );
 }
 
@@ -551,19 +551,19 @@ fn endpoint_route_modules_only_keep_wrappers() {
 
 #[test]
 fn openai_router_module_does_not_reexport_test_helpers() {
-    let source = route_source("openai.rs");
+    let source = route_source("openai/mod.rs");
 
     assert!(
         !source.contains("pub(crate) use crate::service::openai_completions_relay::"),
-        "router/openai.rs should not re-export completion helpers for tests"
+        "router/openai/mod.rs should not re-export completion helpers for tests"
     );
     assert!(
         !source.contains("pub(crate) use crate::service::openai_relay_support::*;"),
-        "router/openai.rs should not re-export relay support helpers for tests"
+        "router/openai/mod.rs should not re-export relay support helpers for tests"
     );
     assert!(
         !source.contains("pub(crate) use crate::service::openai_tracking::"),
-        "router/openai.rs should not re-export tracking helpers for tests"
+        "router/openai/mod.rs should not re-export tracking helpers for tests"
     );
 }
 
