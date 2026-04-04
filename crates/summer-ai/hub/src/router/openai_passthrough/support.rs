@@ -5,7 +5,7 @@ use summer_web::axum::http::{
 };
 use summer_web::axum::response::{IntoResponse, Response};
 
-use crate::router::openai::insert_request_id_header;
+use crate::service::openai_http::insert_request_id_header;
 
 pub(crate) fn build_bytes_response(
     status: StatusCode,

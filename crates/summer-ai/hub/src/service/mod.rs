@@ -12,6 +12,8 @@ pub mod log_batch;
 pub mod metrics;
 pub mod model;
 pub mod multi_tenant;
+pub mod openai_http;
+pub mod openai_tracking;
 pub mod platform_config;
 pub mod request;
 pub mod resource_affinity;

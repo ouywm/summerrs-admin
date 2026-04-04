@@ -12,6 +12,7 @@ use crate::relay::rate_limit::RateLimitEngine;
 use crate::router::openai::settle_usage_accounting;
 use crate::service::channel::ChannelService;
 use crate::service::log::LogService;
+use crate::service::openai_tracking::RequestTrackingIds;
 use crate::service::request::{ExecutionStatusUpdate, RequestService, RequestStatusUpdate};
 use crate::service::token::TokenInfo;
 
@@ -37,7 +38,7 @@ pub(crate) fn build_sse_response(
     upstream_request_id: String,
     user_agent: String,
     request_svc: RequestService,
-    tracking: crate::router::openai::RequestTrackingIds,
+    tracking: RequestTrackingIds,
 ) -> Response {
     let response_request_id = request_id.clone();
     let stream = async_stream::stream! {

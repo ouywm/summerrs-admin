@@ -9,23 +9,19 @@ use summer_web::axum::http::{
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::{get_api, post_api};
-use uuid::Uuid;
 
 use summer_ai_core::provider::{
     ProviderErrorInfo, ProviderErrorKind, ResponsesRuntimeMode, get_adapter,
 };
-use summer_ai_core::types::chat::{
-    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse,
-};
-use summer_ai_core::types::common::{Message, Usage};
+use summer_ai_core::types::chat::{ChatCompletionChunk, ChatCompletionRequest};
+use summer_ai_core::types::common::Usage;
 use summer_ai_core::types::embedding::{EmbeddingRequest, EmbeddingResponse};
 use summer_ai_core::types::error::{
     OpenAiApiResult, OpenAiError, OpenAiErrorBody, OpenAiErrorResponse,
 };
 use summer_ai_core::types::model::ModelListResponse;
 use summer_ai_core::types::responses::{
-    ResponseInputTokensDetails, ResponseOutputTokensDetails, ResponseUsage, ResponsesRequest,
-    ResponsesResponse, estimate_input_tokens as estimate_response_input_tokens,
+    ResponsesRequest, ResponsesResponse, estimate_input_tokens as estimate_response_input_tokens,
     estimate_total_tokens_for_rate_limit as estimate_response_total_tokens_for_rate_limit,
     extract_response_model, extract_response_usage, is_output_text_delta_event,
 };
@@ -37,16 +33,23 @@ use crate::auth::extractor::AiToken;
 use crate::relay::billing::{
     BillingEngine, ModelConfigInfo, estimate_prompt_tokens, estimate_total_tokens_for_rate_limit,
 };
-use crate::relay::channel_router::{
-    ChannelRouter, RouteSelectionExclusions, RouteSelectionState, SelectedChannel,
-};
+use crate::relay::channel_router::{ChannelRouter, RouteSelectionExclusions, RouteSelectionState};
 use crate::relay::http_client::UpstreamHttpClient;
 use crate::relay::rate_limit::RateLimitEngine;
 use crate::relay::stream::build_sse_response;
 use crate::router::openai_passthrough::unusable_success_response_message;
 use crate::service::channel::ChannelService;
-use crate::service::log::{AiFailureLogRecord, AiUsageLogRecord, LogService};
+use crate::service::log::{AiUsageLogRecord, LogService};
 use crate::service::model::ModelService;
+use crate::service::openai_http::{
+    bridge_chat_completion_to_response, extract_request_id, extract_upstream_request_id,
+    fallback_usage, insert_request_id_header, insert_upstream_request_id_header,
+    response_usage_from_usage,
+};
+use crate::service::openai_tracking::{
+    FailureTrackingUpdate, RequestTrackingIds, map_adapter_build_error, record_terminal_failure,
+    update_request_failure_tracking, update_request_success_tracking,
+};
 use crate::service::request::{
     ExecutionSnapshotInput, ExecutionStatusUpdate, RequestService, RequestSnapshotInput,
     RequestStatusUpdate, build_execution_active_model, build_request_active_model,
@@ -55,7 +58,7 @@ use crate::service::request::{
 use crate::service::resource_affinity::ResourceAffinityService;
 use crate::service::response_bridge::ResponseBridgeService;
 use crate::service::runtime_ops::RuntimeOpsService;
-use crate::service::token::{TokenInfo, TokenService};
+use crate::service::token::TokenService;
 use summer_common::extractor::ClientIp;
 use summer_common::response::Json;
 
@@ -92,143 +95,6 @@ pub(crate) struct UpstreamProviderFailure {
     pub message: String,
 }
 use summer_common::user_agent::UserAgentInfo;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RequestTrackingIds {
-    pub(crate) request_id: Option<i64>,
-    pub(crate) execution_id: Option<i64>,
-}
-
-struct FailureTrackingUpdate {
-    status_code: i32,
-    message: String,
-    elapsed_ms: i64,
-    upstream_model: Option<String>,
-    upstream_request_id: Option<String>,
-    response_body: Option<serde_json::Value>,
-}
-
-fn map_adapter_build_error(context: &str, error: anyhow::Error) -> OpenAiErrorResponse {
-    let message = error.to_string();
-    if message.contains("is not supported") {
-        return OpenAiErrorResponse::unsupported_endpoint(message);
-    }
-    OpenAiErrorResponse::internal_with(context, error)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_terminal_failure(
-    log_svc: &LogService,
-    token_info: &TokenInfo,
-    channel: &SelectedChannel,
-    endpoint: &str,
-    request_format: &str,
-    requested_model: &str,
-    upstream_model: &str,
-    model_name: &str,
-    request_id: &str,
-    upstream_request_id: &str,
-    elapsed_ms: i64,
-    is_stream: bool,
-    client_ip: &str,
-    user_agent: &str,
-    status_code: i32,
-    message: impl Into<String>,
-) {
-    log_svc.record_failure_async(
-        token_info,
-        channel,
-        AiFailureLogRecord {
-            endpoint: endpoint.to_string(),
-            request_format: request_format.to_string(),
-            request_id: request_id.to_string(),
-            upstream_request_id: upstream_request_id.to_string(),
-            requested_model: requested_model.to_string(),
-            upstream_model: upstream_model.to_string(),
-            model_name: model_name.to_string(),
-            elapsed_time: elapsed_ms as i32,
-            is_stream,
-            client_ip: client_ip.to_string(),
-            user_agent: user_agent.to_string(),
-            status_code,
-            content: message.into(),
-        },
-    );
-}
-
-async fn update_request_failure_tracking(
-    request_svc: &RequestService,
-    tracking: RequestTrackingIds,
-    failure: FailureTrackingUpdate,
-) {
-    request_svc
-        .try_update_execution_status(
-            tracking.execution_id,
-            ExecutionStatusUpdate {
-                status: ExecutionStatus::Failed,
-                error_message: Some(failure.message.clone()),
-                duration_ms: Some(failure.elapsed_ms as i32),
-                first_token_ms: Some(0),
-                response_status_code: Some(failure.status_code),
-                response_body: failure.response_body.clone(),
-                upstream_request_id: failure.upstream_request_id,
-            },
-        )
-        .await;
-    request_svc
-        .try_update_request_status(
-            tracking.request_id,
-            RequestStatusUpdate {
-                status: RequestStatus::Failed,
-                error_message: Some(failure.message),
-                duration_ms: Some(failure.elapsed_ms as i32),
-                first_token_ms: Some(0),
-                response_status_code: Some(failure.status_code),
-                response_body: failure.response_body,
-                upstream_model: failure.upstream_model,
-            },
-        )
-        .await;
-}
-
-async fn update_request_success_tracking(
-    request_svc: &RequestService,
-    tracking: RequestTrackingIds,
-    elapsed_ms: i64,
-    first_token_ms: i32,
-    upstream_model: String,
-    upstream_request_id: String,
-    response_body: Option<serde_json::Value>,
-) {
-    request_svc
-        .try_update_execution_status(
-            tracking.execution_id,
-            ExecutionStatusUpdate {
-                status: ExecutionStatus::Success,
-                error_message: None,
-                duration_ms: Some(elapsed_ms as i32),
-                first_token_ms: Some(first_token_ms),
-                response_status_code: Some(200),
-                response_body: response_body.clone(),
-                upstream_request_id: Some(upstream_request_id),
-            },
-        )
-        .await;
-    request_svc
-        .try_update_request_status(
-            tracking.request_id,
-            RequestStatusUpdate {
-                status: RequestStatus::Success,
-                error_message: None,
-                duration_ms: Some(elapsed_ms as i32),
-                first_token_ms: Some(first_token_ms),
-                response_status_code: Some(200),
-                response_body,
-                upstream_model: Some(upstream_model),
-            },
-        )
-        .await;
-}
 
 /// POST /v1/chat/completions
 #[post_api("/v1/chat/completions")]
@@ -1343,16 +1209,6 @@ pub(crate) fn spawn_usage_accounting_task(
     });
 }
 
-pub(crate) fn fallback_usage(prompt_tokens: i32) -> Usage {
-    Usage {
-        prompt_tokens,
-        completion_tokens: 0,
-        total_tokens: prompt_tokens,
-        cached_tokens: 0,
-        reasoning_tokens: 0,
-    }
-}
-
 pub(crate) fn build_json_bytes_response(
     body: Bytes,
     content_type: Option<HeaderValue>,
@@ -1368,55 +1224,6 @@ pub(crate) fn build_json_bytes_response(
     );
     insert_request_id_header(&mut response, request_id);
     response
-}
-
-fn response_usage_from_usage(usage: &Usage) -> ResponseUsage {
-    ResponseUsage {
-        input_tokens: usage.prompt_tokens,
-        output_tokens: usage.completion_tokens,
-        total_tokens: usage.total_tokens,
-        input_tokens_details: (usage.cached_tokens > 0).then_some(ResponseInputTokensDetails {
-            cached_tokens: usage.cached_tokens,
-        }),
-        output_tokens_details: (usage.reasoning_tokens > 0).then_some(
-            ResponseOutputTokensDetails {
-                reasoning_tokens: usage.reasoning_tokens,
-            },
-        ),
-    }
-}
-
-fn response_output_text_from_message(message: &Message) -> Option<String> {
-    match &message.content {
-        serde_json::Value::String(text) if !text.is_empty() => Some(text.clone()),
-        serde_json::Value::Array(items) => {
-            let text = items
-                .iter()
-                .filter_map(|item| item.get("text").and_then(serde_json::Value::as_str))
-                .collect::<Vec<_>>()
-                .join("");
-            (!text.is_empty()).then_some(text)
-        }
-        _ => None,
-    }
-}
-
-fn bridge_chat_completion_to_response(response: ChatCompletionResponse) -> ResponsesResponse {
-    let choice = response.choices.into_iter().next();
-    let output_text = choice
-        .as_ref()
-        .and_then(|choice| response_output_text_from_message(&choice.message));
-
-    ResponsesResponse {
-        id: response.id,
-        object: "response".into(),
-        created_at: response.created,
-        model: response.model,
-        status: "completed".into(),
-        usage: Some(response_usage_from_usage(&response.usage)),
-        output_text,
-        extra: serde_json::Map::new(),
-    }
 }
 
 fn responses_sse_bytes(payload: &serde_json::Value) -> Bytes {
@@ -3708,58 +3515,6 @@ pub async fn embeddings(
     Err(OpenAiErrorResponse::no_available_channel(
         "all channels failed",
     ))
-}
-
-pub(crate) fn extract_request_id(headers: &HeaderMap) -> String {
-    request_header_value(headers, &["x-request-id", "request-id"])
-        .unwrap_or_else(|| Uuid::new_v4().to_string())
-}
-
-pub(crate) fn extract_upstream_request_id(headers: &HeaderMap) -> String {
-    request_header_value(
-        headers,
-        &[
-            "x-request-id",
-            "request-id",
-            "x-oneapi-request-id",
-            "openai-request-id",
-            "anthropic-request-id",
-            "cf-ray",
-        ],
-    )
-    .unwrap_or_default()
-}
-
-pub(crate) fn request_header_value(headers: &HeaderMap, names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| {
-        headers
-            .get(*name)
-            .and_then(|value| value.to_str().ok())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    })
-}
-
-pub(crate) fn insert_request_id_header(response: &mut Response, request_id: &str) {
-    if let Ok(value) = HeaderValue::from_str(request_id) {
-        response.headers_mut().insert("x-request-id", value);
-    }
-}
-
-pub(crate) fn insert_upstream_request_id_header(
-    response: &mut Response,
-    upstream_request_id: &str,
-) {
-    if upstream_request_id.is_empty() {
-        return;
-    }
-
-    if let Ok(value) = HeaderValue::from_str(upstream_request_id) {
-        response
-            .headers_mut()
-            .insert("x-upstream-request-id", value);
-    }
 }
 
 pub(crate) fn classify_upstream_provider_failure(

@@ -31,14 +31,16 @@ use crate::relay::http_client::UpstreamHttpClient;
 use crate::relay::rate_limit::RateLimitEngine;
 use crate::service::channel::ChannelService;
 use crate::service::log::LogService;
+use crate::service::openai_http::{
+    extract_request_id, extract_upstream_request_id, fallback_usage, insert_request_id_header,
+    insert_upstream_request_id_header,
+};
 use crate::service::runtime_ops::RuntimeOpsService;
 use crate::service::token::TokenService;
 
 use super::{
-    apply_upstream_failure_scope, classify_upstream_provider_failure, extract_request_id,
-    extract_upstream_request_id, fallback_usage, insert_request_id_header,
-    insert_upstream_request_id_header, map_adapter_build_error, record_terminal_failure,
-    spawn_usage_accounting_task, unusable_success_response_message,
+    apply_upstream_failure_scope, classify_upstream_provider_failure, map_adapter_build_error,
+    record_terminal_failure, spawn_usage_accounting_task, unusable_success_response_message,
 };
 
 /// POST /v1/completions
