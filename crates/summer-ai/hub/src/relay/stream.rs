@@ -12,13 +12,14 @@ use crate::relay::rate_limit::RateLimitEngine;
 use crate::router::openai::settle_usage_accounting;
 use crate::service::channel::ChannelService;
 use crate::service::log::LogService;
+use crate::service::request::{ExecutionStatusUpdate, RequestService, RequestStatusUpdate};
 use crate::service::token::TokenInfo;
 
 use crate::service::metrics::relay_metrics;
 
 /// Convert the upstream chunk stream into an axum SSE response.
 #[allow(clippy::too_many_arguments)]
-pub fn build_sse_response(
+pub(crate) fn build_sse_response(
     chunk_stream: futures::stream::BoxStream<'static, anyhow::Result<ChatCompletionChunk>>,
     token_info: TokenInfo,
     pre_consumed: i64,
@@ -35,6 +36,8 @@ pub fn build_sse_response(
     request_id: String,
     upstream_request_id: String,
     user_agent: String,
+    request_svc: RequestService,
+    tracking: crate::router::openai::RequestTrackingIds,
 ) -> Response {
     let response_request_id = request_id.clone();
     let stream = async_stream::stream! {
@@ -103,6 +106,34 @@ pub fn build_sse_response(
             stream_error.as_ref(),
         ) {
             StreamSettlement::Success { usage } => {
+                request_svc
+                    .try_update_execution_status(
+                        tracking.execution_id,
+                        ExecutionStatusUpdate {
+                            status: summer_ai_model::entity::request_execution::ExecutionStatus::Success,
+                            error_message: None,
+                            duration_ms: Some(total_elapsed as i32),
+                            first_token_ms: Some(ftt),
+                            response_status_code: Some(200),
+                            response_body: None,
+                            upstream_request_id: Some(upstream_request_id.clone()),
+                        },
+                    )
+                    .await;
+                request_svc
+                    .try_update_request_status(
+                        tracking.request_id,
+                        RequestStatusUpdate {
+                            status: summer_ai_model::entity::request::RequestStatus::Success,
+                            error_message: None,
+                            duration_ms: Some(total_elapsed as i32),
+                            first_token_ms: Some(ftt),
+                            response_status_code: Some(200),
+                            response_body: None,
+                            upstream_model: (!upstream_model.is_empty()).then(|| upstream_model.clone()),
+                        },
+                    )
+                    .await;
                 settle_usage_accounting(
                     billing,
                     rate_limiter,
@@ -129,6 +160,34 @@ pub fn build_sse_response(
                 .await;
             }
             StreamSettlement::Failure { status_code, message } => {
+                request_svc
+                    .try_update_execution_status(
+                        tracking.execution_id,
+                        ExecutionStatusUpdate {
+                            status: summer_ai_model::entity::request_execution::ExecutionStatus::Failed,
+                            error_message: Some(message.clone()),
+                            duration_ms: Some(total_elapsed as i32),
+                            first_token_ms: Some(ftt),
+                            response_status_code: Some(status_code),
+                            response_body: None,
+                            upstream_request_id: Some(upstream_request_id.clone()),
+                        },
+                    )
+                    .await;
+                request_svc
+                    .try_update_request_status(
+                        tracking.request_id,
+                        RequestStatusUpdate {
+                            status: summer_ai_model::entity::request::RequestStatus::Failed,
+                            error_message: Some(message.clone()),
+                            duration_ms: Some(total_elapsed as i32),
+                            first_token_ms: Some(ftt),
+                            response_status_code: Some(status_code),
+                            response_body: None,
+                            upstream_model: (!upstream_model.is_empty()).then(|| upstream_model.clone()),
+                        },
+                    )
+                    .await;
                 if let Err(error) = billing
                     .refund_with_retry(&request_id, token_info.token_id, pre_consumed)
                     .await
