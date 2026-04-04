@@ -331,4 +331,63 @@ return current
             .with_context(|| format!("failed to trim sorted-set members for key {key}"))
             .map_err(ApiErrors::Internal)
     }
+
+    // ── Redis Degradation Helpers ──────────────────────────────────────
+
+    /// Read-through with graceful degradation: returns `None` on Redis failure
+    /// instead of propagating the error, allowing callers to fall back to DB.
+    pub async fn get_json_graceful<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        match self.get_json::<T>(key).await {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(error = %e, key, "redis degraded: cache read failed, falling back");
+                None
+            }
+        }
+    }
+
+    /// Write-through with graceful degradation: logs a warning on Redis failure
+    /// instead of propagating the error. Data will be re-cached on next read.
+    pub async fn set_json_graceful<T: Serialize>(&self, key: &str, value: &T, ttl_seconds: u64) {
+        if let Err(e) = self.set_json(key, value, ttl_seconds).await {
+            tracing::warn!(error = %e, key, "redis degraded: cache write failed, skipping");
+        }
+    }
+
+    /// Atomic increment with graceful degradation for rate limiting.
+    ///
+    /// On Redis failure, returns `Ok(0)` (effectively allowing the request)
+    /// and logs a warning. This is a deliberate fail-open for rate limiting
+    /// to avoid blocking all traffic when Redis is temporarily unavailable.
+    pub async fn incr_with_expire_graceful(&self, key: &str, ttl_seconds: i64) -> i64 {
+        match self.incr_with_expire(key, ttl_seconds).await {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, key,
+                    "redis degraded: rate limit incr failed, allowing request"
+                );
+                0
+            }
+        }
+    }
+
+    /// Atomic increment-by with graceful degradation for rate limiting.
+    pub async fn incr_by_with_expire_graceful(
+        &self,
+        key: &str,
+        value: i64,
+        ttl_seconds: i64,
+    ) -> i64 {
+        match self.incr_by_with_expire(key, value, ttl_seconds).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, key,
+                    "redis degraded: rate limit incr_by failed, allowing request"
+                );
+                0
+            }
+        }
+    }
 }

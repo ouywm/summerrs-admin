@@ -35,9 +35,11 @@ pub enum ChannelStatus {
     Archived = 4,
 }
 
-/// 渠道类型（0=Unknown, 1=OpenAI, 3=Anthropic, 14=Azure, 15=Baidu, 17=Ali, 24=Gemini, 28=Ollama）
+/// 渠道类型
 ///
+/// 编号设计参考 one-api 惯例，便于数据迁移。
 /// `Unknown` 用于向前兼容：新增渠道类型值时只需添加变体，无需迁移。
+/// 所有标注 "OpenAI 兼容" 的厂商共享 OpenAI adapter，仅 base_url 不同。
 #[derive(
     Debug,
     Clone,
@@ -62,21 +64,54 @@ pub enum ChannelType {
     /// Anthropic
     #[sea_orm(num_value = 3)]
     Anthropic = 3,
-    /// Azure
+    /// Azure OpenAI
     #[sea_orm(num_value = 14)]
     Azure = 14,
-    /// 百度
+    /// 百度（文心一言）
     #[sea_orm(num_value = 15)]
     Baidu = 15,
-    /// 阿里
+    /// 阿里（通义千问）— OpenAI 兼容
     #[sea_orm(num_value = 17)]
     Ali = 17,
-    /// Gemini
+    /// Google Gemini
     #[sea_orm(num_value = 24)]
     Gemini = 24,
-    /// Ollama
+    /// Ollama — OpenAI 兼容（本地部署）
     #[sea_orm(num_value = 28)]
     Ollama = 28,
+    /// DeepSeek — OpenAI 兼容
+    #[sea_orm(num_value = 30)]
+    DeepSeek = 30,
+    /// Groq — OpenAI 兼容（极速推理）
+    #[sea_orm(num_value = 31)]
+    Groq = 31,
+    /// Mistral — OpenAI 兼容
+    #[sea_orm(num_value = 32)]
+    Mistral = 32,
+    /// SiliconFlow（硅基流动）— OpenAI 兼容
+    #[sea_orm(num_value = 33)]
+    SiliconFlow = 33,
+    /// vLLM — OpenAI 兼容（自托管）
+    #[sea_orm(num_value = 34)]
+    Vllm = 34,
+    /// Fireworks AI — OpenAI 兼容
+    #[sea_orm(num_value = 35)]
+    Fireworks = 35,
+    /// Together AI — OpenAI 兼容
+    #[sea_orm(num_value = 36)]
+    Together = 36,
+    /// OpenRouter — OpenAI 兼容（聚合路由）
+    #[sea_orm(num_value = 37)]
+    OpenRouter = 37,
+    /// Moonshot（月之暗面）— OpenAI 兼容
+    #[sea_orm(num_value = 38)]
+    Moonshot = 38,
+    /// 零一万物（Yi）— OpenAI 兼容
+    #[sea_orm(num_value = 39)]
+    Lingyi = 39,
+    /// Cohere — 独特协议（未来可选适配）
+    #[sea_orm(num_value = 40)]
+    Cohere = 40,
 }
 
 #[sea_orm::model]

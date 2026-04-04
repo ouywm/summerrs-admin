@@ -90,8 +90,24 @@ where
     }
 }
 
+/// Fail-close: AI relay routes require auth by default.
+///
+/// Only explicitly exempted paths bypass authentication.
+/// This prevents accidentally exposing new endpoints without auth.
 fn requires_ai_auth(path: &str) -> bool {
-    path.starts_with("/v1/") || path.starts_with("/api/v1/")
+    // Paths that are part of the AI relay gateway.
+    let is_ai_path = path.starts_with("/v1/") || path.starts_with("/api/v1/");
+    if !is_ai_path {
+        return false;
+    }
+
+    // Explicit exempt list — these AI paths do NOT require Bearer token auth.
+    const AUTH_EXEMPT: &[&str] = &[
+        "/v1/models",     // Model listing (public)
+        "/api/v1/models", // Model listing (public)
+    ];
+
+    !AUTH_EXEMPT.contains(&path)
 }
 
 fn extract_bearer_token(parts: &Parts) -> Option<String> {
@@ -120,17 +136,24 @@ mod tests {
         assert!(requires_ai_auth("/v1/chat/completions"));
         assert!(requires_ai_auth("/v1/files"));
         assert!(requires_ai_auth("/v1/threads/runs"));
+        assert!(requires_ai_auth("/v1/embeddings"));
+        assert!(requires_ai_auth("/v1/responses"));
     }
 
     #[test]
     fn requires_auth_for_api_v1_openai_endpoints() {
-        assert!(requires_ai_auth("/api/v1/models"));
         assert!(requires_ai_auth("/api/v1/rerank"));
         assert!(requires_ai_auth("/api/v1/vector_stores"));
     }
 
     #[test]
-    fn ignores_non_openai_control_plane_routes() {
+    fn exempts_model_listing() {
+        assert!(!requires_ai_auth("/v1/models"));
+        assert!(!requires_ai_auth("/api/v1/models"));
+    }
+
+    #[test]
+    fn ignores_non_ai_control_plane_routes() {
         assert!(!requires_ai_auth("/ai/token"));
         assert!(!requires_ai_auth("/system/menu/list"));
         assert!(!requires_ai_auth("/health"));

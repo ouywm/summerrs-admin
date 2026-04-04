@@ -170,9 +170,9 @@ impl ChannelService {
     }
 
     pub async fn recover_auto_disabled_channels(&self) -> ApiResult<()> {
-        // Cooldown: only attempt recovery for channels whose last error was at least
-        // 5 minutes ago, preventing rapid-fire retries on persistently failing channels.
-        let cooldown_cutoff = chrono::Utc::now().fixed_offset() - chrono::Duration::minutes(5);
+        let now = chrono::Utc::now().fixed_offset();
+        // Base cooldown: 5 minutes since last error.
+        let base_cooldown = chrono::Duration::minutes(5);
 
         let channels = channel::Entity::find()
             .filter(channel::Column::Status.eq(ChannelStatus::AutoDisabled))
@@ -180,7 +180,7 @@ impl ChannelService {
             .filter(
                 sea_orm::Condition::any()
                     .add(channel::Column::LastErrorAt.is_null())
-                    .add(channel::Column::LastErrorAt.lt(cooldown_cutoff)),
+                    .add(channel::Column::LastErrorAt.lt(now - base_cooldown)),
             )
             .order_by_asc(channel::Column::Id)
             .all(&self.db)
@@ -189,6 +189,15 @@ impl ChannelService {
             .map_err(ApiErrors::Internal)?;
 
         for channel in channels {
+            // Exponential backoff based on failure_streak:
+            //   streak 0-1 → 5min, 2 → 10min, 3 → 20min, 4 → 40min, 5+ → 60min (cap)
+            let backoff_minutes = (5_i64 * (1 << channel.failure_streak.min(4) as u32)).min(60);
+            if let Some(last_error) = channel.last_error_at {
+                let backoff_cutoff = last_error + chrono::Duration::minutes(backoff_minutes);
+                if now < backoff_cutoff {
+                    continue;
+                }
+            }
             if let Err(error) = resolve_probe_endpoint_scope(
                 channel.channel_type as i16,
                 &channel.endpoint_scopes,

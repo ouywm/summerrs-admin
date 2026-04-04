@@ -14,6 +14,8 @@ use crate::service::channel::ChannelService;
 use crate::service::log::LogService;
 use crate::service::token::TokenInfo;
 
+use crate::service::metrics::relay_metrics;
+
 /// Convert the upstream chunk stream into an axum SSE response.
 #[allow(clippy::too_many_arguments)]
 pub fn build_sse_response(
@@ -36,6 +38,9 @@ pub fn build_sse_response(
 ) -> Response {
     let response_request_id = request_id.clone();
     let stream = async_stream::stream! {
+        let metrics = relay_metrics();
+        metrics.record_stream_start();
+
         let mut last_usage: Option<Usage> = None;
         let mut saw_terminal_finish_reason = false;
         let mut first_token_time: Option<i64> = None;
@@ -80,6 +85,14 @@ pub fn build_sse_response(
         }
 
         yield Ok(Event::default().data("[DONE]"));
+
+        metrics.record_stream_end();
+        if let Some(ftt_ms) = first_token_time {
+            metrics.record_first_token_latency(ftt_ms as u64);
+        }
+        if let Some(ref usage) = last_usage {
+            metrics.record_tokens(usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens);
+        }
 
         let total_elapsed = start_elapsed + start.elapsed().as_millis() as i64;
         let ftt = first_token_time.unwrap_or(0) as i32;
@@ -142,7 +155,11 @@ pub fn build_sse_response(
     };
 
     let mut response = Sse::new(stream)
-        .keep_alive(KeepAlive::default())
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("keepalive"),
+        )
         .into_response();
     if let Ok(value) = summer_web::axum::http::HeaderValue::from_str(&response_request_id) {
         response.headers_mut().insert("x-request-id", value);

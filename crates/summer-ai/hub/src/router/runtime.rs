@@ -30,6 +30,12 @@ pub async fn runtime_summary(
     Ok(Json(svc.summary().await?))
 }
 
+/// GET /ai/runtime/metrics — real-time relay metrics (in-memory atomic counters).
+#[get_api("/ai/runtime/metrics")]
+pub async fn runtime_metrics() -> Json<crate::service::metrics::RelayMetricsSnapshot> {
+    Json(crate::service::metrics::relay_metrics().snapshot())
+}
+
 #[cfg(test)]
 mod tests {
     use sea_orm::Set;

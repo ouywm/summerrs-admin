@@ -790,6 +790,18 @@ pub(crate) async fn settle_usage_accounting(
         },
     );
 
+    // Record metrics for successful relay.
+    let metrics = crate::service::metrics::relay_metrics();
+    metrics.record_request_success(elapsed as u64);
+    metrics.record_tokens(
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        usage.cached_tokens,
+    );
+    metrics
+        .quota_consumed
+        .fetch_add(actual_quota, std::sync::atomic::Ordering::Relaxed);
+
     if let Err(error) = rate_limiter
         .finalize_success_with_retry(&request_id, i64::from(usage.total_tokens))
         .await

@@ -40,10 +40,11 @@ impl RateLimitEngine {
         estimated_total_tokens: i64,
     ) -> ApiResult<()> {
         let record_key = request_record_key(request_id);
+        // Idempotency check — use graceful read so Redis failure doesn't block requests.
         if self
             .cache
-            .get_json::<RateLimitRequestRecord>(&record_key)
-            .await?
+            .get_json_graceful::<RateLimitRequestRecord>(&record_key)
+            .await
             .is_some()
         {
             return Ok(());
@@ -71,6 +72,9 @@ impl RateLimitEngine {
                 .await?;
             if current > i64::from(token_info.rpm_limit) {
                 let _ = self.cache.decr_by(&key, 1).await;
+                crate::service::metrics::relay_metrics()
+                    .rate_limited_total
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Err(ApiErrors::TooManyRequests("RPM limit exceeded".into()));
             }
             record.rpm_key = Some(key);
@@ -89,6 +93,9 @@ impl RateLimitEngine {
                 if let Some(rpm_key) = record.rpm_key.as_ref() {
                     let _ = self.cache.decr_by(rpm_key, record.rpm_reserved).await;
                 }
+                crate::service::metrics::relay_metrics()
+                    .rate_limited_total
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Err(ApiErrors::TooManyRequests("TPM limit exceeded".into()));
             }
             record.tpm_key = Some(key);
@@ -144,8 +151,8 @@ impl RateLimitEngine {
         let record_key = request_record_key(request_id);
         let Some(mut record) = self
             .cache
-            .get_json::<RateLimitRequestRecord>(&record_key)
-            .await?
+            .get_json_graceful::<RateLimitRequestRecord>(&record_key)
+            .await
         else {
             return Ok(());
         };
@@ -186,8 +193,8 @@ impl RateLimitEngine {
         let record_key = request_record_key(request_id);
         let Some(mut record) = self
             .cache
-            .get_json::<RateLimitRequestRecord>(&record_key)
-            .await?
+            .get_json_graceful::<RateLimitRequestRecord>(&record_key)
+            .await
         else {
             return Ok(());
         };

@@ -244,6 +244,24 @@ impl ChannelRouter {
         ))
     }
 
+    /// Build a channel plan using a custom routing strategy.
+    pub async fn build_channel_plan_with_strategy(
+        &self,
+        group: &str,
+        model: &str,
+        endpoint_scope: &str,
+        exclusions: &RouteSelectionExclusions,
+        strategy: &dyn crate::relay::routing_strategy::RoutingStrategy,
+    ) -> ApiResult<RouteSelectionPlan> {
+        let candidates = self
+            .load_cached_route_candidates(group, model, endpoint_scope)
+            .await?;
+        Ok(RouteSelectionPlan::new(
+            build_route_plan_from_candidates_with_strategy(&candidates, exclusions, Some(strategy)),
+            exclusions.clone(),
+        ))
+    }
+
     pub async fn select_default_channel(
         &self,
         group: &str,
@@ -753,9 +771,18 @@ fn weighted_random_select<T: Copy>(items: &[(T, i32)]) -> Option<T> {
     None
 }
 
+#[cfg(test)]
 fn select_from_route_candidates(
     candidates: &[CachedRouteCandidate],
     exclusions: &RouteSelectionExclusions,
+) -> Option<SelectedChannel> {
+    select_from_route_candidates_with_strategy(candidates, exclusions, None)
+}
+
+fn select_from_route_candidates_with_strategy(
+    candidates: &[CachedRouteCandidate],
+    exclusions: &RouteSelectionExclusions,
+    strategy: Option<&dyn crate::relay::routing_strategy::RoutingStrategy>,
 ) -> Option<SelectedChannel> {
     let available_candidates: Vec<(&CachedRouteCandidate, Vec<&CachedRouteAccount>)> = candidates
         .iter()
@@ -777,6 +804,60 @@ fn select_from_route_candidates(
         })
         .collect();
 
+    // If a custom strategy is provided, flatten candidates into RouteCandidate
+    // structs and delegate selection entirely to the strategy.
+    if let Some(strategy) = strategy {
+        use crate::relay::routing_strategy::{RouteCandidate, RoutingContext};
+
+        let mut flat: Vec<(RouteCandidate, usize, usize)> = Vec::new();
+        for (ci, (candidate, accounts)) in available_candidates.iter().enumerate() {
+            for (ai, account) in accounts.iter().enumerate() {
+                flat.push((
+                    RouteCandidate {
+                        channel_id: candidate.channel_id,
+                        channel_name: candidate.channel_name.clone(),
+                        channel_type: candidate.channel_type,
+                        base_url: candidate.base_url.clone(),
+                        model_mapping: candidate.model_mapping.clone(),
+                        priority: effective_candidate_priority(candidate),
+                        weight: candidate.weight,
+                        response_time: candidate.channel_response_time,
+                        failure_streak: candidate.channel_failure_streak,
+                        recent_penalty_count: candidate.recent_penalty_count,
+                        account_id: account.account_id,
+                        account_name: account.account_name.clone(),
+                        api_key: account.api_key.clone(),
+                    },
+                    ci,
+                    ai,
+                ));
+            }
+        }
+
+        let route_candidates: Vec<RouteCandidate> =
+            flat.iter().map(|(rc, _, _)| rc.clone()).collect();
+        let ctx = RoutingContext {
+            model: "",
+            endpoint_scope: "",
+            estimated_tokens: 0,
+        };
+
+        let selected_index = strategy.select(&route_candidates, &ctx)?;
+        let (rc, _, _) = flat.get(selected_index)?;
+
+        return Some(SelectedChannel {
+            channel_id: rc.channel_id,
+            channel_name: rc.channel_name.clone(),
+            channel_type: rc.channel_type,
+            base_url: rc.base_url.clone(),
+            model_mapping: rc.model_mapping.clone(),
+            api_key: rc.api_key.clone(),
+            account_id: rc.account_id,
+            account_name: rc.account_name.clone(),
+        });
+    }
+
+    // Default strategy: priority → health → weighted random (original logic).
     let max_priority = available_candidates
         .iter()
         .map(|(candidate, _)| effective_candidate_priority(candidate))
@@ -815,10 +896,20 @@ fn build_route_plan_from_candidates(
     candidates: &[CachedRouteCandidate],
     exclusions: &RouteSelectionExclusions,
 ) -> Vec<SelectedChannel> {
+    build_route_plan_from_candidates_with_strategy(candidates, exclusions, None)
+}
+
+fn build_route_plan_from_candidates_with_strategy(
+    candidates: &[CachedRouteCandidate],
+    exclusions: &RouteSelectionExclusions,
+    strategy: Option<&dyn crate::relay::routing_strategy::RoutingStrategy>,
+) -> Vec<SelectedChannel> {
     let mut plan = Vec::new();
     let mut planning_exclusions = exclusions.clone();
 
-    while let Some(selected) = select_from_route_candidates(candidates, &planning_exclusions) {
+    while let Some(selected) =
+        select_from_route_candidates_with_strategy(candidates, &planning_exclusions, strategy)
+    {
         planning_exclusions.exclude_selected_account(&selected);
         plan.push(selected);
     }

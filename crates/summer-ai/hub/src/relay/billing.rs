@@ -576,6 +576,7 @@ fn billing_record_key(request_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use summer_ai_core::types::common::{Message, Usage};
 
     fn sample_model_config(supported_endpoints: &[&str]) -> ModelConfigInfo {
         ModelConfigInfo {
@@ -591,6 +592,18 @@ mod tests {
         }
     }
 
+    fn make_message(content: &str) -> Message {
+        Message {
+            role: "user".into(),
+            content: serde_json::Value::String(content.into()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    // ── endpoint support ───────────────────────────────────────────
+
     #[test]
     fn endpoint_support_check_accepts_supported_scope() {
         let config = sample_model_config(&["chat", "responses"]);
@@ -603,5 +616,179 @@ mod tests {
         let error = config.ensure_endpoint_supported("responses").unwrap_err();
         assert!(matches!(error, ApiErrors::BadRequest(_)));
         assert!(error.to_string().contains("responses"));
+    }
+
+    // ── calculate_actual_quota ─────────────────────────────────────
+
+    #[test]
+    fn actual_quota_basic_input_output() {
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        };
+        let config = ModelConfigInfo {
+            model_name: "gpt-4o".into(),
+            input_ratio: 2.5,
+            output_ratio: 10.0,
+            cached_input_ratio: 0.0,
+            reasoning_ratio: 0.0,
+            supported_endpoints: vec![],
+        };
+
+        // (100 * 2.5 + 50 * 10.0) * 1.0 = 750
+        assert_eq!(
+            BillingEngine::calculate_actual_quota(&usage, &config, 1.0),
+            750
+        );
+    }
+
+    #[test]
+    fn actual_quota_with_cached_and_reasoning_tokens() {
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cached_tokens: 30,
+            reasoning_tokens: 20,
+        };
+        let config = ModelConfigInfo {
+            model_name: "claude".into(),
+            input_ratio: 3.0,
+            output_ratio: 15.0,
+            cached_input_ratio: 1.5,
+            reasoning_ratio: 15.0,
+            supported_endpoints: vec![],
+        };
+
+        // (100*3 + 50*15 + 30*1.5 + 20*15) * 1.0 = (300+750+45+300) = 1395
+        assert_eq!(
+            BillingEngine::calculate_actual_quota(&usage, &config, 1.0),
+            1395
+        );
+    }
+
+    #[test]
+    fn actual_quota_applies_group_ratio() {
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 100,
+            total_tokens: 200,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        };
+        let config = ModelConfigInfo {
+            model_name: "test".into(),
+            input_ratio: 1.0,
+            output_ratio: 1.0,
+            cached_input_ratio: 0.0,
+            reasoning_ratio: 0.0,
+            supported_endpoints: vec![],
+        };
+
+        // (100 + 100) * 0.5 = 100
+        assert_eq!(
+            BillingEngine::calculate_actual_quota(&usage, &config, 0.5),
+            100
+        );
+        // (100 + 100) * 2.0 = 400
+        assert_eq!(
+            BillingEngine::calculate_actual_quota(&usage, &config, 2.0),
+            400
+        );
+    }
+
+    #[test]
+    fn actual_quota_ceils_fractional_result() {
+        let usage = Usage {
+            prompt_tokens: 1,
+            completion_tokens: 0,
+            total_tokens: 1,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        };
+        let config = ModelConfigInfo {
+            model_name: "test".into(),
+            input_ratio: 0.3,
+            output_ratio: 0.0,
+            cached_input_ratio: 0.0,
+            reasoning_ratio: 0.0,
+            supported_endpoints: vec![],
+        };
+
+        // 1 * 0.3 * 1.0 = 0.3 → ceil = 1
+        assert_eq!(
+            BillingEngine::calculate_actual_quota(&usage, &config, 1.0),
+            1
+        );
+    }
+
+    // ── estimate_prompt_tokens ─────────────────────────────────────
+
+    #[test]
+    fn estimate_tokens_english_text() {
+        let messages = vec![make_message("Hello, how are you today?")];
+        let estimate = estimate_prompt_tokens(&messages);
+        // 25 chars / 3.0 = 8.33 → ceil = 9
+        assert_eq!(estimate, 9);
+    }
+
+    #[test]
+    fn estimate_tokens_chinese_text() {
+        let messages = vec![make_message("你好世界")];
+        let estimate = estimate_prompt_tokens(&messages);
+        // 4 chars / 3.0 = 1.33 → ceil = 2
+        assert_eq!(estimate, 2);
+    }
+
+    #[test]
+    fn estimate_tokens_multiple_messages() {
+        let messages = vec![
+            make_message("Hi"),          // 2 chars
+            make_message("Hello world"), // 11 chars
+        ];
+        let estimate = estimate_prompt_tokens(&messages);
+        // 13 / 3.0 = 4.33 → ceil = 5
+        assert_eq!(estimate, 5);
+    }
+
+    #[test]
+    fn estimate_tokens_empty_messages() {
+        let messages: Vec<Message> = vec![];
+        assert_eq!(estimate_prompt_tokens(&messages), 0);
+    }
+
+    // ── estimate_total_tokens_for_rate_limit ───────────────────────
+
+    #[test]
+    fn total_token_estimate_uses_max_tokens_when_provided() {
+        let messages = vec![make_message("test")]; // ~2 tokens
+        let total = estimate_total_tokens_for_rate_limit(&messages, Some(500));
+        assert_eq!(total, 2 + 500);
+    }
+
+    #[test]
+    fn total_token_estimate_defaults_to_2048() {
+        let messages = vec![make_message("test")]; // ~2 tokens
+        let total = estimate_total_tokens_for_rate_limit(&messages, None);
+        assert_eq!(total, 2 + 2048);
+    }
+
+    // ── BillingReservationStatus transitions ───────────────────────
+
+    #[test]
+    fn billing_reservation_status_serde_roundtrip() {
+        for status in [
+            BillingReservationStatus::Pending,
+            BillingReservationStatus::Reserved,
+            BillingReservationStatus::Settled,
+            BillingReservationStatus::Refunded,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let back: BillingReservationStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, back);
+        }
     }
 }

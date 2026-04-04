@@ -20,6 +20,178 @@ pub use openai::OpenAiAdapter;
 
 const CHAT_ONLY_PROVIDER_SCOPES: &[&str] = &["chat", "responses"];
 const GEMINI_PROVIDER_SCOPES: &[&str] = &["chat", "responses", "embeddings"];
+const OLLAMA_PROVIDER_SCOPES: &[&str] = &["chat", "embeddings"];
+
+/// Static metadata for each known provider.
+#[derive(Debug, Clone)]
+pub struct ProviderMeta {
+    /// Human-readable provider name.
+    pub name: &'static str,
+    /// Default base URL (user can override via channel config).
+    pub default_base_url: &'static str,
+    /// Supported endpoint scopes (empty = unrestricted / all OpenAI endpoints).
+    pub supported_scopes: &'static [&'static str],
+    /// Whether this provider uses the OpenAI-compatible API format.
+    pub openai_compatible: bool,
+}
+
+/// Look up static metadata for a channel type.
+///
+/// Returns `None` for truly unknown types (0 or unrecognized values).
+pub fn provider_meta(channel_type: i16) -> Option<&'static ProviderMeta> {
+    static PROVIDERS: &[ProviderMeta] = &[
+        // 1 - OpenAI
+        ProviderMeta {
+            name: "OpenAI",
+            default_base_url: "https://api.openai.com",
+            supported_scopes: &[],
+            openai_compatible: true,
+        },
+        // 3 - Anthropic
+        ProviderMeta {
+            name: "Anthropic",
+            default_base_url: "https://api.anthropic.com",
+            supported_scopes: &["chat", "responses"],
+            openai_compatible: false,
+        },
+        // 14 - Azure OpenAI
+        ProviderMeta {
+            name: "Azure OpenAI",
+            default_base_url: "",
+            supported_scopes: &[],
+            openai_compatible: false,
+        },
+        // 15 - Baidu
+        ProviderMeta {
+            name: "百度文心",
+            default_base_url: "https://aip.baidubce.com",
+            supported_scopes: &["chat"],
+            openai_compatible: true,
+        },
+        // 17 - Ali
+        ProviderMeta {
+            name: "阿里通义",
+            default_base_url: "https://dashscope.aliyuncs.com/compatible-mode",
+            supported_scopes: &[],
+            openai_compatible: true,
+        },
+        // 24 - Gemini
+        ProviderMeta {
+            name: "Google Gemini",
+            default_base_url: "https://generativelanguage.googleapis.com",
+            supported_scopes: &["chat", "responses", "embeddings"],
+            openai_compatible: false,
+        },
+        // 28 - Ollama
+        ProviderMeta {
+            name: "Ollama",
+            default_base_url: "http://localhost:11434",
+            supported_scopes: &["chat", "embeddings"],
+            openai_compatible: true,
+        },
+        // 30 - DeepSeek
+        ProviderMeta {
+            name: "DeepSeek",
+            default_base_url: "https://api.deepseek.com",
+            supported_scopes: &[],
+            openai_compatible: true,
+        },
+        // 31 - Groq
+        ProviderMeta {
+            name: "Groq",
+            default_base_url: "https://api.groq.com/openai",
+            supported_scopes: &["chat"],
+            openai_compatible: true,
+        },
+        // 32 - Mistral
+        ProviderMeta {
+            name: "Mistral",
+            default_base_url: "https://api.mistral.ai",
+            supported_scopes: &[],
+            openai_compatible: true,
+        },
+        // 33 - SiliconFlow
+        ProviderMeta {
+            name: "SiliconFlow",
+            default_base_url: "https://api.siliconflow.cn",
+            supported_scopes: &[],
+            openai_compatible: true,
+        },
+        // 34 - vLLM
+        ProviderMeta {
+            name: "vLLM",
+            default_base_url: "http://localhost:8000",
+            supported_scopes: &["chat", "embeddings"],
+            openai_compatible: true,
+        },
+        // 35 - Fireworks
+        ProviderMeta {
+            name: "Fireworks AI",
+            default_base_url: "https://api.fireworks.ai/inference",
+            supported_scopes: &["chat", "embeddings"],
+            openai_compatible: true,
+        },
+        // 36 - Together
+        ProviderMeta {
+            name: "Together AI",
+            default_base_url: "https://api.together.xyz",
+            supported_scopes: &["chat", "embeddings"],
+            openai_compatible: true,
+        },
+        // 37 - OpenRouter
+        ProviderMeta {
+            name: "OpenRouter",
+            default_base_url: "https://openrouter.ai/api",
+            supported_scopes: &[],
+            openai_compatible: true,
+        },
+        // 38 - Moonshot
+        ProviderMeta {
+            name: "Moonshot",
+            default_base_url: "https://api.moonshot.cn",
+            supported_scopes: &["chat"],
+            openai_compatible: true,
+        },
+        // 39 - Lingyi
+        ProviderMeta {
+            name: "零一万物",
+            default_base_url: "https://api.lingyiwanwu.com",
+            supported_scopes: &["chat"],
+            openai_compatible: true,
+        },
+        // 40 - Cohere
+        ProviderMeta {
+            name: "Cohere",
+            default_base_url: "https://api.cohere.com/compatibility",
+            supported_scopes: &["chat", "responses", "rerank", "embeddings"],
+            openai_compatible: true,
+        },
+    ];
+
+    // Map channel_type → index into PROVIDERS.
+    let index = match channel_type {
+        1 => 0,
+        3 => 1,
+        14 => 2,
+        15 => 3,
+        17 => 4,
+        24 => 5,
+        28 => 6,
+        30 => 7,
+        31 => 8,
+        32 => 9,
+        33 => 10,
+        34 => 11,
+        35 => 12,
+        36 => 13,
+        37 => 14,
+        38 => 15,
+        39 => 16,
+        40 => 17,
+        _ => return None,
+    };
+    PROVIDERS.get(index)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponsesRuntimeMode {
@@ -303,6 +475,9 @@ fn merge_extra_body_fields(
 }
 
 /// 根据渠道类型获取对应适配器（零状态，全局静态实例）
+///
+/// OpenAI 兼容厂商（DeepSeek, Groq, Mistral 等）共享 OpenAI adapter，
+/// 仅 base_url 和 api_key 不同，由渠道配置决定。
 pub fn get_adapter(channel_type: i16) -> &'static dyn ProviderAdapter {
     static ANTHROPIC: AnthropicAdapter = AnthropicAdapter;
     static AZURE: AzureOpenAiAdapter = AzureOpenAiAdapter;
@@ -310,19 +485,27 @@ pub fn get_adapter(channel_type: i16) -> &'static dyn ProviderAdapter {
     static OPENAI: OpenAiAdapter = OpenAiAdapter;
 
     match channel_type {
-        1 => &OPENAI,    // OpenAI / OpenAI 兼容
         3 => &ANTHROPIC, // Anthropic
         14 => &AZURE,    // Azure OpenAI
         24 => &GEMINI,   // Gemini
-        _ => &OPENAI,    // 默认 OpenAI 兼容
+        // All others → OpenAI compatible (OpenAI, DeepSeek, Groq, Mistral,
+        // Ollama, SiliconFlow, vLLM, Fireworks, Together, OpenRouter,
+        // Ali, Baidu, Moonshot, Lingyi, Cohere, Unknown, etc.)
+        _ => &OPENAI,
     }
 }
 
+/// Restrict which endpoint scopes a provider supports.
+///
+/// Returns `None` for OpenAI-compatible providers (unrestricted).
+/// Returns `Some(allowlist)` for providers that only support specific endpoints.
 pub fn provider_scope_allowlist(channel_type: i16) -> Option<&'static [&'static str]> {
     match channel_type {
-        3 => Some(CHAT_ONLY_PROVIDER_SCOPES),
-        24 => Some(GEMINI_PROVIDER_SCOPES),
-        _ => None,
+        3 => Some(CHAT_ONLY_PROVIDER_SCOPES), // Anthropic: chat + responses only
+        24 => Some(GEMINI_PROVIDER_SCOPES),   // Gemini: chat + responses + embeddings
+        28 => Some(OLLAMA_PROVIDER_SCOPES),   // Ollama: chat + embeddings
+        40 => Some(CHAT_ONLY_PROVIDER_SCOPES), // Cohere: chat + responses only
+        _ => None,                            // OpenAI-compatible: unrestricted
     }
 }
 
@@ -369,12 +552,64 @@ mod tests {
             provider_scope_allowlist(24),
             Some(&["chat", "responses", "embeddings"][..])
         );
+        assert_eq!(
+            provider_scope_allowlist(28),
+            Some(&["chat", "embeddings"][..])
+        );
     }
 
     #[test]
-    fn provider_scope_allowlist_keeps_openai_unrestricted() {
+    fn provider_scope_allowlist_keeps_openai_compatible_unrestricted() {
+        // OpenAI
         assert_eq!(provider_scope_allowlist(1), None);
+        // DeepSeek
+        assert_eq!(provider_scope_allowlist(30), None);
+        // Groq
+        assert_eq!(provider_scope_allowlist(31), None);
+        // Mistral
+        assert_eq!(provider_scope_allowlist(32), None);
+        // Unknown
         assert_eq!(provider_scope_allowlist(999), None);
+    }
+
+    #[test]
+    fn openai_compatible_providers_share_openai_adapter() {
+        let openai = get_adapter(1);
+        let deepseek = get_adapter(30);
+        let groq = get_adapter(31);
+        let mistral = get_adapter(32);
+        let ollama = get_adapter(28);
+        let siliconflow = get_adapter(33);
+
+        // All OpenAI-compatible providers point to the same static instance.
+        assert!(std::ptr::eq(openai, deepseek));
+        assert!(std::ptr::eq(openai, groq));
+        assert!(std::ptr::eq(openai, mistral));
+        assert!(std::ptr::eq(openai, ollama));
+        assert!(std::ptr::eq(openai, siliconflow));
+    }
+
+    #[test]
+    fn provider_meta_returns_known_providers() {
+        let openai = provider_meta(1).unwrap();
+        assert_eq!(openai.name, "OpenAI");
+        assert!(openai.openai_compatible);
+
+        let anthropic = provider_meta(3).unwrap();
+        assert_eq!(anthropic.name, "Anthropic");
+        assert!(!anthropic.openai_compatible);
+
+        let deepseek = provider_meta(30).unwrap();
+        assert_eq!(deepseek.name, "DeepSeek");
+        assert_eq!(deepseek.default_base_url, "https://api.deepseek.com");
+        assert!(deepseek.openai_compatible);
+
+        let groq = provider_meta(31).unwrap();
+        assert_eq!(groq.name, "Groq");
+        assert!(groq.openai_compatible);
+
+        assert!(provider_meta(0).is_none());
+        assert!(provider_meta(999).is_none());
     }
 
     #[test]
