@@ -1,4 +1,5 @@
 use super::*;
+use crate::service::openai_http::bridge_chat_completion_to_response;
 use summer_ai_core::types::audio::AudioSpeechRequest;
 use summer_ai_core::types::batch::BatchCreateRequest;
 use summer_ai_core::types::chat::ChatCompletionResponse;
