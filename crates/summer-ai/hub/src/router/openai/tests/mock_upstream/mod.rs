@@ -1,16 +1,24 @@
 use std::sync::{Arc, Mutex};
 
-use super::super::*;
+pub(crate) use crate::router::openai::{UpstreamFailureScope, classify_upstream_provider_failure};
 use crate::router::test_support::{MultipartRequestSpec, TestHarness};
+pub(crate) use crate::service::openai_http::extract_upstream_request_id;
+pub(crate) use crate::service::openai_relay_support::MAX_MULTIPART_FILE_SIZE_BYTES;
+pub(crate) use crate::service::openai_tracking::map_adapter_build_error;
+pub(crate) use summer_ai_core::provider::{ProviderErrorKind, get_adapter};
+pub(crate) use summer_ai_core::types::chat::ChatCompletionRequest;
+pub(crate) use summer_ai_core::types::embedding::EmbeddingRequest;
+pub(crate) use summer_ai_core::types::responses::ResponsesRequest;
 use summer_ai_model::entity::log::LogStatus;
 use summer_ai_model::entity::request::RequestStatus;
 use summer_ai_model::entity::request_execution::ExecutionStatus;
+pub(crate) use summer_web::axum::http::StatusCode;
 use summer_web::axum::{
     Router,
     body::{Body, to_bytes},
     extract::{Request, State},
-    http::Method,
     http::header::CONTENT_TYPE,
+    http::{HeaderMap, Method},
     response::IntoResponse,
 };
 use tokio::sync::oneshot;

@@ -30,16 +30,14 @@ use crate::relay::channel_router::{
 };
 use crate::relay::http_client::UpstreamHttpClient;
 use crate::relay::rate_limit::RateLimitEngine;
-use crate::router::openai::{
-    apply_upstream_failure_scope, classify_upstream_provider_failure,
-    read_multipart_field_bytes_limited,
-};
+use crate::router::openai::{apply_upstream_failure_scope, classify_upstream_provider_failure};
 use crate::service::channel::ChannelService;
 use crate::service::log::{AiFailureLogRecord, AiUsageLogRecord, LogService};
 use crate::service::openai_http::{
     extract_request_id, extract_upstream_request_id, fallback_usage, insert_request_id_header,
     insert_upstream_request_id_header,
 };
+use crate::service::openai_relay_support::read_multipart_field_bytes_limited;
 use crate::service::resource_affinity::ResourceAffinityService;
 use crate::service::response_bridge::ResponseBridgeService;
 use crate::service::token::{TokenInfo, TokenService};

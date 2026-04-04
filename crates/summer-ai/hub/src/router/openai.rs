@@ -33,16 +33,6 @@ mod rerank;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-pub(crate) use crate::service::openai_completions_relay::{
-    bridge_chat_completion_to_completion, completion_request_to_chat_request,
-};
-#[allow(unused_imports)]
-pub(crate) use crate::service::openai_relay_support::*;
-#[allow(unused_imports)]
-pub(crate) use crate::service::openai_tracking::{
-    map_adapter_build_error, record_terminal_failure,
-};
 pub use files::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

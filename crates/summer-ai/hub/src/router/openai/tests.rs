@@ -1,5 +1,15 @@
-use super::*;
+use crate::service::openai_completions_relay::{
+    bridge_chat_completion_to_completion, completion_request_to_chat_request,
+};
 use crate::service::openai_http::bridge_chat_completion_to_response;
+use crate::service::openai_http::insert_upstream_request_id_header;
+use crate::service::openai_relay_support::{
+    BufferedMultipartField, build_audio_speech_request, build_batch_create_request,
+    build_completion_request, build_file_upload_request, build_image_generation_request,
+    build_image_variation_request, build_moderation_request, extend_limited_buffer,
+    join_upstream_url, parse_audio_transcription_meta, parse_image_edit_meta,
+    parse_image_variation_meta,
+};
 use summer_ai_core::types::audio::AudioSpeechRequest;
 use summer_ai_core::types::batch::BatchCreateRequest;
 use summer_ai_core::types::chat::ChatCompletionResponse;
@@ -536,6 +546,24 @@ fn endpoint_route_modules_only_keep_wrappers() {
         "openai/image_multipart.rs",
         "async fn relay_image_multipart_request(",
         "image multipart route should delegate to a service module",
+    );
+}
+
+#[test]
+fn openai_router_module_does_not_reexport_test_helpers() {
+    let source = route_source("openai.rs");
+
+    assert!(
+        !source.contains("pub(crate) use crate::service::openai_completions_relay::"),
+        "router/openai.rs should not re-export completion helpers for tests"
+    );
+    assert!(
+        !source.contains("pub(crate) use crate::service::openai_relay_support::*;"),
+        "router/openai.rs should not re-export relay support helpers for tests"
+    );
+    assert!(
+        !source.contains("pub(crate) use crate::service::openai_tracking::"),
+        "router/openai.rs should not re-export tracking helpers for tests"
     );
 }
 
