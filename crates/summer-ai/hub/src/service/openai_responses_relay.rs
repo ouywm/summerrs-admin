@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use summer::plugin::Service;
 use summer_web::axum::body::Body;
 use summer_web::axum::http::{HeaderMap, StatusCode};
 use summer_web::axum::http::{HeaderValue, header::CONTENT_TYPE};
@@ -48,6 +49,61 @@ use crate::service::resource_affinity::ResourceAffinityService;
 use crate::service::response_bridge::ResponseBridgeService;
 use crate::service::runtime_ops::RuntimeOpsService;
 use crate::service::token::TokenService;
+
+#[derive(Clone, Service)]
+pub struct OpenAiResponsesRelayService {
+    #[inject(component)]
+    router_svc: ChannelRouter,
+    #[inject(component)]
+    billing: BillingEngine,
+    #[inject(component)]
+    rate_limiter: RateLimitEngine,
+    #[inject(component)]
+    http_client: UpstreamHttpClient,
+    #[inject(component)]
+    log_svc: LogService,
+    #[inject(component)]
+    channel_svc: ChannelService,
+    #[inject(component)]
+    token_svc: TokenService,
+    #[inject(component)]
+    response_bridge: ResponseBridgeService,
+    #[inject(component)]
+    resource_affinity: ResourceAffinityService,
+    #[inject(component)]
+    runtime_ops: RuntimeOpsService,
+    #[inject(component)]
+    request_svc: RequestService,
+}
+
+impl OpenAiResponsesRelayService {
+    pub async fn relay(
+        &self,
+        token_info: crate::service::token::TokenInfo,
+        client_ip: std::net::IpAddr,
+        headers: HeaderMap,
+        req: ResponsesRequest,
+    ) -> OpenAiApiResult<Response> {
+        relay_impl(
+            AiToken(token_info),
+            Component(self.router_svc.clone()),
+            Component(self.billing.clone()),
+            Component(self.rate_limiter.clone()),
+            Component(self.http_client.clone()),
+            Component(self.log_svc.clone()),
+            Component(self.channel_svc.clone()),
+            Component(self.token_svc.clone()),
+            Component(self.response_bridge.clone()),
+            Component(self.resource_affinity.clone()),
+            Component(self.runtime_ops.clone()),
+            Component(self.request_svc.clone()),
+            ClientIp(client_ip),
+            headers,
+            Json(req),
+        )
+        .await
+    }
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn settle_usage_accounting(
     billing: BillingEngine,
@@ -212,7 +268,7 @@ pub(crate) fn build_json_bytes_response(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn responses(
+async fn relay_impl(
     AiToken(token_info): AiToken,
     Component(router_svc): Component<ChannelRouter>,
     Component(billing): Component<BillingEngine>,

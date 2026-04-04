@@ -12,6 +12,7 @@ pub mod log_batch;
 pub mod metrics;
 pub mod model;
 pub mod multi_tenant;
+pub mod openai_chat_relay;
 pub mod openai_embeddings_relay;
 pub mod openai_http;
 pub mod openai_responses_relay;

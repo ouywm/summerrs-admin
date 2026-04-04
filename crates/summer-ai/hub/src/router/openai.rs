@@ -26,10 +26,13 @@ use crate::router::openai_passthrough::unusable_success_response_message;
 use crate::service::channel::ChannelService;
 use crate::service::log::LogService;
 use crate::service::model::ModelService;
+use crate::service::openai_chat_relay::OpenAiChatRelayService;
+use crate::service::openai_embeddings_relay::OpenAiEmbeddingsRelayService;
 use crate::service::openai_http::{
     extract_request_id, extract_upstream_request_id, fallback_usage, insert_request_id_header,
     insert_upstream_request_id_header,
 };
+use crate::service::openai_responses_relay::OpenAiResponsesRelayService;
 use crate::service::openai_tracking::{
     FailureTrackingUpdate, RequestTrackingIds, map_adapter_build_error, record_terminal_failure,
     update_request_failure_tracking, update_request_success_tracking,
@@ -39,8 +42,6 @@ use crate::service::request::{
     RequestStatusUpdate, build_execution_active_model, build_request_active_model,
     snapshot_response_body_bytes,
 };
-use crate::service::resource_affinity::ResourceAffinityService;
-use crate::service::response_bridge::ResponseBridgeService;
 use crate::service::runtime_ops::RuntimeOpsService;
 use crate::service::token::TokenService;
 use summer_common::extractor::ClientIp;
@@ -82,8 +83,18 @@ use summer_common::user_agent::UserAgentInfo;
 
 /// POST /v1/chat/completions
 #[post_api("/v1/chat/completions")]
-#[allow(clippy::too_many_arguments)]
 pub async fn chat_completions(
+    AiToken(token_info): AiToken,
+    Component(relay_svc): Component<OpenAiChatRelayService>,
+    ClientIp(client_ip): ClientIp,
+    headers: HeaderMap,
+    Json(req): Json<ChatCompletionRequest>,
+) -> OpenAiApiResult<Response> {
+    relay_svc.relay(token_info, client_ip, headers, req).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn relay_chat_completions_impl(
     AiToken(token_info): AiToken,
     Component(router_svc): Component<ChannelRouter>,
     Component(billing): Component<BillingEngine>,
@@ -981,78 +992,26 @@ pub(crate) use crate::service::openai_responses_relay::{
 
 /// POST /v1/responses
 #[post_api("/v1/responses")]
-#[allow(clippy::too_many_arguments)]
 pub async fn responses(
     AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(response_bridge): Component<ResponseBridgeService>,
-    Component(resource_affinity): Component<ResourceAffinityService>,
-    Component(runtime_ops): Component<RuntimeOpsService>,
-    Component(request_svc): Component<RequestService>,
+    Component(relay_svc): Component<OpenAiResponsesRelayService>,
     ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     Json(req): Json<ResponsesRequest>,
 ) -> OpenAiApiResult<Response> {
-    crate::service::openai_responses_relay::responses(
-        AiToken(token_info),
-        Component(router_svc),
-        Component(billing),
-        Component(rate_limiter),
-        Component(http_client),
-        Component(log_svc),
-        Component(channel_svc),
-        Component(token_svc),
-        Component(response_bridge),
-        Component(resource_affinity),
-        Component(runtime_ops),
-        Component(request_svc),
-        ClientIp(client_ip),
-        headers,
-        Json(req),
-    )
-    .await
+    relay_svc.relay(token_info, client_ip, headers, req).await
 }
 
 /// POST /v1/embeddings
 #[post_api("/v1/embeddings")]
-#[allow(clippy::too_many_arguments)]
 pub async fn embeddings(
     AiToken(token_info): AiToken,
-    Component(router_svc): Component<ChannelRouter>,
-    Component(billing): Component<BillingEngine>,
-    Component(rate_limiter): Component<RateLimitEngine>,
-    Component(http_client): Component<UpstreamHttpClient>,
-    Component(log_svc): Component<LogService>,
-    Component(channel_svc): Component<ChannelService>,
-    Component(token_svc): Component<TokenService>,
-    Component(runtime_ops): Component<RuntimeOpsService>,
-    Component(request_svc): Component<RequestService>,
+    Component(relay_svc): Component<OpenAiEmbeddingsRelayService>,
     ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     Json(req): Json<EmbeddingRequest>,
 ) -> OpenAiApiResult<Response> {
-    crate::service::openai_embeddings_relay::embeddings(
-        AiToken(token_info),
-        Component(router_svc),
-        Component(billing),
-        Component(rate_limiter),
-        Component(http_client),
-        Component(log_svc),
-        Component(channel_svc),
-        Component(token_svc),
-        Component(runtime_ops),
-        Component(request_svc),
-        ClientIp(client_ip),
-        headers,
-        Json(req),
-    )
-    .await
+    relay_svc.relay(token_info, client_ip, headers, req).await
 }
 pub(crate) fn classify_upstream_provider_failure(
     channel_type: i16,
