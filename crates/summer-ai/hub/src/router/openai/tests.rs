@@ -491,6 +491,20 @@ fn bridge_chat_completion_to_completion_preserves_usage_and_text() {
 }
 
 #[test]
+fn chat_relay_impl_is_not_defined_in_router_module() {
+    let source = std::fs::read_to_string(format!(
+        "{}/src/router/openai.rs",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("read router/openai.rs");
+
+    assert!(
+        !source.contains("pub(crate) async fn relay_chat_completions_impl("),
+        "chat relay implementation should live in a service module, not router/openai.rs"
+    );
+}
+
+#[test]
 fn extend_limited_buffer_rejects_payload_over_limit() {
     let mut buffer = Vec::new();
     let error = extend_limited_buffer(&mut buffer, b"abcdef", 4, "file").unwrap_err();
