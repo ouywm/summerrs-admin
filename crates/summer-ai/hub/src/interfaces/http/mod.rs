@@ -1,1 +1,1 @@
-pub use crate::router::*;
+//! HTTP interface skeleton for summer-ai-hub.

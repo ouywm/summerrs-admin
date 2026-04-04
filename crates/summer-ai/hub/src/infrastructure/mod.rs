@@ -1,3 +1,1 @@
-pub mod auth;
-pub mod job;
-pub mod relay;
+//! Infrastructure layer skeleton for summer-ai-hub.
