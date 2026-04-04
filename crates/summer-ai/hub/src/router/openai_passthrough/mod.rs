@@ -45,8 +45,7 @@ use crate::service::token::{TokenInfo, TokenService};
 mod assistants_threads;
 mod batches;
 mod fine_tuning;
-mod relay_json;
-mod relay_stream;
+mod protocol;
 pub(crate) mod resource;
 mod responses;
 pub(crate) mod support;
@@ -56,22 +55,24 @@ mod uploads_models;
 mod vector_stores;
 
 #[allow(unused_imports)]
+pub(crate) use self::protocol::stream as relay_stream;
+#[allow(unused_imports)]
 pub use assistants_threads::*;
 #[allow(unused_imports)]
 pub use batches::*;
 #[allow(unused_imports)]
 pub use fine_tuning::*;
 #[allow(unused_imports)]
-pub(crate) use relay_json::{
-    relay_json_model_request, relay_resource_bodyless_post, relay_resource_delete,
-    relay_resource_get, relay_resource_json_post, relay_usage_resource_json_post,
-};
-#[allow(unused_imports)]
-pub(crate) use relay_stream::{
+pub(crate) use protocol::{
     bind_resource_affinities, build_generic_stream_response, ensure_json_model,
     estimate_json_tokens, estimate_total_tokens_for_rate_limit, extract_model_from_response_value,
     extract_usage_from_value, json_body_requests_stream, mapped_model, payload_has_text_delta,
     relay_resource_multipart_post, relay_resource_request, spawn_resource_usage_accounting_task,
+};
+#[allow(unused_imports)]
+pub(crate) use protocol::{
+    relay_json_model_request, relay_resource_bodyless_post, relay_resource_delete,
+    relay_resource_get, relay_resource_json_post, relay_usage_resource_json_post,
 };
 #[allow(unused_imports)]
 pub use responses::*;
@@ -197,12 +198,12 @@ impl GenericStreamTracker {
                 continue;
             };
 
-            if first_token_time.is_none() && relay_stream::payload_has_text_delta(&payload) {
+            if first_token_time.is_none() && protocol::payload_has_text_delta(&payload) {
                 *first_token_time = Some(start.elapsed().as_millis() as i64);
             }
 
             if self.upstream_model.is_empty()
-                && let Some(model) = relay_stream::extract_model_from_response_value(&payload)
+                && let Some(model) = protocol::extract_model_from_response_value(&payload)
             {
                 self.upstream_model = model;
             }
@@ -225,7 +226,7 @@ impl GenericStreamTracker {
                 }
             }
 
-            if let Some(usage) = relay_stream::extract_usage_from_value(&payload) {
+            if let Some(usage) = protocol::extract_usage_from_value(&payload) {
                 self.usage = Some(usage);
             }
         }

@@ -24,6 +24,33 @@ fn openai_passthrough_router_module_does_not_reexport_test_helpers() {
 }
 
 #[test]
+fn openai_passthrough_protocol_relays_are_grouped_under_protocol_directory() {
+    let base_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/router/openai_passthrough");
+
+    assert!(
+        base_dir.join("protocol").is_dir(),
+        "router/openai_passthrough/protocol directory should exist"
+    );
+    assert!(
+        !base_dir.join("relay_json.rs").exists(),
+        "relay_json.rs should move under router/openai_passthrough/protocol/"
+    );
+    assert!(
+        !base_dir.join("relay_stream.rs").exists(),
+        "relay_stream.rs should move under router/openai_passthrough/protocol/"
+    );
+    assert!(
+        base_dir.join("protocol/json.rs").is_file(),
+        "router/openai_passthrough/protocol/json.rs should exist"
+    );
+    assert!(
+        base_dir.join("protocol/stream.rs").is_file(),
+        "router/openai_passthrough/protocol/stream.rs should exist"
+    );
+}
+
+#[test]
 fn model_from_json_body_uses_default() {
     let body = serde_json::json!({"input": "hello"});
     assert_eq!(
