@@ -2,6 +2,26 @@ use super::*;
 use crate::router::openai_passthrough::relay_stream::{
     model_from_json_body, usage_accounting_model,
 };
+use crate::router::openai_passthrough::resource::resource_affinity_lookup_keys;
+
+#[test]
+fn openai_passthrough_router_module_does_not_reexport_test_helpers() {
+    let source = std::fs::read_to_string(format!(
+        "{}/src/router/openai_passthrough/mod.rs",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("read router/openai_passthrough/mod.rs");
+
+    assert!(
+        !source.contains("pub(crate) use self::resource::resource_affinity_lookup_keys;"),
+        "router/openai_passthrough/mod.rs should not re-export test helpers"
+    );
+    assert!(
+        !source
+            .contains("pub(crate) use self::support::detect_unusable_upstream_success_response;"),
+        "router/openai_passthrough/mod.rs should not re-export support test helpers"
+    );
+}
 
 #[test]
 fn model_from_json_body_uses_default() {
@@ -156,8 +176,6 @@ fn referenced_resource_ids_extract_nested_resource_fields() {
 
 #[test]
 fn resource_affinity_lookup_keys_keeps_explicit_keys_first() {
-    use crate::router::openai_passthrough::resource::resource_affinity_lookup_keys;
-
     let body = serde_json::json!({
         "assistant_id": "asst_123",
         "thread_id": "thread_123",

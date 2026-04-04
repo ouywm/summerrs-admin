@@ -80,20 +80,13 @@ pub use uploads_models::*;
 #[allow(unused_imports)]
 pub use vector_stores::*;
 
-#[cfg(test)]
-pub(crate) use self::resource::resource_affinity_lookup_keys;
 pub(crate) use self::resource::{
     ResourceRequestSpec, ResourceRouteState, extract_generic_resource_id, referenced_resource_ids,
 };
-#[cfg(test)]
-pub(crate) use self::support::detect_unusable_upstream_success_response;
 pub(crate) use self::support::{
     allow_empty_success_body_for_upstream_path, apply_forward_headers, apply_upstream_auth,
     build_bytes_response, build_upstream_url, unusable_success_response_message,
 };
-#[cfg(test)]
-use summer_web::axum::http::StatusCode;
-
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) struct JsonModelRelaySpec {
