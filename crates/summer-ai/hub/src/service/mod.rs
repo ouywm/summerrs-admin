@@ -21,6 +21,7 @@ pub mod openai_http;
 pub mod openai_image_multipart_relay;
 pub mod openai_images_relay;
 pub mod openai_moderations_relay;
+pub mod openai_passthrough_relay;
 pub mod openai_relay_support;
 pub mod openai_rerank_relay;
 pub mod openai_responses_relay;

@@ -51,6 +51,50 @@ fn openai_passthrough_protocol_relays_are_grouped_under_protocol_directory() {
 }
 
 #[test]
+fn resource_routes_use_service_façades_instead_of_component_fanout() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let files = [
+        manifest_dir.join("src/router/openai/files.rs"),
+        manifest_dir.join("src/router/openai_passthrough/assistants_threads.rs"),
+        manifest_dir.join("src/router/openai_passthrough/batches.rs"),
+        manifest_dir.join("src/router/openai_passthrough/fine_tuning.rs"),
+        manifest_dir.join("src/router/openai_passthrough/responses.rs"),
+        manifest_dir.join("src/router/openai_passthrough/uploads_models.rs"),
+        manifest_dir.join("src/router/openai_passthrough/vector_stores.rs"),
+    ];
+
+    for path in files {
+        let source =
+            std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("read {}", path.display()));
+        assert!(
+            !source.contains("Component(router_svc): Component<ChannelRouter>"),
+            "{} should use a single relay service instead of direct router injection",
+            path.display()
+        );
+        assert!(
+            !source.contains("Component(http_client): Component<UpstreamHttpClient>"),
+            "{} should use a single relay service instead of direct http client injection",
+            path.display()
+        );
+        assert!(
+            !source.contains("Component(channel_svc): Component<ChannelService>"),
+            "{} should use a single relay service instead of direct channel service injection",
+            path.display()
+        );
+        assert!(
+            !source.contains("Component(token_svc): Component<TokenService>"),
+            "{} should use a single relay service instead of direct token service injection",
+            path.display()
+        );
+        assert!(
+            !source.contains("Component(resource_affinity): Component<ResourceAffinityService>"),
+            "{} should use a single relay service instead of direct resource affinity injection",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn model_from_json_body_uses_default() {
     let body = serde_json::json!({"input": "hello"});
     assert_eq!(

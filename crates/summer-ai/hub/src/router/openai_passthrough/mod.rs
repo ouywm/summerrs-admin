@@ -19,7 +19,7 @@ use summer_web::axum::http::{
     HeaderMap, HeaderValue, Method,
     header::{CACHE_CONTROL, CONTENT_TYPE},
 };
-use summer_web::axum::response::{IntoResponse, Response};
+use summer_web::axum::response::Response;
 use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api};
 
@@ -39,7 +39,6 @@ use crate::service::openai_http::{
 };
 use crate::service::openai_relay_support::read_multipart_field_bytes_limited;
 use crate::service::resource_affinity::ResourceAffinityService;
-use crate::service::response_bridge::ResponseBridgeService;
 use crate::service::token::{TokenInfo, TokenService};
 
 mod assistants_threads;
