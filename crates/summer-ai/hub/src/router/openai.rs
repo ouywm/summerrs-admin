@@ -18,7 +18,6 @@ use crate::service::model::ModelService;
 use crate::service::openai_chat_relay::OpenAiChatRelayService;
 use crate::service::openai_embeddings_relay::OpenAiEmbeddingsRelayService;
 use crate::service::openai_responses_relay::OpenAiResponsesRelayService;
-use crate::service::openai_tracking::{map_adapter_build_error, record_terminal_failure};
 use crate::service::token::TokenService;
 use summer_common::extractor::ClientIp;
 use summer_common::response::Json;
@@ -31,17 +30,20 @@ mod image_multipart;
 mod images;
 mod moderations;
 mod rerank;
-mod support;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
-pub(crate) use completions::{
+pub(crate) use crate::service::openai_completions_relay::{
     bridge_chat_completion_to_completion, completion_request_to_chat_request,
 };
-pub use files::*;
 #[allow(unused_imports)]
-pub(crate) use support::*;
+pub(crate) use crate::service::openai_relay_support::*;
+#[allow(unused_imports)]
+pub(crate) use crate::service::openai_tracking::{
+    map_adapter_build_error, record_terminal_failure,
+};
+pub use files::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpstreamFailureScope {
@@ -68,14 +70,13 @@ pub async fn chat_completions(
     relay_svc.relay(token_info, client_ip, headers, req).await
 }
 
-pub(crate) use crate::router::openai_passthrough::unusable_success_response_message;
 #[allow(unused_imports)]
 pub(crate) use crate::service::openai_http::{
     extract_request_id, extract_upstream_request_id, fallback_usage, insert_request_id_header,
     insert_upstream_request_id_header,
 };
 pub(crate) use crate::service::openai_responses_relay::{
-    build_json_bytes_response, settle_usage_accounting, spawn_usage_accounting_task,
+    settle_usage_accounting, spawn_usage_accounting_task,
 };
 
 /// POST /v1/responses

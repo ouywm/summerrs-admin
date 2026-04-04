@@ -492,16 +492,61 @@ fn bridge_chat_completion_to_completion_preserves_usage_and_text() {
 
 #[test]
 fn chat_relay_impl_is_not_defined_in_router_module() {
-    let source = std::fs::read_to_string(format!(
-        "{}/src/router/openai.rs",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .expect("read router/openai.rs");
+    let source = route_source("openai.rs");
 
     assert!(
         !source.contains("pub(crate) async fn relay_chat_completions_impl("),
         "chat relay implementation should live in a service module, not router/openai.rs"
     );
+}
+
+#[test]
+fn endpoint_route_modules_only_keep_wrappers() {
+    assert_route_module_omits(
+        "openai/completions.rs",
+        "fn completion_request_to_chat_request(",
+        "completions route should delegate to a service module",
+    );
+    assert_route_module_omits(
+        "openai/audio.rs",
+        "fn build_audio_speech_request_for_channel(",
+        "audio route should delegate to a service module",
+    );
+    assert_route_module_omits(
+        "openai/audio_transcribe.rs",
+        "async fn relay_audio_multipart_request(",
+        "audio multipart route should delegate to a service module",
+    );
+    assert_route_module_omits(
+        "openai/moderations.rs",
+        "fn build_moderation_request_for_channel(",
+        "moderations route should delegate to a service module",
+    );
+    assert_route_module_omits(
+        "openai/rerank.rs",
+        "fn build_rerank_request_for_channel(",
+        "rerank route should delegate to a service module",
+    );
+    assert_route_module_omits(
+        "openai/images.rs",
+        "fn build_image_generation_request_for_channel(",
+        "images route should delegate to a service module",
+    );
+    assert_route_module_omits(
+        "openai/image_multipart.rs",
+        "async fn relay_image_multipart_request(",
+        "image multipart route should delegate to a service module",
+    );
+}
+
+fn route_source(path: &str) -> String {
+    std::fs::read_to_string(format!("{}/src/router/{path}", env!("CARGO_MANIFEST_DIR")))
+        .unwrap_or_else(|_| panic!("read src/router/{path}"))
+}
+
+fn assert_route_module_omits(path: &str, needle: &str, message: &str) {
+    let source = route_source(path);
+    assert!(!source.contains(needle), "{message}");
 }
 
 #[test]
