@@ -1,6 +1,6 @@
 use super::*;
 pub(crate) use crate::router::openai_passthrough::support::detect_unusable_upstream_success_response;
-use crate::router::test_support::{
+use crate::router::tests::support::{
     MockRoute, MockUpstreamServer, MultipartRequestSpec, TestHarness, response_json, response_text,
 };
 use summer_ai_model::entity::channel_account::AccountStatus;

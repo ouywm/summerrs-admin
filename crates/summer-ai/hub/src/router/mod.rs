@@ -2,12 +2,11 @@ pub mod management;
 pub mod openai;
 pub mod openai_passthrough;
 pub use management::{
-    alert, billing, channel, channel_account, channel_model_price, conversation, dashboard,
-    file_storage, guardrail, log, model_config, multi_tenant, platform_config, request, runtime,
-    token, vendor,
+    channel::{channel_account, channel_model_price, routes as channel},
+    config::{billing, file_storage, guardrail, model_config, platform_config, vendor},
+    ops::{alert, dashboard, log, request, runtime},
+    tenant::{conversation, multi_tenant, token},
 };
 
-#[cfg(test)]
-pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;

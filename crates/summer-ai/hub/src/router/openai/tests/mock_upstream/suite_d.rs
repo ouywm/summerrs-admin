@@ -71,7 +71,7 @@ async fn anthropic_responses_route_skips_rate_limited_primary_on_next_request() 
         )
         .await;
     assert_eq!(first_response.status(), StatusCode::OK);
-    let first_payload = crate::router::test_support::response_json(first_response).await;
+    let first_payload = crate::router::tests::support::response_json(first_response).await;
     assert_eq!(first_payload["id"], "msg_resp_fallback_skip_123");
 
     let primary_account = harness.wait_for_primary_account_rate_limited().await;
@@ -91,7 +91,7 @@ async fn anthropic_responses_route_skips_rate_limited_primary_on_next_request() 
         )
         .await;
     assert_eq!(second_response.status(), StatusCode::OK);
-    let second_payload = crate::router::test_support::response_json(second_response).await;
+    let second_payload = crate::router::tests::support::response_json(second_response).await;
     assert_eq!(second_payload["id"], "msg_resp_fallback_skip_123");
 
     let token = harness.wait_for_token_used_quota(38).await;
@@ -198,7 +198,7 @@ async fn embeddings_route_persists_request_and_execution_snapshots() {
         .and_then(|value| value.to_str().ok())
         .expect("embeddings upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
     assert_eq!(payload["data"][0]["embedding"][0], 0.1);
     assert_eq!(upstream_request_id, "embeddings-upstream-123");
 
@@ -408,7 +408,7 @@ async fn gemini_embeddings_route_normalizes_provider_payload_to_openai_shape() {
         .and_then(|value| value.to_str().ok())
         .expect("gemini embeddings upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["object"], "list");
     assert_eq!(
@@ -497,7 +497,7 @@ async fn gemini_embeddings_route_falls_back_after_primary_invalid_request() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(
         payload["data"][0]["embedding"],
@@ -571,7 +571,7 @@ async fn anthropic_responses_route_quarantines_primary_account_after_auth_failur
         )
         .await;
     assert_eq!(first_response.status(), StatusCode::OK);
-    let first_payload = crate::router::test_support::response_json(first_response).await;
+    let first_payload = crate::router::tests::support::response_json(first_response).await;
     assert_eq!(first_payload["id"], "msg_resp_auth_fallback_123");
 
     let primary_account = harness.wait_for_primary_account_disabled().await;
@@ -599,7 +599,7 @@ async fn anthropic_responses_route_quarantines_primary_account_after_auth_failur
         )
         .await;
     assert_eq!(second_response.status(), StatusCode::OK);
-    let second_payload = crate::router::test_support::response_json(second_response).await;
+    let second_payload = crate::router::tests::support::response_json(second_response).await;
     assert_eq!(second_payload["id"], "msg_resp_auth_fallback_123");
 
     let token = harness.wait_for_token_used_quota(38).await;
@@ -681,7 +681,7 @@ async fn gemini_embeddings_route_falls_back_after_primary_rate_limit() {
         .and_then(|value| value.to_str().ok())
         .expect("gemini embeddings fallback upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(
         payload["data"][0]["embedding"],
@@ -779,7 +779,7 @@ async fn gemini_embeddings_route_skips_rate_limited_primary_on_next_request() {
         )
         .await;
     assert_eq!(first_response.status(), StatusCode::OK);
-    let first_payload = crate::router::test_support::response_json(first_response).await;
+    let first_payload = crate::router::tests::support::response_json(first_response).await;
     assert_eq!(
         first_payload["data"][0]["embedding"],
         serde_json::json!([9.0, 8.0])
@@ -801,7 +801,7 @@ async fn gemini_embeddings_route_skips_rate_limited_primary_on_next_request() {
         )
         .await;
     assert_eq!(second_response.status(), StatusCode::OK);
-    let second_payload = crate::router::test_support::response_json(second_response).await;
+    let second_payload = crate::router::tests::support::response_json(second_response).await;
     assert_eq!(
         second_payload["data"][0]["embedding"],
         serde_json::json!([9.0, 8.0])
@@ -884,7 +884,7 @@ async fn gemini_embeddings_route_quarantines_primary_account_after_auth_failure(
         )
         .await;
     assert_eq!(first_response.status(), StatusCode::OK);
-    let first_payload = crate::router::test_support::response_json(first_response).await;
+    let first_payload = crate::router::tests::support::response_json(first_response).await;
     assert_eq!(
         first_payload["data"][0]["embedding"],
         serde_json::json!([9.0, 8.0])
@@ -914,7 +914,7 @@ async fn gemini_embeddings_route_quarantines_primary_account_after_auth_failure(
         )
         .await;
     assert_eq!(second_response.status(), StatusCode::OK);
-    let second_payload = crate::router::test_support::response_json(second_response).await;
+    let second_payload = crate::router::tests::support::response_json(second_response).await;
     assert_eq!(
         second_payload["data"][0]["embedding"],
         serde_json::json!([9.0, 8.0])
@@ -1129,7 +1129,7 @@ async fn list_models_returns_fixture_models_for_token_group() {
         .empty_request(Method::GET, "/v1/models", "list-models")
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["object"], "list");
     assert_eq!(payload["data"].as_array().map(Vec::len), Some(1));
@@ -1152,7 +1152,7 @@ async fn retrieve_model_returns_not_found_for_unknown_fixture_model() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
     assert_eq!(payload["error"]["code"], "not_found");
 
     harness.cleanup().await;

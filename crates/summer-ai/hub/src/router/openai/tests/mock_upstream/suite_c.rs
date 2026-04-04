@@ -305,7 +305,7 @@ async fn responses_route_persists_request_and_execution_snapshots() {
         .and_then(|value| value.to_str().ok())
         .expect("responses upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
     assert_eq!(payload["id"], "resp_123");
     assert_eq!(upstream_request_id, "responses-upstream-123");
 
@@ -423,7 +423,7 @@ async fn responses_stream_route_persists_request_and_execution_snapshots() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body = crate::router::test_support::response_text(response).await;
+    let body = crate::router::tests::support::response_text(response).await;
     assert!(body.contains("response.completed"));
 
     let request = harness.wait_for_request_by_request_id(&request_id).await;
@@ -536,7 +536,7 @@ async fn anthropic_responses_route_bridges_non_stream_chat_response() {
         .and_then(|value| value.to_str().ok())
         .expect("anthropic upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["object"], "response");
     assert_eq!(payload["id"], "msg_resp_123");
@@ -605,7 +605,7 @@ async fn gemini_responses_route_bridges_stream_to_response_events() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body = crate::router::test_support::response_text(response).await;
+    let body = crate::router::tests::support::response_text(response).await;
 
     assert!(body.contains("\"type\":\"response.created\""));
     assert!(body.contains("\"type\":\"response.output_text.delta\""));
@@ -676,7 +676,7 @@ async fn anthropic_responses_route_follow_up_reads_bridged_cache() {
         )
         .await;
     assert_eq!(create_response.status(), StatusCode::OK);
-    let create_payload = crate::router::test_support::response_json(create_response).await;
+    let create_payload = crate::router::tests::support::response_json(create_response).await;
     let response_id = create_payload["id"]
         .as_str()
         .expect("bridged response id")
@@ -690,7 +690,7 @@ async fn anthropic_responses_route_follow_up_reads_bridged_cache() {
         )
         .await;
     assert_eq!(get_response.status(), StatusCode::OK);
-    let get_payload = crate::router::test_support::response_json(get_response).await;
+    let get_payload = crate::router::tests::support::response_json(get_response).await;
     assert_eq!(get_payload["id"], response_id);
     assert_eq!(get_payload["status"], "completed");
     assert_eq!(get_payload["output_text"], "Hello from bridged cache");
@@ -704,7 +704,7 @@ async fn anthropic_responses_route_follow_up_reads_bridged_cache() {
         .await;
     assert_eq!(input_items_response.status(), StatusCode::OK);
     let input_items_payload =
-        crate::router::test_support::response_json(input_items_response).await;
+        crate::router::tests::support::response_json(input_items_response).await;
     assert_eq!(input_items_payload["object"], "list");
     assert_eq!(input_items_payload["data"][0]["role"], "user");
     assert_eq!(input_items_payload["data"][0]["content"], "Hello");
@@ -717,7 +717,7 @@ async fn anthropic_responses_route_follow_up_reads_bridged_cache() {
         )
         .await;
     assert_eq!(cancel_response.status(), StatusCode::OK);
-    let cancel_payload = crate::router::test_support::response_json(cancel_response).await;
+    let cancel_payload = crate::router::tests::support::response_json(cancel_response).await;
     assert_eq!(cancel_payload["id"], response_id);
     assert_eq!(cancel_payload["status"], "cancelled");
 
@@ -730,7 +730,7 @@ async fn anthropic_responses_route_follow_up_reads_bridged_cache() {
         .await;
     assert_eq!(get_cancelled_response.status(), StatusCode::OK);
     let cancelled_payload =
-        crate::router::test_support::response_json(get_cancelled_response).await;
+        crate::router::tests::support::response_json(get_cancelled_response).await;
     assert_eq!(cancelled_payload["status"], "cancelled");
 
     harness.cleanup().await;
@@ -776,7 +776,7 @@ async fn gemini_responses_route_stream_follow_up_reads_bridged_cache() {
         )
         .await;
     assert_eq!(create_response.status(), StatusCode::OK);
-    let create_body = crate::router::test_support::response_text(create_response).await;
+    let create_body = crate::router::tests::support::response_text(create_response).await;
     let created_event = extract_responses_event(&create_body, "response.created");
     let response_id = created_event["response"]["id"]
         .as_str()
@@ -791,7 +791,7 @@ async fn gemini_responses_route_stream_follow_up_reads_bridged_cache() {
         )
         .await;
     assert_eq!(cancel_response.status(), StatusCode::OK);
-    let cancel_payload = crate::router::test_support::response_json(cancel_response).await;
+    let cancel_payload = crate::router::tests::support::response_json(cancel_response).await;
     assert_eq!(cancel_payload["id"], response_id);
     assert_eq!(cancel_payload["status"], "cancelled");
 
@@ -803,7 +803,7 @@ async fn gemini_responses_route_stream_follow_up_reads_bridged_cache() {
         )
         .await;
     assert_eq!(get_response.status(), StatusCode::OK);
-    let get_payload = crate::router::test_support::response_json(get_response).await;
+    let get_payload = crate::router::tests::support::response_json(get_response).await;
     assert_eq!(get_payload["id"], response_id);
     assert_eq!(get_payload["status"], "cancelled");
     assert_eq!(get_payload["output_text"], "Hello world");
@@ -877,7 +877,7 @@ async fn gemini_responses_route_stream_falls_back_after_primary_overload() {
         .and_then(|value| value.to_str().ok())
         .expect("gemini fallback responses stream upstream request id")
         .to_string();
-    let body = crate::router::test_support::response_text(response).await;
+    let body = crate::router::tests::support::response_text(response).await;
 
     assert!(body.contains("\"type\":\"response.created\""));
     assert!(body.contains("\"type\":\"response.completed\""));
@@ -974,7 +974,7 @@ async fn gemini_responses_route_stream_skips_overloaded_primary_on_next_request(
         )
         .await;
     assert_eq!(first_response.status(), StatusCode::OK);
-    let first_body = crate::router::test_support::response_text(first_response).await;
+    let first_body = crate::router::tests::support::response_text(first_response).await;
     assert!(first_body.contains("\"type\":\"response.completed\""));
     assert!(first_body.contains("Hello fallback"));
 
@@ -995,7 +995,7 @@ async fn gemini_responses_route_stream_skips_overloaded_primary_on_next_request(
         )
         .await;
     assert_eq!(second_response.status(), StatusCode::OK);
-    let second_body = crate::router::test_support::response_text(second_response).await;
+    let second_body = crate::router::tests::support::response_text(second_response).await;
     assert!(second_body.contains("\"type\":\"response.completed\""));
     assert!(second_body.contains("Hello fallback"));
 
@@ -1089,7 +1089,7 @@ async fn anthropic_responses_route_falls_back_after_primary_rate_limit() {
         .and_then(|value| value.to_str().ok())
         .expect("anthropic fallback responses upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["id"], "msg_resp_fallback_123");
     assert_eq!(payload["output_text"], "Hello from Claude fallback");

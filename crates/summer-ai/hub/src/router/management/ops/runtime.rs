@@ -44,7 +44,7 @@ mod tests {
     use summer_redis::redis::Client;
     use summer_web::axum::http::{Method, StatusCode};
 
-    use crate::router::test_support::{TestHarness, response_json};
+    use crate::router::tests::support::{TestHarness, response_json};
     use crate::service::runtime_cache::RuntimeCacheService;
     use crate::service::runtime_ops::RuntimeOpsService;
 

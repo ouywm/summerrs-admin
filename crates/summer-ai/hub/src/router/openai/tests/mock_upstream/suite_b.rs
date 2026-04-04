@@ -489,7 +489,7 @@ async fn anthropic_chat_route_falls_back_after_primary_rate_limit() {
         )
         .await;
     assert_eq!(baseline_response.status(), StatusCode::OK);
-    let baseline = crate::router::test_support::response_json(baseline_response).await;
+    let baseline = crate::router::tests::support::response_json(baseline_response).await;
 
     let response = harness
         .json_request(
@@ -510,7 +510,7 @@ async fn anthropic_chat_route_falls_back_after_primary_rate_limit() {
         .and_then(|value| value.to_str().ok())
         .expect("anthropic fallback chat upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["id"], "msg_chat_fallback_123");
     assert_eq!(
@@ -556,7 +556,7 @@ async fn anthropic_chat_route_falls_back_after_primary_rate_limit() {
             )
             .await;
         assert_eq!(runtime_response.status(), StatusCode::OK);
-        let runtime_payload = crate::router::test_support::response_json(runtime_response).await;
+        let runtime_payload = crate::router::tests::support::response_json(runtime_response).await;
         let fallback_count = runtime_payload["recentFallbackCount"].as_i64();
         if fallback_count == Some(expected_fallback_count) {
             observed_fallback_count = fallback_count;
@@ -632,7 +632,7 @@ async fn anthropic_chat_route_skips_rate_limited_primary_on_next_request() {
         )
         .await;
     assert_eq!(first_response.status(), StatusCode::OK);
-    let first_payload = crate::router::test_support::response_json(first_response).await;
+    let first_payload = crate::router::tests::support::response_json(first_response).await;
     assert_eq!(first_payload["id"], "msg_chat_fallback_skip_123");
 
     let primary_account = harness.wait_for_primary_account_rate_limited().await;
@@ -652,7 +652,7 @@ async fn anthropic_chat_route_skips_rate_limited_primary_on_next_request() {
         )
         .await;
     assert_eq!(second_response.status(), StatusCode::OK);
-    let second_payload = crate::router::test_support::response_json(second_response).await;
+    let second_payload = crate::router::tests::support::response_json(second_response).await;
     assert_eq!(second_payload["id"], "msg_chat_fallback_skip_123");
 
     let token = harness.wait_for_token_used_quota(38).await;
@@ -727,7 +727,7 @@ async fn anthropic_chat_route_keeps_short_term_penalty_after_manual_primary_reco
         )
         .await;
     assert_eq!(first_response.status(), StatusCode::OK);
-    let first_payload = crate::router::test_support::response_json(first_response).await;
+    let first_payload = crate::router::tests::support::response_json(first_response).await;
     assert_eq!(first_payload["id"], "msg_chat_recovered_penalty_123");
 
     let primary_account = harness.wait_for_primary_account_rate_limited().await;
@@ -748,7 +748,7 @@ async fn anthropic_chat_route_keeps_short_term_penalty_after_manual_primary_reco
             )
             .await;
         assert_eq!(runtime_response.status(), StatusCode::OK);
-        let runtime_payload = crate::router::test_support::response_json(runtime_response).await;
+        let runtime_payload = crate::router::tests::support::response_json(runtime_response).await;
         let Some(item) = runtime_payload.as_array().and_then(|items| {
             items
                 .iter()
@@ -790,7 +790,7 @@ async fn anthropic_chat_route_keeps_short_term_penalty_after_manual_primary_reco
         )
         .await;
     assert_eq!(second_response.status(), StatusCode::OK);
-    let second_payload = crate::router::test_support::response_json(second_response).await;
+    let second_payload = crate::router::tests::support::response_json(second_response).await;
     assert_eq!(second_payload["id"], "msg_chat_recovered_penalty_123");
 
     assert_eq!(primary.hit_count("/v1/messages"), 1);
@@ -860,7 +860,7 @@ async fn gemini_chat_route_falls_back_after_primary_invalid_request_without_quar
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(
         payload["choices"][0]["message"]["content"],
@@ -950,7 +950,7 @@ async fn gemini_chat_route_quarantines_primary_account_after_auth_failure() {
         )
         .await;
     assert_eq!(first_response.status(), StatusCode::OK);
-    let first_payload = crate::router::test_support::response_json(first_response).await;
+    let first_payload = crate::router::tests::support::response_json(first_response).await;
     assert_eq!(
         first_payload["choices"][0]["message"]["content"],
         "Hello from Gemini fallback"
@@ -981,7 +981,7 @@ async fn gemini_chat_route_quarantines_primary_account_after_auth_failure() {
         )
         .await;
     assert_eq!(second_response.status(), StatusCode::OK);
-    let second_payload = crate::router::test_support::response_json(second_response).await;
+    let second_payload = crate::router::tests::support::response_json(second_response).await;
     assert_eq!(
         second_payload["choices"][0]["message"]["content"],
         "Hello from Gemini fallback"

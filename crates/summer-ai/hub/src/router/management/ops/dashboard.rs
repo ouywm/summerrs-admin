@@ -131,7 +131,7 @@ mod tests {
     use summer_ai_model::entity::log::{self, LogStatus, LogType};
     use summer_web::axum::http::{Method, StatusCode};
 
-    use crate::router::test_support::{TestHarness, response_json};
+    use crate::router::tests::support::{TestHarness, response_json};
 
     struct DashboardLogSeed {
         request_id: &'static str,

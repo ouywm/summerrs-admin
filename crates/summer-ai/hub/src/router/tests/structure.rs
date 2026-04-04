@@ -32,4 +32,33 @@ fn control_plane_routes_are_grouped_under_management_directory() {
             "control-plane route file should live under router/management: {file_name}"
         );
     }
+
+    for dir_name in ["channel", "config", "ops", "tenant"] {
+        assert!(
+            management_dir.join(dir_name).is_dir(),
+            "router/management/{dir_name} directory should exist"
+        );
+    }
+}
+
+#[test]
+fn router_root_keeps_tests_in_dedicated_directories() {
+    let router_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/router");
+
+    assert!(
+        router_dir.join("tests").is_dir(),
+        "router/tests directory should exist"
+    );
+    assert!(
+        router_dir.join("tests/support").is_dir(),
+        "router/tests/support directory should exist"
+    );
+    assert!(
+        !router_dir.join("tests.rs").exists(),
+        "router/tests.rs should be folded into router/tests/"
+    );
+    assert!(
+        !router_dir.join("test_support.rs").exists(),
+        "router/test_support.rs should be folded into router/tests/support/"
+    );
 }

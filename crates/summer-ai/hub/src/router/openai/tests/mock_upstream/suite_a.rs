@@ -52,7 +52,7 @@ async fn openai_moderations_route_native_success() {
         .and_then(|value| value.to_str().ok())
         .expect("moderations upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["id"], "modr_123");
     assert_eq!(payload["results"][0]["flagged"], false);
@@ -99,7 +99,7 @@ async fn anthropic_moderations_route_returns_unsupported_endpoint() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -135,7 +135,7 @@ async fn anthropic_rerank_route_returns_unsupported_endpoint() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -203,7 +203,7 @@ async fn openai_rerank_route_native_success() {
         .and_then(|value| value.to_str().ok())
         .expect("rerank upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["id"], "rerank_123");
     assert_eq!(payload["results"][0]["index"], 1);
@@ -249,7 +249,7 @@ async fn anthropic_image_generations_route_returns_unsupported_endpoint() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -287,7 +287,7 @@ async fn anthropic_image_edits_route_returns_unsupported_endpoint() {
         })
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -357,7 +357,7 @@ async fn openai_image_edits_route_native_success() {
         .and_then(|value| value.to_str().ok())
         .expect("image edit upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["data"][0]["b64_json"], "edit-result");
     assert_eq!(upstream_request_id, "openai-upstream-image-edits-123");
@@ -405,7 +405,7 @@ async fn anthropic_image_variations_route_returns_unsupported_endpoint() {
         })
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -472,7 +472,7 @@ async fn openai_image_variations_route_native_success() {
         .and_then(|value| value.to_str().ok())
         .expect("image variation upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["data"][0]["b64_json"], "variation-result");
     assert_eq!(upstream_request_id, "openai-upstream-image-variations-123");
@@ -512,7 +512,7 @@ async fn anthropic_files_list_route_returns_unsupported_endpoint() {
         .empty_request(Method::GET, "/v1/files", request_id)
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -570,7 +570,7 @@ async fn openai_files_upload_route_native_success() {
         .and_then(|value| value.to_str().ok())
         .expect("file upload upstream request id")
         .to_string();
-    let upload_payload = crate::router::test_support::response_json(upload_response).await;
+    let upload_payload = crate::router::tests::support::response_json(upload_response).await;
 
     assert_eq!(upload_payload["id"], "file_primary");
     assert_eq!(upload_upstream_request_id, "openai-files-upload-123");
@@ -599,7 +599,7 @@ async fn files_upload_route_rejects_payload_over_limit() {
         })
         .await;
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "invalid_request_error");
     assert_eq!(payload["error"]["code"], "payload_too_large");
@@ -628,7 +628,7 @@ async fn anthropic_audio_speech_route_returns_unsupported_endpoint() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -688,7 +688,7 @@ async fn openai_audio_speech_route_native_success() {
         .and_then(|value| value.to_str().ok())
         .expect("audio speech upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_text(response).await;
+    let payload = crate::router::tests::support::response_text(response).await;
 
     assert_eq!(payload, "native-audio");
     assert_eq!(upstream_request_id, "openai-upstream-audio-speech-123");
@@ -736,7 +736,7 @@ async fn anthropic_audio_transcriptions_route_returns_unsupported_endpoint() {
         })
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -799,7 +799,7 @@ async fn openai_audio_transcriptions_route_native_success() {
         .and_then(|value| value.to_str().ok())
         .expect("audio transcription upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["text"], "native transcript");
     assert_eq!(
@@ -853,7 +853,7 @@ async fn anthropic_audio_translations_route_returns_unsupported_endpoint() {
         })
         .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["error"]["type"], "upstream_error");
     assert_eq!(payload["error"]["code"], "unsupported_endpoint");
@@ -915,7 +915,7 @@ async fn openai_audio_translations_route_native_success() {
         .and_then(|value| value.to_str().ok())
         .expect("audio translation upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["text"], "native translation");
     assert_eq!(
@@ -991,7 +991,7 @@ async fn openai_completions_route_bridges_stream_and_accounts_usage() {
         .and_then(|value| value.to_str().ok())
         .expect("openai completions upstream request id")
         .to_string();
-    let body = crate::router::test_support::response_text(response).await;
+    let body = crate::router::tests::support::response_text(response).await;
 
     assert!(body.contains("\"object\":\"text_completion\""));
     assert!(body.contains("\"text\":\"Hello\""));
@@ -1074,7 +1074,7 @@ async fn anthropic_completions_route_bridges_non_stream_response() {
         .and_then(|value| value.to_str().ok())
         .expect("anthropic completions upstream request id")
         .to_string();
-    let payload = crate::router::test_support::response_json(response).await;
+    let payload = crate::router::tests::support::response_json(response).await;
 
     assert_eq!(payload["id"], "msg_completion_123");
     assert_eq!(payload["object"], "text_completion");

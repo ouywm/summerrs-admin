@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 pub(crate) use crate::router::openai::{UpstreamFailureScope, classify_upstream_provider_failure};
-use crate::router::test_support::{MultipartRequestSpec, TestHarness};
+use crate::router::tests::support::{MultipartRequestSpec, TestHarness};
 pub(crate) use crate::service::openai_http::extract_upstream_request_id;
 pub(crate) use crate::service::openai_relay_support::MAX_MULTIPART_FILE_SIZE_BYTES;
 pub(crate) use crate::service::openai_tracking::map_adapter_build_error;
