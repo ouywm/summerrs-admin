@@ -33,3 +33,35 @@ fn openai_relay_services_do_not_wrap_extractors_inside_service_methods() {
         );
     }
 }
+
+#[test]
+fn hub_uses_ddd_roots_with_legacy_facades() {
+    let src_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+
+    assert!(
+        src_dir.join("application/mod.rs").is_file(),
+        "src/application/mod.rs should exist"
+    );
+    assert!(
+        src_dir.join("infrastructure/mod.rs").is_file(),
+        "src/infrastructure/mod.rs should exist"
+    );
+    assert!(
+        src_dir.join("domain/mod.rs").is_file(),
+        "src/domain/mod.rs should exist"
+    );
+
+    for facade in ["auth.rs", "job.rs", "relay.rs", "router.rs", "service.rs"] {
+        assert!(
+            src_dir.join(facade).is_file(),
+            "legacy facade should exist: src/{facade}"
+        );
+    }
+
+    for legacy_dir in ["auth", "job", "relay", "service"] {
+        assert!(
+            !src_dir.join(legacy_dir).is_dir(),
+            "legacy implementation directory should be migrated away: src/{legacy_dir}"
+        );
+    }
+}
