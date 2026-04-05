@@ -1,5 +1,6 @@
 mod auth_macro;
 mod log_macro;
+mod rate_limit_macro;
 
 use proc_macro::TokenStream;
 
@@ -120,4 +121,12 @@ pub fn has_perms(args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
     auth_macro::expand_check_roles(args.into(), input.into()).into()
+}
+
+/// 限流属性宏
+///
+/// 为 HTTP handler 注入 `RateLimitContext` 并在业务逻辑前执行声明式限流检查。
+#[proc_macro_attribute]
+pub fn rate_limit(args: TokenStream, input: TokenStream) -> TokenStream {
+    rate_limit_macro::expand(args.into(), input.into()).into()
 }
