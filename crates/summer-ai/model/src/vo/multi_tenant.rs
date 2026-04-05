@@ -101,12 +101,12 @@ pub struct AuditLogVo {
     pub id: i64,
     pub organization_id: i64,
     pub project_id: i64,
-    pub user_id: i64,
+    pub actor_user_id: i64,
     pub action: String,
     pub resource_type: String,
     pub resource_id: String,
     pub change_set: serde_json::Value,
-    pub client_ip: String,
+    pub ip_address: String,
     pub create_time: DateTime<FixedOffset>,
 }
 impl AuditLogVo {
@@ -115,12 +115,12 @@ impl AuditLogVo {
             id: m.id,
             organization_id: m.organization_id,
             project_id: m.project_id,
-            user_id: m.user_id,
+            actor_user_id: m.actor_user_id,
             action: m.action,
             resource_type: m.resource_type,
             resource_id: m.resource_id,
             change_set: m.change_set,
-            client_ip: m.client_ip,
+            ip_address: m.ip_address,
             create_time: m.create_time,
         }
     }

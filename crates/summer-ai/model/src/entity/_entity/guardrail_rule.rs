@@ -62,4 +62,7 @@ pub struct Model {
     pub create_time: DateTimeWithTimeZone,
     pub update_by: String,
     pub update_time: DateTimeWithTimeZone,
+    /// 关联 Guardrail 配置（多对一，逻辑关联 ai.guardrail_config.id，不建立数据库外键）
+    #[sea_orm(belongs_to, from = "guardrail_config_id", to = "id", skip_fk)]
+    pub guardrail_config: Option<super::guardrail_config::Entity>,
 }

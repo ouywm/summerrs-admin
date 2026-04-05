@@ -118,4 +118,7 @@ pub struct Model {
     pub update_by: String,
     /// 更新时间
     pub update_time: DateTimeWithTimeZone,
+    /// 关联渠道（多对一，逻辑关联 ai.channel.id，不建立数据库外键）
+    #[sea_orm(belongs_to, from = "channel_id", to = "id", skip_fk)]
+    pub channel: Option<super::channel::Entity>,
 }

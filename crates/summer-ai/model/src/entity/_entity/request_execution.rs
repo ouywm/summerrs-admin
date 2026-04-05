@@ -92,4 +92,7 @@ pub struct Model {
     pub finished_at: Option<DateTimeWithTimeZone>,
     /// 记录创建时间
     pub create_time: DateTimeWithTimeZone,
+    /// 关联请求主表（多对一，逻辑关联 ai.request.id，不建立数据库外键）
+    #[sea_orm(belongs_to, from = "ai_request_id", to = "id", skip_fk)]
+    pub request: Option<super::request::Entity>,
 }

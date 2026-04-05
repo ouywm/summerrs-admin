@@ -28,4 +28,7 @@ pub struct Model {
     pub create_time: DateTimeWithTimeZone,
     pub update_by: String,
     pub update_time: DateTimeWithTimeZone,
+    /// 关联 Guardrail 规则（一对多）
+    #[sea_orm(has_many)]
+    pub rules: HasMany<super::guardrail_rule::Entity>,
 }

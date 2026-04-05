@@ -1,20 +1,4 @@
 pub use super::_entity::message::*;
-use sea_orm::entity::prelude::*;
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum MessageRelation {
-    #[sea_orm(
-        belongs_to = "super::conversation::Entity",
-        from = "Column::ConversationId",
-        to = "super::conversation::Column::Id"
-    )]
-    Conversation,
-}
-impl Related<super::conversation::Entity> for Entity {
-    fn to() -> RelationDef {
-        MessageRelation::Conversation.def()
-    }
-}
 
 #[async_trait::async_trait]
 impl sea_orm::ActiveModelBehavior for ActiveModel {

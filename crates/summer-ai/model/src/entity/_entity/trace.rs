@@ -52,4 +52,7 @@ pub struct Model {
     pub finished_at: Option<DateTimeWithTimeZone>,
     pub create_time: DateTimeWithTimeZone,
     pub update_time: DateTimeWithTimeZone,
+    /// 关联 Span 列表（一对多）
+    #[sea_orm(has_many)]
+    pub spans: HasMany<super::trace_span::Entity>,
 }

@@ -32,7 +32,7 @@ fn default_purpose() -> String {
 pub struct QueryFileDto {
     pub project_id: Option<i64>,
     pub purpose: Option<String>,
-    pub status: Option<i16>,
+    pub status: Option<file::FileStatus>,
     pub filename: Option<String>,
 }
 

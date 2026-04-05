@@ -57,4 +57,7 @@ pub struct Model {
     pub started_at: DateTimeWithTimeZone,
     pub finished_at: Option<DateTimeWithTimeZone>,
     pub create_time: DateTimeWithTimeZone,
+    /// 关联 Trace（多对一，逻辑关联 ai.trace.id，不建立数据库外键）
+    #[sea_orm(belongs_to, from = "trace_id", to = "id", skip_fk)]
+    pub trace: Option<super::trace::Entity>,
 }

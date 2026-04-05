@@ -107,4 +107,7 @@ pub struct Model {
     pub create_time: DateTimeWithTimeZone,
     /// 更新时间
     pub update_time: DateTimeWithTimeZone,
+    /// 关联执行记录（一对多）
+    #[sea_orm(has_many)]
+    pub executions: HasMany<super::request_execution::Entity>,
 }

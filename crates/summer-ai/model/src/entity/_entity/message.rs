@@ -67,4 +67,7 @@ pub struct Model {
     pub metadata: serde_json::Value,
     pub create_time: DateTimeWithTimeZone,
     pub update_time: DateTimeWithTimeZone,
+    /// 关联对话（多对一，逻辑关联 ai.conversation.id，不建立数据库外键）
+    #[sea_orm(belongs_to, from = "conversation_id", to = "id", skip_fk)]
+    pub conversation: Option<super::conversation::Entity>,
 }

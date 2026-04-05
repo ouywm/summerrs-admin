@@ -72,3 +72,6 @@ pub mod user_subscription;
 pub mod vector_store;
 pub mod vector_store_file;
 pub mod vendor;
+
+#[cfg(test)]
+mod tests;

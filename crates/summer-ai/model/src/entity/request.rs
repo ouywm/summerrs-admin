@@ -1,19 +1,5 @@
 pub use super::_entity::request::*;
 
-use sea_orm::entity::prelude::*;
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum RequestRelation {
-    #[sea_orm(has_many = "super::request_execution::Entity")]
-    Executions,
-}
-
-impl Related<super::request_execution::Entity> for Entity {
-    fn to() -> RelationDef {
-        RequestRelation::Executions.def()
-    }
-}
-
 #[async_trait::async_trait]
 impl sea_orm::ActiveModelBehavior for ActiveModel {
     async fn before_save<C>(mut self, _db: &C, insert: bool) -> Result<Self, sea_orm::DbErr>

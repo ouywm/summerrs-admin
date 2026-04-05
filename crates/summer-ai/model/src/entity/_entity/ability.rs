@@ -31,4 +31,7 @@ pub struct Model {
     pub create_time: DateTimeWithTimeZone,
     /// 更新时间
     pub update_time: DateTimeWithTimeZone,
+    /// 关联渠道（多对一）
+    #[sea_orm(belongs_to, from = "channel_id", to = "id", skip_fk)]
+    pub channel: Option<super::channel::Entity>,
 }

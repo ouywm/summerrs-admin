@@ -157,7 +157,7 @@ impl From<QueryProjectDto> for sea_orm::Condition {
 pub struct QueryAuditLogDto {
     pub organization_id: Option<i64>,
     pub project_id: Option<i64>,
-    pub user_id: Option<i64>,
+    pub actor_user_id: Option<i64>,
     pub action: Option<String>,
     pub resource_type: Option<String>,
 }
@@ -172,8 +172,8 @@ impl From<QueryAuditLogDto> for sea_orm::Condition {
         if let Some(v) = dto.project_id {
             cond = cond.add(audit_log::Column::ProjectId.eq(v));
         }
-        if let Some(v) = dto.user_id {
-            cond = cond.add(audit_log::Column::UserId.eq(v));
+        if let Some(v) = dto.actor_user_id {
+            cond = cond.add(audit_log::Column::ActorUserId.eq(v));
         }
         if let Some(v) = dto.action {
             cond = cond.add(audit_log::Column::Action.eq(v));

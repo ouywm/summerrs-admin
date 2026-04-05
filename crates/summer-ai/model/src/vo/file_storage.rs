@@ -15,7 +15,7 @@ pub struct FileVo {
     pub content_type: String,
     pub size_bytes: i64,
     pub storage_backend: String,
-    pub status: i16,
+    pub status: file::FileStatus,
     pub project_id: i64,
     pub expires_at: Option<DateTime<FixedOffset>>,
     pub create_time: DateTime<FixedOffset>,

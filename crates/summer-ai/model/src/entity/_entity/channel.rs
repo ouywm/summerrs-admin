@@ -193,4 +193,10 @@ pub struct Model {
     pub update_by: String,
     /// 更新时间
     pub update_time: DateTimeWithTimeZone,
+    /// channel -> channel_account（一对多）
+    #[sea_orm(has_many)]
+    pub channel_accounts: HasMany<super::channel_account::Entity>,
+    /// channel -> ability（一对多）
+    #[sea_orm(has_many)]
+    pub abilities: HasMany<super::ability::Entity>,
 }
