@@ -7,6 +7,7 @@ Cargo.lock
 rust-project.json
 .vscode/
 .idea/
+.worktrees/
 *.iml
 docs/public
 docs/relay/
