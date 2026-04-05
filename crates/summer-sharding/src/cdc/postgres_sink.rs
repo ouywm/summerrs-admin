@@ -16,6 +16,7 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 struct TableMetadata {
     primary_keys: Vec<String>,
+    column_types: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,31 +60,52 @@ impl PostgresTableSink {
             .query_all_raw(Statement::from_sql_and_values(
                 DbBackend::Postgres,
                 r#"
-                SELECT a.attname
-                FROM pg_index i
-                JOIN pg_class c ON c.oid = i.indrelid
+                SELECT a.attname,
+                       pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+                       i.indisprimary AS is_primary,
+                       keys.ord AS primary_ordinal
+                FROM pg_class c
                 JOIN pg_namespace n ON n.oid = c.relnamespace
-                JOIN unnest(i.indkey) WITH ORDINALITY AS keys(attnum, ord) ON true
-                JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = keys.attnum
-                WHERE i.indisprimary
-                  AND n.nspname = $1
+                JOIN pg_attribute a ON a.attrelid = c.oid
+                LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisprimary
+                LEFT JOIN unnest(i.indkey) WITH ORDINALITY AS keys(attnum, ord)
+                    ON keys.attnum = a.attnum
+                WHERE n.nspname = $1
                   AND c.relname = $2
-                ORDER BY keys.ord
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
+                ORDER BY a.attnum
                 "#,
                 [schema.into(), relation.into()],
             ))
             .await?;
-        let primary_keys = rows
-            .into_iter()
-            .map(|row| row.try_get::<String>("", "attname"))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut primary_keys = Vec::new();
+        let mut column_types = BTreeMap::new();
+        let mut primary_with_order = Vec::new();
+        for row in rows {
+            let column = row.try_get::<String>("", "attname")?;
+            let data_type = row.try_get::<String>("", "data_type")?;
+            let is_primary = row
+                .try_get::<Option<bool>>("", "is_primary")?
+                .unwrap_or(false);
+            let primary_ordinal = row.try_get::<Option<i64>>("", "primary_ordinal")?;
+            column_types.insert(column.clone(), data_type);
+            if is_primary && primary_ordinal.is_some() {
+                primary_with_order.push((primary_ordinal.unwrap_or_default(), column));
+            }
+        }
+        primary_with_order.sort_by_key(|(order, _)| *order);
+        primary_keys.extend(primary_with_order.into_iter().map(|(_, column)| column));
         if primary_keys.is_empty() {
             return Err(ShardingError::Config(format!(
                 "postgres table sink requires primary key columns for `{table}`"
             )));
         }
 
-        let metadata = TableMetadata { primary_keys };
+        let metadata = TableMetadata {
+            primary_keys,
+            column_types,
+        };
         self.metadata
             .lock()
             .insert(table.to_string(), metadata.clone());
@@ -110,7 +132,14 @@ impl PostgresTableSink {
         let columns = payload.keys().cloned().collect::<BTreeSet<_>>();
         let columns = columns.into_iter().collect::<Vec<_>>();
         let placeholders = (1..=columns.len())
-            .map(|index| format!("${index}"))
+            .map(|index| {
+                let column = &columns[index - 1];
+                metadata
+                    .column_types
+                    .get(column)
+                    .map(|data_type| format!("${index}::{data_type}"))
+                    .unwrap_or_else(|| format!("${index}"))
+            })
             .collect::<Vec<_>>();
         let params = columns
             .iter()
@@ -208,6 +237,19 @@ impl PostgresTableSink {
             .await?;
         Ok(())
     }
+
+    async fn truncate(&self, record: &CdcRecord) -> Result<()> {
+        let target_table = self.target_table(record.table.as_str());
+        self.truncate_table(target_table.as_str()).await
+    }
+
+    async fn truncate_table(&self, target_table: &str) -> Result<()> {
+        let sql = format!("TRUNCATE TABLE {}", quote_qualified_table(target_table)?);
+        self.connection
+            .execute_raw(Statement::from_string(DbBackend::Postgres, sql))
+            .await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +291,7 @@ impl CdcSink for PostgresTableSink {
     async fn apply_change(&self, record: &CdcRecord) -> Result<()> {
         match record.operation {
             CdcOperation::Delete => self.delete(record).await,
+            CdcOperation::Truncate => self.truncate(record).await,
             CdcOperation::Insert | CdcOperation::Update | CdcOperation::Snapshot => {
                 self.upsert(record).await
             }
@@ -269,14 +312,21 @@ impl CdcSink for PostgresHashShardSink {
     }
 
     async fn apply_change(&self, record: &CdcRecord) -> Result<()> {
-        let target_table = self.target_table_for(record)?;
         match record.operation {
             CdcOperation::Delete => {
+                let target_table = self.target_table_for(record)?;
                 self.table_sink
                     .delete_from(record, target_table.as_str())
                     .await
             }
+            CdcOperation::Truncate => {
+                for table in self.target_tables.iter() {
+                    self.table_sink.truncate_table(table.as_str()).await?;
+                }
+                Ok(())
+            }
             CdcOperation::Insert | CdcOperation::Update | CdcOperation::Snapshot => {
+                let target_table = self.target_table_for(record)?;
                 self.table_sink
                     .upsert_into(record, target_table.as_str())
                     .await

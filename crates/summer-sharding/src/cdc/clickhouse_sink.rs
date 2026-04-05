@@ -159,6 +159,7 @@ impl CdcSink for ClickHouseHttpSink {
         let target_table = self.target_table(record.table.as_str());
         match record.operation {
             CdcOperation::Delete => self.delete_row(target_table.as_str(), record).await,
+            CdcOperation::Truncate => self.truncate_table(target_table.as_str()).await,
             CdcOperation::Insert | CdcOperation::Snapshot => self
                 .insert_rows(target_table.as_str(), std::slice::from_ref(record))
                 .await
@@ -174,6 +175,13 @@ impl CdcSink for ClickHouseHttpSink {
 
     fn kind(&self) -> CdcSinkKind {
         CdcSinkKind::ClickHouse
+    }
+}
+
+impl ClickHouseHttpSink {
+    async fn truncate_table(&self, table: &str) -> Result<()> {
+        let sql = format!("TRUNCATE TABLE {table}");
+        self.execute_sql(sql.as_str()).await
     }
 }
 

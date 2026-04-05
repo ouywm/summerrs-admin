@@ -113,6 +113,12 @@ pub fn build_like_expr(column: &str, pattern: &str) -> Expr {
     }
 }
 
+pub fn build_bound_placeholder(index: usize) -> Expr {
+    Expr::Value(Value::Placeholder(crate::pipeline::internal_placeholder(
+        index,
+    )))
+}
+
 pub fn build_exists_expr(subquery: Query) -> Expr {
     Expr::Exists {
         subquery: Box::new(subquery),

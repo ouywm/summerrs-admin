@@ -48,11 +48,36 @@ impl ResultMerger for DefaultResultMerger {
     ) -> Result<Vec<QueryResult>> {
         let rows = if analysis.has_aggregate_projection() || analysis.is_grouped_query() {
             group_by::merge(shards, analysis)?
+        } else if !plan.order_by.is_empty() {
+            let mut stream = stream::MergedRowStream::from_sorted_shards(shards, &plan.order_by);
+            let mut rows = Vec::new();
+            let offset = plan.offset.unwrap_or(0) as usize;
+            for _ in 0..offset {
+                if stream.next().is_none() {
+                    return post_process::apply(rows, analysis, &self.config);
+                }
+            }
+            let limit = plan.limit.map(|value| value as usize);
+            for row in stream {
+                rows.push(row);
+                if limit.is_some_and(|limit| rows.len() >= limit) {
+                    break;
+                }
+            }
+            rows
         } else {
             shards.into_iter().flatten().collect()
         };
-        let rows = order_by::merge(rows, plan.order_by.as_slice());
-        let rows = limit::apply(rows, plan.limit, plan.offset);
+        let rows = if plan.order_by.is_empty() {
+            limit::apply(rows, plan.limit, plan.offset)
+        } else {
+            rows
+        };
+        let rows = if plan.order_by.is_empty() {
+            rows
+        } else {
+            order_by::merge(rows, &[])
+        };
         post_process::apply(rows, analysis, &self.config)
     }
 }

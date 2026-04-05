@@ -123,8 +123,8 @@ impl PgCdcSource {
         request: &CdcSubscribeRequest,
         start_lsn: Lsn,
     ) -> Result<ReplicationClient> {
-        const RETRY_ATTEMPTS: usize = 5;
-        const RETRY_DELAY_MS: u64 = 100;
+        const RETRY_ATTEMPTS: usize = 20;
+        const RETRY_DELAY_MS: u64 = 250;
 
         let config = self.endpoint.to_replication_config(
             request.slot.as_str(),
@@ -138,6 +138,9 @@ impl PgCdcSource {
                 Err(error)
                     if attempt + 1 < RETRY_ATTEMPTS && replication_artifact_not_ready(&error) =>
                 {
+                    self.ensure_replication_slot(request.slot.as_str()).await?;
+                    self.ensure_publication(request.publication.as_str(), &request.source_tables)
+                        .await?;
                     tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
                 }
                 Err(error) => return Err(pgwire_error(error)),
@@ -213,25 +216,23 @@ impl PgCdcSource {
                 [publication.into()],
             ))
             .await?;
-        if exists.is_some() {
-            return Ok(());
-        }
-
-        let table_list = tables
-            .iter()
-            .map(|table| quote_qualified_table(table))
-            .collect::<Result<Vec<_>>>()?
-            .join(", ");
-        self.snapshot_connection
-            .execute_unprepared(
-                format!(
-                    "CREATE PUBLICATION {} FOR TABLE {}",
-                    quote_ident(publication),
-                    table_list
+        if exists.is_none() {
+            let table_list = tables
+                .iter()
+                .map(|table| quote_qualified_table(table))
+                .collect::<Result<Vec<_>>>()?
+                .join(", ");
+            self.snapshot_connection
+                .execute_unprepared(
+                    format!(
+                        "CREATE PUBLICATION {} FOR TABLE {}",
+                        quote_ident(publication),
+                        table_list
+                    )
+                    .as_str(),
                 )
-                .as_str(),
-            )
-            .await?;
+                .await?;
+        }
         self.wait_for_publication(publication).await
     }
 

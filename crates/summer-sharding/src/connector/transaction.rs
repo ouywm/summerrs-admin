@@ -1,9 +1,11 @@
-use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
+use std::{collections::BTreeMap, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
+use rand::random;
 use sea_orm::{
     AccessMode, ConnectionTrait, DatabaseTransaction, DbBackend, DbErr, ExecResult, IsolationLevel,
     QueryResult, TransactionError, TransactionOptions, TransactionSession, TransactionTrait,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     connector::connection::{ExecutionOverrides, ShardingConnection, ShardingConnectionInner},
@@ -686,7 +688,7 @@ fn escape_literal(value: &str) -> String {
 
 #[cfg(test)]
 mod saga_tests {
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::{collections::BTreeMap, path::Path, sync::Arc};
 
     use chrono::Utc;
     use parking_lot::Mutex;
@@ -697,7 +699,9 @@ mod saga_tests {
     };
     use tokio::sync::Barrier;
 
-    use super::{SagaContext, SagaCoordinator, SagaStep};
+    use super::{
+        FileSagaJournal, SagaContext, SagaCoordinator, SagaJournal, SagaRecoveryWorker, SagaStep,
+    };
     use crate::{
         cdc::test_support::PreparedTransactionTestDatabases,
         config::{DataSourceConfig, DataSourceRole, ShardingConfig, TenantIsolationLevel},
@@ -777,6 +781,33 @@ mod saga_tests {
                 "compensate:step1".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn saga_recovery_worker_compensates_incomplete_logged_run() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let context = DummyContext { log: log.clone() };
+        let steps = vec![
+            Arc::new(RecordingStep::new("step1", false)) as Arc<dyn SagaStep>,
+            Arc::new(RecordingStep::new("step2", false)) as Arc<dyn SagaStep>,
+        ];
+        let journal_dir =
+            std::env::temp_dir().join(format!("summer-saga-recovery-{}", random::<u64>()));
+        let journal = Arc::new(FileSagaJournal::new(journal_dir.clone()));
+        journal.start_run("run-1").expect("start run");
+        journal
+            .mark_step_completed("run-1", "step1")
+            .expect("mark completed");
+
+        let worker = SagaRecoveryWorker::new(steps, journal.clone());
+        let recovered = worker.recover_all(&context).await.expect("recover");
+
+        assert_eq!(recovered, 1);
+        assert_eq!(log.lock().clone(), vec!["compensate:step1".to_string()]);
+        assert!(journal.load_incomplete_runs().expect("load").is_empty());
+        if Path::new(journal_dir.as_path()).exists() {
+            let _ = std::fs::remove_dir_all(&journal_dir);
+        }
     }
 
     #[tokio::test]
@@ -1424,26 +1455,198 @@ pub trait SagaStep: Send + Sync {
     async fn compensate(&self, ctx: &dyn SagaContext) -> Result<()>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SagaRunState {
+    run_id: String,
+    completed_steps: Vec<String>,
+    compensated_steps: Vec<String>,
+}
+
+trait SagaJournal: Send + Sync {
+    fn start_run(&self, run_id: &str) -> Result<()>;
+    fn mark_step_completed(&self, run_id: &str, step_name: &str) -> Result<()>;
+    fn mark_step_compensated(&self, run_id: &str, step_name: &str) -> Result<()>;
+    fn finish_run(&self, run_id: &str) -> Result<()>;
+    #[allow(dead_code)]
+    fn load_incomplete_runs(&self) -> Result<Vec<SagaRunState>>;
+}
+
+#[derive(Debug, Clone)]
+struct FileSagaJournal {
+    dir: PathBuf,
+}
+
+impl FileSagaJournal {
+    fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    fn default_dir() -> PathBuf {
+        std::env::temp_dir().join("summer-sharding-saga")
+    }
+
+    fn path_for(&self, run_id: &str) -> PathBuf {
+        self.dir.join(format!("{run_id}.json"))
+    }
+
+    fn ensure_dir(&self) -> Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        Ok(())
+    }
+
+    fn write_state(&self, state: &SagaRunState) -> Result<()> {
+        self.ensure_dir()?;
+        std::fs::write(
+            self.path_for(state.run_id.as_str()),
+            serde_json::to_vec_pretty(state)
+                .map_err(|err| ShardingError::Io(std::io::Error::other(err.to_string())))?,
+        )?;
+        Ok(())
+    }
+
+    fn read_state(&self, run_id: &str) -> Result<SagaRunState> {
+        let bytes = std::fs::read(self.path_for(run_id))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|err| ShardingError::Io(std::io::Error::other(err.to_string())))
+    }
+
+    fn update_state(&self, run_id: &str, mutate: impl FnOnce(&mut SagaRunState)) -> Result<()> {
+        let mut state = self.read_state(run_id)?;
+        mutate(&mut state);
+        self.write_state(&state)
+    }
+}
+
+impl SagaJournal for FileSagaJournal {
+    fn start_run(&self, run_id: &str) -> Result<()> {
+        self.write_state(&SagaRunState {
+            run_id: run_id.to_string(),
+            completed_steps: Vec::new(),
+            compensated_steps: Vec::new(),
+        })
+    }
+
+    fn mark_step_completed(&self, run_id: &str, step_name: &str) -> Result<()> {
+        self.update_state(run_id, |state| {
+            if !state.completed_steps.iter().any(|step| step == step_name) {
+                state.completed_steps.push(step_name.to_string());
+            }
+        })
+    }
+
+    fn mark_step_compensated(&self, run_id: &str, step_name: &str) -> Result<()> {
+        self.update_state(run_id, |state| {
+            if !state.compensated_steps.iter().any(|step| step == step_name) {
+                state.compensated_steps.push(step_name.to_string());
+            }
+        })
+    }
+
+    fn finish_run(&self, run_id: &str) -> Result<()> {
+        let path = self.path_for(run_id);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn load_incomplete_runs(&self) -> Result<Vec<SagaRunState>> {
+        if !self.dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut states = Vec::new();
+        for entry in std::fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            if entry.path().extension().is_some_and(|ext| ext == "json") {
+                let bytes = std::fs::read(entry.path())?;
+                states
+                    .push(serde_json::from_slice(&bytes).map_err(|err| {
+                        ShardingError::Io(std::io::Error::other(err.to_string()))
+                    })?);
+            }
+        }
+        Ok(states)
+    }
+}
+
 pub struct SagaCoordinator {
     steps: Vec<Arc<dyn SagaStep>>,
+    run_id: String,
+    journal: Arc<dyn SagaJournal>,
+}
+
+#[cfg(test)]
+pub struct SagaRecoveryWorker {
+    steps: Vec<Arc<dyn SagaStep>>,
+    journal: Arc<dyn SagaJournal>,
 }
 
 impl SagaCoordinator {
     pub fn new(steps: Vec<Arc<dyn SagaStep>>) -> Self {
-        Self { steps }
+        Self {
+            steps,
+            run_id: format!("saga-{}-{}", std::process::id(), random::<u64>()),
+            journal: Arc::new(FileSagaJournal::new(FileSagaJournal::default_dir())),
+        }
     }
 
     pub async fn execute(&self, ctx: &dyn SagaContext) -> Result<()> {
+        self.journal.start_run(self.run_id.as_str())?;
         let mut completed: Vec<Arc<dyn SagaStep>> = Vec::new();
         for step in &self.steps {
             if let Err(err) = step.execute(ctx).await {
                 for executed in completed.iter().rev() {
-                    let _ = executed.compensate(ctx).await;
+                    if executed.compensate(ctx).await.is_ok() {
+                        self.journal
+                            .mark_step_compensated(self.run_id.as_str(), executed.name())?;
+                    }
                 }
+                self.journal.finish_run(self.run_id.as_str())?;
                 return Err(err);
             }
+            self.journal
+                .mark_step_completed(self.run_id.as_str(), step.name())?;
             completed.push(step.clone());
         }
+        self.journal.finish_run(self.run_id.as_str())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl SagaRecoveryWorker {
+    fn new(steps: Vec<Arc<dyn SagaStep>>, journal: Arc<dyn SagaJournal>) -> Self {
+        Self { steps, journal }
+    }
+
+    pub async fn recover_all(&self, ctx: &dyn SagaContext) -> Result<usize> {
+        let states = self.journal.load_incomplete_runs()?;
+        for state in &states {
+            let compensated = state
+                .compensated_steps
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            for step_name in state.completed_steps.iter().rev() {
+                if compensated.contains(step_name) {
+                    continue;
+                }
+                let step = self
+                    .steps
+                    .iter()
+                    .find(|step| step.name() == step_name)
+                    .ok_or_else(|| {
+                        ShardingError::Route(format!(
+                            "saga recovery cannot find step `{step_name}` for run `{}`",
+                            state.run_id
+                        ))
+                    })?;
+                step.compensate(ctx).await?;
+                self.journal
+                    .mark_step_compensated(state.run_id.as_str(), step_name)?;
+            }
+            self.journal.finish_run(state.run_id.as_str())?;
+        }
+        Ok(states.len())
     }
 }

@@ -337,6 +337,9 @@ impl MigrationOrchestrator {
                 .map(|table| format!("ALTER TABLE {table} REPLICA IDENTITY FULL"))
                 .collect::<Vec<_>>(),
             vec![format!(
+                "SELECT pg_drop_replication_slot('{slot_literal}') FROM pg_replication_slots WHERE slot_name = '{slot_literal}' AND NOT active"
+            )],
+            vec![format!(
                 "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = '{slot_literal}') THEN '{slot_literal}' ELSE (SELECT slot_name FROM pg_create_logical_replication_slot('{slot_literal}', 'pgoutput')) END"
             )],
             vec![format!("DROP PUBLICATION IF EXISTS {publication}")],

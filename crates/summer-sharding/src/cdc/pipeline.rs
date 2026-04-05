@@ -11,6 +11,7 @@ pub enum CdcOperation {
     Insert,
     Update,
     Delete,
+    Truncate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +89,7 @@ impl CdcOperation {
             "insert" => Some(CdcOperation::Insert),
             "update" => Some(CdcOperation::Update),
             "delete" => Some(CdcOperation::Delete),
+            "truncate" => Some(CdcOperation::Truncate),
             _ => None,
         }
     }

@@ -1,10 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     sync::Arc,
     time::Instant,
 };
 
 use async_trait::async_trait;
+use futures::future::join_all;
 use parking_lot::RwLock;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 
@@ -166,12 +168,11 @@ impl DataSourcePool {
 
     pub async fn health_check(&self) -> Vec<DataSourceHealth> {
         let snapshot = self.connections.read().clone();
-        let mut health = Vec::with_capacity(snapshot.len());
         let slow_threshold_ms = self.config.audit.slow_query_threshold_ms as u128;
-        for (datasource, connection) in snapshot {
+        collect_health(snapshot, move |datasource, connection| async move {
             let datasource_name = datasource.clone();
             let started = Instant::now();
-            let status = connection
+            connection
                 .ping()
                 .await
                 .map(|_| {
@@ -199,11 +200,24 @@ impl DataSourcePool {
                         error: Some(err.to_string()),
                         latency_ms: Some(elapsed_ms),
                     }
-                });
-            health.push(status);
-        }
-        health
+                })
+        })
+        .await
     }
+}
+
+async fn collect_health<C, F, Fut>(snapshot: BTreeMap<String, C>, ping: F) -> Vec<DataSourceHealth>
+where
+    C: Send + 'static,
+    F: Fn(String, C) -> Fut + Send + Sync + Copy + 'static,
+    Fut: Future<Output = DataSourceHealth> + Send + 'static,
+{
+    join_all(
+        snapshot
+            .into_iter()
+            .map(|(datasource, connection)| ping(datasource, connection)),
+    )
+    .await
 }
 
 async fn connect_datasource(datasource: &DataSourceConfig) -> Result<DatabaseConnection> {
@@ -239,13 +253,14 @@ impl RawStatementExecutor for DataSourcePool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
     use sea_orm::{DbBackend, MockDatabase};
+    use tokio::time::{Duration, sleep};
 
     use crate::{
         config::{DataSourceConfig, DataSourceRole, ShardingConfig, TenantIsolationLevel},
-        datasource::{DataSourcePool, clear_route_states, route_state},
+        datasource::{DataSourceHealth, DataSourcePool, clear_route_states, route_state},
         tenant::{TenantMetadataRecord, TenantMetadataStore},
     };
 
@@ -389,5 +404,32 @@ mod tests {
             vec!["replica".to_string()]
         );
         clear_route_states();
+    }
+
+    #[tokio::test]
+    async fn collect_health_runs_ping_work_in_parallel() {
+        let snapshot = BTreeMap::from([
+            ("slow_a".to_string(), 80_u64),
+            ("slow_b".to_string(), 80_u64),
+        ]);
+
+        let started = Instant::now();
+        let health = super::collect_health(snapshot, |datasource, delay_ms| async move {
+            sleep(Duration::from_millis(delay_ms)).await;
+            DataSourceHealth {
+                datasource,
+                reachable: true,
+                error: None,
+                latency_ms: Some(delay_ms as u128),
+            }
+        })
+        .await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(health.len(), 2);
+        assert!(
+            elapsed < Duration::from_millis(140),
+            "health checks should run in parallel, elapsed={elapsed:?}"
+        );
     }
 }

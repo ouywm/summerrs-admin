@@ -74,7 +74,7 @@ impl PgOutputDecoder {
                         records.push(record);
                     }
                 }
-                b'T' => self.parse_truncate(&mut input)?,
+                b'T' => records.extend(self.parse_truncate(&mut input, lsn)?),
                 b'O' => self.parse_origin(&mut input)?,
                 other => {
                     return Err(ShardingError::Parse(format!(
@@ -189,13 +189,31 @@ impl PgOutputDecoder {
         self.build_record(relation_id, CdcOperation::Delete, Some(&tuple), None, lsn)
     }
 
-    fn parse_truncate(&self, input: &mut Input<'_>) -> Result<()> {
+    fn parse_truncate(&self, input: &mut Input<'_>, lsn: Lsn) -> Result<Vec<CdcRecord>> {
         let relation_count = input.read_u32()?;
         let _options = input.read_u8()?;
+        let mut records = Vec::with_capacity(relation_count as usize);
         for _ in 0..relation_count {
-            let _relation_id = input.read_u32()?;
+            let relation_id = input.read_u32()?;
+            let Some(relation) = self.relations.get(&relation_id) else {
+                return Err(ShardingError::Parse(format!(
+                    "missing relation metadata for relation id {relation_id}"
+                )));
+            };
+            if self
+                .source_tables
+                .contains(relation.full_table_name.as_str())
+            {
+                records.push(CdcRecord {
+                    table: relation.full_table_name.clone(),
+                    key: "__truncate__".to_string(),
+                    payload: JsonValue::Object(Map::new()),
+                    operation: CdcOperation::Truncate,
+                    source_lsn: Some(lsn.to_string()),
+                });
+            }
         }
-        Ok(())
+        Ok(records)
     }
 
     fn parse_origin(&self, input: &mut Input<'_>) -> Result<()> {
@@ -457,9 +475,41 @@ impl<'a> Input<'a> {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+    use pgwire_replication::Lsn;
     use serde_json::json;
 
-    use super::{RelationColumn, TupleValue, record_key, tuple_to_json};
+    use super::{PgOutputDecoder, RelationColumn, TupleValue, record_key, tuple_to_json};
+    use crate::cdc::CdcOperation;
+
+    fn push_cstring(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
+    }
+
+    fn relation_message(relation_id: u32, schema: &str, table: &str) -> Vec<u8> {
+        let mut bytes = vec![b'R'];
+        bytes.extend_from_slice(&relation_id.to_be_bytes());
+        push_cstring(&mut bytes, schema);
+        push_cstring(&mut bytes, table);
+        bytes.push(b'd');
+        bytes.extend_from_slice(&(1_u16).to_be_bytes());
+        bytes.push(1);
+        push_cstring(&mut bytes, "id");
+        bytes.extend_from_slice(&20_u32.to_be_bytes());
+        bytes.extend_from_slice(&(-1_i32).to_be_bytes());
+        bytes
+    }
+
+    fn truncate_message(relation_ids: &[u32]) -> Vec<u8> {
+        let mut bytes = vec![b'T'];
+        bytes.extend_from_slice(&(relation_ids.len() as u32).to_be_bytes());
+        bytes.push(0);
+        for relation_id in relation_ids {
+            bytes.extend_from_slice(&relation_id.to_be_bytes());
+        }
+        bytes
+    }
 
     #[test]
     fn tuple_to_json_rejects_unchanged_toast_without_previous_row_image() {
@@ -522,5 +572,22 @@ mod tests {
         let key = record_key(&columns, &payload, Some(&["id".to_string()])).expect("key");
 
         assert_eq!(key, "42");
+    }
+
+    #[test]
+    fn decode_chunk_emits_truncate_record() {
+        let mut decoder =
+            PgOutputDecoder::with_primary_keys(&["public.logs".to_string()], Default::default());
+        let mut bytes = relation_message(7, "public", "logs");
+        bytes.extend(truncate_message(&[7]));
+
+        let records = decoder
+            .decode_chunk(&Bytes::from(bytes), Lsn::from(128_u64))
+            .expect("decode");
+
+        assert_eq!(records.len(), 1, "truncate should emit a cdc record");
+        assert_eq!(records[0].table, "public.logs");
+        assert_eq!(records[0].operation, CdcOperation::Truncate);
+        assert_eq!(records[0].payload, json!({}));
     }
 }

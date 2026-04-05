@@ -28,6 +28,7 @@ impl CdcSink for TableSink {
         let mut rows = self.rows.lock();
         match record.operation {
             CdcOperation::Delete => rows.retain(|candidate| candidate.key != record.key),
+            CdcOperation::Truncate => rows.retain(|candidate| candidate.table != record.table),
             CdcOperation::Insert | CdcOperation::Update | CdcOperation::Snapshot => {
                 rows.retain(|candidate| candidate.key != record.key);
                 rows.push(record.clone());

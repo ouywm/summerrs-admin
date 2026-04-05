@@ -247,6 +247,7 @@ fn remap_prepared_values(
     let source_values = original_values.0;
     let mut remapped_values = Vec::new();
     let mut postgres_index_map = std::collections::BTreeMap::<usize, usize>::new();
+    let mut mysql_used_indexes = std::collections::BTreeSet::<usize>::new();
 
     let visit = visit_expressions_mut(statement, |expr| {
         let Expr::Value(AstValue::Placeholder(placeholder)) = expr else {
@@ -255,9 +256,20 @@ fn remap_prepared_values(
 
         match db_backend {
             DbBackend::MySql | DbBackend::Sqlite => {
-                let Some(index) = parse_internal_placeholder(placeholder.as_str()) else {
+                let index = if let Some(index) = parse_internal_placeholder(placeholder.as_str()) {
+                    index
+                } else if placeholder == "?" {
+                    let Some(index) =
+                        (1..=source_values.len()).find(|index| !mysql_used_indexes.contains(index))
+                    else {
+                        return ControlFlow::Break(SqlRewriteError::Rewrite(format!(
+                            "sql rewrite placeholder `{placeholder}` does not have a remaining bound value"
+                        )));
+                    };
+                    index
+                } else {
                     return ControlFlow::Break(SqlRewriteError::Rewrite(format!(
-                        "prepared positional placeholder `{placeholder}` cannot be remapped after sql rewrite; keep original placeholder nodes instead of rebuilding fresh `?` placeholders"
+                        "unsupported prepared positional placeholder `{placeholder}` after sql rewrite"
                     )));
                 };
                 let Some(value) = source_values.get(index - 1).cloned() else {
@@ -265,6 +277,7 @@ fn remap_prepared_values(
                         "sql rewrite placeholder `{placeholder}` points to missing bound value {index}"
                     )));
                 };
+                mysql_used_indexes.insert(index);
                 remapped_values.push(value);
                 *placeholder = "?".to_string();
             }
@@ -300,7 +313,7 @@ fn remap_prepared_values(
     Ok(Values(remapped_values))
 }
 
-fn internal_placeholder(index: usize) -> String {
+pub(crate) fn internal_placeholder(index: usize) -> String {
     format!("{INTERNAL_PLACEHOLDER_PREFIX}{index}")
 }
 
@@ -415,6 +428,10 @@ mod tests {
 
     struct SwapMysqlPredicateOrderPlugin;
 
+    struct RebuildMysqlFreshPlaceholdersPlugin;
+
+    struct RebuildMysqlWithBoundPlaceholdersPlugin;
+
     impl SqlRewritePlugin for SwapMysqlPredicateOrderPlugin {
         fn name(&self) -> &str {
             "swap_mysql_predicates"
@@ -456,6 +473,59 @@ mod tests {
                 Parser::parse_sql(&PostgreSqlDialect {}, "SELECT * FROM users WHERE name = $1")
                     .expect("parse replacement")
                     .remove(0);
+            Ok(())
+        }
+    }
+
+    impl SqlRewritePlugin for RebuildMysqlFreshPlaceholdersPlugin {
+        fn name(&self) -> &str {
+            "rebuild_mysql_fresh_placeholders"
+        }
+
+        fn matches(&self, _ctx: &crate::context::SqlRewriteContext) -> bool {
+            true
+        }
+
+        fn rewrite(&self, ctx: &mut crate::context::SqlRewriteContext) -> crate::Result<()> {
+            *ctx.statement = Parser::parse_sql(
+                &sqlparser::dialect::MySqlDialect {},
+                "SELECT * FROM users WHERE name = ? AND age = ?",
+            )
+            .expect("parse replacement")
+            .remove(0);
+            Ok(())
+        }
+    }
+
+    impl SqlRewritePlugin for RebuildMysqlWithBoundPlaceholdersPlugin {
+        fn name(&self) -> &str {
+            "rebuild_mysql_bound_placeholders"
+        }
+
+        fn matches(&self, _ctx: &crate::context::SqlRewriteContext) -> bool {
+            true
+        }
+
+        fn rewrite(&self, ctx: &mut crate::context::SqlRewriteContext) -> crate::Result<()> {
+            let AstStatement::Query(query) = ctx.statement else {
+                panic!("expected query");
+            };
+            let SetExpr::Select(select) = query.body.as_mut() else {
+                panic!("expected select");
+            };
+            select.selection = Some(Expr::BinaryOp {
+                left: Box::new(Expr::BinaryOp {
+                    left: Box::new(Expr::Identifier(sqlparser::ast::Ident::new("age"))),
+                    op: BinaryOperator::Eq,
+                    right: Box::new(crate::helpers::build_bound_placeholder(2)),
+                }),
+                op: BinaryOperator::And,
+                right: Box::new(Expr::BinaryOp {
+                    left: Box::new(Expr::Identifier(sqlparser::ast::Ident::new("name"))),
+                    op: BinaryOperator::Eq,
+                    right: Box::new(crate::helpers::build_bound_placeholder(1)),
+                }),
+            });
             Ok(())
         }
     }
@@ -542,6 +612,44 @@ mod tests {
     fn pipeline_remaps_mysql_placeholder_values_when_predicates_reorder() {
         let mut registry = PluginRegistry::new();
         registry.register(SwapMysqlPredicateOrderPlugin);
+
+        let stmt = sea_orm::Statement::from_sql_and_values(
+            DbBackend::MySql,
+            "SELECT * FROM users WHERE name = ? AND age = ?",
+            ["Alice".into(), 42_i64.into()],
+        );
+
+        let rewritten = rewrite_statement(stmt, &registry, &Extensions::new()).expect("rewrite");
+
+        assert_eq!(
+            rewritten.to_string(),
+            "SELECT * FROM users WHERE age = 42 AND name = 'Alice'"
+        );
+    }
+
+    #[test]
+    fn pipeline_accepts_rebuilt_mysql_placeholders_in_original_order() {
+        let mut registry = PluginRegistry::new();
+        registry.register(RebuildMysqlFreshPlaceholdersPlugin);
+
+        let stmt = sea_orm::Statement::from_sql_and_values(
+            DbBackend::MySql,
+            "SELECT * FROM users WHERE name = ? AND age = ?",
+            ["Alice".into(), 42_i64.into()],
+        );
+
+        let rewritten = rewrite_statement(stmt, &registry, &Extensions::new()).expect("rewrite");
+
+        assert_eq!(
+            rewritten.to_string(),
+            "SELECT * FROM users WHERE name = 'Alice' AND age = 42"
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_bound_placeholders_for_rebuilt_mysql_ast() {
+        let mut registry = PluginRegistry::new();
+        registry.register(RebuildMysqlWithBoundPlaceholdersPlugin);
 
         let stmt = sea_orm::Statement::from_sql_and_values(
             DbBackend::MySql,

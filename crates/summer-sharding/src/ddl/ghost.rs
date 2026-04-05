@@ -32,8 +32,19 @@ pub struct GhostTablePlanner;
 
 impl GhostTablePlanner {
     pub fn plan_staged(&self, table: &str, alter_sql: &str, batch_size: usize) -> GhostTablePlan {
+        self.plan_staged_with_run_suffix(table, alter_sql, batch_size, None)
+    }
+
+    pub fn plan_staged_with_run_suffix(
+        &self,
+        table: &str,
+        alter_sql: &str,
+        batch_size: usize,
+        run_suffix: Option<&str>,
+    ) -> GhostTablePlan {
         let (_schema, table_name) = split_qualified_table_name(table);
-        let names = ghost_table_names(table);
+        let names = ghost_table_names_with_run_suffix(table, run_suffix);
+        let (_, old_table_name) = split_qualified_table_name(names.old_table.as_str());
 
         GhostTablePlan {
             snapshot_statements: vec![
@@ -58,7 +69,7 @@ impl GhostTablePlanner {
             ],
             cutover_statements: vec![
                 format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"),
-                format!("ALTER TABLE {table} RENAME TO {}__old", table_name),
+                format!("ALTER TABLE {table} RENAME TO {old_table_name}"),
                 format!("ALTER TABLE {} RENAME TO {table_name}", names.ghost_table),
             ],
             cleanup_statements: vec![
@@ -121,6 +132,27 @@ mod tests {
                 .all(|statement| !statement.contains("-- logical replication apply"))
         );
     }
+
+    #[test]
+    fn ghost_planner_generates_unique_names_for_distinct_runs() {
+        let planner = GhostTablePlanner;
+        let plan_a = planner.plan_staged_with_run_suffix(
+            "ai.log",
+            "ALTER TABLE ai.log ADD COLUMN extra text",
+            1000,
+            Some("task1"),
+        );
+        let plan_b = planner.plan_staged_with_run_suffix(
+            "ai.log",
+            "ALTER TABLE ai.log ADD COLUMN extra text",
+            1000,
+            Some("task2"),
+        );
+
+        assert_ne!(plan_a.snapshot_statements[0], plan_b.snapshot_statements[0]);
+        assert_ne!(plan_a.cutover_statements[1], plan_b.cutover_statements[1]);
+        assert_ne!(plan_a.catch_up_statements[1], plan_b.catch_up_statements[1]);
+    }
 }
 
 fn split_qualified_table_name(table: &str) -> (Option<String>, String) {
@@ -137,11 +169,27 @@ fn qualify_table_name(schema: Option<&str>, table: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn ghost_table_names(table: &str) -> GhostTableNames {
+    ghost_table_names_with_run_suffix(table, None)
+}
+
+pub(crate) fn ghost_table_names_with_run_suffix(
+    table: &str,
+    run_suffix: Option<&str>,
+) -> GhostTableNames {
     let (schema, table_name) = split_qualified_table_name(table);
-    let ghost_name = format!("{table_name}__ghost");
-    let old_name = format!("{table_name}__old");
-    let replication_key = sanitize_identifier(format!("{}_ddl", table.replace('.', "_")));
+    let run_suffix = run_suffix.filter(|value| !value.is_empty());
+    let ghost_name = run_suffix
+        .map(|suffix| format!("{table_name}__ghost_{suffix}"))
+        .unwrap_or_else(|| format!("{table_name}__ghost"));
+    let old_name = run_suffix
+        .map(|suffix| format!("{table_name}__old_{suffix}"))
+        .unwrap_or_else(|| format!("{table_name}__old"));
+    let replication_key = sanitize_identifier(match run_suffix {
+        Some(suffix) => format!("{}_ddl_{suffix}", table.replace('.', "_")),
+        None => format!("{}_ddl", table.replace('.', "_")),
+    });
     GhostTableNames {
         ghost_table: qualify_table_name(schema.as_deref(), ghost_name.as_str()),
         old_table: qualify_table_name(schema.as_deref(), old_name.as_str()),

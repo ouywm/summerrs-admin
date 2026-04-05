@@ -24,7 +24,11 @@ pub fn merge(mut rows: Vec<QueryResult>, order_by: &[OrderByItem]) -> Vec<QueryR
     rows
 }
 
-fn compare_rows(left: &QueryResult, right: &QueryResult, order_by: &[OrderByItem]) -> Ordering {
+pub(crate) fn compare_rows(
+    left: &QueryResult,
+    right: &QueryResult,
+    order_by: &[OrderByItem],
+) -> Ordering {
     for item in order_by {
         let left_value = sort_value(left, item.column.as_str());
         let right_value = sort_value(right, item.column.as_str());

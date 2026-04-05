@@ -137,7 +137,7 @@ impl SqlRouter for DefaultSqlRouter {
                 return Ok(RoutePlan {
                     operation: analysis.operation,
                     logic_tables: analysis.tables.clone(),
-                    targets: self.apply_binding_group(targets, &logic_table, analysis),
+                    targets: self.apply_binding_group(targets, &logic_table, analysis)?,
                     order_by: analysis.order_by.clone(),
                     limit: analysis.limit,
                     offset: analysis.offset,
@@ -221,7 +221,7 @@ impl SqlRouter for DefaultSqlRouter {
                         .collect(),
                     &logic_table,
                     analysis,
-                ),
+                )?,
                 order_by: analysis.order_by.clone(),
                 limit: analysis.limit,
                 offset: analysis.offset,
@@ -284,28 +284,25 @@ impl DefaultSqlRouter {
         targets: Vec<RouteTarget>,
         primary_logic_table: &QualifiedTableName,
         analysis: &StatementContext,
-    ) -> Vec<RouteTarget> {
+    ) -> Result<Vec<RouteTarget>> {
         let Some(group) = self
             .config
             .binding_group_for(primary_logic_table.full_name().as_str())
         else {
-            return targets;
+            return Ok(targets);
         };
+
+        let primary_actual_targets =
+            self.binding_group_targets_for(primary_logic_table, analysis)?;
 
         targets
             .into_iter()
             .map(|mut target| {
-                let suffix = target
-                    .table_rewrites
-                    .first()
-                    .and_then(|rewrite| {
-                        rewrite
-                            .actual_table
-                            .table
-                            .strip_prefix(primary_logic_table.table.as_str())
-                    })
-                    .unwrap_or("")
-                    .to_string();
+                let primary_target_index = target.table_rewrites.first().and_then(|rewrite| {
+                    primary_actual_targets
+                        .iter()
+                        .position(|candidate| candidate == &rewrite.actual_table)
+                });
 
                 for logic_table in &analysis.tables {
                     if logic_table == primary_logic_table {
@@ -321,23 +318,101 @@ impl DefaultSqlRouter {
                     }) {
                         continue;
                     }
+                    let actual_table = self
+                        .binding_group_targets_for(logic_table, analysis)?
+                        .into_iter()
+                        .nth(primary_target_index.unwrap_or(0))
+                        .unwrap_or_else(|| logic_table.clone());
                     target.table_rewrites.push(TableRewrite {
                         logic_table: logic_table.clone(),
-                        actual_table: QualifiedTableName {
-                            schema: logic_table.schema.clone(),
-                            table: format!("{}{}", logic_table.table, suffix),
-                        },
+                        actual_table,
                     });
                 }
-                target
+                Ok(target)
             })
             .collect()
+    }
+
+    fn binding_group_targets_for(
+        &self,
+        logic_table: &QualifiedTableName,
+        analysis: &StatementContext,
+    ) -> Result<Vec<QualifiedTableName>> {
+        let Some(rule) = self.config.table_rule(logic_table.full_name().as_str()) else {
+            return Ok(vec![logic_table.clone()]);
+        };
+
+        let available_targets = self.table_router.available_targets(rule, analysis)?;
+        let algorithm = self.algorithms.build(rule)?;
+        let actual_targets = match analysis.operation {
+            SqlOperation::Insert => {
+                let values = analysis.insert_values(rule.sharding_column.as_str());
+                if values.is_empty() {
+                    return Err(ShardingError::MissingShardingValue {
+                        table: rule.logic_table.clone(),
+                        column: rule.sharding_column.clone(),
+                    });
+                }
+                let mut targets = Vec::new();
+                for value in values {
+                    targets.extend(algorithm.do_sharding(&available_targets, value));
+                }
+                targets
+            }
+            _ => {
+                if let Some(value) = analysis.hint.as_ref().and_then(|hint| {
+                    self.hint_router
+                        .override_sharding_value(hint, rule.sharding_column.as_str())
+                }) {
+                    algorithm.do_sharding(&available_targets, value)
+                } else if let Some(value) =
+                    self.resolve_lookup_sharding_value(logic_table, analysis, rule)
+                {
+                    algorithm.do_sharding(&available_targets, &value)
+                } else {
+                    match analysis.sharding_condition(rule.sharding_column.as_str()) {
+                        Some(ShardingCondition::Exact(value)) => {
+                            algorithm.do_sharding(&available_targets, value)
+                        }
+                        Some(ShardingCondition::Range { lower, upper }) => {
+                            match (lower.as_ref(), upper.as_ref()) {
+                                (Some(lower), Some(upper)) => algorithm.do_range_sharding(
+                                    &available_targets,
+                                    &lower.value,
+                                    &upper.value,
+                                ),
+                                _ => self
+                                    .table_router
+                                    .expand_all_targets(rule, now_fixed_offset())?,
+                            }
+                        }
+                        None => self
+                            .table_router
+                            .expand_all_targets(rule, now_fixed_offset())?,
+                    }
+                }
+            }
+        };
+
+        let mut actual_targets = actual_targets
+            .into_iter()
+            .map(|value| QualifiedTableName::parse(value.as_str()))
+            .collect::<Vec<_>>();
+        actual_targets.sort();
+        actual_targets.dedup();
+        Ok(actual_targets)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{QualifiedTableName, SqlOperation};
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use sea_orm::{DbBackend, Statement};
+
+    use crate::{connector::analyze_statement, lookup::LookupIndex};
+
+    use super::{DefaultSqlRouter, QualifiedTableName, SqlOperation, SqlRouter};
 
     #[test]
     fn router_exports_shared_sql_rewrite_types() {
@@ -346,5 +421,74 @@ mod tests {
 
         assert_eq!(table.full_name(), "sys.user");
         assert_eq!(operation, summer_sql_rewrite::SqlOperation::Select);
+    }
+
+    #[test]
+    fn router_rewrites_binding_tables_with_independent_actual_table_names() {
+        let config = Arc::new(
+            crate::config::ShardingConfig::from_test_str(
+                r#"
+                [datasources.ds_ai]
+                uri = "mock://ai"
+                schema = "ai"
+                role = "primary"
+
+                [[sharding.tables]]
+                logic_table = "ai.request"
+                actual_tables = ["ai.req_even", "ai.req_odd"]
+                sharding_column = "tenant_id"
+                algorithm = "hash_mod"
+
+                  [sharding.tables.algorithm_props]
+                  count = 2
+
+                [[sharding.tables]]
+                logic_table = "ai.request_execution"
+                actual_tables = ["ai.exec_bucket_even", "ai.exec_bucket_odd"]
+                sharding_column = "tenant_id"
+                algorithm = "hash_mod"
+
+                  [sharding.tables.algorithm_props]
+                  count = 2
+
+                [[sharding.binding_groups]]
+                tables = ["ai.request", "ai.request_execution"]
+                sharding_column = "tenant_id"
+                "#,
+            )
+            .expect("config"),
+        );
+        let router = DefaultSqlRouter::new(config, Arc::new(LookupIndex::default()));
+        let analysis = analyze_statement(&Statement::from_string(
+            DbBackend::Postgres,
+            r#"SELECT r.id, e.status
+               FROM ai.request r
+               JOIN ai.request_execution e ON r.id = e.request_id
+               WHERE r.tenant_id = 1"#,
+        ))
+        .expect("analysis");
+
+        let plan = router.route(&analysis, false).expect("route");
+
+        assert_eq!(plan.targets.len(), 1);
+        let rewrites = &plan.targets[0].table_rewrites;
+        let actuals = rewrites
+            .iter()
+            .map(|rewrite| {
+                (
+                    rewrite.logic_table.full_name(),
+                    rewrite.actual_table.full_name(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(
+            actuals.get("ai.request").map(String::as_str),
+            Some("ai.req_odd")
+        );
+        assert_eq!(
+            actuals.get("ai.request_execution").map(String::as_str),
+            Some("ai.exec_bucket_odd")
+        );
     }
 }

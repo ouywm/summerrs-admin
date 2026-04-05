@@ -6,12 +6,13 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use futures::future::try_join_all;
 use parking_lot::RwLock;
+use rand::random;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, TransactionTrait};
 
 use crate::cdc::{CdcSink, CdcSource, CdcSubscribeRequest, RowTransform};
 use crate::error::{Result, ShardingError};
 
-use self::ghost::ghost_table_names;
+use self::ghost::ghost_table_names_with_run_suffix;
 
 pub use ghost::{GhostTablePlan, GhostTablePlanner};
 pub use scheduler::DdlScheduler;
@@ -50,6 +51,10 @@ pub struct OnlineDdlTask {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DdlShardPlan {
     pub table: String,
+    pub ghost_table: String,
+    pub old_table: String,
+    pub slot: String,
+    pub publication: String,
     pub snapshot_statements: Vec<String>,
     pub catch_up_statements: Vec<String>,
     pub cutover_statements: Vec<String>,
@@ -271,7 +276,7 @@ impl InMemoryOnlineDdlEngine {
                 source,
                 transformer,
                 sink,
-                plan.table.as_str(),
+                plan,
                 DdlDrainOptions {
                     batch_size,
                     from_position: None,
@@ -300,7 +305,6 @@ impl InMemoryOnlineDdlEngine {
             let start_position = resume_positions.get(plan.table.as_str()).cloned().flatten();
             async move {
                 let txn = connection.begin().await?;
-                let table = plan.table.clone();
                 let (lock_statement, rename_statements) =
                     split_cutover_statements(&plan.cutover_statements);
                 if let Some(lock_statement) = lock_statement.as_deref() {
@@ -311,7 +315,7 @@ impl InMemoryOnlineDdlEngine {
                         source,
                         transformer,
                         sink,
-                        table.as_str(),
+                        plan,
                         DdlDrainOptions {
                             batch_size,
                             from_position: start_position,
@@ -335,15 +339,14 @@ impl InMemoryOnlineDdlEngine {
         source: &dyn CdcSource,
         transformer: &dyn RowTransform,
         sink: &dyn CdcSink,
-        table: &str,
+        plan: &DdlShardPlan,
         options: DdlDrainOptions,
     ) -> Result<Option<String>> {
-        let names = ghost_table_names(table);
         let mut subscription = source
             .subscribe(CdcSubscribeRequest {
-                slot: names.slot,
-                publication: names.publication,
-                source_tables: vec![table.to_string()],
+                slot: plan.slot.clone(),
+                publication: plan.publication.clone(),
+                source_tables: vec![plan.table.clone()],
                 from_position: options.from_position,
             })
             .await?;
@@ -446,16 +449,26 @@ impl OnlineDdlEngine for InMemoryOnlineDdlEngine {
         let mut next_id = self.next_id.write();
         *next_id += 1;
         let id = *next_id;
+        let run_suffix = format!("t{id}_{}", random::<u32>());
 
         let shard_plans = task
             .actual_tables
             .iter()
             .map(|table| {
-                let staged_plan =
-                    self.planner
-                        .plan_staged(table.as_str(), task.ddl.as_str(), task.batch_size);
+                let names =
+                    ghost_table_names_with_run_suffix(table.as_str(), Some(run_suffix.as_str()));
+                let staged_plan = self.planner.plan_staged_with_run_suffix(
+                    table.as_str(),
+                    task.ddl.as_str(),
+                    task.batch_size,
+                    Some(run_suffix.as_str()),
+                );
                 DdlShardPlan {
                     table: table.clone(),
+                    ghost_table: names.ghost_table,
+                    old_table: names.old_table,
+                    slot: names.slot,
+                    publication: names.publication,
                     snapshot_statements: staged_plan.snapshot_statements,
                     catch_up_statements: staged_plan.catch_up_statements,
                     cutover_statements: staged_plan.cutover_statements,
@@ -694,9 +707,11 @@ mod tests {
             })
             .await
             .expect("submit");
+        let progress = engine.progress(id).await.expect("progress");
+        let shard_plan = progress.shard_plans.first().expect("shard plan");
 
         let source = InMemoryCdcSource::new()
-            .with_replication("ai_log_202603_ddl_slot", "ai_log_202603_ddl_pub")
+            .with_replication(shard_plan.slot.as_str(), shard_plan.publication.as_str())
             .with_change(CdcRecord {
                 table: "ai.log_202603".to_string(),
                 key: "1".to_string(),
@@ -867,19 +882,6 @@ mod tests {
 
         let source = PgCdcSource::new(std::sync::Arc::new(connection.clone()), &database_url)
             .expect("build pg cdc source");
-        let sink = PostgresTableSink::with_table_map(
-            std::sync::Arc::new(connection.clone()),
-            [
-                (
-                    "public.ddl_probe_0".to_string(),
-                    "public.ddl_probe_0__ghost".to_string(),
-                ),
-                (
-                    "public.ddl_probe_1".to_string(),
-                    "public.ddl_probe_1__ghost".to_string(),
-                ),
-            ],
-        );
         let engine = std::sync::Arc::new(InMemoryOnlineDdlEngine::new());
         let task_id = engine
             .submit(OnlineDdlTask {
@@ -895,6 +897,15 @@ mod tests {
             })
             .await
             .expect("submit ddl task");
+        let progress = engine.progress(task_id).await.expect("progress");
+        let sink = PostgresTableSink::with_table_map(
+            std::sync::Arc::new(connection.clone()),
+            progress
+                .shard_plans
+                .iter()
+                .map(|plan| (plan.table.clone(), plan.ghost_table.clone()))
+                .collect::<Vec<_>>(),
+        );
 
         let execute = {
             let engine = engine.clone();

@@ -1,5 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+use ring::hkdf::{HKDF_SHA256, KeyType, Salt};
 use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::{
@@ -12,6 +13,18 @@ pub struct AesGcmEncryptor {
     key: [u8; 32],
 }
 
+const HKDF_SALT: &[u8] = b"summer-sharding:aes-gcm";
+const HKDF_INFO: &[u8] = b"summer-sharding:aes-gcm:key:v1";
+
+#[derive(Debug, Clone, Copy)]
+struct Aes256KeyLen;
+
+impl KeyType for Aes256KeyLen {
+    fn len(&self) -> usize {
+        32
+    }
+}
+
 impl AesGcmEncryptor {
     pub fn from_env(key_env: &str) -> Result<Self> {
         let raw = std::env::var(key_env)
@@ -20,15 +33,19 @@ impl AesGcmEncryptor {
     }
 
     pub fn from_material(material: &[u8]) -> Result<Self> {
-        let mut key = [0_u8; 32];
-        for (index, byte) in material.iter().copied().enumerate().take(32) {
-            key[index] = byte;
-        }
         if material.is_empty() {
             return Err(ShardingError::Config(
                 "encryption key material cannot be empty".to_string(),
             ));
         }
+        let salt = Salt::new(HKDF_SHA256, HKDF_SALT);
+        let prk = salt.extract(material);
+        let okm = prk
+            .expand(&[HKDF_INFO], Aes256KeyLen)
+            .map_err(|_| ShardingError::Config("invalid encryption key material".to_string()))?;
+        let mut key = [0_u8; 32];
+        okm.fill(&mut key)
+            .map_err(|_| ShardingError::Config("invalid encryption key material".to_string()))?;
         Ok(Self { key })
     }
 }
@@ -87,5 +104,23 @@ mod tests {
         let cipher = encryptor.encrypt("secret").expect("cipher");
         let plain = encryptor.decrypt(cipher.as_str()).expect("plain");
         assert_eq!(plain, "secret");
+    }
+
+    #[test]
+    fn short_material_is_not_zero_padded_directly() {
+        let encryptor = AesGcmEncryptor::from_material(b"short").expect("encryptor");
+        let mut zero_padded = [0_u8; 32];
+        zero_padded[..5].copy_from_slice(b"short");
+
+        assert_ne!(
+            encryptor.key, zero_padded,
+            "short key material should be derived, not copied and zero-padded"
+        );
+        assert_eq!(
+            encryptor.key,
+            AesGcmEncryptor::from_material(b"short")
+                .expect("encryptor")
+                .key
+        );
     }
 }

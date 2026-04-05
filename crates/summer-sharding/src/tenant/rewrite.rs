@@ -1,6 +1,6 @@
 use sqlparser::ast::{
-    BinaryOperator, Delete, Expr, Ident, Insert, Query, SetExpr, Statement, TableFactor,
-    TableWithJoins, Value,
+    BinaryOperator, Delete, Expr, Ident, Insert, Query, SelectItem, SetExpr, Statement,
+    TableFactor, TableWithJoins, Value,
 };
 
 use crate::{
@@ -114,24 +114,51 @@ fn inject_selection(
 
 fn inject_insert_tenant(insert: &mut Insert, tenant: &TenantContext, config: &ShardingConfig) {
     let tenant_column = config.tenant.row_level.column_name.as_str();
-    if insert
+    let tenant_column_present = insert
         .columns
         .iter()
-        .any(|column| column.value.eq_ignore_ascii_case(tenant_column))
-    {
-        return;
+        .any(|column| column.value.eq_ignore_ascii_case(tenant_column));
+
+    if !tenant_column_present {
+        insert.columns.push(Ident::new(tenant_column));
     }
 
-    insert.columns.push(Ident::new(tenant_column));
-    if let Some(source) = &mut insert.source
-        && let SetExpr::Values(values) = source.body.as_mut()
-    {
-        for row in &mut values.rows {
-            row.push(Expr::Value(Value::SingleQuotedString(
-                tenant.tenant_id.clone(),
-            )));
+    if let Some(source) = &mut insert.source {
+        inject_query_filter(source, tenant, config);
+
+        if tenant_column_present {
+            return;
+        }
+
+        match source.body.as_mut() {
+            SetExpr::Values(values) => {
+                for row in &mut values.rows {
+                    row.push(tenant_literal_expr(tenant));
+                }
+            }
+            body => append_tenant_projection(body, tenant),
         }
     }
+}
+
+fn append_tenant_projection(body: &mut SetExpr, tenant: &TenantContext) {
+    match body {
+        SetExpr::Select(select) => {
+            select
+                .projection
+                .push(SelectItem::UnnamedExpr(tenant_literal_expr(tenant)));
+        }
+        SetExpr::Query(query) => append_tenant_projection(query.body.as_mut(), tenant),
+        SetExpr::SetOperation { left, right, .. } => {
+            append_tenant_projection(left.as_mut(), tenant);
+            append_tenant_projection(right.as_mut(), tenant);
+        }
+        _ => {}
+    }
+}
+
+fn tenant_literal_expr(tenant: &TenantContext) -> Expr {
+    Expr::Value(Value::SingleQuotedString(tenant.tenant_id.clone()))
 }
 
 fn tenant_expr(tenant: &TenantContext, config: &ShardingConfig, qualifier: Option<String>) -> Expr {
@@ -164,5 +191,77 @@ fn resolve_table_factor_qualifier(factor: &TableFactor) -> Option<String> {
             .map(|alias| alias.name.value.clone())
             .or_else(|| name.0.last().map(|ident| ident.value.clone())),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlparser::{
+        ast::{Expr, SelectItem, SetExpr, Statement as AstStatement, Value},
+        dialect::PostgreSqlDialect,
+        parser::Parser,
+    };
+
+    use super::apply_tenant_rewrite;
+    use crate::{
+        TenantIsolationLevel,
+        config::{ShardingConfig, TenantRowLevelStrategy},
+        router::QualifiedTableName,
+        tenant::TenantContext,
+    };
+
+    fn shared_row_config() -> ShardingConfig {
+        let mut config = ShardingConfig::default();
+        config.tenant.row_level.column_name = "tenant_id".to_string();
+        config.tenant.row_level.strategy = TenantRowLevelStrategy::SqlRewrite;
+        config
+    }
+
+    fn tenant() -> TenantContext {
+        TenantContext::new("T-001", TenantIsolationLevel::SharedRow)
+    }
+
+    #[test]
+    fn tenant_rewrite_extends_insert_select_projection_with_tenant_id() {
+        let mut stmt = Parser::parse_sql(
+            &PostgreSqlDialect {},
+            "INSERT INTO ai.log_archive (id, body) SELECT id, body FROM ai.log",
+        )
+        .expect("parse")
+        .remove(0);
+
+        apply_tenant_rewrite(
+            &mut stmt,
+            &tenant(),
+            &shared_row_config(),
+            &[QualifiedTableName::parse("ai.log_archive")],
+        );
+
+        let AstStatement::Insert(insert) = stmt else {
+            panic!("expected insert statement");
+        };
+        assert_eq!(insert.columns.len(), 3, "tenant column should be appended");
+        assert_eq!(insert.columns[2].value, "tenant_id");
+
+        let source = insert.source.as_ref().expect("insert source");
+        let SetExpr::Select(select) = source.body.as_ref() else {
+            panic!("expected select body");
+        };
+        assert_eq!(
+            select.projection.len(),
+            3,
+            "INSERT ... SELECT should append tenant literal to SELECT projection"
+        );
+        match &select.projection[2] {
+            SelectItem::UnnamedExpr(Expr::Value(Value::SingleQuotedString(value))) => {
+                assert_eq!(value, "T-001");
+            }
+            other => panic!("unexpected tenant projection: {other:?}"),
+        }
+        let rendered = AstStatement::Insert(insert).to_string();
+        assert!(
+            rendered.contains("tenant_id = 'T-001'"),
+            "source select should still be row-level filtered: {rendered}"
+        );
     }
 }
