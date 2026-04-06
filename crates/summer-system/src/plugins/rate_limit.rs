@@ -15,4 +15,8 @@ impl Plugin for RateLimitPlugin {
     fn name(&self) -> &str {
         "summer_system::RateLimitPlugin"
     }
+
+    fn dependencies(&self) -> Vec<&str> {
+        vec!["summer_redis::RedisPlugin"]
+    }
 }
