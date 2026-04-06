@@ -1,3 +1,4 @@
+use std::time::Instant;
 use summer_admin_macros::rate_limit;
 use summer_auth::{AdminProfile, DeviceType, LoginId, UserProfile, UserSession};
 use summer_common::error::ApiResult;
@@ -23,6 +24,42 @@ async fn user_limited_handler() -> ApiResult<()> {
     Ok(())
 }
 
+#[rate_limit(rate = 2, per = "second", key = "ip", algorithm = "sliding_window")]
+#[get_api("/sliding-window")]
+async fn sliding_window_handler() -> ApiResult<()> {
+    Ok(())
+}
+
+#[rate_limit(rate = 1, per = "second", key = "ip", algorithm = "leaky_bucket")]
+#[get_api("/leaky-bucket")]
+async fn leaky_bucket_handler() -> ApiResult<()> {
+    Ok(())
+}
+
+#[rate_limit(
+    rate = 1,
+    per = "second",
+    key = "ip",
+    algorithm = "throttle_queue",
+    max_wait_ms = 1500
+)]
+#[get_api("/throttle-queue")]
+async fn throttle_queue_handler() -> ApiResult<()> {
+    Ok(())
+}
+
+#[rate_limit(
+    rate = 1,
+    per = "second",
+    key = "ip",
+    algorithm = "throttle_queue",
+    max_wait_ms = 500
+)]
+#[get_api("/throttle-queue-short")]
+async fn throttle_queue_short_handler() -> ApiResult<()> {
+    Ok(())
+}
+
 fn admin_session(user_id: i64) -> UserSession {
     UserSession {
         login_id: LoginId::admin(user_id),
@@ -41,6 +78,10 @@ async fn test_router() -> Router {
     Router::new()
         .typed_route(limited_handler)
         .typed_route(user_limited_handler)
+        .typed_route(sliding_window_handler)
+        .typed_route(leaky_bucket_handler)
+        .typed_route(throttle_queue_handler)
+        .typed_route(throttle_queue_short_handler)
         .layer(Extension(RateLimitEngine::new(None)))
 }
 
@@ -103,4 +144,118 @@ async fn user_key_isolated_by_user_id() {
 
     let response = router.oneshot(request(2)).await.expect("user 2 response");
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn sliding_window_third_request_returns_429() {
+    let router = test_router().await;
+
+    let request = || {
+        Request::builder()
+            .method(Method::GET)
+            .uri("/sliding-window")
+            .body(Body::empty())
+            .expect("build request")
+    };
+
+    let response = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("first response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("second response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = router.oneshot(request()).await.expect("third response");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn leaky_bucket_rejects_until_interval_passes() {
+    let router = test_router().await;
+
+    let request = || {
+        Request::builder()
+            .method(Method::GET)
+            .uri("/leaky-bucket")
+            .body(Body::empty())
+            .expect("build request")
+    };
+
+    let response = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("first response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("second response");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    let response = router.oneshot(request()).await.expect("third response");
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn throttle_queue_waits_before_second_request() {
+    let router = test_router().await;
+
+    let request = || {
+        Request::builder()
+            .method(Method::GET)
+            .uri("/throttle-queue")
+            .body(Body::empty())
+            .expect("build request")
+    };
+
+    let response = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("first response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let started_at = Instant::now();
+    let response = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("second response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(started_at.elapsed().as_millis() >= 900);
+}
+
+#[tokio::test]
+async fn throttle_queue_rejects_when_wait_exceeds_limit() {
+    let router = test_router().await;
+
+    let request = || {
+        Request::builder()
+            .method(Method::GET)
+            .uri("/throttle-queue-short")
+            .body(Body::empty())
+            .expect("build request")
+    };
+
+    let response = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("first response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = router.oneshot(request()).await.expect("second response");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 }
