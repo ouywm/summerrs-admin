@@ -1,24 +1,19 @@
 use summer::app::AppBuilder;
 use summer::async_trait;
 use summer::plugin::Plugin;
+use summer_ai_admin::SummerAiAdminPlugin;
+use summer_ai_billing::SummerAiBillingPlugin;
+use summer_ai_relay::SummerAiRelayPlugin;
 
-use crate::application::ApplicationModule;
-use crate::domain::DomainModule;
-use crate::infrastructure::InfrastructureModule;
-use crate::interfaces::InterfaceModule;
-use crate::interfaces::http::HttpInterfaceModule;
-
-/// summer-ai-hub DDD 插件入口
+/// summer-ai-hub 装配层插件入口
 pub struct SummerAiHubPlugin;
 
 #[async_trait]
 impl Plugin for SummerAiHubPlugin {
-    async fn build(&self, _app: &mut AppBuilder) {
-        let _ = ApplicationModule;
-        let _ = DomainModule;
-        let _ = InfrastructureModule;
-        let _ = InterfaceModule;
-        let _ = HttpInterfaceModule;
+    async fn build(&self, app: &mut AppBuilder) {
+        SummerAiAdminPlugin.build(app).await;
+        SummerAiBillingPlugin.build(app).await;
+        SummerAiRelayPlugin.build(app).await;
     }
 
     fn name(&self) -> &str {
