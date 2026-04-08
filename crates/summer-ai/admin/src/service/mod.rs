@@ -3,4 +3,7 @@
 pub mod channel;
 pub mod channel_account;
 pub mod channel_model_price;
+pub mod request;
+pub mod request_execution;
+pub mod retry_attempt;
 pub mod vendor;
