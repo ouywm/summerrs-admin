@@ -11,14 +11,51 @@ pub struct SseEvent {
     pub data: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChatStreamItem {
+    chunk: Option<ChatCompletionChunk>,
+    terminal: bool,
+}
+
+impl ChatStreamItem {
+    pub fn chunk(chunk: ChatCompletionChunk) -> Self {
+        Self {
+            chunk: Some(chunk),
+            terminal: false,
+        }
+    }
+
+    pub fn terminal_chunk(chunk: ChatCompletionChunk) -> Self {
+        Self {
+            chunk: Some(chunk),
+            terminal: true,
+        }
+    }
+
+    pub fn terminal() -> Self {
+        Self {
+            chunk: None,
+            terminal: true,
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    pub fn chunk_ref(&self) -> Option<&ChatCompletionChunk> {
+        self.chunk.as_ref()
+    }
+
+    pub fn into_chunk(self) -> Option<ChatCompletionChunk> {
+        self.chunk
+    }
+}
+
 pub trait StreamEventMapper: Send + Sync {
     type State: Default + Send + 'static;
 
-    fn map_event(
-        &self,
-        state: &mut Self::State,
-        event: SseEvent,
-    ) -> Vec<Result<ChatCompletionChunk>>;
+    fn map_event(&self, state: &mut Self::State, event: SseEvent) -> Vec<Result<ChatStreamItem>>;
 
     fn should_stop(&self, _state: &Self::State) -> bool {
         false
@@ -61,7 +98,7 @@ pub fn sse_event_stream(response: reqwest::Response) -> BoxStream<'static, Resul
 pub fn mapped_chunk_stream<M>(
     response: reqwest::Response,
     mapper: M,
-) -> BoxStream<'static, Result<ChatCompletionChunk>>
+) -> BoxStream<'static, Result<ChatStreamItem>>
 where
     M: StreamEventMapper + 'static,
 {
@@ -144,9 +181,9 @@ mod tests {
             &self,
             state: &mut Self::State,
             event: SseEvent,
-        ) -> Vec<Result<ChatCompletionChunk>> {
+        ) -> Vec<Result<ChatStreamItem>> {
             *state += 1;
-            vec![Ok(ChatCompletionChunk {
+            vec![Ok(ChatStreamItem::chunk(ChatCompletionChunk {
                 id: "stream-1".into(),
                 object: "chat.completion.chunk".into(),
                 created: 1,
@@ -162,7 +199,7 @@ mod tests {
                     finish_reason: None,
                 }],
                 usage: None,
-            })]
+            }))]
         }
 
         fn should_stop(&self, state: &Self::State) -> bool {
@@ -188,7 +225,7 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert_eq!(
-            items[0].as_ref().unwrap().choices[0]
+            items[0].as_ref().unwrap().chunk_ref().unwrap().choices[0]
                 .delta
                 .content
                 .as_deref(),

@@ -27,6 +27,7 @@ summer-sea-orm = { workspace = true, features = [
 ] }
 summer-web = { workspace = true, features = ["openapi"] }
 tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 tower-layer = { workspace = true }
 tower-service = { workspace = true }
 tracing = { workspace = true }

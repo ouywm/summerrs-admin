@@ -3,7 +3,8 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use reqwest::header::HeaderMap;
 
-use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
+use crate::stream::ChatStreamItem;
+use crate::types::chat::{ChatCompletionRequest, ChatCompletionResponse};
 use crate::types::embedding::EmbeddingResponse;
 
 pub mod anthropic;
@@ -52,7 +53,7 @@ pub trait ChatProvider: Provider {
         &self,
         response: reqwest::Response,
         model: &str,
-    ) -> Result<BoxStream<'static, Result<ChatCompletionChunk>>>;
+    ) -> Result<BoxStream<'static, Result<ChatStreamItem>>>;
 }
 
 pub trait EmbeddingProvider: Provider {

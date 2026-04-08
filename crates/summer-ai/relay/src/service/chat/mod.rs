@@ -24,6 +24,7 @@ use summer_web::axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
 use self::stream::{TrackedChatSseStream, TrackedChatSseStreamArgs};
+use crate::plugin::RelayStreamTaskTracker;
 use crate::service::token::TokenInfo;
 use crate::service::tracking::TrackingService;
 
@@ -37,6 +38,8 @@ pub struct ChatRelayService {
     client: reqwest::Client,
     #[inject(component)]
     tracking: TrackingService,
+    #[inject(component)]
+    stream_task_tracker: RelayStreamTaskTracker,
 }
 
 impl ChatRelayService {
@@ -122,6 +125,7 @@ impl ChatRelayService {
 
             let stream = TrackedChatSseStream::new(TrackedChatSseStreamArgs {
                 inner: chunk_stream,
+                task_tracker: self.stream_task_tracker.clone(),
                 tracking: Some(self.tracking.clone()),
                 tracked_request_id: tracked_request.as_ref().map(|model| model.id),
                 tracked_execution_id: tracked_execution.as_ref().map(|model| model.id),

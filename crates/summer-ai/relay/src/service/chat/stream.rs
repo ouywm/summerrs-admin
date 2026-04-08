@@ -7,6 +7,7 @@ use anyhow::Context;
 use futures::Stream;
 use futures::stream::BoxStream;
 
+use crate::plugin::RelayStreamTaskTracker;
 use crate::service::tracking::TrackingService;
 
 const DOWNSTREAM_CLIENT_CLOSED_STATUS_CODE: i32 = 499;
@@ -15,8 +16,7 @@ const DOWNSTREAM_CLIENT_CLOSED_MESSAGE: &str = "chat stream dropped before compl
 #[derive(Clone, Debug, Default)]
 struct ChatStreamProgress {
     first_token_ms: Option<i32>,
-    last_usage: Option<summer_ai_core::types::common::Usage>,
-    saw_terminal_finish_reason: bool,
+    saw_explicit_terminal_signal: bool,
     saw_any_chunk: bool,
 }
 
@@ -27,8 +27,8 @@ enum ChatStreamSettlement {
 }
 
 pub(super) struct TrackedChatSseStreamArgs {
-    pub(super) inner:
-        BoxStream<'static, anyhow::Result<summer_ai_core::types::chat::ChatCompletionChunk>>,
+    pub(super) inner: BoxStream<'static, anyhow::Result<summer_ai_core::stream::ChatStreamItem>>,
+    pub(super) task_tracker: RelayStreamTaskTracker,
     pub(super) tracking: Option<TrackingService>,
     pub(super) tracked_request_id: Option<i64>,
     pub(super) tracked_execution_id: Option<i64>,
@@ -40,7 +40,8 @@ pub(super) struct TrackedChatSseStreamArgs {
 }
 
 pub(super) struct TrackedChatSseStream {
-    inner: BoxStream<'static, anyhow::Result<summer_ai_core::types::chat::ChatCompletionChunk>>,
+    inner: BoxStream<'static, anyhow::Result<summer_ai_core::stream::ChatStreamItem>>,
+    task_tracker: RelayStreamTaskTracker,
     tracking: Option<TrackingService>,
     tracked_request_id: Option<i64>,
     tracked_execution_id: Option<i64>,
@@ -58,6 +59,7 @@ impl TrackedChatSseStream {
     pub(super) fn new(args: TrackedChatSseStreamArgs) -> Self {
         Self {
             inner: args.inner,
+            task_tracker: args.task_tracker,
             tracking: args.tracking,
             tracked_request_id: args.tracked_request_id,
             tracked_execution_id: args.tracked_execution_id,
@@ -72,62 +74,25 @@ impl TrackedChatSseStream {
         }
     }
 
-    fn observe_chunk(&mut self, chunk: &summer_ai_core::types::chat::ChatCompletionChunk) {
+    fn observe_item(&mut self, item: &summer_ai_core::stream::ChatStreamItem) {
+        if item.is_terminal() {
+            self.progress.saw_explicit_terminal_signal = true;
+        }
+        let Some(chunk) = item.chunk_ref() else {
+            return;
+        };
+
         self.progress.saw_any_chunk = true;
-        if chunk
-            .choices
-            .iter()
-            .any(|choice| choice.finish_reason.is_some())
-        {
-            self.progress.saw_terminal_finish_reason = true;
-        }
-        if let Some(usage) = chunk.usage.clone() {
-            self.progress.last_usage = Some(usage);
-        }
         if self.progress.first_token_ms.is_none() && chunk_contains_visible_output(chunk) {
-            let measured = self.started_at.elapsed().as_millis() as i32;
-            self.progress.first_token_ms = Some(measured);
-            self.spawn_record_first_token(measured);
+            self.progress.first_token_ms = Some(self.started_at.elapsed().as_millis() as i32);
         }
     }
 
-    fn spawn_record_first_token(&self, first_token_ms: i32) {
-        let Some(tracking) = self.tracking.clone() else {
-            return;
-        };
-        let request_id = self.request_id.clone();
-        let tracked_request_id = self.tracked_request_id;
-        let tracked_execution_id = self.tracked_execution_id;
-
-        tokio::spawn(async move {
-            if let Some(request_pk) = tracked_request_id
-                && let Err(error) = tracking
-                    .record_request_first_token(request_pk, first_token_ms)
-                    .await
-            {
-                tracing::warn!(request_id, error = %error, "failed to update request first_token_ms");
-            }
-
-            if let Some(execution_id) = tracked_execution_id
-                && let Err(error) = tracking
-                    .record_execution_first_token(execution_id, first_token_ms)
-                    .await
-            {
-                tracing::warn!(request_id, error = %error, "failed to update request_execution first_token_ms");
-            }
-        });
-    }
-
-    fn spawn_finalize(&mut self, settlement: ChatStreamSettlement) {
-        if self.stream_settled {
-            return;
-        }
-        self.stream_settled = true;
-
-        let Some(tracking) = self.tracking.clone() else {
-            return;
-        };
-
+    fn build_finalize_future(
+        &self,
+        settlement: ChatStreamSettlement,
+    ) -> Option<impl Future<Output = ()> + Send + 'static> {
+        let tracking = self.tracking.clone()?;
         let tracked_request_id = self.tracked_request_id;
         let tracked_execution_id = self.tracked_execution_id;
         let request_id = self.request_id.clone();
@@ -137,7 +102,7 @@ impl TrackedChatSseStream {
         let duration_ms = self.started_at.elapsed().as_millis() as i32;
         let first_token_ms = self.progress.first_token_ms.unwrap_or(0);
 
-        tokio::spawn(async move {
+        Some(async move {
             match settlement {
                 ChatStreamSettlement::Success => {
                     if let Some(request_pk) = tracked_request_id
@@ -205,7 +170,17 @@ impl TrackedChatSseStream {
                     }
                 }
             }
-        });
+        })
+    }
+
+    fn queue_finalize(&mut self, settlement: ChatStreamSettlement) {
+        if self.stream_settled {
+            return;
+        }
+        self.stream_settled = true;
+        if let Some(future) = self.build_finalize_future(settlement) {
+            self.task_tracker.spawn(future);
+        }
     }
 }
 
@@ -217,45 +192,54 @@ impl Stream for TrackedChatSseStream {
             return Poll::Ready(None);
         }
 
-        match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(chunk))) => {
-                self.observe_chunk(&chunk);
-                match build_chat_chunk_sse_frame(&chunk) {
-                    Ok(frame) => Poll::Ready(Some(Ok(frame))),
-                    Err(error) => {
-                        let message = error.to_string();
-                        self.spawn_finalize(ChatStreamSettlement::Failure {
-                            status_code: 0,
-                            message: message.clone(),
-                        });
-                        self.done_emitted = true;
-                        Poll::Ready(Some(Err(io::Error::other(message))))
+        loop {
+            match Pin::new(&mut self.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(item))) => {
+                    self.observe_item(&item);
+                    let is_terminal = item.is_terminal();
+                    let Some(chunk) = item.into_chunk() else {
+                        if is_terminal {
+                            continue;
+                        }
+                        continue;
+                    };
+
+                    match build_chat_chunk_sse_frame(&chunk) {
+                        Ok(frame) => return Poll::Ready(Some(Ok(frame))),
+                        Err(error) => {
+                            let message = error.to_string();
+                            self.queue_finalize(ChatStreamSettlement::Failure {
+                                status_code: 0,
+                                message: message.clone(),
+                            });
+                            self.done_emitted = true;
+                            return Poll::Ready(Some(Err(io::Error::other(message))));
+                        }
                     }
                 }
-            }
-            Poll::Ready(Some(Err(error))) => {
-                tracing::warn!(request_id = self.request_id.as_str(), error = %error, "chat stream chunk read failed");
-                let settlement = resolve_chat_stream_settlement(&self.progress, Some(&error));
-                let message = error.to_string();
-                self.spawn_finalize(settlement);
-                self.done_emitted = true;
-                Poll::Ready(Some(Err(io::Error::other(message))))
-            }
-            Poll::Ready(None) => {
-                let settlement = resolve_chat_stream_settlement(&self.progress, None);
-                match settlement {
-                    ChatStreamSettlement::Success => {
-                        self.spawn_finalize(ChatStreamSettlement::Success);
-                        self.done_emitted = true;
-                        Poll::Ready(Some(Ok(build_done_sse_frame())))
-                    }
-                    failure @ ChatStreamSettlement::Failure { .. } => {
-                        self.spawn_finalize(failure);
-                        Poll::Ready(None)
+                Poll::Ready(Some(Err(error))) => {
+                    tracing::warn!(request_id = self.request_id.as_str(), error = %error, "chat stream chunk read failed");
+                    let settlement = resolve_chat_stream_settlement(&self.progress, Some(&error));
+                    let message = error.to_string();
+                    self.queue_finalize(settlement);
+                    self.done_emitted = true;
+                    return Poll::Ready(Some(Err(io::Error::other(message))));
+                }
+                Poll::Ready(None) => {
+                    let settlement = resolve_chat_stream_settlement(&self.progress, None);
+                    self.queue_finalize(settlement.clone());
+                    self.done_emitted = true;
+                    match settlement {
+                        ChatStreamSettlement::Success => {
+                            return Poll::Ready(Some(Ok(build_done_sse_frame())));
+                        }
+                        ChatStreamSettlement::Failure { .. } => {
+                            return Poll::Ready(None);
+                        }
                     }
                 }
+                Poll::Pending => return Poll::Pending,
             }
-            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -266,7 +250,7 @@ impl Drop for TrackedChatSseStream {
             return;
         }
 
-        self.spawn_finalize(ChatStreamSettlement::Failure {
+        self.queue_finalize(ChatStreamSettlement::Failure {
             status_code: DOWNSTREAM_CLIENT_CLOSED_STATUS_CODE,
             message: DOWNSTREAM_CLIENT_CLOSED_MESSAGE.to_string(),
         });
@@ -315,15 +299,12 @@ fn resolve_chat_stream_settlement(
         };
     }
 
-    if progress.saw_terminal_finish_reason
-        || progress.last_usage.is_some()
-        || progress.first_token_ms.is_some()
-    {
+    if progress.saw_explicit_terminal_signal {
         ChatStreamSettlement::Success
     } else if progress.saw_any_chunk {
         ChatStreamSettlement::Failure {
             status_code: 0,
-            message: "chat stream ended without terminal marker or usage".to_string(),
+            message: "chat stream ended without explicit terminal signal".to_string(),
         }
     } else {
         ChatStreamSettlement::Failure {
@@ -339,13 +320,15 @@ mod tests {
 
     use futures::StreamExt as _;
     use futures::stream;
+    use summer_ai_core::stream::ChatStreamItem;
     use summer_ai_core::types::chat::ChatCompletionChunk;
-    use summer_ai_core::types::common::{Delta, Usage};
+    use summer_ai_core::types::common::Delta;
 
     use super::{
         ChatStreamProgress, ChatStreamSettlement, TrackedChatSseStream, TrackedChatSseStreamArgs,
         build_chat_chunk_sse_frame, chunk_contains_visible_output, resolve_chat_stream_settlement,
     };
+    use crate::plugin::RelayStreamTaskTracker;
 
     #[test]
     fn build_chat_chunk_sse_frame_wraps_json_in_data_prefix() {
@@ -422,18 +405,10 @@ mod tests {
 
     #[test]
     fn resolve_chat_stream_settlement_accepts_supported_clean_endings() {
-        let usage = Usage {
-            prompt_tokens: 10,
-            completion_tokens: 5,
-            total_tokens: 15,
-            cached_tokens: 0,
-            reasoning_tokens: 0,
-        };
-
         assert!(matches!(
             resolve_chat_stream_settlement(
                 &ChatStreamProgress {
-                    saw_terminal_finish_reason: true,
+                    saw_explicit_terminal_signal: true,
                     ..Default::default()
                 },
                 None,
@@ -444,29 +419,21 @@ mod tests {
         assert!(matches!(
             resolve_chat_stream_settlement(
                 &ChatStreamProgress {
-                    last_usage: Some(usage.clone()),
-                    ..Default::default()
-                },
-                None,
-            ),
-            ChatStreamSettlement::Success
-        ));
-
-        assert!(matches!(
-            resolve_chat_stream_settlement(
-                &ChatStreamProgress {
-                    first_token_ms: Some(42),
                     saw_any_chunk: true,
                     ..Default::default()
                 },
                 None,
             ),
-            ChatStreamSettlement::Success
+            ChatStreamSettlement::Failure { .. }
         ));
+    }
 
+    #[test]
+    fn resolve_chat_stream_settlement_rejects_visible_output_without_terminal_signal() {
         assert!(matches!(
             resolve_chat_stream_settlement(
                 &ChatStreamProgress {
+                    first_token_ms: Some(42),
                     saw_any_chunk: true,
                     ..Default::default()
                 },
@@ -493,10 +460,11 @@ mod tests {
 
         let stream = TrackedChatSseStream::new(TrackedChatSseStreamArgs {
             inner: stream::iter(vec![
-                Ok(text_chunk),
+                Ok(ChatStreamItem::chunk(text_chunk)),
                 Err(anyhow::anyhow!("synthetic stream failure")),
             ])
             .boxed(),
+            task_tracker: RelayStreamTaskTracker::new(),
             tracking: None,
             tracked_request_id: None,
             tracked_execution_id: None,
@@ -518,22 +486,25 @@ mod tests {
 
     #[tokio::test]
     async fn tracked_chat_sse_stream_accepts_usage_only_terminal_event() {
-        let usage_only_chunk: ChatCompletionChunk = serde_json::from_value(serde_json::json!({
-            "id": "chatcmpl-usage",
-            "object": "chat.completion.chunk",
-            "created": 1,
-            "model": "gpt-5.4",
-            "choices": [],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 2,
-                "total_tokens": 12
-            }
-        }))
-        .expect("usage chunk");
+        let usage_only_chunk = ChatStreamItem::terminal_chunk(
+            serde_json::from_value::<ChatCompletionChunk>(serde_json::json!({
+                "id": "chatcmpl-usage",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "gpt-5.4",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "total_tokens": 12
+                }
+            }))
+            .expect("usage chunk"),
+        );
 
         let stream = TrackedChatSseStream::new(TrackedChatSseStreamArgs {
             inner: stream::iter(vec![Ok(usage_only_chunk)]).boxed(),
+            task_tracker: RelayStreamTaskTracker::new(),
             tracking: None,
             tracked_request_id: None,
             tracked_execution_id: None,

@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::convert::serialize_arguments;
 use crate::provider::{ProviderErrorInfo, ProviderErrorKind, ProviderStreamError};
-use crate::stream::{SseEvent, StreamEventMapper};
+use crate::stream::{ChatStreamItem, SseEvent, StreamEventMapper};
 use crate::types::chat::{ChatCompletionChunk, ChunkChoice};
 use crate::types::common::{Delta, FunctionCallDelta, ToolCallDelta, Usage};
 
@@ -39,11 +39,7 @@ impl GeminiStreamMapper {
 impl StreamEventMapper for GeminiStreamMapper {
     type State = GeminiStreamState;
 
-    fn map_event(
-        &self,
-        state: &mut Self::State,
-        event: SseEvent,
-    ) -> Vec<Result<ChatCompletionChunk>> {
+    fn map_event(&self, state: &mut Self::State, event: SseEvent) -> Vec<Result<ChatStreamItem>> {
         initialize_state(state, &self.model);
 
         if event.data.is_empty() || event.data == "[DONE]" {
@@ -130,7 +126,7 @@ fn initialize_state(state: &mut GeminiStreamState, model: &str) {
 fn map_response_chunks(
     state: &mut GeminiStreamState,
     response: GeminiResponse,
-) -> Vec<Result<ChatCompletionChunk>> {
+) -> Vec<Result<ChatStreamItem>> {
     let usage = response.usage_metadata.clone().map(usage_from_gemini);
     let total_candidates = response.candidates.len();
     let mut emitted_terminal_chunk = false;
@@ -142,7 +138,7 @@ fn map_response_chunks(
 
         if let Some(content) = candidate.content {
             if state.role_emitted.insert(choice_index) {
-                chunks.push(Ok(chunk_with_delta(
+                chunks.push(Ok(ChatStreamItem::chunk(chunk_with_delta(
                     state,
                     choice_index,
                     Delta {
@@ -153,14 +149,14 @@ fn map_response_chunks(
                     },
                     None,
                     None,
-                )));
+                ))));
             }
 
             for (part_index, part) in content.parts.into_iter().enumerate() {
                 if let Some(text) = part.text
                     && !text.is_empty()
                 {
-                    chunks.push(Ok(chunk_with_delta(
+                    chunks.push(Ok(ChatStreamItem::chunk(chunk_with_delta(
                         state,
                         choice_index,
                         Delta {
@@ -171,7 +167,7 @@ fn map_response_chunks(
                         },
                         None,
                         None,
-                    )));
+                    ))));
                 }
 
                 if let Some(function_call) = part.function_call {
@@ -197,7 +193,7 @@ fn map_response_chunks(
                             .insert((choice_index, part_index), tool_index);
                         tool_index
                     };
-                    chunks.push(Ok(chunk_with_delta(
+                    chunks.push(Ok(ChatStreamItem::chunk(chunk_with_delta(
                         state,
                         choice_index,
                         Delta {
@@ -216,7 +212,7 @@ fn map_response_chunks(
                         },
                         None,
                         None,
-                    )));
+                    ))));
                 }
             }
         }
@@ -232,7 +228,7 @@ fn map_response_chunks(
             } else {
                 None
             };
-            chunks.push(Ok(chunk_with_delta(
+            chunks.push(Ok(ChatStreamItem::terminal_chunk(chunk_with_delta(
                 state,
                 choice_index,
                 Delta {
@@ -243,7 +239,7 @@ fn map_response_chunks(
                 },
                 finish_reason,
                 choice_usage,
-            )));
+            ))));
         }
     }
 
@@ -252,7 +248,7 @@ fn map_response_chunks(
         if state.role_emitted.is_empty() {
             state.role_emitted.insert(choice_index);
         }
-        chunks.push(Ok(chunk_with_delta(
+        chunks.push(Ok(ChatStreamItem::terminal_chunk(chunk_with_delta(
             state,
             choice_index,
             Delta {
@@ -263,7 +259,7 @@ fn map_response_chunks(
             },
             None,
             Some(usage),
-        )));
+        ))));
     }
 
     chunks

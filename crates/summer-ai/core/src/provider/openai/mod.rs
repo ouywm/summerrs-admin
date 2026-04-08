@@ -6,7 +6,7 @@ use crate::provider::error::parse_openai_compatible_error;
 use crate::provider::{
     ChatProvider, EmbeddingProvider, Provider, ProviderErrorInfo, ProviderKind, ResponsesProvider,
 };
-use crate::stream::{SseEvent, StreamEventMapper, mapped_chunk_stream};
+use crate::stream::{ChatStreamItem, SseEvent, StreamEventMapper, mapped_chunk_stream};
 use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
 
 /// OpenAI 兼容适配器（零状态）
@@ -14,33 +14,29 @@ use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatComplet
 /// 直接透传请求体，仅替换 model 字段为映射后的实际模型名。
 pub struct OpenAiAdapter;
 
-#[derive(Debug, Default, Clone, Copy)]
-struct OpenAiStreamMapper;
-
 #[derive(Debug, Default)]
 struct OpenAiStreamState {
     stopped: bool,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct OpenAiStreamMapper;
+
 impl StreamEventMapper for OpenAiStreamMapper {
     type State = OpenAiStreamState;
 
-    fn map_event(
-        &self,
-        state: &mut Self::State,
-        event: SseEvent,
-    ) -> Vec<Result<ChatCompletionChunk>> {
+    fn map_event(&self, state: &mut Self::State, event: SseEvent) -> Vec<Result<ChatStreamItem>> {
         let data = event.data.trim();
         if data == "[DONE]" {
             state.stopped = true;
-            return Vec::new();
+            return vec![Ok(ChatStreamItem::terminal())];
         }
         if data.is_empty() {
             return Vec::new();
         }
 
         match serde_json::from_str::<ChatCompletionChunk>(data) {
-            Ok(parsed) => vec![Ok(parsed)],
+            Ok(parsed) => vec![Ok(ChatStreamItem::chunk(parsed))],
             Err(error) => {
                 tracing::warn!("Failed to parse SSE chunk: {error}, data: {data}");
                 Vec::new()
@@ -92,7 +88,7 @@ impl ChatProvider for OpenAiAdapter {
         &self,
         response: reqwest::Response,
         _model: &str,
-    ) -> Result<BoxStream<'static, Result<ChatCompletionChunk>>> {
+    ) -> Result<BoxStream<'static, Result<ChatStreamItem>>> {
         Ok(mapped_chunk_stream(response, OpenAiStreamMapper))
     }
 }
