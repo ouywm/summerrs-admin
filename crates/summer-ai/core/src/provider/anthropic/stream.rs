@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 
 use crate::provider::{ProviderErrorInfo, ProviderErrorKind, ProviderStreamError};
-use crate::stream::{SseEvent, StreamEventMapper};
+use crate::stream::{ChatStreamItem, SseEvent, StreamEventMapper};
 use crate::types::chat::{ChatCompletionChunk, ChunkChoice};
 use crate::types::common::{Delta, FinishReason, FunctionCallDelta, ToolCallDelta, Usage};
 
@@ -45,11 +45,7 @@ pub(super) struct AnthropicStreamMapper;
 impl StreamEventMapper for AnthropicStreamMapper {
     type State = AnthropicStreamState;
 
-    fn map_event(
-        &self,
-        state: &mut Self::State,
-        event: SseEvent,
-    ) -> Vec<Result<ChatCompletionChunk>> {
+    fn map_event(&self, state: &mut Self::State, event: SseEvent) -> Vec<Result<ChatStreamItem>> {
         if event.data.is_empty() || event.data == "[DONE]" {
             return Vec::new();
         }
@@ -93,7 +89,7 @@ impl StreamEventMapper for AnthropicStreamMapper {
 fn map_message_start(
     state: &mut AnthropicStreamState,
     message: Option<AnthropicStreamMessage>,
-) -> Vec<Result<ChatCompletionChunk>> {
+) -> Vec<Result<ChatStreamItem>> {
     let Some(message) = message else {
         return Vec::new();
     };
@@ -107,7 +103,7 @@ fn map_message_start(
     }
     state.role_emitted = true;
 
-    vec![Ok(chunk_with_delta(
+    vec![Ok(ChatStreamItem::chunk(chunk_with_delta(
         state,
         Delta {
             role: Some("assistant".into()),
@@ -117,13 +113,13 @@ fn map_message_start(
         },
         None,
         None,
-    ))]
+    )))]
 }
 
 fn map_content_block_start(
     state: &mut AnthropicStreamState,
     envelope: AnthropicStreamEnvelope,
-) -> Vec<Result<ChatCompletionChunk>> {
+) -> Vec<Result<ChatStreamItem>> {
     let Some(block) = envelope.content_block else {
         return Vec::new();
     };
@@ -137,7 +133,7 @@ fn map_content_block_start(
         state.block_tool_call_index.insert(block_index, index);
     }
 
-    vec![Ok(chunk_with_delta(
+    vec![Ok(ChatStreamItem::chunk(chunk_with_delta(
         state,
         Delta {
             role: None,
@@ -155,45 +151,49 @@ fn map_content_block_start(
         },
         None,
         None,
-    ))]
+    )))]
 }
 
 fn map_content_block_delta(
     state: &mut AnthropicStreamState,
     envelope: AnthropicStreamEnvelope,
-) -> Vec<Result<ChatCompletionChunk>> {
+) -> Vec<Result<ChatStreamItem>> {
     let Some(delta) = envelope.delta else {
         return Vec::new();
     };
 
     match delta.kind.as_str() {
-        "text_delta" if !delta.text.is_empty() => vec![Ok(chunk_with_delta(
-            state,
-            Delta {
-                role: None,
-                content: Some(delta.text),
-                reasoning_content: None,
-                tool_calls: None,
-            },
-            None,
-            None,
-        ))],
-        "thinking_delta" if !delta.thinking.is_empty() => vec![Ok(chunk_with_delta(
-            state,
-            Delta {
-                role: None,
-                content: None,
-                reasoning_content: Some(delta.thinking),
-                tool_calls: None,
-            },
-            None,
-            None,
-        ))],
+        "text_delta" if !delta.text.is_empty() => {
+            vec![Ok(ChatStreamItem::chunk(chunk_with_delta(
+                state,
+                Delta {
+                    role: None,
+                    content: Some(delta.text),
+                    reasoning_content: None,
+                    tool_calls: None,
+                },
+                None,
+                None,
+            )))]
+        }
+        "thinking_delta" if !delta.thinking.is_empty() => {
+            vec![Ok(ChatStreamItem::chunk(chunk_with_delta(
+                state,
+                Delta {
+                    role: None,
+                    content: None,
+                    reasoning_content: Some(delta.thinking),
+                    tool_calls: None,
+                },
+                None,
+                None,
+            )))]
+        }
         "input_json_delta" if !delta.partial_json.is_empty() => envelope
             .index
             .and_then(|block_index| state.block_tool_call_index.get(&block_index).copied())
             .map(|tool_index| {
-                Ok(chunk_with_delta(
+                Ok(ChatStreamItem::chunk(chunk_with_delta(
                     state,
                     Delta {
                         role: None,
@@ -211,7 +211,7 @@ fn map_content_block_delta(
                     },
                     None,
                     None,
-                ))
+                )))
             })
             .into_iter()
             .collect(),
@@ -222,7 +222,8 @@ fn map_content_block_delta(
 fn map_message_delta(
     state: &mut AnthropicStreamState,
     envelope: AnthropicStreamEnvelope,
-) -> Vec<Result<ChatCompletionChunk>> {
+) -> Vec<Result<ChatStreamItem>> {
+    let has_terminal_usage = envelope.usage.is_some();
     if let Some(usage) = envelope.usage {
         merge_anthropic_usage(&mut state.usage, usage);
     }
@@ -231,7 +232,7 @@ fn map_message_delta(
         .delta
         .and_then(|delta| map_anthropic_stream_finish_reason(delta.stop_reason.as_deref(), false));
 
-    vec![Ok(chunk_with_delta(
+    let chunk = chunk_with_delta(
         state,
         Delta {
             role: None,
@@ -239,15 +240,20 @@ fn map_message_delta(
             reasoning_content: None,
             tool_calls: None,
         },
-        finish_reason,
+        finish_reason.clone(),
         Some(state.usage.clone()),
-    ))]
+    );
+    if finish_reason.is_some() || has_terminal_usage {
+        vec![Ok(ChatStreamItem::terminal_chunk(chunk))]
+    } else {
+        vec![Ok(ChatStreamItem::chunk(chunk))]
+    }
 }
 
 fn map_error_event(
     state: &mut AnthropicStreamState,
     error: Option<AnthropicStreamError>,
-) -> Vec<Result<ChatCompletionChunk>> {
+) -> Vec<Result<ChatStreamItem>> {
     let Some(error) = error else {
         return Vec::new();
     };

@@ -21,9 +21,12 @@ use summer_web::axum::body::Body;
 use summer_web::axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use summer_web::axum::http::{HeaderMap, HeaderValue, StatusCode};
 use summer_web::axum::response::{IntoResponse, Response};
-use uuid::Uuid;
 
 use self::stream::{TrackedChatSseStream, TrackedChatSseStreamArgs};
+use crate::plugin::RelayStreamTaskTracker;
+use crate::service::shared::request_prep::{
+    PreparedRequestMeta, prepare_request_meta, try_create_tracked_request,
+};
 use crate::service::token::TokenInfo;
 use crate::service::tracking::TrackingService;
 
@@ -37,6 +40,8 @@ pub struct ChatRelayService {
     client: reqwest::Client,
     #[inject(component)]
     tracking: TrackingService,
+    #[inject(component)]
+    stream_task_tracker: RelayStreamTaskTracker,
 }
 
 impl ChatRelayService {
@@ -122,6 +127,7 @@ impl ChatRelayService {
 
             let stream = TrackedChatSseStream::new(TrackedChatSseStreamArgs {
                 inner: chunk_stream,
+                task_tracker: self.stream_task_tracker.clone(),
                 tracking: Some(self.tracking.clone()),
                 tracked_request_id: tracked_request.as_ref().map(|model| model.id),
                 tracked_execution_id: tracked_execution.as_ref().map(|model| model.id),
@@ -239,34 +245,23 @@ impl ChatRelayService {
         ctx: &RelayChatContext,
         request: &ChatCompletionRequest,
     ) -> Result<PreparedChatRelay, OpenAiErrorResponse> {
-        ctx.token_info
-            .ensure_endpoint_allowed("chat")
-            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
-        ctx.token_info
-            .ensure_model_allowed(&request.model)
-            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
+        let PreparedRequestMeta {
+            request_id,
+            started_at,
+        } = prepare_request_meta(&ctx.token_info, "chat", &request.model)?;
 
-        let request_id = format!("req_{}", Uuid::new_v4().simple());
-        let started_at = Instant::now();
-
-        let tracked_request = match self
-            .tracking
-            .create_chat_request(
+        let tracked_request = try_create_tracked_request(
+            &request_id,
+            self.tracking.create_chat_request(
                 &request_id,
                 &ctx.token_info,
                 request,
                 &ctx.client_ip,
                 &ctx.user_agent,
                 &ctx.request_headers,
-            )
-            .await
-        {
-            Ok(model) => Some(model),
-            Err(error) => {
-                tracing::warn!(request_id, error = %error, "failed to create request tracking row");
-                None
-            }
-        };
+            ),
+        )
+        .await;
 
         let target = match self.resolve_target(&ctx.token_info.group, request).await {
             Ok(target) => target,

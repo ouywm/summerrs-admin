@@ -7,7 +7,8 @@ use crate::provider::{
     ChatProvider, EmbeddingProvider, OpenAiAdapter, Provider, ProviderErrorInfo, ProviderKind,
     ResponsesProvider,
 };
-use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
+use crate::stream::ChatStreamItem;
+use crate::types::chat::{ChatCompletionRequest, ChatCompletionResponse};
 
 const DEFAULT_AZURE_API_VERSION: &str = "2024-10-21";
 
@@ -64,7 +65,7 @@ impl ChatProvider for AzureOpenAiAdapter {
         &self,
         response: reqwest::Response,
         model: &str,
-    ) -> Result<BoxStream<'static, Result<ChatCompletionChunk>>> {
+    ) -> Result<BoxStream<'static, Result<ChatStreamItem>>> {
         let delegate = OpenAiAdapter;
         <OpenAiAdapter as ChatProvider>::parse_chat_stream(&delegate, response, model)
     }

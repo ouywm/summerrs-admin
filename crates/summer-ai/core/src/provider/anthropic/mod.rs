@@ -14,8 +14,8 @@ use crate::provider::{
     ChatProvider, Provider, ProviderErrorInfo, ProviderKind, ResponsesProvider,
     ResponsesRuntimeMode, status_to_provider_error_kind,
 };
-use crate::stream::mapped_chunk_stream;
-use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
+use crate::stream::{ChatStreamItem, mapped_chunk_stream};
+use crate::types::chat::{ChatCompletionRequest, ChatCompletionResponse};
 
 mod convert;
 mod protocol;
@@ -79,7 +79,7 @@ impl ChatProvider for AnthropicAdapter {
         &self,
         response: reqwest::Response,
         _model: &str,
-    ) -> Result<BoxStream<'static, Result<ChatCompletionChunk>>> {
+    ) -> Result<BoxStream<'static, Result<ChatStreamItem>>> {
         Ok(mapped_chunk_stream(response, AnthropicStreamMapper))
     }
 }

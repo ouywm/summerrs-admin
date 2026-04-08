@@ -48,6 +48,20 @@ mod tests {
     }
 
     #[test]
+    fn relay_plugin_registers_stream_task_shutdown_hook() {
+        let source = include_str!("plugin.rs");
+        assert!(source.contains("RelayStreamTaskTracker"));
+        assert!(source.contains("add_shutdown_hook"));
+        assert!(source.contains("timeout("));
+    }
+
+    #[test]
+    fn chat_stream_tracking_avoids_detached_tokio_spawn() {
+        let source = include_str!("service/chat/stream.rs");
+        assert!(!source.contains("tokio::spawn("));
+    }
+
+    #[test]
     fn relay_crate_exposes_auth_chain_modules() {
         let _ = std::any::TypeId::of::<crate::auth::middleware::AiAuthLayer>();
         let _ = std::any::TypeId::of::<crate::auth::extractor::AiToken>();

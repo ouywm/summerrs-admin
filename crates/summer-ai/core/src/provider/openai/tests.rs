@@ -1,5 +1,6 @@
 use super::*;
 use crate::provider::{ChatProvider, EmbeddingProvider, ResponsesProvider};
+use crate::stream::ChatStreamItem;
 use futures::{StreamExt, stream};
 
 fn sample_request() -> ChatCompletionRequest {
@@ -8,6 +9,10 @@ fn sample_request() -> ChatCompletionRequest {
         "messages": [{"role": "user", "content": "Hello"}]
     }))
     .unwrap()
+}
+
+fn chunk(item: &ChatStreamItem) -> &ChatCompletionChunk {
+    item.chunk_ref().expect("expected chunk payload")
 }
 
 #[test]
@@ -198,12 +203,17 @@ async fn parse_stream_sse_chunks() {
         .filter_map(|r| r.ok())
         .collect();
 
-    assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks[0].choices[0].delta.content.as_deref(), Some("Hello"));
+    assert_eq!(chunks.len(), 3);
     assert_eq!(
-        chunks[1].choices[0].delta.content.as_deref(),
+        chunk(&chunks[0]).choices[0].delta.content.as_deref(),
+        Some("Hello")
+    );
+    assert_eq!(
+        chunk(&chunks[1]).choices[0].delta.content.as_deref(),
         Some(" world")
     );
+    assert!(chunks[2].is_terminal());
+    assert!(chunks[2].chunk_ref().is_none());
 }
 
 #[tokio::test]
@@ -240,6 +250,11 @@ async fn parse_stream_preserves_utf8_when_sse_chunk_splits_multibyte_boundary() 
         .filter_map(Result::ok)
         .collect();
 
-    assert_eq!(chunks.len(), 1);
-    assert_eq!(chunks[0].choices[0].delta.content.as_deref(), Some("你好"));
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(
+        chunk(&chunks[0]).choices[0].delta.content.as_deref(),
+        Some("你好")
+    );
+    assert!(chunks[1].is_terminal());
+    assert!(chunks[1].chunk_ref().is_none());
 }

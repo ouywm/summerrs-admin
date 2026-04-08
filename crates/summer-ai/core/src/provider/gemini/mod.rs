@@ -17,8 +17,8 @@ use crate::provider::{
     ChatProvider, EmbeddingProvider, Provider, ProviderErrorInfo, ProviderKind, ResponsesProvider,
     ResponsesRuntimeMode, status_to_provider_error_kind,
 };
-use crate::stream::mapped_chunk_stream;
-use crate::types::chat::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
+use crate::stream::{ChatStreamItem, mapped_chunk_stream};
+use crate::types::chat::{ChatCompletionRequest, ChatCompletionResponse};
 use crate::types::embedding::{EmbeddingRequest, EmbeddingResponse};
 
 mod convert;
@@ -88,7 +88,7 @@ impl ChatProvider for GeminiAdapter {
         &self,
         response: reqwest::Response,
         model: &str,
-    ) -> Result<BoxStream<'static, Result<ChatCompletionChunk>>> {
+    ) -> Result<BoxStream<'static, Result<ChatStreamItem>>> {
         Ok(mapped_chunk_stream(
             response,
             GeminiStreamMapper::new(model),

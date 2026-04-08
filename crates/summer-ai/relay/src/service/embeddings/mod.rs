@@ -17,12 +17,14 @@ use summer_common::error::{ApiErrors, ApiResult};
 use summer_common::response::Json;
 use summer_sea_orm::DbConn;
 use summer_web::axum::response::{IntoResponse, Response};
-use uuid::Uuid;
 
 use crate::service::chat::{
     RelayChatContext, effective_base_url, extract_api_key, extract_upstream_request_id,
     provider_error_to_openai_response, provider_kind_from_channel_type, resolve_upstream_model,
     select_schedulable_account,
+};
+use crate::service::shared::request_prep::{
+    PreparedRequestMeta, prepare_request_meta, try_create_tracked_request,
 };
 use crate::service::tracking::TrackingService;
 
@@ -42,34 +44,24 @@ impl EmbeddingsRelayService {
         ctx: RelayChatContext,
         request: EmbeddingRequest,
     ) -> Result<Response, OpenAiErrorResponse> {
-        ctx.token_info
-            .ensure_endpoint_allowed("embeddings")
-            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
-        ctx.token_info
-            .ensure_model_allowed(&request.model)
-            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
-
-        let request_id = format!("req_{}", Uuid::new_v4().simple());
-        let started_at = std::time::Instant::now();
+        let PreparedRequestMeta {
+            request_id,
+            started_at,
+        } = prepare_request_meta(&ctx.token_info, "embeddings", &request.model)?;
         let tracking = &self.tracking;
 
-        let tracked_request = match tracking
-            .create_embeddings_request(
+        let tracked_request = try_create_tracked_request(
+            &request_id,
+            tracking.create_embeddings_request(
                 &request_id,
                 &ctx.token_info,
                 &request,
                 &ctx.client_ip,
                 &ctx.user_agent,
                 &ctx.request_headers,
-            )
-            .await
-        {
-            Ok(model) => Some(model),
-            Err(error) => {
-                tracing::warn!(request_id, error = %error, "failed to create request tracking row");
-                None
-            }
-        };
+            ),
+        )
+        .await;
 
         let target = match self.resolve_target(&ctx.token_info.group, &request).await {
             Ok(target) => target,

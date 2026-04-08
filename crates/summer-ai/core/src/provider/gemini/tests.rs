@@ -1,6 +1,8 @@
 use super::*;
 use crate::provider::gemini::request::convert_contents;
 use crate::provider::{ChatProvider, EmbeddingProvider, Provider, ProviderErrorKind};
+use crate::stream::ChatStreamItem;
+use crate::types::chat::ChatCompletionChunk;
 use crate::types::common::{FinishReason, FunctionCall, Message, ToolCall};
 use futures::{StreamExt, stream};
 use reqwest::StatusCode;
@@ -14,6 +16,16 @@ fn sample_request() -> ChatCompletionRequest {
         ]
     }))
     .unwrap()
+}
+
+fn chunk(item: &ChatStreamItem) -> &ChatCompletionChunk {
+    item.chunk_ref().expect("expected chunk payload")
+}
+
+fn chunk_has_usage(item: &ChatStreamItem) -> bool {
+    item.chunk_ref()
+        .and_then(|chunk| chunk.usage.as_ref())
+        .is_some()
 }
 
 #[test]
@@ -813,22 +825,26 @@ async fn parse_stream_handles_multiline_sse_and_usage_only_terminal_event() {
     assert!(
         chunks
             .iter()
-            .any(|chunk| chunk.choices[0].delta.role.as_deref() == Some("assistant"))
+            .any(|item| chunk(item).choices[0].delta.role.as_deref() == Some("assistant"))
     );
     assert!(
         chunks
             .iter()
-            .any(|chunk| chunk.choices[0].delta.content.as_deref() == Some("Hello"))
+            .any(|item| chunk(item).choices[0].delta.content.as_deref() == Some("Hello"))
     );
     let usage_chunk = chunks
         .iter()
-        .find(|chunk| chunk.usage.is_some())
+        .find(|item| chunk_has_usage(item))
         .expect("expected usage chunk");
     assert_eq!(
-        usage_chunk.usage.as_ref().map(|usage| usage.total_tokens),
+        chunk(usage_chunk)
+            .usage
+            .as_ref()
+            .map(|usage| usage.total_tokens),
         Some(10)
     );
-    assert!(usage_chunk.choices[0].finish_reason.is_none());
+    assert!(chunk(usage_chunk).choices[0].finish_reason.is_none());
+    assert!(usage_chunk.is_terminal());
 }
 
 #[tokio::test]
@@ -864,7 +880,7 @@ async fn parse_stream_preserves_utf8_when_sse_chunk_splits_multibyte_boundary() 
     assert!(
         chunks
             .iter()
-            .any(|chunk| chunk.choices[0].delta.content.as_deref() == Some("你好"))
+            .any(|item| chunk(item).choices[0].delta.content.as_deref() == Some("你好"))
     );
 }
 
@@ -893,19 +909,27 @@ async fn parse_stream_emits_choice_indexes_for_multiple_candidates() {
         .filter_map(Result::ok)
         .collect();
 
-    assert!(chunks.iter().any(|chunk| {
-        chunk.choices[0].index == 0 && chunk.choices[0].delta.content.as_deref() == Some("Hello")
+    assert!(chunks.iter().any(|item| {
+        chunk(item).choices[0].index == 0
+            && chunk(item).choices[0].delta.content.as_deref() == Some("Hello")
     }));
-    assert!(chunks.iter().any(|chunk| {
-        chunk.choices[0].index == 1 && chunk.choices[0].delta.content.as_deref() == Some("Bonjour")
+    assert!(chunks.iter().any(|item| {
+        chunk(item).choices[0].index == 1
+            && chunk(item).choices[0].delta.content.as_deref() == Some("Bonjour")
     }));
-    assert!(chunks.iter().any(|chunk| {
-        chunk.choices[0].index == 0
-            && matches!(chunk.choices[0].finish_reason, Some(FinishReason::Stop))
+    assert!(chunks.iter().any(|item| {
+        chunk(item).choices[0].index == 0
+            && matches!(
+                chunk(item).choices[0].finish_reason,
+                Some(FinishReason::Stop)
+            )
     }));
-    assert!(chunks.iter().any(|chunk| {
-        chunk.choices[0].index == 1
-            && matches!(chunk.choices[0].finish_reason, Some(FinishReason::Length))
+    assert!(chunks.iter().any(|item| {
+        chunk(item).choices[0].index == 1
+            && matches!(
+                chunk(item).choices[0].finish_reason,
+                Some(FinishReason::Length)
+            )
     }));
 }
 
@@ -936,11 +960,11 @@ async fn parse_stream_emits_usage_only_once_for_multiple_candidates() {
 
     let usage_chunks = chunks
         .iter()
-        .filter(|chunk| chunk.usage.is_some())
+        .filter(|item| chunk_has_usage(item))
         .collect::<Vec<_>>();
     assert_eq!(usage_chunks.len(), 1);
     assert_eq!(
-        usage_chunks[0]
+        chunk(usage_chunks[0])
             .usage
             .as_ref()
             .map(|usage| usage.total_tokens),
@@ -969,18 +993,25 @@ async fn parse_stream_emits_text_and_usage() {
         .collect();
 
     assert_eq!(
-        chunks[0].choices[0].delta.role.as_deref(),
+        chunk(&chunks[0]).choices[0].delta.role.as_deref(),
         Some("assistant")
     );
-    assert_eq!(chunks[1].choices[0].delta.content.as_deref(), Some("Hello"));
     assert_eq!(
-        chunks[2].usage.as_ref().map(|usage| usage.total_tokens),
+        chunk(&chunks[1]).choices[0].delta.content.as_deref(),
+        Some("Hello")
+    );
+    assert_eq!(
+        chunk(&chunks[2])
+            .usage
+            .as_ref()
+            .map(|usage| usage.total_tokens),
         Some(10)
     );
     assert!(matches!(
-        chunks[2].choices[0].finish_reason,
+        chunk(&chunks[2]).choices[0].finish_reason,
         Some(FinishReason::Stop)
     ));
+    assert!(chunks[2].is_terminal());
 }
 
 #[tokio::test]
@@ -1003,7 +1034,11 @@ async fn parse_stream_emits_function_call_deltas() {
         .filter_map(Result::ok)
         .collect();
 
-    let tool_calls = chunks[1].choices[0].delta.tool_calls.as_ref().unwrap();
+    let tool_calls = chunk(&chunks[1]).choices[0]
+        .delta
+        .tool_calls
+        .as_ref()
+        .unwrap();
     assert_eq!(
         tool_calls[0].function.as_ref().unwrap().name.as_deref(),
         Some("get_weather")
@@ -1018,9 +1053,10 @@ async fn parse_stream_emits_function_call_deltas() {
         Some("{\"city\":\"Paris\"}")
     );
     assert!(matches!(
-        chunks[2].choices[0].finish_reason,
+        chunk(&chunks[2]).choices[0].finish_reason,
         Some(FinishReason::ToolCalls)
     ));
+    assert!(chunks[2].is_terminal());
 }
 
 #[tokio::test]
@@ -1048,12 +1084,13 @@ async fn parse_stream_keeps_tool_call_finish_reason_across_events() {
 
     let final_chunk = chunks
         .iter()
-        .rfind(|chunk| chunk.choices[0].finish_reason.is_some())
+        .rfind(|item| chunk(item).choices[0].finish_reason.is_some())
         .expect("expected terminal chunk");
     assert!(matches!(
-        final_chunk.choices[0].finish_reason,
+        chunk(final_chunk).choices[0].finish_reason,
         Some(FinishReason::ToolCalls)
     ));
+    assert!(final_chunk.is_terminal());
 }
 
 #[tokio::test]
@@ -1082,7 +1119,7 @@ async fn parse_stream_reuses_tool_call_index_across_events() {
 
     let tool_call_chunks = chunks
         .iter()
-        .filter_map(|chunk| chunk.choices[0].delta.tool_calls.as_ref())
+        .filter_map(|item| chunk(item).choices[0].delta.tool_calls.as_ref())
         .collect::<Vec<_>>();
     assert_eq!(tool_call_chunks.len(), 2);
     assert_eq!(tool_call_chunks[0][0].index, 0);
@@ -1092,12 +1129,13 @@ async fn parse_stream_reuses_tool_call_index_across_events() {
 
     let final_chunk = chunks
         .iter()
-        .rfind(|chunk| chunk.choices[0].finish_reason.is_some())
+        .rfind(|item| chunk(item).choices[0].finish_reason.is_some())
         .expect("expected terminal chunk");
     assert!(matches!(
-        final_chunk.choices[0].finish_reason,
+        chunk(final_chunk).choices[0].finish_reason,
         Some(FinishReason::ToolCalls)
     ));
+    assert!(final_chunk.is_terminal());
 }
 
 #[tokio::test]
@@ -1126,18 +1164,19 @@ async fn parse_stream_does_not_emit_terminal_chunk_before_finish_reason() {
     assert_eq!(
         chunks
             .iter()
-            .filter(|chunk| chunk.choices[0].finish_reason.is_some())
+            .filter(|item| chunk(item).choices[0].finish_reason.is_some())
             .count(),
         1
     );
     let final_chunk = chunks
         .iter()
-        .rfind(|chunk| chunk.choices[0].finish_reason.is_some())
+        .rfind(|item| chunk(item).choices[0].finish_reason.is_some())
         .expect("expected final terminal chunk");
     assert!(matches!(
-        final_chunk.choices[0].finish_reason,
+        chunk(final_chunk).choices[0].finish_reason,
         Some(FinishReason::Stop)
     ));
+    assert!(final_chunk.is_terminal());
 }
 
 #[tokio::test]
