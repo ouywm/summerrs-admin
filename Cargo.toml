@@ -3,9 +3,12 @@ members = [
     "crates/app",
     "crates/summer-system-model",
     "crates/summer-ai",
+    "crates/summer-ai/admin",
+    "crates/summer-ai/billing",
     "crates/summer-ai/model",
     "crates/summer-ai/core",
     "crates/summer-ai/hub",
+    "crates/summer-ai/relay",
     "crates/summer-model",
     "crates/summer-common",
     "crates/summer-admin-macros",
@@ -42,8 +45,11 @@ garde = "0.22.1"
 hex = "0.4"
 hotpath = "0.14"
 http = "1"
+indexmap = "2.13.0"
 ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master" }
+#ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
 ipnetwork = "0.20.0"
+jsonwebtoken = "9"
 kanal = "0.1"
 lettre = "0.11"
 md-5 = "0.10"
@@ -55,8 +61,10 @@ pgwire-replication = "0.2.0"
 rand = "0.10.0"
 regex = "1.12.3"
 reqwest = "0.13.2"
+reqwest-eventsource = "0.6"
 rig-core = "0.33.0"
 ring = "0.17.14"
+rmcp = "1.2.0"
 rust_xlsxwriter = "0.91.0"
 rustc-hash = "2"
 schema = "0.1.0"
@@ -70,8 +78,12 @@ sqlparser = "0.54.0"
 summer = "0.5.0"
 summer-admin-macros = { path = "crates/summer-admin-macros" }
 summer-ai = { path = "crates/summer-ai" }
+summer-ai-admin = { path = "crates/summer-ai/admin" }
+summer-ai-billing = { path = "crates/summer-ai/billing" }
 summer-ai-core = { path = "crates/summer-ai/core" }
+summer-ai-hub = { path = "crates/summer-ai/hub" }
 summer-ai-model = { path = "crates/summer-ai/model" }
+summer-ai-relay = { path = "crates/summer-ai/relay" }
 summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
@@ -79,16 +91,19 @@ summer-job = "0.5.0"
 summer-macros = "0.5.0"
 summer-mail = "0.5.0"
 summer-mcp = { path = "crates/summer-mcp" }
+summer-plugins = { path = "crates/summer-plugins" }
 summer-redis = "0.5.0"
 summer-rig = { path = "crates/summer-rig" }
 summer-sea-orm = { version = "0.5.0-rc.1", default-features = false }
 summer-sharding = { path = "crates/summer-sharding" }
 summer-sql-rewrite = { path = "crates/summer-sql-rewrite" }
+summer-system = { path = "crates/summer-system" }
 summer-system-model = { path = "crates/summer-system-model" }
 summer-web = "0.5.0"
 sysinfo = "0.35"
 thiserror = "2.0.18"
 tokio = "1.49.0"
+tokio-stream = "0.1"
 tokio-util = "0.7"
 tower = "0.5.3"
 tower-http = "0.6.8"
@@ -99,15 +114,6 @@ url = "2.5.8"
 uuid = "1.21.0"
 validator = "0.20.0"
 woothee = "0.13"
-#ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
-indexmap = "2.13.0"
-jsonwebtoken = "9"
-reqwest-eventsource = "0.6"
-rmcp = "1.2.0"
-summer-ai-hub = { path = "crates/summer-ai/hub" }
-summer-plugins = { path = "crates/summer-plugins" }
-summer-system = { path = "crates/summer-system" }
-tokio-stream = "0.1"
 
 [patch.crates-io]
 sea-orm = { path = "/Volumes/990pro/code/rust/sea-orm" }

@@ -1,5 +1,8 @@
 use super::*;
-use futures::stream;
+use crate::provider::gemini::request::convert_contents;
+use crate::provider::{ChatProvider, EmbeddingProvider, Provider, ProviderErrorKind};
+use crate::types::common::{FinishReason, FunctionCall, Message, ToolCall};
+use futures::{StreamExt, stream};
 use reqwest::StatusCode;
 
 fn sample_request() -> ChatCompletionRequest {
@@ -18,7 +21,7 @@ fn build_request_targets_generate_content_endpoint() {
     let client = reqwest::Client::new();
     let adapter = GeminiAdapter;
     let builder = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -43,7 +46,7 @@ fn build_stream_request_targets_stream_generate_content_sse_endpoint() {
     request.stream = true;
 
     let builder = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -65,7 +68,7 @@ fn build_request_respects_explicit_v1_base_url() {
     let client = reqwest::Client::new();
     let adapter = GeminiAdapter;
     let builder = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com/v1",
             "gem-key",
@@ -82,6 +85,43 @@ fn build_request_respects_explicit_v1_base_url() {
 }
 
 #[test]
+fn build_request_promotes_developer_messages_into_system_instruction() {
+    let client = reqwest::Client::new();
+    let adapter = GeminiAdapter;
+    let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+        "model": "gemini-2.5-pro",
+        "messages": [
+            {"role": "system", "content": "Follow platform rules."},
+            {"role": "developer", "content": "Always answer with JSON."},
+            {"role": "user", "content": "hello"}
+        ]
+    }))
+    .unwrap();
+
+    let request = adapter
+        .build_chat_request(
+            &client,
+            "https://generativelanguage.googleapis.com",
+            "gem-key",
+            &req,
+            "gemini-2.5-pro",
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let body: serde_json::Value =
+        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+    assert_eq!(
+        body["systemInstruction"]["parts"][0]["text"],
+        serde_json::json!("Follow platform rules.\n\nAlways answer with JSON.")
+    );
+    assert_eq!(body["contents"].as_array().unwrap().len(), 1);
+    assert_eq!(body["contents"][0]["role"], "user");
+    assert_eq!(body["contents"][0]["parts"][0]["text"], "hello");
+}
+
+#[test]
 fn build_embeddings_request_targets_embed_content_endpoint() {
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
@@ -91,7 +131,7 @@ fn build_embeddings_request_targets_embed_content_endpoint() {
     });
 
     let request = GeminiAdapter
-        .build_embeddings_request(
+        .build_embedding_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -129,7 +169,7 @@ fn build_embeddings_request_targets_batch_embed_contents_endpoint() {
     });
 
     let request = GeminiAdapter
-        .build_embeddings_request(
+        .build_embedding_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -186,7 +226,7 @@ fn build_request_converts_data_url_image_to_inline_data() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -230,7 +270,7 @@ fn build_request_converts_file_uri_image_to_file_data() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -272,7 +312,7 @@ fn build_request_maps_required_tool_choice_to_any_mode() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -311,7 +351,7 @@ fn build_request_maps_specific_tool_choice_to_allowed_function_names() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -348,7 +388,7 @@ fn build_request_preserves_safety_settings_extra_body_fields() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -399,7 +439,7 @@ fn build_request_preserves_structured_function_response_payload() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -445,7 +485,7 @@ fn build_request_sets_system_instruction_and_generation_config() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -504,7 +544,7 @@ fn build_request_maps_json_schema_response_format_to_response_json_schema() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -552,7 +592,7 @@ fn build_request_maps_auto_and_none_tool_choice_modes() {
     .unwrap();
 
     let auto_request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -563,7 +603,7 @@ fn build_request_maps_auto_and_none_tool_choice_modes() {
         .build()
         .unwrap();
     let none_request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://generativelanguage.googleapis.com",
             "gem-key",
@@ -608,7 +648,7 @@ fn parse_response_converts_text_and_usage() {
         .unwrap(),
     );
 
-    let response = adapter.parse_response(body, "gemini-2.5-pro").unwrap();
+    let response = adapter.parse_chat_response(body, "gemini-2.5-pro").unwrap();
     assert_eq!(response.model, "gemini-2.5-pro");
     assert_eq!(
         response.choices[0].message.content,
@@ -630,7 +670,7 @@ fn parse_embeddings_response_converts_single_embedding() {
     );
 
     let response = adapter
-        .parse_embeddings_response(body, "text-embedding-004", 8)
+        .parse_embedding_response(body, "text-embedding-004", 8)
         .unwrap();
     assert_eq!(response.data.len(), 1);
     assert_eq!(response.data[0].index, 0);
@@ -652,7 +692,7 @@ fn parse_embeddings_response_converts_batch_embeddings() {
     );
 
     let response = adapter
-        .parse_embeddings_response(body, "text-embedding-004", 12)
+        .parse_embedding_response(body, "text-embedding-004", 12)
         .unwrap();
     assert_eq!(response.data.len(), 2);
     assert_eq!(response.data[0].embedding, serde_json::json!([1.0, 2.0]));
@@ -688,7 +728,7 @@ fn parse_response_returns_multiple_choices_for_multiple_candidates() {
         .unwrap(),
     );
 
-    let response = adapter.parse_response(body, "gemini-2.5-pro").unwrap();
+    let response = adapter.parse_chat_response(body, "gemini-2.5-pro").unwrap();
     assert_eq!(response.choices.len(), 2);
     assert_eq!(
         response.choices[0].message.content,
@@ -733,7 +773,7 @@ fn parse_response_converts_function_call_candidate() {
         .unwrap(),
     );
 
-    let response = adapter.parse_response(body, "gemini-2.5-pro").unwrap();
+    let response = adapter.parse_chat_response(body, "gemini-2.5-pro").unwrap();
     let tool_calls = response.choices[0].message.tool_calls.as_ref().unwrap();
     assert_eq!(tool_calls.len(), 1);
     assert_eq!(tool_calls[0].function.name, "get_weather");
@@ -762,7 +802,7 @@ async fn parse_stream_handles_multiline_sse_and_usage_only_terminal_event() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -813,7 +853,7 @@ async fn parse_stream_preserves_utf8_when_sse_chunk_splits_multibyte_boundary() 
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -845,7 +885,7 @@ async fn parse_stream_emits_choice_indexes_for_multiple_candidates() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -886,7 +926,7 @@ async fn parse_stream_emits_usage_only_once_for_multiple_candidates() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -920,7 +960,7 @@ async fn parse_stream_emits_text_and_usage() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -955,7 +995,7 @@ async fn parse_stream_emits_function_call_deltas() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -998,7 +1038,7 @@ async fn parse_stream_keeps_tool_call_finish_reason_across_events() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -1032,7 +1072,7 @@ async fn parse_stream_reuses_tool_call_index_across_events() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -1075,7 +1115,7 @@ async fn parse_stream_does_not_emit_terminal_chunk_before_finish_reason() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -1115,7 +1155,7 @@ async fn parse_stream_returns_error_for_gemini_error_event() {
     let response = reqwest::Response::from(mock_response);
 
     let results = adapter
-        .parse_stream(response, "gemini-2.5-pro")
+        .parse_chat_stream(response, "gemini-2.5-pro")
         .unwrap()
         .collect::<Vec<_>>()
         .await;

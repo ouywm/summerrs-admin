@@ -14,6 +14,20 @@ pub struct Message {
     pub tool_call_id: Option<String>,
 }
 
+impl Message {
+    pub fn text_content(&self) -> Option<&str> {
+        self.content.as_str()
+    }
+
+    pub fn is_system(&self) -> bool {
+        self.role == "system"
+    }
+
+    pub fn is_user(&self) -> bool {
+        self.role == "user"
+    }
+}
+
 /// Token 用量统计
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Usage {
@@ -130,6 +144,31 @@ mod tests {
         let parsed: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.role, "user");
         assert_eq!(parsed.content, serde_json::Value::String("hello".into()));
+    }
+
+    #[test]
+    fn message_helper_methods_cover_common_roles() {
+        let system = Message {
+            role: "system".into(),
+            content: serde_json::Value::String("rules".into()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        assert_eq!(system.text_content(), Some("rules"));
+        assert!(system.is_system());
+        assert!(!system.is_user());
+
+        let user = Message {
+            role: "user".into(),
+            content: serde_json::Value::String("hello".into()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        assert_eq!(user.text_content(), Some("hello"));
+        assert!(user.is_user());
+        assert!(!user.is_system());
     }
 
     #[test]

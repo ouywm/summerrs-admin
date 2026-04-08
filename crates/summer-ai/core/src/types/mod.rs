@@ -9,5 +9,5 @@ pub mod file;
 pub mod image;
 pub mod model;
 pub mod moderation;
+pub mod rerank;
 pub mod responses;
-pub mod sse_parser;

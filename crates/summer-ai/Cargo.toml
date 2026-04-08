@@ -4,6 +4,9 @@ name = "summer-ai"
 version = "0.0.1"
 
 [dependencies]
+summer-ai-admin = { workspace = true }
+summer-ai-billing = { workspace = true }
 summer-ai-core = { workspace = true }
 summer-ai-hub = { workspace = true }
 summer-ai-model = { workspace = true }
+summer-ai-relay = { workspace = true }

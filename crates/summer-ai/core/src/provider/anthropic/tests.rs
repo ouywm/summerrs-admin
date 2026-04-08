@@ -1,5 +1,7 @@
 use super::*;
-use futures::stream;
+use crate::provider::{ChatProvider, Provider, ProviderErrorKind};
+use crate::types::common::FinishReason;
+use futures::{StreamExt, stream};
 use http::StatusCode;
 
 fn sample_request() -> ChatCompletionRequest {
@@ -26,7 +28,7 @@ fn build_request_targets_messages_endpoint() {
     let client = reqwest::Client::new();
     let adapter = AnthropicAdapter;
     let builder = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://api.anthropic.com",
             "sk-ant-test",
@@ -77,7 +79,7 @@ fn build_request_omits_tool_choice_and_tools_for_none_and_converts_data_url_imag
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://api.anthropic.com",
             "sk-ant-test",
@@ -121,7 +123,7 @@ fn build_request_preserves_thinking_extra_body_fields() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://api.anthropic.com",
             "sk-ant-test",
@@ -141,6 +143,43 @@ fn build_request_preserves_thinking_extra_body_fields() {
             "budget_tokens": 2048
         })
     );
+}
+
+#[test]
+fn build_request_promotes_developer_messages_into_system_prompt() {
+    let client = reqwest::Client::new();
+    let adapter = AnthropicAdapter;
+    let req: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {"role": "system", "content": "Follow platform rules."},
+            {"role": "developer", "content": "Always answer with JSON."},
+            {"role": "user", "content": "hello"}
+        ]
+    }))
+    .unwrap();
+
+    let request = adapter
+        .build_chat_request(
+            &client,
+            "https://api.anthropic.com",
+            "sk-ant-test",
+            &req,
+            "claude-3-5-sonnet-20241022",
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let body: serde_json::Value =
+        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+    assert_eq!(
+        body["system"],
+        serde_json::json!("Follow platform rules.\n\nAlways answer with JSON.")
+    );
+    assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["messages"][0]["content"][0]["text"], "hello");
 }
 
 #[test]
@@ -175,7 +214,7 @@ fn build_request_preserves_tool_result_content_blocks() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://api.anthropic.com",
             "sk-ant-test",
@@ -245,7 +284,7 @@ fn build_request_converts_system_tool_result_and_named_tool_choice() {
     .unwrap();
 
     let request = adapter
-        .build_request(
+        .build_chat_request(
             &client,
             "https://api.anthropic.com",
             "sk-ant-test",
@@ -308,7 +347,7 @@ fn parse_response_converts_text_and_usage() {
         .unwrap(),
     );
 
-    let response = adapter.parse_response(body, "claude").unwrap();
+    let response = adapter.parse_chat_response(body, "claude").unwrap();
     assert_eq!(response.id, "msg_123");
     assert_eq!(response.model, "claude-3-5-sonnet-20241022");
     assert_eq!(
@@ -342,7 +381,7 @@ fn parse_response_converts_tool_use_and_cached_usage() {
         .unwrap(),
     );
 
-    let response = adapter.parse_response(body, "claude").unwrap();
+    let response = adapter.parse_chat_response(body, "claude").unwrap();
     let tool_calls = response.choices[0].message.tool_calls.as_ref().unwrap();
     assert_eq!(tool_calls.len(), 1);
     assert_eq!(tool_calls[0].id, "toolu_123");
@@ -375,7 +414,7 @@ fn parse_response_maps_refusal_finish_reason_to_content_filter() {
         .unwrap(),
     );
 
-    let response = adapter.parse_response(body, "claude").unwrap();
+    let response = adapter.parse_chat_response(body, "claude").unwrap();
     assert!(matches!(
         response.choices[0].finish_reason,
         Some(FinishReason::ContentFilter)
@@ -399,7 +438,7 @@ fn parse_response_maps_max_tokens_finish_reason_to_length() {
         .unwrap(),
     );
 
-    let response = adapter.parse_response(body, "claude").unwrap();
+    let response = adapter.parse_chat_response(body, "claude").unwrap();
     assert!(matches!(
         response.choices[0].finish_reason,
         Some(FinishReason::Length)
@@ -427,7 +466,7 @@ async fn parse_stream_emits_text_and_final_usage() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "claude-3-5-sonnet-20241022")
+        .parse_chat_stream(response, "claude-3-5-sonnet-20241022")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -492,7 +531,7 @@ async fn parse_stream_preserves_utf8_when_sse_chunk_splits_multibyte_boundary() 
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "claude-sonnet-4-20250514")
+        .parse_chat_stream(response, "claude-sonnet-4-20250514")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -526,7 +565,7 @@ async fn parse_stream_emits_reasoning_content_for_thinking_delta() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "claude-sonnet-4-20250514")
+        .parse_chat_stream(response, "claude-sonnet-4-20250514")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -573,7 +612,7 @@ async fn parse_stream_maps_content_filter_finish_reason() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "claude-sonnet-4-20250514")
+        .parse_chat_stream(response, "claude-sonnet-4-20250514")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -610,7 +649,7 @@ async fn parse_stream_uses_event_name_when_type_is_missing() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "claude-3-5-sonnet-20241022")
+        .parse_chat_stream(response, "claude-3-5-sonnet-20241022")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -661,7 +700,7 @@ async fn parse_stream_emits_tool_call_deltas() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "claude-3-5-sonnet-20241022")
+        .parse_chat_stream(response, "claude-3-5-sonnet-20241022")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -711,7 +750,7 @@ async fn parse_stream_returns_error_for_anthropic_error_event() {
     let response = reqwest::Response::from(mock_response);
 
     let results = adapter
-        .parse_stream(response, "claude-3-5-sonnet-20241022")
+        .parse_chat_stream(response, "claude-3-5-sonnet-20241022")
         .unwrap()
         .collect::<Vec<_>>()
         .await;
@@ -761,7 +800,7 @@ async fn parse_stream_does_not_emit_terminal_chunk_for_intermediate_message_delt
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "claude-3-5-sonnet-20241022")
+        .parse_chat_stream(response, "claude-3-5-sonnet-20241022")
         .unwrap()
         .collect::<Vec<_>>()
         .await
@@ -807,7 +846,7 @@ async fn parse_stream_maps_refusal_finish_reason_to_content_filter() {
     let response = reqwest::Response::from(mock_response);
 
     let chunks: Vec<_> = adapter
-        .parse_stream(response, "claude-sonnet-4-20250514")
+        .parse_chat_stream(response, "claude-sonnet-4-20250514")
         .unwrap()
         .collect::<Vec<_>>()
         .await
