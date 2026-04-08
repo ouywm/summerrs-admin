@@ -7,7 +7,7 @@ pub struct SummerAiAdminPlugin;
 
 #[async_trait]
 impl Plugin for SummerAiAdminPlugin {
-    async fn build(&self, app: &mut AppBuilder) {}
+    async fn build(&self, _app: &mut AppBuilder) {}
 
     fn name(&self) -> &str {
         "summer_ai_admin::SummerAiAdminPlugin"

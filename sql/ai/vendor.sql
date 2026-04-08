@@ -47,12 +47,12 @@ COMMENT ON COLUMN ai.vendor.update_time IS '更新时间';
 INSERT INTO ai.vendor (vendor_code, vendor_name, api_style, base_url, doc_url, metadata, vendor_sort, enabled, create_by) VALUES
     ('openai',      'OpenAI',       'openai-compatible', 'https://api.openai.com',                       'https://platform.openai.com/docs',                     '{}'::jsonb, 1,  TRUE, 'system'),
     ('anthropic',   'Anthropic',    'anthropic-native',  'https://api.anthropic.com',                    'https://docs.anthropic.com',                           '{}'::jsonb, 2,  TRUE, 'system'),
-    ('google',      'Google',       'gemini-native',     'https://generativelanguage.googleapis.com',    'https://ai.google.dev/docs',                           '{}'::jsonb, 3,  TRUE, 'system'),
-    ('deepseek',    'DeepSeek',     'openai-compatible', 'https://api.deepseek.com',                     'https://platform.deepseek.com/docs',                   '{}'::jsonb, 4,  TRUE, 'system'),
-    ('azure',       'Azure OpenAI', 'openai-compatible', '',                                              'https://learn.microsoft.com/azure/ai-services/openai', '{}'::jsonb, 5,  TRUE, 'system'),
-    ('baidu',       'Baidu (文心)', 'native',            'https://aip.baidubce.com',                     'https://cloud.baidu.com/doc/WENXINWORKSHOP',           '{}'::jsonb, 6,  TRUE, 'system'),
-    ('ali',         'Ali (通义)',   'native',            'https://dashscope.aliyuncs.com',               'https://help.aliyun.com/zh/model-studio',              '{}'::jsonb, 7,  TRUE, 'system'),
-    ('ollama',      'Ollama',       'openai-compatible', 'http://localhost:11434',                       'https://ollama.com',                                   '{}'::jsonb, 8,  TRUE, 'system'),
+    ('azure',       'Azure OpenAI', 'openai-compatible', '',                                              'https://learn.microsoft.com/azure/ai-services/openai', '{}'::jsonb, 3,  TRUE, 'system'),
+    ('baidu',       'Baidu (文心)', 'native',            'https://aip.baidubce.com',                     'https://cloud.baidu.com/doc/WENXINWORKSHOP',           '{}'::jsonb, 4,  TRUE, 'system'),
+    ('ali',         'Ali (通义)',   'native',            'https://dashscope.aliyuncs.com',               'https://help.aliyun.com/zh/model-studio',              '{}'::jsonb, 5,  TRUE, 'system'),
+    ('google',      'Google',       'gemini-native',     'https://generativelanguage.googleapis.com',    'https://ai.google.dev/docs',                           '{}'::jsonb, 6,  TRUE, 'system'),
+    ('ollama',      'Ollama',       'openai-compatible', 'http://localhost:11434',                       'https://ollama.com',                                   '{}'::jsonb, 7,  TRUE, 'system'),
+    ('deepseek',    'DeepSeek',     'openai-compatible', 'https://api.deepseek.com',                     'https://platform.deepseek.com/docs',                   '{}'::jsonb, 8,  TRUE, 'system'),
     ('groq',        'Groq',         'openai-compatible', 'https://api.groq.com/openai',                  'https://console.groq.com/docs',                        '{}'::jsonb, 9,  TRUE, 'system'),
     ('openrouter',  'OpenRouter',   'openai-compatible', 'https://openrouter.ai/api',                    'https://openrouter.ai/docs',                           '{}'::jsonb, 10, TRUE, 'system')
 ON CONFLICT (vendor_code) DO NOTHING;
