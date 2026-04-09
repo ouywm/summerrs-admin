@@ -6,8 +6,19 @@ use std::time::Instant;
 use anyhow::Context;
 use futures::Stream;
 use futures::stream::BoxStream;
+use summer_ai_billing::service::engine::BillingEngine;
+use summer_ai_core::types::common::Usage;
 
+use super::{ChatBillingContext, ChatLogContext};
 use crate::plugin::RelayStreamTaskTracker;
+use crate::service::log::LogService;
+use crate::service::shared::stream::driver::{
+    BoxFinalizeFuture, RelayStreamAdapter, RelayStreamFinalizer,
+};
+use crate::service::shared::stream::usage_tracking_finalize::{
+    UsageStreamBillingContext, UsageStreamFinalizeContext, UsageStreamFinalizeMeta,
+    UsageStreamFinalizeSettlement, UsageStreamLogContext,
+};
 use crate::service::tracking::TrackingService;
 
 const DOWNSTREAM_CLIENT_CLOSED_STATUS_CODE: i32 = 499;
@@ -18,6 +29,9 @@ struct ChatStreamProgress {
     first_token_ms: Option<i32>,
     saw_explicit_terminal_signal: bool,
     saw_any_chunk: bool,
+    last_usage: Option<Usage>,
+    estimated_completion_tokens: i32,
+    estimated_reasoning_tokens: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +44,10 @@ pub(super) struct TrackedChatSseStreamArgs {
     pub(super) inner: BoxStream<'static, anyhow::Result<summer_ai_core::stream::ChatStreamItem>>,
     pub(super) task_tracker: RelayStreamTaskTracker,
     pub(super) tracking: Option<TrackingService>,
+    pub(super) billing: Option<BillingEngine>,
+    pub(super) billing_context: Option<ChatBillingContext>,
+    pub(super) log: Option<LogService>,
+    pub(super) log_context: Option<ChatLogContext>,
     pub(super) tracked_request_id: Option<i64>,
     pub(super) tracked_execution_id: Option<i64>,
     pub(super) request_id: String,
@@ -39,147 +57,56 @@ pub(super) struct TrackedChatSseStreamArgs {
     pub(super) response_status_code: i32,
 }
 
-pub(super) struct TrackedChatSseStream {
-    inner: BoxStream<'static, anyhow::Result<summer_ai_core::stream::ChatStreamItem>>,
-    task_tracker: RelayStreamTaskTracker,
-    tracking: Option<TrackingService>,
-    tracked_request_id: Option<i64>,
-    tracked_execution_id: Option<i64>,
+type ChatTrackedInner = crate::service::shared::stream::driver::TrackedRelayStream<
+    BoxStream<'static, anyhow::Result<summer_ai_core::stream::ChatStreamItem>>,
+    ChatSseAdapter,
+    ChatStreamFinalizeContext,
+>;
+
+type ChatStreamFinalizeContext = UsageStreamFinalizeContext<ChatLogContext, ChatBillingContext>;
+
+#[derive(Clone)]
+struct ChatSseAdapter {
     request_id: String,
     started_at: Instant,
-    upstream_model: String,
-    upstream_request_id: Option<String>,
-    response_status_code: i32,
-    progress: ChatStreamProgress,
-    stream_settled: bool,
-    done_emitted: bool,
+}
+
+pub(super) struct TrackedChatSseStream {
+    inner: ChatTrackedInner,
 }
 
 impl TrackedChatSseStream {
     pub(super) fn new(args: TrackedChatSseStreamArgs) -> Self {
-        Self {
-            inner: args.inner,
-            task_tracker: args.task_tracker,
-            tracking: args.tracking,
-            tracked_request_id: args.tracked_request_id,
-            tracked_execution_id: args.tracked_execution_id,
-            request_id: args.request_id,
+        let adapter = ChatSseAdapter {
+            request_id: args.request_id.clone(),
             started_at: args.started_at,
-            upstream_model: args.upstream_model,
-            upstream_request_id: args.upstream_request_id,
-            response_status_code: args.response_status_code,
-            progress: ChatStreamProgress::default(),
-            stream_settled: false,
-            done_emitted: false,
-        }
-    }
-
-    fn observe_item(&mut self, item: &summer_ai_core::stream::ChatStreamItem) {
-        if item.is_terminal() {
-            self.progress.saw_explicit_terminal_signal = true;
-        }
-        let Some(chunk) = item.chunk_ref() else {
-            return;
         };
+        let finalizer = ChatStreamFinalizeContext::new(
+            UsageStreamFinalizeMeta::new(
+                "/v1/chat/completions",
+                "openai/chat_completions",
+                args.request_id,
+                args.upstream_model,
+                args.upstream_request_id,
+                args.response_status_code,
+            ),
+            args.started_at,
+            args.tracking,
+            args.billing,
+            args.billing_context,
+            args.log,
+            args.log_context,
+            args.tracked_request_id,
+            args.tracked_execution_id,
+        );
 
-        self.progress.saw_any_chunk = true;
-        if self.progress.first_token_ms.is_none() && chunk_contains_visible_output(chunk) {
-            self.progress.first_token_ms = Some(self.started_at.elapsed().as_millis() as i32);
-        }
-    }
-
-    fn build_finalize_future(
-        &self,
-        settlement: ChatStreamSettlement,
-    ) -> Option<impl Future<Output = ()> + Send + 'static> {
-        let tracking = self.tracking.clone()?;
-        let tracked_request_id = self.tracked_request_id;
-        let tracked_execution_id = self.tracked_execution_id;
-        let request_id = self.request_id.clone();
-        let upstream_model = self.upstream_model.clone();
-        let upstream_request_id = self.upstream_request_id.clone();
-        let response_status_code = self.response_status_code;
-        let duration_ms = self.started_at.elapsed().as_millis() as i32;
-        let first_token_ms = self.progress.first_token_ms.unwrap_or(0);
-
-        Some(async move {
-            match settlement {
-                ChatStreamSettlement::Success => {
-                    if let Some(request_pk) = tracked_request_id
-                        && let Err(error) = tracking
-                            .finish_request_stream_success(
-                                request_pk,
-                                &upstream_model,
-                                response_status_code,
-                                duration_ms,
-                                first_token_ms,
-                            )
-                            .await
-                    {
-                        tracing::warn!(request_id, error = %error, "failed to finalize request streaming success");
-                    }
-
-                    if let Some(execution_id) = tracked_execution_id
-                        && let Err(error) = tracking
-                            .finish_execution_stream_success(
-                                execution_id,
-                                upstream_request_id.as_deref(),
-                                response_status_code,
-                                duration_ms,
-                                first_token_ms,
-                            )
-                            .await
-                    {
-                        tracing::warn!(request_id, error = %error, "failed to finalize request_execution streaming success");
-                    }
-                }
-                ChatStreamSettlement::Failure {
-                    status_code,
-                    message,
-                } => {
-                    if let Some(request_pk) = tracked_request_id
-                        && let Err(error) = tracking
-                            .finish_request_stream_failure(
-                                request_pk,
-                                Some(&upstream_model),
-                                status_code,
-                                &message,
-                                None,
-                                duration_ms,
-                                first_token_ms,
-                            )
-                            .await
-                    {
-                        tracing::warn!(request_id, error = %error, "failed to finalize request streaming failure");
-                    }
-
-                    if let Some(execution_id) = tracked_execution_id
-                        && let Err(error) = tracking
-                            .finish_execution_stream_failure(
-                                execution_id,
-                                upstream_request_id.as_deref(),
-                                status_code,
-                                &message,
-                                None,
-                                duration_ms,
-                                first_token_ms,
-                            )
-                            .await
-                    {
-                        tracing::warn!(request_id, error = %error, "failed to finalize request_execution streaming failure");
-                    }
-                }
-            }
-        })
-    }
-
-    fn queue_finalize(&mut self, settlement: ChatStreamSettlement) {
-        if self.stream_settled {
-            return;
-        }
-        self.stream_settled = true;
-        if let Some(future) = self.build_finalize_future(settlement) {
-            self.task_tracker.spawn(future);
+        Self {
+            inner: crate::service::shared::stream::driver::TrackedRelayStream::new(
+                args.inner,
+                adapter,
+                args.task_tracker,
+                finalizer,
+            ),
         }
     }
 }
@@ -188,72 +115,7 @@ impl Stream for TrackedChatSseStream {
     type Item = Result<bytes::Bytes, io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
-        if self.done_emitted {
-            return Poll::Ready(None);
-        }
-
-        loop {
-            match Pin::new(&mut self.inner).poll_next(cx) {
-                Poll::Ready(Some(Ok(item))) => {
-                    self.observe_item(&item);
-                    let is_terminal = item.is_terminal();
-                    let Some(chunk) = item.into_chunk() else {
-                        if is_terminal {
-                            continue;
-                        }
-                        continue;
-                    };
-
-                    match build_chat_chunk_sse_frame(&chunk) {
-                        Ok(frame) => return Poll::Ready(Some(Ok(frame))),
-                        Err(error) => {
-                            let message = error.to_string();
-                            self.queue_finalize(ChatStreamSettlement::Failure {
-                                status_code: 0,
-                                message: message.clone(),
-                            });
-                            self.done_emitted = true;
-                            return Poll::Ready(Some(Err(io::Error::other(message))));
-                        }
-                    }
-                }
-                Poll::Ready(Some(Err(error))) => {
-                    tracing::warn!(request_id = self.request_id.as_str(), error = %error, "chat stream chunk read failed");
-                    let settlement = resolve_chat_stream_settlement(&self.progress, Some(&error));
-                    let message = error.to_string();
-                    self.queue_finalize(settlement);
-                    self.done_emitted = true;
-                    return Poll::Ready(Some(Err(io::Error::other(message))));
-                }
-                Poll::Ready(None) => {
-                    let settlement = resolve_chat_stream_settlement(&self.progress, None);
-                    self.queue_finalize(settlement.clone());
-                    self.done_emitted = true;
-                    match settlement {
-                        ChatStreamSettlement::Success => {
-                            return Poll::Ready(Some(Ok(build_done_sse_frame())));
-                        }
-                        ChatStreamSettlement::Failure { .. } => {
-                            return Poll::Ready(None);
-                        }
-                    }
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
-}
-
-impl Drop for TrackedChatSseStream {
-    fn drop(&mut self) {
-        if self.stream_settled {
-            return;
-        }
-
-        self.queue_finalize(ChatStreamSettlement::Failure {
-            status_code: DOWNSTREAM_CLIENT_CLOSED_STATUS_CODE,
-            message: DOWNSTREAM_CLIENT_CLOSED_MESSAGE.to_string(),
-        });
+        Pin::new(&mut self.inner).poll_next(cx)
     }
 }
 
@@ -266,6 +128,22 @@ fn build_chat_chunk_sse_frame(
 
 fn build_done_sse_frame() -> bytes::Bytes {
     bytes::Bytes::from_static(b"data: [DONE]\n\n")
+}
+
+fn resolve_final_chat_stream_usage(
+    progress: &ChatStreamProgress,
+    billing: &ChatBillingContext,
+) -> Usage {
+    progress.last_usage.clone().unwrap_or_else(|| Usage {
+        prompt_tokens: billing.estimated_prompt_tokens.max(0),
+        completion_tokens: progress.estimated_completion_tokens.max(0),
+        total_tokens: billing
+            .estimated_prompt_tokens
+            .max(0)
+            .saturating_add(progress.estimated_completion_tokens.max(0)),
+        cached_tokens: 0,
+        reasoning_tokens: progress.estimated_reasoning_tokens.max(0),
+    })
 }
 
 fn chunk_contains_visible_output(chunk: &summer_ai_core::types::chat::ChatCompletionChunk) -> bool {
@@ -286,6 +164,54 @@ fn chunk_contains_visible_output(chunk: &summer_ai_core::types::chat::ChatComple
                 .as_ref()
                 .is_some_and(|calls| !calls.is_empty())
     })
+}
+
+fn estimate_chunk_output_tokens(chunk: &summer_ai_core::types::chat::ChatCompletionChunk) -> i32 {
+    chunk
+        .choices
+        .iter()
+        .map(estimate_choice_output_tokens)
+        .sum()
+}
+
+fn estimate_choice_output_tokens(choice: &summer_ai_core::types::chat::ChunkChoice) -> i32 {
+    estimate_text_tokens(choice.delta.content.as_deref().unwrap_or_default())
+        + choice
+            .delta
+            .tool_calls
+            .as_ref()
+            .map(|calls| {
+                estimate_text_tokens(
+                    &serde_json::to_string(calls).unwrap_or_else(|_| String::new()),
+                )
+            })
+            .unwrap_or(0)
+}
+
+fn estimate_chunk_reasoning_tokens(
+    chunk: &summer_ai_core::types::chat::ChatCompletionChunk,
+) -> i32 {
+    chunk
+        .choices
+        .iter()
+        .map(|choice| {
+            estimate_text_tokens(
+                choice
+                    .delta
+                    .reasoning_content
+                    .as_deref()
+                    .unwrap_or_default(),
+            )
+        })
+        .sum()
+}
+
+fn estimate_text_tokens(text: &str) -> i32 {
+    if text.is_empty() {
+        return 0;
+    }
+
+    (text.chars().count() as f64 / 4.0).ceil() as i32
 }
 
 fn resolve_chat_stream_settlement(
@@ -314,21 +240,182 @@ fn resolve_chat_stream_settlement(
     }
 }
 
+impl RelayStreamAdapter for ChatSseAdapter {
+    type Item = summer_ai_core::stream::ChatStreamItem;
+    type Progress = ChatStreamProgress;
+    type Settlement = ChatStreamSettlement;
+
+    fn request_id(&self) -> &str {
+        self.request_id.as_str()
+    }
+
+    fn observe(
+        &mut self,
+        progress: &mut Self::Progress,
+        item: Self::Item,
+        pending_frames: &mut std::collections::VecDeque<bytes::Bytes>,
+    ) -> anyhow::Result<()> {
+        if item.is_terminal() {
+            progress.saw_explicit_terminal_signal = true;
+        }
+        let Some(chunk) = item.into_chunk() else {
+            return Ok(());
+        };
+
+        progress.saw_any_chunk = true;
+        if let Some(usage) = chunk.usage.clone() {
+            progress.last_usage = Some(usage);
+        }
+        progress.estimated_completion_tokens += estimate_chunk_output_tokens(&chunk);
+        progress.estimated_reasoning_tokens += estimate_chunk_reasoning_tokens(&chunk);
+        if progress.first_token_ms.is_none() && chunk_contains_visible_output(&chunk) {
+            progress.first_token_ms = Some(self.started_at.elapsed().as_millis() as i32);
+        }
+        pending_frames.push_back(build_chat_chunk_sse_frame(&chunk)?);
+        Ok(())
+    }
+
+    fn settle_on_error(
+        &self,
+        progress: &Self::Progress,
+        error: &anyhow::Error,
+    ) -> Self::Settlement {
+        resolve_chat_stream_settlement(progress, Some(error))
+    }
+
+    fn settle_on_eof(
+        &mut self,
+        progress: &Self::Progress,
+        pending_frames: &mut std::collections::VecDeque<bytes::Bytes>,
+    ) -> anyhow::Result<Self::Settlement> {
+        let settlement = resolve_chat_stream_settlement(progress, None);
+        if settlement == ChatStreamSettlement::Success {
+            pending_frames.push_back(build_done_sse_frame());
+        }
+        Ok(settlement)
+    }
+
+    fn settle_on_cancel(&self) -> Self::Settlement {
+        ChatStreamSettlement::Failure {
+            status_code: DOWNSTREAM_CLIENT_CLOSED_STATUS_CODE,
+            message: DOWNSTREAM_CLIENT_CLOSED_MESSAGE.to_string(),
+        }
+    }
+}
+
+impl RelayStreamFinalizer<ChatStreamProgress, ChatStreamSettlement> for ChatStreamFinalizeContext {
+    fn build_finalize_future(
+        &self,
+        progress: &ChatStreamProgress,
+        settlement: ChatStreamSettlement,
+    ) -> Option<BoxFinalizeFuture> {
+        let first_token_ms = progress.first_token_ms.unwrap_or(0);
+        let final_usage = self
+            .billing_context()
+            .as_ref()
+            .map(|billing_context| resolve_final_chat_stream_usage(progress, billing_context))
+            .or_else(|| progress.last_usage.clone());
+
+        let shared_settlement = match settlement {
+            ChatStreamSettlement::Success => UsageStreamFinalizeSettlement::success(
+                self.meta().upstream_model.clone(),
+                first_token_ms,
+                final_usage,
+            ),
+            ChatStreamSettlement::Failure {
+                status_code,
+                message,
+            } => UsageStreamFinalizeSettlement::failure(
+                self.meta().upstream_model.clone(),
+                first_token_ms,
+                status_code,
+                message,
+            ),
+        };
+
+        self.build_usage_finalize_future(shared_settlement)
+    }
+}
+
+impl UsageStreamBillingContext for ChatBillingContext {
+    fn token_id(&self) -> i64 {
+        self.token_id
+    }
+
+    fn unlimited_quota(&self) -> bool {
+        self.unlimited_quota
+    }
+
+    fn group_ratio(&self) -> f64 {
+        self.group_ratio
+    }
+
+    fn pre_consumed(&self) -> i64 {
+        self.pre_consumed
+    }
+
+    fn price(&self) -> &summer_ai_billing::service::channel_model_price::ResolvedModelPrice {
+        &self.price
+    }
+}
+
+impl UsageStreamLogContext for ChatLogContext {
+    fn token_info(&self) -> &crate::service::token::TokenInfo {
+        &self.token_info
+    }
+
+    fn channel_id(&self) -> i64 {
+        self.channel_id
+    }
+
+    fn channel_name(&self) -> &str {
+        self.channel_name.as_str()
+    }
+
+    fn account_id(&self) -> i64 {
+        self.account_id
+    }
+
+    fn account_name(&self) -> &str {
+        self.account_name.as_str()
+    }
+
+    fn execution_id(&self) -> i64 {
+        self.execution_id
+    }
+
+    fn requested_model(&self) -> &str {
+        self.requested_model.as_str()
+    }
+
+    fn client_ip(&self) -> &str {
+        self.client_ip.as_str()
+    }
+
+    fn user_agent(&self) -> &str {
+        self.user_agent.as_str()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
 
     use futures::StreamExt as _;
     use futures::stream;
+    use summer_ai_billing::service::channel_model_price::ResolvedModelPrice;
     use summer_ai_core::stream::ChatStreamItem;
     use summer_ai_core::types::chat::ChatCompletionChunk;
     use summer_ai_core::types::common::Delta;
+    use summer_ai_model::entity::channel_model_price::ChannelModelPriceBillingMode;
 
     use super::{
         ChatStreamProgress, ChatStreamSettlement, TrackedChatSseStream, TrackedChatSseStreamArgs,
         build_chat_chunk_sse_frame, chunk_contains_visible_output, resolve_chat_stream_settlement,
+        resolve_final_chat_stream_usage,
     };
     use crate::plugin::RelayStreamTaskTracker;
+    use crate::service::chat::ChatBillingContext;
 
     #[test]
     fn build_chat_chunk_sse_frame_wraps_json_in_data_prefix() {
@@ -466,6 +553,10 @@ mod tests {
             .boxed(),
             task_tracker: RelayStreamTaskTracker::new(),
             tracking: None,
+            billing: None,
+            billing_context: None,
+            log: None,
+            log_context: None,
             tracked_request_id: None,
             tracked_execution_id: None,
             request_id: "req_test_stream_error".into(),
@@ -506,6 +597,10 @@ mod tests {
             inner: stream::iter(vec![Ok(usage_only_chunk)]).boxed(),
             task_tracker: RelayStreamTaskTracker::new(),
             tracking: None,
+            billing: None,
+            billing_context: None,
+            log: None,
+            log_context: None,
             tracked_request_id: None,
             tracked_execution_id: None,
             request_id: "req_test_usage_only".into(),
@@ -525,5 +620,39 @@ mod tests {
             std::str::from_utf8(items[1].as_ref().expect("done frame")).expect("utf8"),
             "data: [DONE]\n\n"
         );
+    }
+
+    #[test]
+    fn resolve_final_chat_stream_usage_estimates_usage_when_terminal_chunk_has_no_usage() {
+        let billing = ChatBillingContext {
+            token_id: 1,
+            unlimited_quota: false,
+            group_ratio: 1.0,
+            pre_consumed: 10,
+            estimated_prompt_tokens: 12,
+            price: ResolvedModelPrice {
+                model_name: "gpt-5.4".into(),
+                billing_mode: ChannelModelPriceBillingMode::ByToken,
+                currency: "USD".into(),
+                input_ratio: 1.0,
+                output_ratio: 1.0,
+                cached_input_ratio: 0.0,
+                reasoning_ratio: 0.0,
+                supported_endpoints: vec!["chat".into()],
+                price_reference: String::new(),
+            },
+        };
+        let progress = ChatStreamProgress {
+            estimated_completion_tokens: 18,
+            estimated_reasoning_tokens: 5,
+            ..Default::default()
+        };
+
+        let usage = resolve_final_chat_stream_usage(&progress, &billing);
+
+        assert_eq!(usage.prompt_tokens, 12);
+        assert_eq!(usage.completion_tokens, 18);
+        assert_eq!(usage.reasoning_tokens, 5);
+        assert_eq!(usage.total_tokens, 30);
     }
 }

@@ -1,9 +1,20 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use sea_orm::DatabaseConnection;
 use summer::app::AppBuilder;
 use summer::async_trait;
 use summer::plugin::{ComponentRegistry, Plugin};
 
 pub struct EntitySchemaSyncPlugin;
+
+type SchemaSyncFuture<'a> = Pin<Box<dyn Future<Output = Result<(), sea_orm::DbErr>> + Send + 'a>>;
+
+struct RegisteredSchemaSync {
+    name: &'static str,
+    prefix: fn() -> String,
+    sync: for<'a> fn(&'a DatabaseConnection) -> SchemaSyncFuture<'a>,
+}
 
 #[async_trait]
 impl Plugin for EntitySchemaSyncPlugin {
@@ -22,11 +33,9 @@ impl Plugin for EntitySchemaSyncPlugin {
                 "DatabaseConnection not found; ensure SeaOrmPlugin is registered before EntitySchemaSyncPlugin",
             );
 
-        let system_prefix = summer_system_model::schema_registry_prefix();
-        finish_sync(system_prefix, summer_system_model::sync_schema(&db).await);
-
-        let ai_prefix = summer_ai_model::schema_registry_prefix();
-        finish_sync(ai_prefix, summer_ai_model::sync_schema(&db).await);
+        for schema in registered_schema_syncs() {
+            sync_registered_schema(&db, schema).await;
+        }
     }
 
     fn name(&self) -> &str {
@@ -38,10 +47,39 @@ impl Plugin for EntitySchemaSyncPlugin {
     }
 }
 
-fn finish_sync(prefix: String, result: Result<(), sea_orm::DbErr>) {
+fn registered_schema_syncs() -> [RegisteredSchemaSync; 2] {
+    [
+        RegisteredSchemaSync {
+            name: "system",
+            prefix: summer_system_model::schema_registry_prefix,
+            sync: system_schema_sync,
+        },
+        RegisteredSchemaSync {
+            name: "ai",
+            prefix: summer_ai_model::schema_registry_prefix,
+            sync: ai_schema_sync,
+        },
+    ]
+}
+
+async fn sync_registered_schema(db: &DatabaseConnection, schema: RegisteredSchemaSync) {
+    let prefix = (schema.prefix)();
+    let result = (schema.sync)(db).await;
     result.unwrap_or_else(|error| panic!("entity schema sync failed for {prefix}: {error}"));
 
-    tracing::info!("Entity schema synced from entity definitions: {prefix}");
+    tracing::info!(
+        schema = schema.name,
+        prefix,
+        "Entity schema synced from entity definitions"
+    );
+}
+
+fn system_schema_sync(db: &DatabaseConnection) -> SchemaSyncFuture<'_> {
+    Box::pin(summer_system_model::sync_schema(db))
+}
+
+fn ai_schema_sync(db: &DatabaseConnection) -> SchemaSyncFuture<'_> {
+    Box::pin(summer_ai_model::sync_schema(db))
 }
 
 fn schema_sync_env_enabled() -> bool {
@@ -54,4 +92,28 @@ fn schema_sync_env_enabled() -> bool {
                 "1" | "true" | "yes"
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{registered_schema_syncs, schema_sync_env_enabled};
+
+    #[test]
+    fn registered_schema_syncs_contains_system_and_ai() {
+        let syncs = registered_schema_syncs();
+        assert_eq!(syncs.len(), 2);
+        assert_eq!(syncs[0].name, "system");
+        assert_eq!(syncs[1].name, "ai");
+    }
+
+    #[test]
+    fn schema_sync_env_enabled_accepts_truthy_values() {
+        unsafe {
+            std::env::set_var("SUMMER_ENTITY_SCHEMA_SYNC", "true");
+        }
+        assert!(schema_sync_env_enabled());
+        unsafe {
+            std::env::remove_var("SUMMER_ENTITY_SCHEMA_SYNC");
+        }
+    }
 }
