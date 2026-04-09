@@ -27,7 +27,12 @@ use crate::service::shared::request_prep::{
     PreparedRequestMeta, prepare_request_meta, try_create_tracked_request,
 };
 use crate::service::token::TokenInfo;
-use crate::service::tracking::TrackingService;
+use crate::service::tracking::{
+    CreateTraceTracking, TrackingService, build_request_trace_failure_metadata,
+    build_request_trace_success_metadata, execution_trace_span_failure_metadata,
+    execution_trace_span_success_metadata, request_trace_failure_metadata,
+    request_trace_success_metadata,
+};
 
 mod non_stream;
 mod support;
@@ -53,6 +58,7 @@ pub struct EmbeddingsRelayService {
 impl EmbeddingsRelayService {
     fn error_context<'a>(
         &'a self,
+        trace_id: Option<i64>,
         tracked_request: Option<&'a request::Model>,
         tracked_execution: Option<&'a request_execution::Model>,
         log_context: Option<&'a EmbeddingsLogContext>,
@@ -62,6 +68,7 @@ impl EmbeddingsRelayService {
     ) -> EmbeddingsErrorContext<'a> {
         EmbeddingsErrorContext {
             service: self,
+            trace_id,
             tracked_request,
             tracked_execution,
             log_context,
@@ -78,14 +85,40 @@ impl EmbeddingsRelayService {
     ) -> Result<Response, OpenAiErrorResponse> {
         let PreparedRequestMeta {
             request_id,
+            trace_key,
             started_at,
         } = prepare_request_meta(&ctx.token_info, "embeddings", &request.model)?;
         let tracking = &self.tracking;
+
+        let trace_id = match tracking
+            .create_trace(CreateTraceTracking {
+                trace_key: &trace_key,
+                root_request_id: &request_id,
+                user_id: ctx.token_info.user_id,
+                metadata: serde_json::json!({
+                    "endpoint": "/v1/embeddings",
+                    "request_format": "openai/embeddings",
+                    "requested_model": request.model,
+                    "is_stream": false,
+                    "channel_group": ctx.token_info.group,
+                    "client_ip": ctx.client_ip,
+                    "user_agent": ctx.user_agent,
+                }),
+            })
+            .await
+        {
+            Ok(model) => Some(model.id),
+            Err(error) => {
+                tracing::warn!(request_id, error = %error, "failed to create trace tracking row");
+                None
+            }
+        };
 
         let tracked_request = try_create_tracked_request(
             &request_id,
             tracking.create_embeddings_request(
                 &request_id,
+                trace_id.unwrap_or(0),
                 &ctx.token_info,
                 &request,
                 &ctx.client_ip,
@@ -95,6 +128,7 @@ impl EmbeddingsRelayService {
         )
         .await;
         let base_error_ctx = self.error_context(
+            trace_id,
             tracked_request.as_ref(),
             None,
             None,
@@ -124,6 +158,7 @@ impl EmbeddingsRelayService {
             Err(error) => {
                 return Err(self
                     .error_context(
+                        trace_id,
                         tracked_request.as_ref(),
                         None,
                         None,
@@ -142,6 +177,7 @@ impl EmbeddingsRelayService {
         let estimated_prompt_tokens = estimate_input_tokens(&request.input);
         let base_request_builder = {
             let error_ctx = self.error_context(
+                trace_id,
                 tracked_request.as_ref(),
                 None,
                 None,
@@ -176,6 +212,7 @@ impl EmbeddingsRelayService {
             &request,
             PreparedEmbeddingsRelay {
                 request_id,
+                trace_id,
                 started_at,
                 tracked_request,
                 target,

@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct PreparedEmbeddingsRelay {
     pub(super) request_id: String,
+    pub(super) trace_id: Option<i64>,
     pub(super) started_at: Instant,
     pub(super) tracked_request: Option<request::Model>,
     pub(super) target: ResolvedEmbeddingsTarget,
@@ -23,6 +24,7 @@ impl EmbeddingsRelayService {
     pub(super) async fn finish_with_error(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
         tracked_request: Option<&request::Model>,
         tracked_execution: Option<&request_execution::Model>,
         log_context: Option<&EmbeddingsLogContext>,
@@ -50,6 +52,15 @@ impl EmbeddingsRelayService {
         .await;
         self.try_finish_request_failure(
             tracking,
+            trace_id,
+            tracked_request
+                .map(|tracked_request| tracked_request.request_id.as_str())
+                .unwrap_or_default(),
+            "/v1/embeddings",
+            "openai/embeddings",
+            log_context
+                .map(|log_context| log_context.requested_model.as_str())
+                .unwrap_or_default(),
             tracked_request,
             upstream_model,
             &openai_error,
@@ -59,6 +70,7 @@ impl EmbeddingsRelayService {
         .await;
         self.try_finish_execution_failure(
             tracking,
+            tracked_request.map(|model| model.trace_id),
             tracked_execution,
             upstream_request_id,
             &openai_error,
@@ -244,6 +256,9 @@ impl EmbeddingsRelayService {
     pub(super) async fn try_finish_request_success(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
+        request_id: &str,
+        requested_model: &str,
         tracked_request: Option<&request::Model>,
         upstream_model: &str,
         response_status_code: i32,
@@ -263,12 +278,53 @@ impl EmbeddingsRelayService {
             {
                 tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update request success tracking row");
             }
+
+            if tracked_request.trace_id > 0
+                && let Err(error) = tracking
+                    .finish_trace_success(
+                        tracked_request.trace_id,
+                        request_trace_success_metadata(
+                            tracked_request,
+                            upstream_model,
+                            response_status_code,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update trace success tracking row");
+            }
+        } else if let Some(trace_id) = trace_id
+            && let Err(error) = tracking
+                .finish_trace_success(
+                    trace_id,
+                    build_request_trace_success_metadata(
+                        request_id,
+                        "/v1/embeddings",
+                        "openai/embeddings",
+                        requested_model,
+                        upstream_model,
+                        false,
+                        response_status_code,
+                        duration_ms,
+                        0,
+                    ),
+                )
+                .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to update trace success tracking row without request tracking");
         }
     }
 
     pub(super) async fn try_finish_request_failure(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
+        request_id: &str,
+        endpoint: &str,
+        request_format: &str,
+        requested_model: &str,
         tracked_request: Option<&request::Model>,
         upstream_model: Option<&str>,
         openai_error: &OpenAiErrorResponse,
@@ -289,12 +345,51 @@ impl EmbeddingsRelayService {
             {
                 tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update request failure tracking row");
             }
+
+            if tracked_request.trace_id > 0
+                && let Err(error) = tracking
+                    .finish_trace_failure(
+                        tracked_request.trace_id,
+                        request_trace_failure_metadata(
+                            tracked_request,
+                            upstream_model,
+                            openai_error.status as i32,
+                            &openai_error.error.error.message,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update trace failure tracking row");
+            }
+        } else if let Some(trace_id) = trace_id
+            && let Err(error) = tracking
+                .finish_trace_failure(
+                    trace_id,
+                    build_request_trace_failure_metadata(
+                        request_id,
+                        endpoint,
+                        request_format,
+                        requested_model,
+                        upstream_model,
+                        false,
+                        openai_error.status as i32,
+                        &openai_error.error.error.message,
+                        duration_ms,
+                        0,
+                    ),
+                )
+                .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to update trace failure tracking row without request tracking");
         }
     }
 
     pub(super) async fn try_finish_execution_success(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
         tracked_execution: Option<&request_execution::Model>,
         upstream_request_id: Option<&str>,
         response_status_code: i32,
@@ -314,12 +409,33 @@ impl EmbeddingsRelayService {
             {
                 tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update request_execution success tracking row");
             }
+
+            if trace_id.unwrap_or(0) > 0
+                && let Err(error) = tracking
+                    .finish_execution_trace_span_success(
+                        trace_id.unwrap_or_default(),
+                        tracked_execution.attempt_no,
+                        serde_json::to_value(response_body)
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                        execution_trace_span_success_metadata(
+                            tracked_execution,
+                            upstream_request_id,
+                            response_status_code,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update trace span success tracking row");
+            }
         }
     }
 
     pub(super) async fn try_finish_execution_failure(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
         tracked_execution: Option<&request_execution::Model>,
         upstream_request_id: Option<&str>,
         openai_error: &OpenAiErrorResponse,
@@ -333,12 +449,33 @@ impl EmbeddingsRelayService {
                     upstream_request_id,
                     openai_error.status as i32,
                     &openai_error.error.error.message,
-                    response_body,
+                    response_body.clone(),
                     duration_ms,
                 )
                 .await
             {
                 tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update request_execution failure tracking row");
+            }
+
+            if trace_id.unwrap_or(0) > 0
+                && let Err(error) = tracking
+                    .finish_execution_trace_span_failure(
+                        trace_id.unwrap_or_default(),
+                        tracked_execution.attempt_no,
+                        &openai_error.error.error.message,
+                        response_body.unwrap_or_else(|| serde_json::json!({})),
+                        execution_trace_span_failure_metadata(
+                            tracked_execution,
+                            upstream_request_id,
+                            openai_error.status as i32,
+                            &openai_error.error.error.message,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update trace span failure tracking row");
             }
         }
     }
@@ -375,6 +512,7 @@ pub(super) struct EmbeddingsBillingContext {
 
 pub(super) struct EmbeddingsErrorContext<'a> {
     pub(super) service: &'a EmbeddingsRelayService,
+    pub(super) trace_id: Option<i64>,
     pub(super) tracked_request: Option<&'a request::Model>,
     pub(super) tracked_execution: Option<&'a request_execution::Model>,
     pub(super) log_context: Option<&'a EmbeddingsLogContext>,
@@ -392,6 +530,7 @@ impl<'a> EmbeddingsErrorContext<'a> {
         self.service
             .finish_with_error(
                 &self.service.tracking,
+                self.trace_id,
                 self.tracked_request,
                 self.tracked_execution,
                 self.log_context,

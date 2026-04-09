@@ -25,7 +25,12 @@ use crate::service::shared::request_prep::{
     PreparedRequestMeta, prepare_request_meta, try_create_tracked_request,
 };
 use crate::service::token::TokenInfo;
-use crate::service::tracking::TrackingService;
+use crate::service::tracking::{
+    CreateTraceTracking, TrackingService, build_request_trace_failure_metadata,
+    build_request_trace_success_metadata, execution_trace_span_failure_metadata,
+    execution_trace_span_success_metadata, request_trace_failure_metadata,
+    request_trace_success_metadata,
+};
 
 mod stream;
 #[cfg(test)]
@@ -66,6 +71,7 @@ pub(crate) struct ChatLogContext {
 
 struct PreparedChatRelay {
     request_id: String,
+    trace_id: Option<i64>,
     started_at: Instant,
     tracked_request: Option<request::Model>,
     tracked_execution: Option<request_execution::Model>,
@@ -78,6 +84,8 @@ struct PreparedChatRelay {
 
 struct ChatErrorContext<'a> {
     service: &'a ChatRelayService,
+    trace_id: Option<i64>,
+    is_stream: bool,
     tracked_request: Option<&'a request::Model>,
     tracked_execution: Option<&'a request_execution::Model>,
     log_context: Option<&'a ChatLogContext>,
@@ -95,6 +103,8 @@ impl<'a> ChatErrorContext<'a> {
         self.service
             .finish_with_error(
                 &self.service.tracking,
+                self.trace_id,
+                self.is_stream,
                 self.tracked_request,
                 self.tracked_execution,
                 self.log_context,
@@ -151,6 +161,8 @@ pub struct ChatRelayService {
 impl ChatRelayService {
     fn error_context<'a>(
         &'a self,
+        trace_id: Option<i64>,
+        is_stream: bool,
         tracked_request: Option<&'a request::Model>,
         tracked_execution: Option<&'a request_execution::Model>,
         log_context: Option<&'a ChatLogContext>,
@@ -160,6 +172,8 @@ impl ChatRelayService {
     ) -> ChatErrorContext<'a> {
         ChatErrorContext {
             service: self,
+            trace_id,
+            is_stream,
             tracked_request,
             tracked_execution,
             log_context,
@@ -191,6 +205,7 @@ impl ChatRelayService {
     ) -> Result<Response, OpenAiErrorResponse> {
         let PreparedChatRelay {
             request_id,
+            trace_id,
             started_at,
             tracked_request,
             mut tracked_execution,
@@ -210,7 +225,7 @@ impl ChatRelayService {
                 tracked_execution = if let Some(tracked_request) = tracked_request.as_ref() {
                     let upstream_body =
                         build_tracking_upstream_body(request, &target.upstream_model);
-                    match self
+                    let tracked_execution = match self
                         .tracking
                         .create_chat_execution(
                             tracked_request.id,
@@ -220,7 +235,7 @@ impl ChatRelayService {
                             target.channel.id,
                             target.account.id,
                             &target.upstream_model,
-                            upstream_body,
+                            upstream_body.clone(),
                         )
                         .await
                     {
@@ -229,7 +244,28 @@ impl ChatRelayService {
                             tracing::warn!(request_id, error = %error, attempt_no, "failed to create retry request_execution tracking row");
                             None
                         }
+                    };
+
+                    if tracked_request.trace_id > 0
+                        && let Err(error) = self
+                            .tracking
+                            .create_execution_trace_span(
+                                tracked_request.trace_id,
+                                &request_id,
+                                "chat",
+                                attempt_no,
+                                &request.model,
+                                &target.upstream_model,
+                                target.channel.id,
+                                target.account.id,
+                                upstream_body,
+                            )
+                            .await
+                    {
+                        tracing::warn!(request_id, error = %error, attempt_no, "failed to create retry trace span tracking row");
                     }
+
+                    tracked_execution
                 } else {
                     None
                 };
@@ -249,6 +285,8 @@ impl ChatRelayService {
             }
 
             let error_ctx = self.error_context(
+                trace_id,
+                request.stream,
                 tracked_request.as_ref(),
                 tracked_execution.as_ref(),
                 Some(&log_context),
@@ -295,6 +333,7 @@ impl ChatRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         &self.tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         None,
                         &error,
@@ -334,6 +373,7 @@ impl ChatRelayService {
                 let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                 self.try_finish_execution_failure(
                     &self.tracking,
+                    tracked_request.as_ref().map(|model| model.trace_id),
                     tracked_execution.as_ref(),
                     upstream_response.upstream_request_id.as_deref(),
                     &error,
@@ -382,6 +422,7 @@ impl ChatRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         &self.tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         upstream_response.upstream_request_id.as_deref(),
                         &openai_error,
@@ -423,6 +464,9 @@ impl ChatRelayService {
             let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
             self.try_finish_request_success(
                 &self.tracking,
+                trace_id,
+                &request_id,
+                &request.model,
                 tracked_request.as_ref(),
                 &target.upstream_model,
                 upstream_response.status_code,
@@ -432,6 +476,7 @@ impl ChatRelayService {
             .await;
             self.try_finish_execution_success(
                 &self.tracking,
+                tracked_request.as_ref().map(|model| model.trace_id),
                 tracked_execution.as_ref(),
                 upstream_response.upstream_request_id.as_deref(),
                 upstream_response.status_code,
@@ -528,13 +573,40 @@ impl ChatRelayService {
     ) -> Result<PreparedChatRelay, OpenAiErrorResponse> {
         let PreparedRequestMeta {
             request_id,
+            trace_key,
             started_at,
         } = prepare_request_meta(&ctx.token_info, "chat", &request.model)?;
+
+        let trace_id = match self
+            .tracking
+            .create_trace(CreateTraceTracking {
+                trace_key: &trace_key,
+                root_request_id: &request_id,
+                user_id: ctx.token_info.user_id,
+                metadata: serde_json::json!({
+                    "endpoint": "/v1/chat/completions",
+                    "request_format": "openai/chat_completions",
+                    "requested_model": request.model,
+                    "is_stream": request.stream,
+                    "channel_group": ctx.token_info.group,
+                    "client_ip": ctx.client_ip,
+                    "user_agent": ctx.user_agent,
+                }),
+            })
+            .await
+        {
+            Ok(model) => Some(model.id),
+            Err(error) => {
+                tracing::warn!(request_id, error = %error, "failed to create trace tracking row");
+                None
+            }
+        };
 
         let tracked_request = try_create_tracked_request(
             &request_id,
             self.tracking.create_chat_request(
                 &request_id,
+                trace_id.unwrap_or(0),
                 &ctx.token_info,
                 request,
                 &ctx.client_ip,
@@ -544,6 +616,8 @@ impl ChatRelayService {
         )
         .await;
         let base_error_ctx = self.error_context(
+            trace_id,
+            request.stream,
             tracked_request.as_ref(),
             None,
             None,
@@ -573,6 +647,8 @@ impl ChatRelayService {
             Err(error) => {
                 return Err(self
                     .error_context(
+                        trace_id,
+                        request.stream,
                         tracked_request.as_ref(),
                         None,
                         None,
@@ -587,7 +663,7 @@ impl ChatRelayService {
 
         let tracked_execution = if let Some(tracked_request) = tracked_request.as_ref() {
             let upstream_body = build_tracking_upstream_body(request, &target.upstream_model);
-            match self
+            let tracked_execution = match self
                 .tracking
                 .create_chat_execution(
                     tracked_request.id,
@@ -597,7 +673,7 @@ impl ChatRelayService {
                     target.channel.id,
                     target.account.id,
                     &target.upstream_model,
-                    upstream_body,
+                    upstream_body.clone(),
                 )
                 .await
             {
@@ -606,7 +682,28 @@ impl ChatRelayService {
                     tracing::warn!(request_id, error = %error, "failed to create request_execution tracking row");
                     None
                 }
+            };
+
+            if let Some(trace_id) = trace_id
+                && let Err(error) = self
+                    .tracking
+                    .create_execution_trace_span(
+                        trace_id,
+                        &request_id,
+                        "chat",
+                        1,
+                        &request.model,
+                        &target.upstream_model,
+                        target.channel.id,
+                        target.account.id,
+                        upstream_body,
+                    )
+                    .await
+            {
+                tracing::warn!(request_id, error = %error, "failed to create trace span tracking row");
             }
+
+            tracked_execution
         } else {
             None
         };
@@ -628,6 +725,8 @@ impl ChatRelayService {
             OpenAiErrorResponse::unsupported_endpoint("chat endpoint is disabled")
         })?;
         let error_ctx = self.error_context(
+            trace_id,
+            request.stream,
             tracked_request.as_ref(),
             tracked_execution.as_ref(),
             Some(&log_context),
@@ -659,6 +758,7 @@ impl ChatRelayService {
 
         Ok(PreparedChatRelay {
             request_id,
+            trace_id,
             started_at,
             tracked_request,
             tracked_execution,
@@ -720,6 +820,8 @@ impl ChatRelayService {
     async fn finish_with_error(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
+        is_stream: bool,
         tracked_request: Option<&request::Model>,
         tracked_execution: Option<&request_execution::Model>,
         log_context: Option<&ChatLogContext>,
@@ -746,6 +848,16 @@ impl ChatRelayService {
         .await;
         self.try_finish_request_failure(
             tracking,
+            trace_id,
+            tracked_request
+                .map(|tracked_request| tracked_request.request_id.as_str())
+                .unwrap_or_default(),
+            "/v1/chat/completions",
+            "openai/chat_completions",
+            log_context
+                .map(|log_context| log_context.requested_model.as_str())
+                .unwrap_or_default(),
+            is_stream,
             tracked_request,
             upstream_model,
             &openai_error,
@@ -755,6 +867,7 @@ impl ChatRelayService {
         .await;
         self.try_finish_execution_failure(
             tracking,
+            tracked_request.map(|model| model.trace_id),
             tracked_execution,
             upstream_request_id,
             &openai_error,
@@ -901,6 +1014,9 @@ impl ChatRelayService {
     async fn try_finish_request_success(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
+        request_id: &str,
+        requested_model: &str,
         tracked_request: Option<&request::Model>,
         upstream_model: &str,
         response_status_code: i32,
@@ -920,12 +1036,54 @@ impl ChatRelayService {
             {
                 tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update request success tracking row");
             }
+
+            if tracked_request.trace_id > 0
+                && let Err(error) = tracking
+                    .finish_trace_success(
+                        tracked_request.trace_id,
+                        request_trace_success_metadata(
+                            tracked_request,
+                            upstream_model,
+                            response_status_code,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update trace success tracking row");
+            }
+        } else if let Some(trace_id) = trace_id
+            && let Err(error) = tracking
+                .finish_trace_success(
+                    trace_id,
+                    build_request_trace_success_metadata(
+                        request_id,
+                        "/v1/chat/completions",
+                        "openai/chat_completions",
+                        requested_model,
+                        upstream_model,
+                        false,
+                        response_status_code,
+                        duration_ms,
+                        0,
+                    ),
+                )
+                .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to update trace success tracking row without request tracking");
         }
     }
 
     async fn try_finish_request_failure(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
+        request_id: &str,
+        endpoint: &str,
+        request_format: &str,
+        requested_model: &str,
+        is_stream: bool,
         tracked_request: Option<&request::Model>,
         upstream_model: Option<&str>,
         openai_error: &OpenAiErrorResponse,
@@ -946,12 +1104,51 @@ impl ChatRelayService {
             {
                 tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update request failure tracking row");
             }
+
+            if tracked_request.trace_id > 0
+                && let Err(error) = tracking
+                    .finish_trace_failure(
+                        tracked_request.trace_id,
+                        request_trace_failure_metadata(
+                            tracked_request,
+                            upstream_model,
+                            openai_error.status as i32,
+                            &openai_error.error.error.message,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update trace failure tracking row");
+            }
+        } else if let Some(trace_id) = trace_id
+            && let Err(error) = tracking
+                .finish_trace_failure(
+                    trace_id,
+                    build_request_trace_failure_metadata(
+                        request_id,
+                        endpoint,
+                        request_format,
+                        requested_model,
+                        upstream_model,
+                        is_stream,
+                        openai_error.status as i32,
+                        &openai_error.error.error.message,
+                        duration_ms,
+                        0,
+                    ),
+                )
+                .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to update trace failure tracking row without request tracking");
         }
     }
 
     async fn try_finish_execution_success(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
         tracked_execution: Option<&request_execution::Model>,
         upstream_request_id: Option<&str>,
         response_status_code: i32,
@@ -971,12 +1168,33 @@ impl ChatRelayService {
             {
                 tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update request_execution success tracking row");
             }
+
+            if trace_id.unwrap_or(0) > 0
+                && let Err(error) = tracking
+                    .finish_execution_trace_span_success(
+                        trace_id.unwrap_or_default(),
+                        tracked_execution.attempt_no,
+                        serde_json::to_value(response_body)
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                        execution_trace_span_success_metadata(
+                            tracked_execution,
+                            upstream_request_id,
+                            response_status_code,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update trace span success tracking row");
+            }
         }
     }
 
     async fn try_finish_execution_failure(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
         tracked_execution: Option<&request_execution::Model>,
         upstream_request_id: Option<&str>,
         openai_error: &OpenAiErrorResponse,
@@ -990,12 +1208,33 @@ impl ChatRelayService {
                     upstream_request_id,
                     openai_error.status as i32,
                     &openai_error.error.error.message,
-                    response_body,
+                    response_body.clone(),
                     duration_ms,
                 )
                 .await
             {
                 tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update request_execution failure tracking row");
+            }
+
+            if trace_id.unwrap_or(0) > 0
+                && let Err(error) = tracking
+                    .finish_execution_trace_span_failure(
+                        trace_id.unwrap_or_default(),
+                        tracked_execution.attempt_no,
+                        &openai_error.error.error.message,
+                        response_body.unwrap_or_else(|| serde_json::json!({})),
+                        execution_trace_span_failure_metadata(
+                            tracked_execution,
+                            upstream_request_id,
+                            openai_error.status as i32,
+                            &openai_error.error.error.message,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update trace span failure tracking row");
             }
         }
     }

@@ -9,6 +9,7 @@ use crate::service::token::TokenInfo;
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedRequestMeta {
     pub(crate) request_id: String,
+    pub(crate) trace_key: String,
     pub(crate) started_at: Instant,
 }
 
@@ -16,6 +17,7 @@ impl PreparedRequestMeta {
     pub(crate) fn new() -> Self {
         Self {
             request_id: format!("req_{}", Uuid::new_v4().simple()),
+            trace_key: format!("trace_{}", Uuid::new_v4().simple()),
             started_at: Instant::now(),
         }
     }
@@ -75,6 +77,7 @@ mod tests {
     fn prepared_request_meta_uses_req_prefix() {
         let meta = PreparedRequestMeta::new();
         assert!(meta.request_id.starts_with("req_"));
+        assert!(meta.trace_key.starts_with("trace_"));
     }
 
     #[test]

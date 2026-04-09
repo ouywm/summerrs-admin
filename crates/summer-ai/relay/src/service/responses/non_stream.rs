@@ -13,6 +13,7 @@ impl ResponsesRelayService {
     ) -> Result<Response, OpenAiErrorResponse> {
         let PreparedResponsesRelay {
             request_id,
+            trace_id,
             started_at,
             tracked_request,
             mut tracked_execution,
@@ -33,7 +34,7 @@ impl ResponsesRelayService {
                 tracked_execution = if let Some(tracked_request) = tracked_request.as_ref() {
                     let upstream_body =
                         build_tracking_upstream_body(request, &target.upstream_model);
-                    match tracking
+                    let tracked_execution = match tracking
                         .create_responses_execution(
                             tracked_request.id,
                             &request_id,
@@ -42,7 +43,7 @@ impl ResponsesRelayService {
                             target.channel.id,
                             target.account.id,
                             &target.upstream_model,
-                            upstream_body,
+                            upstream_body.clone(),
                         )
                         .await
                     {
@@ -51,7 +52,27 @@ impl ResponsesRelayService {
                             tracing::warn!(request_id, error = %error, attempt_no, "failed to create retry request_execution tracking row");
                             None
                         }
+                    };
+
+                    if tracked_request.trace_id > 0
+                        && let Err(error) = tracking
+                            .create_execution_trace_span(
+                                tracked_request.trace_id,
+                                &request_id,
+                                "responses",
+                                attempt_no,
+                                &request.model,
+                                &target.upstream_model,
+                                target.channel.id,
+                                target.account.id,
+                                upstream_body,
+                            )
+                            .await
+                    {
+                        tracing::warn!(request_id, error = %error, attempt_no, "failed to create retry trace span tracking row");
                     }
+
+                    tracked_execution
                 } else {
                     None
                 };
@@ -71,6 +92,8 @@ impl ResponsesRelayService {
             }
 
             let error_ctx = self.error_context(
+                trace_id,
+                request.stream,
                 tracked_request.as_ref(),
                 tracked_execution.as_ref(),
                 Some(&log_context),
@@ -117,6 +140,7 @@ impl ResponsesRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         None,
                         &error,
@@ -156,6 +180,7 @@ impl ResponsesRelayService {
                 let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                 self.try_finish_execution_failure(
                     tracking,
+                    tracked_request.as_ref().map(|model| model.trace_id),
                     tracked_execution.as_ref(),
                     upstream_response.upstream_request_id.as_deref(),
                     &error,
@@ -208,6 +233,7 @@ impl ResponsesRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         upstream_response.upstream_request_id.as_deref(),
                         &openai_error,
@@ -249,6 +275,9 @@ impl ResponsesRelayService {
             let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
             self.try_finish_request_success(
                 tracking,
+                trace_id,
+                &request_id,
+                &request.model,
                 tracked_request.as_ref(),
                 &target.upstream_model,
                 upstream_response.status_code,
@@ -258,6 +287,7 @@ impl ResponsesRelayService {
             .await;
             self.try_finish_execution_success(
                 tracking,
+                tracked_request.as_ref().map(|model| model.trace_id),
                 tracked_execution.as_ref(),
                 upstream_response.upstream_request_id.as_deref(),
                 upstream_response.status_code,

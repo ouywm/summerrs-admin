@@ -34,7 +34,12 @@ use crate::service::shared::request_prep::{
     PreparedRequestMeta, prepare_request_meta, try_create_tracked_request,
 };
 use crate::service::token::TokenInfo;
-use crate::service::tracking::TrackingService;
+use crate::service::tracking::{
+    CreateTraceTracking, TrackingService, build_request_trace_failure_metadata,
+    build_request_trace_success_metadata, execution_trace_span_failure_metadata,
+    execution_trace_span_success_metadata, request_trace_failure_metadata,
+    request_trace_success_metadata,
+};
 use summer_ai_model::entity::request;
 use summer_ai_model::entity::request_execution;
 
@@ -64,6 +69,8 @@ pub struct ResponsesRelayService {
 impl ResponsesRelayService {
     fn error_context<'a>(
         &'a self,
+        trace_id: Option<i64>,
+        is_stream: bool,
         tracked_request: Option<&'a request::Model>,
         tracked_execution: Option<&'a request_execution::Model>,
         log_context: Option<&'a ResponsesLogContext>,
@@ -73,6 +80,8 @@ impl ResponsesRelayService {
     ) -> ResponsesErrorContext<'a> {
         ResponsesErrorContext {
             service: self,
+            trace_id,
+            is_stream,
             tracked_request,
             tracked_execution,
             log_context,

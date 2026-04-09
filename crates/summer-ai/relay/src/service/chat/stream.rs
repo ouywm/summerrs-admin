@@ -30,8 +30,8 @@ use crate::service::shared::stream::driver::{
     BoxFinalizeFuture, RelayStreamAdapter, RelayStreamFinalizer,
 };
 use crate::service::shared::stream::usage_tracking_finalize::{
-    UsageStreamBillingContext, UsageStreamFinalizeContext, UsageStreamFinalizeMeta,
-    UsageStreamFinalizeSettlement, UsageStreamLogContext,
+    UsageStreamBillingSnapshot, UsageStreamFinalizeContext, UsageStreamFinalizeMeta,
+    UsageStreamFinalizeSettlement, UsageStreamLogSnapshot,
 };
 use crate::service::tracking::TrackingService;
 
@@ -65,6 +65,8 @@ pub(super) struct TrackedChatSseStreamArgs {
     pub(super) tracked_request_id: Option<i64>,
     pub(super) tracked_execution_id: Option<i64>,
     pub(super) request_id: String,
+    pub(super) requested_model: String,
+    pub(super) trace_id: Option<i64>,
     pub(super) started_at: Instant,
     pub(super) upstream_model: String,
     pub(super) upstream_request_id: Option<String>,
@@ -77,7 +79,7 @@ type ChatTrackedInner = crate::service::shared::stream::driver::TrackedRelayStre
     ChatStreamFinalizeContext,
 >;
 
-type ChatStreamFinalizeContext = UsageStreamFinalizeContext<ChatLogContext, ChatBillingContext>;
+type ChatStreamFinalizeContext = UsageStreamFinalizeContext;
 
 #[derive(Clone)]
 struct ChatSseAdapter {
@@ -100,6 +102,7 @@ impl TrackedChatSseStream {
                 "/v1/chat/completions",
                 "openai/chat_completions",
                 args.request_id,
+                args.requested_model,
                 args.upstream_model,
                 args.upstream_request_id,
                 args.response_status_code,
@@ -107,9 +110,10 @@ impl TrackedChatSseStream {
             args.started_at,
             args.tracking,
             args.billing,
-            args.billing_context,
+            args.billing_context.map(build_chat_billing_snapshot),
             args.log,
-            args.log_context,
+            args.log_context.map(build_chat_log_snapshot),
+            args.trace_id,
             args.tracked_request_id,
             args.tracked_execution_id,
         );
@@ -146,7 +150,7 @@ fn build_done_sse_frame() -> bytes::Bytes {
 
 fn resolve_final_chat_stream_usage(
     progress: &ChatStreamProgress,
-    billing: &ChatBillingContext,
+    billing: &UsageStreamBillingSnapshot,
 ) -> Usage {
     progress.last_usage.clone().unwrap_or_else(|| Usage {
         prompt_tokens: billing.estimated_prompt_tokens.max(0),
@@ -351,63 +355,28 @@ impl RelayStreamFinalizer<ChatStreamProgress, ChatStreamSettlement> for ChatStre
     }
 }
 
-impl UsageStreamBillingContext for ChatBillingContext {
-    fn token_id(&self) -> i64 {
-        self.token_id
-    }
-
-    fn unlimited_quota(&self) -> bool {
-        self.unlimited_quota
-    }
-
-    fn group_ratio(&self) -> f64 {
-        self.group_ratio
-    }
-
-    fn pre_consumed(&self) -> i64 {
-        self.pre_consumed
-    }
-
-    fn price(&self) -> &summer_ai_billing::service::channel_model_price::ResolvedModelPrice {
-        &self.price
+fn build_chat_billing_snapshot(context: ChatBillingContext) -> UsageStreamBillingSnapshot {
+    UsageStreamBillingSnapshot {
+        token_id: context.token_id,
+        unlimited_quota: context.unlimited_quota,
+        group_ratio: context.group_ratio,
+        pre_consumed: context.pre_consumed,
+        estimated_prompt_tokens: context.estimated_prompt_tokens,
+        price: context.price,
     }
 }
 
-impl UsageStreamLogContext for ChatLogContext {
-    fn token_info(&self) -> &crate::service::token::TokenInfo {
-        &self.token_info
-    }
-
-    fn channel_id(&self) -> i64 {
-        self.channel_id
-    }
-
-    fn channel_name(&self) -> &str {
-        self.channel_name.as_str()
-    }
-
-    fn account_id(&self) -> i64 {
-        self.account_id
-    }
-
-    fn account_name(&self) -> &str {
-        self.account_name.as_str()
-    }
-
-    fn execution_id(&self) -> i64 {
-        self.execution_id
-    }
-
-    fn requested_model(&self) -> &str {
-        self.requested_model.as_str()
-    }
-
-    fn client_ip(&self) -> &str {
-        self.client_ip.as_str()
-    }
-
-    fn user_agent(&self) -> &str {
-        self.user_agent.as_str()
+fn build_chat_log_snapshot(context: ChatLogContext) -> UsageStreamLogSnapshot {
+    UsageStreamLogSnapshot {
+        token_info: context.token_info,
+        channel_id: context.channel_id,
+        channel_name: context.channel_name,
+        account_id: context.account_id,
+        account_name: context.account_name,
+        execution_id: context.execution_id,
+        requested_model: context.requested_model,
+        client_ip: context.client_ip,
+        user_agent: context.user_agent,
     }
 }
 
@@ -420,6 +389,7 @@ impl ChatRelayService {
     ) -> Result<Response, OpenAiErrorResponse> {
         let PreparedChatRelay {
             request_id,
+            trace_id,
             started_at,
             tracked_request,
             mut tracked_execution,
@@ -439,7 +409,7 @@ impl ChatRelayService {
                 tracked_execution = if let Some(tracked_request) = tracked_request.as_ref() {
                     let upstream_body =
                         build_tracking_upstream_body(request, &target.upstream_model);
-                    match self
+                    let tracked_execution = match self
                         .tracking
                         .create_chat_execution(
                             tracked_request.id,
@@ -449,7 +419,7 @@ impl ChatRelayService {
                             target.channel.id,
                             target.account.id,
                             &target.upstream_model,
-                            upstream_body,
+                            upstream_body.clone(),
                         )
                         .await
                     {
@@ -458,7 +428,28 @@ impl ChatRelayService {
                             tracing::warn!(request_id, error = %error, attempt_no, "failed to create retry request_execution tracking row");
                             None
                         }
+                    };
+
+                    if tracked_request.trace_id > 0
+                        && let Err(error) = self
+                            .tracking
+                            .create_execution_trace_span(
+                                tracked_request.trace_id,
+                                &request_id,
+                                "chat",
+                                attempt_no,
+                                &request.model,
+                                &target.upstream_model,
+                                target.channel.id,
+                                target.account.id,
+                                upstream_body,
+                            )
+                            .await
+                    {
+                        tracing::warn!(request_id, error = %error, attempt_no, "failed to create retry trace span tracking row");
                     }
+
+                    tracked_execution
                 } else {
                     None
                 };
@@ -478,6 +469,8 @@ impl ChatRelayService {
             }
 
             let error_ctx = self.error_context(
+                trace_id,
+                request.stream,
                 tracked_request.as_ref(),
                 tracked_execution.as_ref(),
                 Some(&log_context),
@@ -524,6 +517,7 @@ impl ChatRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         &self.tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         None,
                         &error,
@@ -572,6 +566,7 @@ impl ChatRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         &self.tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         upstream_request_id.as_deref(),
                         &error,
@@ -619,6 +614,7 @@ impl ChatRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         &self.tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         upstream_request_id.as_deref(),
                         &openai_error,
@@ -682,6 +678,8 @@ impl ChatRelayService {
                 tracked_request_id: tracked_request.as_ref().map(|model| model.id),
                 tracked_execution_id: tracked_execution.as_ref().map(|model| model.id),
                 request_id: request_id.clone(),
+                requested_model: request.model.clone(),
+                trace_id,
                 started_at,
                 upstream_model: target.upstream_model.clone(),
                 upstream_request_id: upstream_request_id.clone(),
@@ -914,6 +912,8 @@ mod tests {
             tracked_request_id: None,
             tracked_execution_id: None,
             request_id: "req_test_stream_error".into(),
+            requested_model: "gpt-5.4".into(),
+            trace_id: None,
             started_at: Instant::now(),
             upstream_model: "gpt-5.4".into(),
             upstream_request_id: None,
@@ -958,6 +958,8 @@ mod tests {
             tracked_request_id: None,
             tracked_execution_id: None,
             request_id: "req_test_usage_only".into(),
+            requested_model: "gpt-5.4".into(),
+            trace_id: None,
             started_at: Instant::now(),
             upstream_model: "gpt-5.4".into(),
             upstream_request_id: None,
@@ -978,7 +980,7 @@ mod tests {
 
     #[test]
     fn resolve_final_chat_stream_usage_estimates_usage_when_terminal_chunk_has_no_usage() {
-        let billing = ChatBillingContext {
+        let billing = super::build_chat_billing_snapshot(ChatBillingContext {
             token_id: 1,
             unlimited_quota: false,
             group_ratio: 1.0,
@@ -995,7 +997,7 @@ mod tests {
                 supported_endpoints: vec!["chat".into()],
                 price_reference: String::new(),
             },
-        };
+        });
         let progress = ChatStreamProgress {
             estimated_completion_tokens: 18,
             estimated_reasoning_tokens: 5,

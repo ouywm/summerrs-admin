@@ -23,8 +23,8 @@ use crate::service::shared::stream::driver::{
     BoxFinalizeFuture, RelayStreamAdapter, RelayStreamFinalizer,
 };
 use crate::service::shared::stream::usage_tracking_finalize::{
-    UsageStreamBillingContext, UsageStreamFinalizeContext, UsageStreamFinalizeMeta,
-    UsageStreamFinalizeSettlement, UsageStreamLogContext,
+    UsageStreamBillingSnapshot, UsageStreamFinalizeContext, UsageStreamFinalizeMeta,
+    UsageStreamFinalizeSettlement, UsageStreamLogSnapshot,
 };
 use crate::service::tracking::TrackingService;
 
@@ -38,6 +38,7 @@ pub(super) struct ResponsesStreamCommonArgs {
     pub(super) billing_context: Option<ResponsesBillingContext>,
     pub(super) log: Option<LogService>,
     pub(super) log_context: Option<ResponsesLogContext>,
+    pub(super) trace_id: Option<i64>,
     pub(super) tracked_request_id: Option<i64>,
     pub(super) tracked_execution_id: Option<i64>,
     pub(super) request_id: String,
@@ -103,8 +104,7 @@ enum ResponsesStreamSettlement {
     Failure { status_code: i32, message: String },
 }
 
-type ResponsesStreamFinalizeContext =
-    UsageStreamFinalizeContext<ResponsesLogContext, ResponsesBillingContext>;
+type ResponsesStreamFinalizeContext = UsageStreamFinalizeContext;
 
 fn build_responses_stream_finalize_context(
     args: ResponsesStreamCommonArgs,
@@ -116,11 +116,12 @@ fn build_responses_stream_finalize_context(
         billing_context,
         log,
         log_context,
+        trace_id,
         tracked_request_id,
         tracked_execution_id,
         request_id,
         started_at,
-        requested_model: _requested_model,
+        requested_model,
         upstream_model,
         upstream_request_id,
         response_status_code,
@@ -133,6 +134,7 @@ fn build_responses_stream_finalize_context(
                 "/v1/responses",
                 "openai/responses",
                 request_id,
+                requested_model,
                 upstream_model,
                 upstream_request_id,
                 response_status_code,
@@ -140,9 +142,10 @@ fn build_responses_stream_finalize_context(
             started_at,
             tracking,
             billing,
-            billing_context,
+            billing_context.map(build_responses_billing_snapshot),
             log,
-            log_context,
+            log_context.map(build_responses_log_snapshot),
+            trace_id,
             tracked_request_id,
             tracked_execution_id,
         ),
@@ -181,63 +184,30 @@ impl RelayStreamFinalizer<ResponsesStreamProgress, ResponsesStreamSettlement>
     }
 }
 
-impl UsageStreamBillingContext for ResponsesBillingContext {
-    fn token_id(&self) -> i64 {
-        self.token_id
-    }
-
-    fn unlimited_quota(&self) -> bool {
-        self.unlimited_quota
-    }
-
-    fn group_ratio(&self) -> f64 {
-        self.group_ratio
-    }
-
-    fn pre_consumed(&self) -> i64 {
-        self.pre_consumed
-    }
-
-    fn price(&self) -> &summer_ai_billing::service::channel_model_price::ResolvedModelPrice {
-        &self.price
+fn build_responses_billing_snapshot(
+    context: ResponsesBillingContext,
+) -> UsageStreamBillingSnapshot {
+    UsageStreamBillingSnapshot {
+        token_id: context.token_id,
+        unlimited_quota: context.unlimited_quota,
+        group_ratio: context.group_ratio,
+        pre_consumed: context.pre_consumed,
+        estimated_prompt_tokens: 0,
+        price: context.price,
     }
 }
 
-impl UsageStreamLogContext for ResponsesLogContext {
-    fn token_info(&self) -> &crate::service::token::TokenInfo {
-        &self.token_info
-    }
-
-    fn channel_id(&self) -> i64 {
-        self.channel_id
-    }
-
-    fn channel_name(&self) -> &str {
-        self.channel_name.as_str()
-    }
-
-    fn account_id(&self) -> i64 {
-        self.account_id
-    }
-
-    fn account_name(&self) -> &str {
-        self.account_name.as_str()
-    }
-
-    fn execution_id(&self) -> i64 {
-        self.execution_id
-    }
-
-    fn requested_model(&self) -> &str {
-        self.requested_model.as_str()
-    }
-
-    fn client_ip(&self) -> &str {
-        self.client_ip.as_str()
-    }
-
-    fn user_agent(&self) -> &str {
-        self.user_agent.as_str()
+fn build_responses_log_snapshot(context: ResponsesLogContext) -> UsageStreamLogSnapshot {
+    UsageStreamLogSnapshot {
+        token_info: context.token_info,
+        channel_id: context.channel_id,
+        channel_name: context.channel_name,
+        account_id: context.account_id,
+        account_name: context.account_name,
+        execution_id: context.execution_id,
+        requested_model: context.requested_model,
+        client_ip: context.client_ip,
+        user_agent: context.user_agent,
     }
 }
 
@@ -866,6 +836,7 @@ mod tests {
                 billing_context: None,
                 log: None,
                 log_context: None,
+                trace_id: None,
                 tracked_request_id: None,
                 tracked_execution_id: None,
                 request_id: "req_123".into(),
@@ -907,6 +878,7 @@ mod tests {
                 billing_context: None,
                 log: None,
                 log_context: None,
+                trace_id: None,
                 tracked_request_id: None,
                 tracked_execution_id: None,
                 request_id: "req_native".into(),

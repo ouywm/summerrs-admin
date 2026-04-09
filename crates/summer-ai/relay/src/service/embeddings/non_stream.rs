@@ -13,6 +13,7 @@ impl EmbeddingsRelayService {
     ) -> Result<Response, OpenAiErrorResponse> {
         let PreparedEmbeddingsRelay {
             request_id,
+            trace_id,
             started_at,
             tracked_request,
             target,
@@ -30,7 +31,7 @@ impl EmbeddingsRelayService {
             let attempt_started_at = Instant::now();
             let tracked_execution = if let Some(tracked_request) = tracked_request.as_ref() {
                 let upstream_body = build_tracking_upstream_body(request, &target.upstream_model);
-                match self
+                let tracked_execution = match self
                     .tracking
                     .create_embeddings_execution(
                         tracked_request.id,
@@ -40,7 +41,7 @@ impl EmbeddingsRelayService {
                         target.channel.id,
                         target.account.id,
                         &target.upstream_model,
-                        upstream_body,
+                        upstream_body.clone(),
                     )
                     .await
                 {
@@ -49,7 +50,28 @@ impl EmbeddingsRelayService {
                         tracing::warn!(request_id, error = %error, attempt_no, "failed to create request_execution tracking row");
                         None
                     }
+                };
+
+                if tracked_request.trace_id > 0
+                    && let Err(error) = self
+                        .tracking
+                        .create_execution_trace_span(
+                            tracked_request.trace_id,
+                            &request_id,
+                            "embeddings",
+                            attempt_no,
+                            &request.model,
+                            &target.upstream_model,
+                            target.channel.id,
+                            target.account.id,
+                            upstream_body,
+                        )
+                        .await
+                {
+                    tracing::warn!(request_id, error = %error, attempt_no, "failed to create trace span tracking row");
                 }
+
+                tracked_execution
             } else {
                 None
             };
@@ -66,6 +88,7 @@ impl EmbeddingsRelayService {
                 &request.model,
             );
             let error_ctx = self.error_context(
+                trace_id,
                 tracked_request.as_ref(),
                 tracked_execution.as_ref(),
                 Some(&log_context),
@@ -113,6 +136,7 @@ impl EmbeddingsRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         &self.tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         None,
                         &error,
@@ -152,6 +176,7 @@ impl EmbeddingsRelayService {
                 let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                 self.try_finish_execution_failure(
                     &self.tracking,
+                    tracked_request.as_ref().map(|model| model.trace_id),
                     tracked_execution.as_ref(),
                     upstream_response.upstream_request_id.as_deref(),
                     &error,
@@ -203,6 +228,7 @@ impl EmbeddingsRelayService {
                     let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
                     self.try_finish_execution_failure(
                         &self.tracking,
+                        tracked_request.as_ref().map(|model| model.trace_id),
                         tracked_execution.as_ref(),
                         upstream_response.upstream_request_id.as_deref(),
                         &openai_error,
@@ -244,6 +270,9 @@ impl EmbeddingsRelayService {
             let attempt_duration_ms = attempt_started_at.elapsed().as_millis() as i32;
             self.try_finish_request_success(
                 &self.tracking,
+                trace_id,
+                &request_id,
+                &request.model,
                 tracked_request.as_ref(),
                 &target.upstream_model,
                 upstream_response.status_code,
@@ -253,6 +282,7 @@ impl EmbeddingsRelayService {
             .await;
             self.try_finish_execution_success(
                 &self.tracking,
+                tracked_request.as_ref().map(|model| model.trace_id),
                 tracked_execution.as_ref(),
                 upstream_response.upstream_request_id.as_deref(),
                 upstream_response.status_code,

@@ -7,26 +7,31 @@ use summer_ai_core::types::common::Usage;
 use crate::service::log::{FailureLogRecord, LogService, UsageLogRecord};
 use crate::service::shared::stream::driver::BoxFinalizeFuture;
 use crate::service::token::TokenInfo;
-use crate::service::tracking::TrackingService;
+use crate::service::tracking::{
+    TrackingService, build_request_trace_failure_metadata, build_request_trace_success_metadata,
+};
 
-pub(crate) trait UsageStreamBillingContext: Clone {
-    fn token_id(&self) -> i64;
-    fn unlimited_quota(&self) -> bool;
-    fn group_ratio(&self) -> f64;
-    fn pre_consumed(&self) -> i64;
-    fn price(&self) -> &ResolvedModelPrice;
+#[derive(Clone)]
+pub(crate) struct UsageStreamBillingSnapshot {
+    pub(crate) token_id: i64,
+    pub(crate) unlimited_quota: bool,
+    pub(crate) group_ratio: f64,
+    pub(crate) pre_consumed: i64,
+    pub(crate) estimated_prompt_tokens: i32,
+    pub(crate) price: ResolvedModelPrice,
 }
 
-pub(crate) trait UsageStreamLogContext: Clone {
-    fn token_info(&self) -> &TokenInfo;
-    fn channel_id(&self) -> i64;
-    fn channel_name(&self) -> &str;
-    fn account_id(&self) -> i64;
-    fn account_name(&self) -> &str;
-    fn execution_id(&self) -> i64;
-    fn requested_model(&self) -> &str;
-    fn client_ip(&self) -> &str;
-    fn user_agent(&self) -> &str;
+#[derive(Clone)]
+pub(crate) struct UsageStreamLogSnapshot {
+    pub(crate) token_info: TokenInfo,
+    pub(crate) channel_id: i64,
+    pub(crate) channel_name: String,
+    pub(crate) account_id: i64,
+    pub(crate) account_name: String,
+    pub(crate) execution_id: i64,
+    pub(crate) requested_model: String,
+    pub(crate) client_ip: String,
+    pub(crate) user_agent: String,
 }
 
 #[derive(Clone)]
@@ -34,6 +39,7 @@ pub(crate) struct UsageStreamFinalizeMeta {
     pub(crate) endpoint: &'static str,
     pub(crate) request_format: &'static str,
     pub(crate) request_id: String,
+    pub(crate) requested_model: String,
     pub(crate) upstream_model: String,
     pub(crate) upstream_request_id: Option<String>,
     pub(crate) response_status_code: i32,
@@ -44,6 +50,7 @@ impl UsageStreamFinalizeMeta {
         endpoint: &'static str,
         request_format: &'static str,
         request_id: String,
+        requested_model: String,
         upstream_model: String,
         upstream_request_id: Option<String>,
         response_status_code: i32,
@@ -52,6 +59,7 @@ impl UsageStreamFinalizeMeta {
             endpoint,
             request_format,
             request_id,
+            requested_model,
             upstream_model,
             upstream_request_id,
             response_status_code,
@@ -60,28 +68,30 @@ impl UsageStreamFinalizeMeta {
 }
 
 #[derive(Clone)]
-pub(crate) struct UsageStreamFinalizeContext<L, B> {
+pub(crate) struct UsageStreamFinalizeContext {
     tracking: Option<TrackingService>,
     billing: Option<BillingEngine>,
-    billing_context: Option<B>,
+    billing_context: Option<UsageStreamBillingSnapshot>,
     log: Option<LogService>,
-    log_context: Option<L>,
+    log_context: Option<UsageStreamLogSnapshot>,
+    trace_id: Option<i64>,
     tracked_request_id: Option<i64>,
     tracked_execution_id: Option<i64>,
     started_at: Instant,
     meta: UsageStreamFinalizeMeta,
 }
 
-impl<L, B> UsageStreamFinalizeContext<L, B> {
+impl UsageStreamFinalizeContext {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         meta: UsageStreamFinalizeMeta,
         started_at: Instant,
         tracking: Option<TrackingService>,
         billing: Option<BillingEngine>,
-        billing_context: Option<B>,
+        billing_context: Option<UsageStreamBillingSnapshot>,
         log: Option<LogService>,
-        log_context: Option<L>,
+        log_context: Option<UsageStreamLogSnapshot>,
+        trace_id: Option<i64>,
         tracked_request_id: Option<i64>,
         tracked_execution_id: Option<i64>,
     ) -> Self {
@@ -91,6 +101,7 @@ impl<L, B> UsageStreamFinalizeContext<L, B> {
             billing_context,
             log,
             log_context,
+            trace_id,
             tracked_request_id,
             tracked_execution_id,
             started_at,
@@ -106,6 +117,7 @@ impl<L, B> UsageStreamFinalizeContext<L, B> {
             billing_context: None,
             log: None,
             log_context: None,
+            trace_id: None,
             tracked_request_id: None,
             tracked_execution_id: None,
             started_at: Instant::now(),
@@ -117,7 +129,7 @@ impl<L, B> UsageStreamFinalizeContext<L, B> {
         &self.meta
     }
 
-    pub(crate) fn billing_context(&self) -> Option<&B> {
+    pub(crate) fn billing_context(&self) -> Option<&UsageStreamBillingSnapshot> {
         self.billing_context.as_ref()
     }
 
@@ -195,11 +207,7 @@ impl UsageStreamFinalizeSettlement {
     }
 }
 
-impl<L, B> UsageStreamFinalizeContext<L, B>
-where
-    L: UsageStreamLogContext + Send + 'static,
-    B: UsageStreamBillingContext + Send + 'static,
-{
+impl UsageStreamFinalizeContext {
     pub(crate) fn build_usage_finalize_future(
         &self,
         settlement: UsageStreamFinalizeSettlement,
@@ -211,6 +219,7 @@ where
         let log_context = self.log_context.clone();
         let tracked_request_id = self.tracked_request_id;
         let tracked_execution_id = self.tracked_execution_id;
+        let trace_id = self.trace_id;
         let meta = self.meta.clone();
         let duration_ms = self.started_at.elapsed().as_millis() as i32;
 
@@ -227,20 +236,20 @@ where
                         let result = if let Some(usage) = final_usage.as_ref() {
                             billing
                                 .post_consume(
-                                    billing_context.token_id(),
-                                    billing_context.unlimited_quota(),
-                                    billing_context.pre_consumed(),
+                                    billing_context.token_id,
+                                    billing_context.unlimited_quota,
+                                    billing_context.pre_consumed,
                                     usage,
-                                    billing_context.price(),
-                                    billing_context.group_ratio(),
+                                    &billing_context.price,
+                                    billing_context.group_ratio,
                                 )
                                 .await
                         } else {
                             billing
                                 .settle_pre_consumed(
-                                    billing_context.token_id(),
-                                    billing_context.unlimited_quota(),
-                                    billing_context.pre_consumed(),
+                                    billing_context.token_id,
+                                    billing_context.unlimited_quota,
+                                    billing_context.pre_consumed,
                                 )
                                 .await
                         };
@@ -261,31 +270,31 @@ where
                         let quota = if let Some(actual_usage) = final_usage.as_ref() {
                             BillingEngine::calculate_actual_quota(
                                 actual_usage,
-                                billing_context.price(),
-                                billing_context.group_ratio(),
+                                &billing_context.price,
+                                billing_context.group_ratio,
                             )
                         } else {
-                            billing_context.pre_consumed()
+                            billing_context.pre_consumed
                         };
 
                         let record = UsageLogRecord {
-                            channel_id: log_context.channel_id(),
-                            channel_name: log_context.channel_name().to_string(),
-                            account_id: log_context.account_id(),
-                            account_name: log_context.account_name().to_string(),
-                            execution_id: log_context.execution_id(),
+                            channel_id: log_context.channel_id,
+                            channel_name: log_context.channel_name.clone(),
+                            account_id: log_context.account_id,
+                            account_name: log_context.account_name.clone(),
+                            execution_id: log_context.execution_id,
                             endpoint: meta.endpoint.into(),
                             request_format: meta.request_format.into(),
-                            requested_model: log_context.requested_model().to_string(),
+                            requested_model: log_context.requested_model.clone(),
                             upstream_model: upstream_model.clone(),
-                            model_name: billing_context.price().model_name.clone(),
+                            model_name: billing_context.price.model_name.clone(),
                             usage: usage.clone(),
                             quota,
                             cost_total: BillingEngine::calculate_cost_total(
                                 &usage,
-                                billing_context.price(),
+                                &billing_context.price,
                             ),
-                            price_reference: billing_context.price().price_reference.clone(),
+                            price_reference: billing_context.price.price_reference.clone(),
                             elapsed_time: duration_ms,
                             first_token_time: first_token_ms,
                             is_stream: true,
@@ -295,12 +304,12 @@ where
                                 .clone()
                                 .unwrap_or_default(),
                             status_code: meta.response_status_code,
-                            client_ip: log_context.client_ip().to_string(),
-                            user_agent: log_context.user_agent().to_string(),
+                            client_ip: log_context.client_ip.clone(),
+                            user_agent: log_context.user_agent.clone(),
                             content: String::new(),
                         };
 
-                        if let Err(error) = log.record_usage(log_context.token_info(), record).await
+                        if let Err(error) = log.record_usage(&log_context.token_info, record).await
                         {
                             tracing::warn!(
                                 request_id = meta.request_id,
@@ -328,6 +337,50 @@ where
                         );
                     }
 
+                    if let Some(request_pk) = tracked_request_id
+                        && let Err(error) = tracking
+                            .finish_request_trace_from_request_success(
+                                request_pk,
+                                &upstream_model,
+                                meta.response_status_code,
+                                duration_ms,
+                                first_token_ms,
+                            )
+                            .await
+                    {
+                        tracing::warn!(
+                            request_id = meta.request_id,
+                            error = %error,
+                            "failed to finalize trace streaming success"
+                        );
+                    }
+
+                    if tracked_request_id.is_none()
+                        && let Some(trace_id) = trace_id
+                        && let Err(error) = tracking
+                            .finish_trace_success(
+                                trace_id,
+                                build_request_trace_success_metadata(
+                                    &meta.request_id,
+                                    meta.endpoint,
+                                    meta.request_format,
+                                    &meta.requested_model,
+                                    &upstream_model,
+                                    true,
+                                    meta.response_status_code,
+                                    duration_ms,
+                                    first_token_ms,
+                                ),
+                            )
+                            .await
+                    {
+                        tracing::warn!(
+                            request_id = meta.request_id,
+                            error = %error,
+                            "failed to finalize trace streaming success without request tracking"
+                        );
+                    }
+
                     if let Some(execution_id) = tracked_execution_id
                         && let Err(error) = tracking
                             .finish_execution_stream_success(
@@ -345,6 +398,27 @@ where
                             "failed to finalize request_execution streaming success"
                         );
                     }
+
+                    if let Some(execution_id) = tracked_execution_id
+                        && let Err(error) = tracking
+                            .finish_execution_trace_span_from_execution_success(
+                                execution_id,
+                                meta.upstream_request_id.as_deref(),
+                                meta.response_status_code,
+                                serde_json::json!({
+                                    "usage": final_usage,
+                                }),
+                                duration_ms,
+                                first_token_ms,
+                            )
+                            .await
+                    {
+                        tracing::warn!(
+                            request_id = meta.request_id,
+                            error = %error,
+                            "failed to finalize trace span streaming success"
+                        );
+                    }
                 }
                 UsageStreamFinalizeSettlement::Failure {
                     upstream_model,
@@ -355,7 +429,7 @@ where
                     if let (Some(billing), Some(billing_context)) =
                         (billing.clone(), billing_context.clone())
                         && let Err(error) = billing
-                            .refund(billing_context.token_id(), billing_context.pre_consumed())
+                            .refund(billing_context.token_id, billing_context.pre_consumed)
                             .await
                     {
                         tracing::warn!(
@@ -369,17 +443,17 @@ where
                         (log.clone(), log_context.clone(), billing_context.clone())
                     {
                         let record = FailureLogRecord {
-                            channel_id: log_context.channel_id(),
-                            channel_name: log_context.channel_name().to_string(),
-                            account_id: log_context.account_id(),
-                            account_name: log_context.account_name().to_string(),
-                            execution_id: log_context.execution_id(),
+                            channel_id: log_context.channel_id,
+                            channel_name: log_context.channel_name.clone(),
+                            account_id: log_context.account_id,
+                            account_name: log_context.account_name.clone(),
+                            execution_id: log_context.execution_id,
                             endpoint: meta.endpoint.into(),
                             request_format: meta.request_format.into(),
-                            requested_model: log_context.requested_model().to_string(),
+                            requested_model: log_context.requested_model.clone(),
                             upstream_model: upstream_model.clone(),
-                            model_name: billing_context.price().model_name.clone(),
-                            price_reference: billing_context.price().price_reference.clone(),
+                            model_name: billing_context.price.model_name.clone(),
+                            price_reference: billing_context.price.price_reference.clone(),
                             elapsed_time: duration_ms,
                             is_stream: true,
                             request_id: meta.request_id.clone(),
@@ -388,13 +462,13 @@ where
                                 .clone()
                                 .unwrap_or_default(),
                             status_code,
-                            client_ip: log_context.client_ip().to_string(),
-                            user_agent: log_context.user_agent().to_string(),
+                            client_ip: log_context.client_ip.clone(),
+                            user_agent: log_context.user_agent.clone(),
                             content: message.clone(),
                         };
 
                         if let Err(error) =
-                            log.record_failure(log_context.token_info(), record).await
+                            log.record_failure(&log_context.token_info, record).await
                         {
                             tracing::warn!(
                                 request_id = meta.request_id,
@@ -424,6 +498,52 @@ where
                         );
                     }
 
+                    if let Some(request_pk) = tracked_request_id
+                        && let Err(error) = tracking
+                            .finish_request_trace_from_request_failure(
+                                request_pk,
+                                Some(&upstream_model),
+                                status_code,
+                                &message,
+                                duration_ms,
+                                first_token_ms,
+                            )
+                            .await
+                    {
+                        tracing::warn!(
+                            request_id = meta.request_id,
+                            error = %error,
+                            "failed to finalize trace streaming failure"
+                        );
+                    }
+
+                    if tracked_request_id.is_none()
+                        && let Some(trace_id) = trace_id
+                        && let Err(error) = tracking
+                            .finish_trace_failure(
+                                trace_id,
+                                build_request_trace_failure_metadata(
+                                    &meta.request_id,
+                                    meta.endpoint,
+                                    meta.request_format,
+                                    &meta.requested_model,
+                                    Some(&upstream_model),
+                                    true,
+                                    status_code,
+                                    &message,
+                                    duration_ms,
+                                    first_token_ms,
+                                ),
+                            )
+                            .await
+                    {
+                        tracing::warn!(
+                            request_id = meta.request_id,
+                            error = %error,
+                            "failed to finalize trace streaming failure without request tracking"
+                        );
+                    }
+
                     if let Some(execution_id) = tracked_execution_id
                         && let Err(error) = tracking
                             .finish_execution_stream_failure(
@@ -441,6 +561,26 @@ where
                             request_id = meta.request_id,
                             error = %error,
                             "failed to finalize request_execution streaming failure"
+                        );
+                    }
+
+                    if let Some(execution_id) = tracked_execution_id
+                        && let Err(error) = tracking
+                            .finish_execution_trace_span_from_execution_failure(
+                                execution_id,
+                                meta.upstream_request_id.as_deref(),
+                                status_code,
+                                &message,
+                                serde_json::json!({}),
+                                duration_ms,
+                                first_token_ms,
+                            )
+                            .await
+                    {
+                        tracing::warn!(
+                            request_id = meta.request_id,
+                            error = %error,
+                            "failed to finalize trace span streaming failure"
                         );
                     }
                 }
@@ -471,11 +611,12 @@ mod tests {
             "openai/chat_completions",
             "req_test".to_string(),
             "gpt-5.4".to_string(),
+            "gpt-5.4".to_string(),
             Some("up_123".to_string()),
             200,
         );
 
-        let context = UsageStreamFinalizeContext::<(), ()>::without_services(meta);
+        let context = UsageStreamFinalizeContext::without_services(meta);
 
         assert_eq!(context.meta().endpoint, "/v1/chat/completions");
         assert_eq!(context.meta().request_format, "openai/chat_completions");

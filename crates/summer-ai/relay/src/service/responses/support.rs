@@ -10,14 +10,40 @@ impl ResponsesRelayService {
     ) -> Result<PreparedResponsesRelay, OpenAiErrorResponse> {
         let PreparedRequestMeta {
             request_id,
+            trace_key,
             started_at,
         } = prepare_request_meta(&ctx.token_info, "responses", &request.model)?;
         let tracking = &self.tracking;
+
+        let trace_id = match tracking
+            .create_trace(CreateTraceTracking {
+                trace_key: &trace_key,
+                root_request_id: &request_id,
+                user_id: ctx.token_info.user_id,
+                metadata: serde_json::json!({
+                    "endpoint": "/v1/responses",
+                    "request_format": "openai/responses",
+                    "requested_model": request.model,
+                    "is_stream": request.stream,
+                    "channel_group": ctx.token_info.group,
+                    "client_ip": ctx.client_ip,
+                    "user_agent": ctx.user_agent,
+                }),
+            })
+            .await
+        {
+            Ok(model) => Some(model.id),
+            Err(error) => {
+                tracing::warn!(request_id, error = %error, "failed to create trace tracking row");
+                None
+            }
+        };
 
         let tracked_request = try_create_tracked_request(
             &request_id,
             tracking.create_responses_request(
                 &request_id,
+                trace_id.unwrap_or(0),
                 &ctx.token_info,
                 request,
                 &ctx.client_ip,
@@ -27,6 +53,8 @@ impl ResponsesRelayService {
         )
         .await;
         let base_error_ctx = self.error_context(
+            trace_id,
+            request.stream,
             tracked_request.as_ref(),
             None,
             None,
@@ -56,6 +84,8 @@ impl ResponsesRelayService {
             Err(error) => {
                 return Err(self
                     .error_context(
+                        trace_id,
+                        request.stream,
                         tracked_request.as_ref(),
                         None,
                         None,
@@ -70,7 +100,7 @@ impl ResponsesRelayService {
 
         let tracked_execution = if let Some(tracked_request) = tracked_request.as_ref() {
             let upstream_body = build_tracking_upstream_body(request, &target.upstream_model);
-            match tracking
+            let tracked_execution = match tracking
                 .create_responses_execution(
                     tracked_request.id,
                     &request_id,
@@ -79,7 +109,7 @@ impl ResponsesRelayService {
                     target.channel.id,
                     target.account.id,
                     &target.upstream_model,
-                    upstream_body,
+                    upstream_body.clone(),
                 )
                 .await
             {
@@ -88,7 +118,27 @@ impl ResponsesRelayService {
                     tracing::warn!(request_id, error = %error, "failed to create request_execution tracking row");
                     None
                 }
+            };
+
+            if let Some(trace_id) = trace_id
+                && let Err(error) = tracking
+                    .create_execution_trace_span(
+                        trace_id,
+                        &request_id,
+                        "responses",
+                        1,
+                        &request.model,
+                        &target.upstream_model,
+                        target.channel.id,
+                        target.account.id,
+                        upstream_body,
+                    )
+                    .await
+            {
+                tracing::warn!(request_id, error = %error, "failed to create trace span tracking row");
             }
+
+            tracked_execution
         } else {
             None
         };
@@ -120,6 +170,8 @@ impl ResponsesRelayService {
             Ok(builder) => builder,
             Err(error) => {
                 let error_ctx = self.error_context(
+                    trace_id,
+                    request.stream,
                     tracked_request.as_ref(),
                     tracked_execution.as_ref(),
                     Some(&log_context),
@@ -141,6 +193,7 @@ impl ResponsesRelayService {
 
         Ok(PreparedResponsesRelay {
             request_id,
+            trace_id,
             started_at,
             tracked_request,
             tracked_execution,
@@ -163,6 +216,8 @@ impl ResponsesRelayService {
     pub(super) async fn finish_with_error(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
+        is_stream: bool,
         tracked_request: Option<&request::Model>,
         tracked_execution: Option<&request_execution::Model>,
         log_context: Option<&ResponsesLogContext>,
@@ -190,6 +245,16 @@ impl ResponsesRelayService {
         .await;
         self.try_finish_request_failure(
             tracking,
+            trace_id,
+            tracked_request
+                .map(|tracked_request| tracked_request.request_id.as_str())
+                .unwrap_or_default(),
+            "/v1/responses",
+            "openai/responses",
+            log_context
+                .map(|log_context| log_context.requested_model.as_str())
+                .unwrap_or_default(),
+            is_stream,
             tracked_request,
             upstream_model,
             &openai_error,
@@ -199,6 +264,7 @@ impl ResponsesRelayService {
         .await;
         self.try_finish_execution_failure(
             tracking,
+            tracked_request.map(|model| model.trace_id),
             tracked_execution,
             upstream_request_id,
             &openai_error,
@@ -405,6 +471,9 @@ impl ResponsesRelayService {
     pub(super) async fn try_finish_request_success(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
+        request_id: &str,
+        requested_model: &str,
         tracked_request: Option<&request::Model>,
         upstream_model: &str,
         response_status_code: i32,
@@ -424,12 +493,54 @@ impl ResponsesRelayService {
             {
                 tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update request success tracking row");
             }
+
+            if tracked_request.trace_id > 0
+                && let Err(error) = tracking
+                    .finish_trace_success(
+                        tracked_request.trace_id,
+                        request_trace_success_metadata(
+                            tracked_request,
+                            upstream_model,
+                            response_status_code,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update trace success tracking row");
+            }
+        } else if let Some(trace_id) = trace_id
+            && let Err(error) = tracking
+                .finish_trace_success(
+                    trace_id,
+                    build_request_trace_success_metadata(
+                        request_id,
+                        "/v1/responses",
+                        "openai/responses",
+                        requested_model,
+                        upstream_model,
+                        false,
+                        response_status_code,
+                        duration_ms,
+                        0,
+                    ),
+                )
+                .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to update trace success tracking row without request tracking");
         }
     }
 
     pub(super) async fn try_finish_request_failure(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
+        request_id: &str,
+        endpoint: &str,
+        request_format: &str,
+        requested_model: &str,
+        is_stream: bool,
         tracked_request: Option<&request::Model>,
         upstream_model: Option<&str>,
         openai_error: &OpenAiErrorResponse,
@@ -450,12 +561,51 @@ impl ResponsesRelayService {
             {
                 tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update request failure tracking row");
             }
+
+            if tracked_request.trace_id > 0
+                && let Err(error) = tracking
+                    .finish_trace_failure(
+                        tracked_request.trace_id,
+                        request_trace_failure_metadata(
+                            tracked_request,
+                            upstream_model,
+                            openai_error.status as i32,
+                            &openai_error.error.error.message,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(request_id = tracked_request.request_id, error = %error, "failed to update trace failure tracking row");
+            }
+        } else if let Some(trace_id) = trace_id
+            && let Err(error) = tracking
+                .finish_trace_failure(
+                    trace_id,
+                    build_request_trace_failure_metadata(
+                        request_id,
+                        endpoint,
+                        request_format,
+                        requested_model,
+                        upstream_model,
+                        is_stream,
+                        openai_error.status as i32,
+                        &openai_error.error.error.message,
+                        duration_ms,
+                        0,
+                    ),
+                )
+                .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to update trace failure tracking row without request tracking");
         }
     }
 
     pub(super) async fn try_finish_execution_success(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
         tracked_execution: Option<&request_execution::Model>,
         upstream_request_id: Option<&str>,
         response_status_code: i32,
@@ -475,12 +625,33 @@ impl ResponsesRelayService {
             {
                 tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update request_execution success tracking row");
             }
+
+            if trace_id.unwrap_or(0) > 0
+                && let Err(error) = tracking
+                    .finish_execution_trace_span_success(
+                        trace_id.unwrap_or_default(),
+                        tracked_execution.attempt_no,
+                        serde_json::to_value(response_body)
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                        execution_trace_span_success_metadata(
+                            tracked_execution,
+                            upstream_request_id,
+                            response_status_code,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update trace span success tracking row");
+            }
         }
     }
 
     pub(super) async fn try_finish_execution_failure(
         &self,
         tracking: &TrackingService,
+        trace_id: Option<i64>,
         tracked_execution: Option<&request_execution::Model>,
         upstream_request_id: Option<&str>,
         openai_error: &OpenAiErrorResponse,
@@ -494,12 +665,33 @@ impl ResponsesRelayService {
                     upstream_request_id,
                     openai_error.status as i32,
                     &openai_error.error.error.message,
-                    response_body,
+                    response_body.clone(),
                     duration_ms,
                 )
                 .await
             {
                 tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update request_execution failure tracking row");
+            }
+
+            if trace_id.unwrap_or(0) > 0
+                && let Err(error) = tracking
+                    .finish_execution_trace_span_failure(
+                        trace_id.unwrap_or_default(),
+                        tracked_execution.attempt_no,
+                        &openai_error.error.error.message,
+                        response_body.unwrap_or_else(|| serde_json::json!({})),
+                        execution_trace_span_failure_metadata(
+                            tracked_execution,
+                            upstream_request_id,
+                            openai_error.status as i32,
+                            &openai_error.error.error.message,
+                            duration_ms,
+                            0,
+                        ),
+                    )
+                    .await
+            {
+                tracing::warn!(execution_id = tracked_execution.id, error = %error, "failed to update trace span failure tracking row");
             }
         }
     }
@@ -603,6 +795,7 @@ pub(crate) struct ResponsesLogContext {
 
 pub(super) struct PreparedResponsesRelay {
     pub(super) request_id: String,
+    pub(super) trace_id: Option<i64>,
     pub(super) started_at: Instant,
     pub(super) tracked_request: Option<request::Model>,
     pub(super) tracked_execution: Option<request_execution::Model>,
@@ -615,6 +808,8 @@ pub(super) struct PreparedResponsesRelay {
 
 pub(super) struct ResponsesErrorContext<'a> {
     pub(super) service: &'a ResponsesRelayService,
+    pub(super) trace_id: Option<i64>,
+    pub(super) is_stream: bool,
     pub(super) tracked_request: Option<&'a request::Model>,
     pub(super) tracked_execution: Option<&'a request_execution::Model>,
     pub(super) log_context: Option<&'a ResponsesLogContext>,
@@ -632,6 +827,8 @@ impl<'a> ResponsesErrorContext<'a> {
         self.service
             .finish_with_error(
                 &self.service.tracking,
+                self.trace_id,
+                self.is_stream,
                 self.tracked_request,
                 self.tracked_execution,
                 self.log_context,
