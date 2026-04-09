@@ -92,8 +92,14 @@ impl EmbeddingsRelayService {
             ),
         )
         .await;
-        let base_error_ctx =
-            self.error_context(tracked_request.as_ref(), None, None, None, None, &started_at);
+        let base_error_ctx = self.error_context(
+            tracked_request.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &started_at,
+        );
 
         let target = match self.resolve_target(&ctx.token_info.group, &request).await {
             Ok(target) => target,
@@ -114,8 +120,8 @@ impl EmbeddingsRelayService {
         {
             Ok(billing) => billing,
             Err(error) => {
-                return Err(
-                    self.error_context(
+                return Err(self
+                    .error_context(
                         tracked_request.as_ref(),
                         None,
                         None,
@@ -124,8 +130,7 @@ impl EmbeddingsRelayService {
                         &started_at,
                     )
                     .finish(None, error)
-                    .await,
-                );
+                    .await);
             }
         };
 
@@ -188,17 +193,15 @@ impl EmbeddingsRelayService {
         ) {
             Ok(builder) => builder,
             Err(error) => {
-                return Err(
-                    error_ctx
-                        .finish(
-                            None,
-                            OpenAiErrorResponse::internal_with(
-                                "failed to build upstream embeddings request",
-                                error,
-                            ),
-                        )
-                        .await,
-                );
+                return Err(error_ctx
+                    .finish(
+                        None,
+                        OpenAiErrorResponse::internal_with(
+                            "failed to build upstream embeddings request",
+                            error,
+                        ),
+                    )
+                    .await);
             }
         };
 
@@ -211,11 +214,9 @@ impl EmbeddingsRelayService {
         };
 
         if let Some(error) = upstream_response.error {
-            return Err(
-                error_ctx
-                    .finish(upstream_response.upstream_request_id.as_deref(), error)
-                    .await,
-            );
+            return Err(error_ctx
+                .finish(upstream_response.upstream_request_id.as_deref(), error)
+                .await);
         }
 
         let embedding_response = match provider.parse_embedding_response(
@@ -225,17 +226,15 @@ impl EmbeddingsRelayService {
         ) {
             Ok(response) => response,
             Err(error) => {
-                return Err(
-                    error_ctx
-                        .finish(
-                            upstream_response.upstream_request_id.as_deref(),
-                            OpenAiErrorResponse::internal_with(
-                                "failed to parse upstream embeddings response",
-                                error,
-                            ),
-                        )
-                        .await,
-                );
+                return Err(error_ctx
+                    .finish(
+                        upstream_response.upstream_request_id.as_deref(),
+                        OpenAiErrorResponse::internal_with(
+                            "failed to parse upstream embeddings response",
+                            error,
+                        ),
+                    )
+                    .await);
             }
         };
 
@@ -606,7 +605,11 @@ impl EmbeddingsRelayService {
             content: openai_error.error.error.message.clone(),
         };
 
-        if let Err(error) = self.log.record_failure(&log_context.token_info, record).await {
+        if let Err(error) = self
+            .log
+            .record_failure(&log_context.token_info, record)
+            .await
+        {
             tracing::warn!(request_id, error = %error, "failed to write embeddings failure log");
         }
     }

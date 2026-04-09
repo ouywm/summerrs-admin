@@ -28,7 +28,7 @@ use self::stream::{TrackedChatSseStream, TrackedChatSseStreamArgs};
 use crate::plugin::RelayStreamTaskTracker;
 use crate::service::log::{FailureLogRecord, LogService, UsageLogRecord};
 use crate::service::shared::request_prep::{
-    prepare_request_meta, try_create_tracked_request, PreparedRequestMeta,
+    PreparedRequestMeta, prepare_request_meta, try_create_tracked_request,
 };
 use crate::service::token::TokenInfo;
 use crate::service::tracking::TrackingService;
@@ -120,23 +120,25 @@ impl ChatRelayService {
                 UpstreamChatStreamResponse::Failure {
                     upstream_request_id,
                     error,
-                } => return Err(error_ctx.finish(upstream_request_id.as_deref(), error).await),
+                } => {
+                    return Err(error_ctx
+                        .finish(upstream_request_id.as_deref(), error)
+                        .await);
+                }
             };
 
             let chunk_stream = match provider.parse_chat_stream(response, &target.upstream_model) {
                 Ok(stream) => stream,
                 Err(error) => {
-                    return Err(
-                        error_ctx
-                            .finish(
-                                upstream_request_id.as_deref(),
-                                OpenAiErrorResponse::internal_with(
-                                    "failed to parse upstream chat stream",
-                                    error,
-                                ),
-                            )
-                            .await,
-                    );
+                    return Err(error_ctx
+                        .finish(
+                            upstream_request_id.as_deref(),
+                            OpenAiErrorResponse::internal_with(
+                                "failed to parse upstream chat stream",
+                                error,
+                            ),
+                        )
+                        .await);
                 }
             };
 
@@ -190,28 +192,24 @@ impl ChatRelayService {
         };
 
         if let Some(error) = upstream_response.error {
-            return Err(
-                error_ctx
-                    .finish(upstream_response.upstream_request_id.as_deref(), error)
-                    .await,
-            );
+            return Err(error_ctx
+                .finish(upstream_response.upstream_request_id.as_deref(), error)
+                .await);
         }
 
         let chat_response =
             match provider.parse_chat_response(upstream_response.body, &target.upstream_model) {
                 Ok(response) => response,
                 Err(error) => {
-                    return Err(
-                        error_ctx
-                            .finish(
-                                upstream_response.upstream_request_id.as_deref(),
-                                OpenAiErrorResponse::internal_with(
-                                    "failed to parse upstream chat response",
-                                    error,
-                                ),
-                            )
-                            .await,
-                    );
+                    return Err(error_ctx
+                        .finish(
+                            upstream_response.upstream_request_id.as_deref(),
+                            OpenAiErrorResponse::internal_with(
+                                "failed to parse upstream chat response",
+                                error,
+                            ),
+                        )
+                        .await);
                 }
             };
 
@@ -280,8 +278,14 @@ impl ChatRelayService {
             ),
         )
         .await;
-        let base_error_ctx =
-            self.error_context(tracked_request.as_ref(), None, None, None, None, &started_at);
+        let base_error_ctx = self.error_context(
+            tracked_request.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &started_at,
+        );
 
         let target = match self.resolve_target(&ctx.token_info.group, request).await {
             Ok(target) => target,
@@ -302,8 +306,8 @@ impl ChatRelayService {
         {
             Ok(billing) => billing,
             Err(error) => {
-                return Err(
-                    self.error_context(
+                return Err(self
+                    .error_context(
                         tracked_request.as_ref(),
                         None,
                         None,
@@ -312,8 +316,7 @@ impl ChatRelayService {
                         &started_at,
                     )
                     .finish(None, error)
-                    .await,
-                );
+                    .await);
             }
         };
 
@@ -376,17 +379,15 @@ impl ChatRelayService {
         ) {
             Ok(builder) => builder,
             Err(error) => {
-                return Err(
-                    error_ctx
-                        .finish(
-                            None,
-                            OpenAiErrorResponse::internal_with(
-                                "failed to build upstream chat request",
-                                error,
-                            ),
-                        )
-                        .await,
-                );
+                return Err(error_ctx
+                    .finish(
+                        None,
+                        OpenAiErrorResponse::internal_with(
+                            "failed to build upstream chat request",
+                            error,
+                        ),
+                    )
+                    .await);
             }
         };
 
@@ -1150,7 +1151,7 @@ mod tests {
     use summer_web::axum::http::HeaderMap;
 
     use super::{
-        extract_api_key, resolve_upstream_model, select_schedulable_account, RelayChatContext,
+        RelayChatContext, extract_api_key, resolve_upstream_model, select_schedulable_account,
     };
     use crate::service::token::TokenInfo;
 

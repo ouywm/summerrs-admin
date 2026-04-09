@@ -41,8 +41,8 @@ use summer::config::ConfigRegistry;
 use summer::error::Result as AppResult;
 use summer::plugin::{ComponentRegistry, MutableComponentRegistry, Plugin};
 use summer_ai_model::entity::log as ai_log;
-use summer_system_model::entity::{sys_login_log, sys_operation_log};
 use summer_sea_orm::DbConn;
+use summer_system_model::entity::{sys_login_log, sys_operation_log};
 use tokio::sync::Notify;
 use tokio_util::task::TaskTracker;
 
@@ -206,8 +206,7 @@ async fn flush_batch<A>(
     buffer: &mut Vec<A>,
     entity_name: &str,
     control: &CollectorControl,
-)
-where
+) where
     A: ActiveModelTrait + ActiveModelBehavior + Send + Clone,
     <A::Entity as EntityTrait>::Model: IntoActiveModel<A>,
 {
@@ -215,7 +214,10 @@ where
     let count = batch.len();
 
     for (attempt, delay_ms) in LOG_BATCH_RETRY_DELAYS_MS.iter().enumerate() {
-        match <A::Entity as EntityTrait>::insert_many(batch.clone()).exec(db).await {
+        match <A::Entity as EntityTrait>::insert_many(batch.clone())
+            .exec(db)
+            .await
+        {
             Ok(_) => {
                 tracing::debug!("{} 批量写入 {} 条", entity_name, count);
                 return;
@@ -236,7 +238,11 @@ where
         }
     }
 
-    tracing::error!("{} 批量写入重试后仍失败，降级为单条写入 {} 条", entity_name, count);
+    tracing::error!(
+        "{} 批量写入重试后仍失败，降级为单条写入 {} 条",
+        entity_name,
+        count
+    );
     for model in batch {
         if let Err(error) = model.insert(db).await {
             tracing::error!("{} 单条写入失败: {}", entity_name, error);

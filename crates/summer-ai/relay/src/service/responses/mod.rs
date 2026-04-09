@@ -107,8 +107,14 @@ impl ResponsesRelayService {
             ),
         )
         .await;
-        let base_error_ctx =
-            self.error_context(tracked_request.as_ref(), None, None, None, None, &started_at);
+        let base_error_ctx = self.error_context(
+            tracked_request.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            &started_at,
+        );
 
         let target = match self.resolve_target(&ctx.token_info.group, &request).await {
             Ok(target) => target,
@@ -129,8 +135,8 @@ impl ResponsesRelayService {
         {
             Ok(billing) => billing,
             Err(error) => {
-                return Err(
-                    self.error_context(
+                return Err(self
+                    .error_context(
                         tracked_request.as_ref(),
                         None,
                         None,
@@ -139,8 +145,7 @@ impl ResponsesRelayService {
                         &started_at,
                     )
                     .finish(None, error)
-                    .await,
-                );
+                    .await);
             }
         };
 
@@ -202,17 +207,15 @@ impl ResponsesRelayService {
         ) {
             Ok(builder) => builder,
             Err(error) => {
-                return Err(
-                    error_ctx
-                        .finish(
-                            None,
-                            OpenAiErrorResponse::internal_with(
-                                "failed to build upstream responses request",
-                                error,
-                            ),
-                        )
-                        .await,
-                );
+                return Err(error_ctx
+                    .finish(
+                        None,
+                        OpenAiErrorResponse::internal_with(
+                            "failed to build upstream responses request",
+                            error,
+                        ),
+                    )
+                    .await);
             }
         };
 
@@ -235,7 +238,11 @@ impl ResponsesRelayService {
                 UpstreamResponsesStreamResponse::Failure {
                     upstream_request_id,
                     error,
-                } => return Err(error_ctx.finish(upstream_request_id.as_deref(), error).await),
+                } => {
+                    return Err(error_ctx
+                        .finish(upstream_request_id.as_deref(), error)
+                        .await);
+                }
             };
 
             let common = ResponsesStreamCommonArgs {
@@ -273,13 +280,11 @@ impl ResponsesRelayService {
                                 "responses bridge requires chat provider support",
                             )
                         })?;
-                    let chunk_stream = match chat_provider
-                        .parse_chat_stream(response, &target.upstream_model)
-                    {
-                        Ok(stream) => stream,
-                        Err(error) => {
-                            return Err(
-                                error_ctx
+                    let chunk_stream =
+                        match chat_provider.parse_chat_stream(response, &target.upstream_model) {
+                            Ok(stream) => stream,
+                            Err(error) => {
+                                return Err(error_ctx
                                     .finish(
                                         upstream_request_id.as_deref(),
                                         OpenAiErrorResponse::internal_with(
@@ -287,10 +292,9 @@ impl ResponsesRelayService {
                                             error,
                                         ),
                                     )
-                                    .await,
-                            );
-                        }
-                    };
+                                    .await);
+                            }
+                        };
 
                     TrackedResponsesSseStream::bridge(BridgeResponsesSseStreamArgs {
                         inner: chunk_stream,
@@ -332,11 +336,9 @@ impl ResponsesRelayService {
         };
 
         if let Some(error) = upstream_response.error {
-            return Err(
-                error_ctx
-                    .finish(upstream_response.upstream_request_id.as_deref(), error)
-                    .await,
-            );
+            return Err(error_ctx
+                .finish(upstream_response.upstream_request_id.as_deref(), error)
+                .await);
         }
 
         let responses_response = match self.parse_responses_response(
@@ -347,17 +349,15 @@ impl ResponsesRelayService {
         ) {
             Ok(response) => response,
             Err(error) => {
-                return Err(
-                    error_ctx
-                        .finish(
-                            upstream_response.upstream_request_id.as_deref(),
-                            OpenAiErrorResponse::internal_with(
-                                "failed to parse upstream responses response",
-                                error,
-                            ),
-                        )
-                        .await,
-                );
+                return Err(error_ctx
+                    .finish(
+                        upstream_response.upstream_request_id.as_deref(),
+                        OpenAiErrorResponse::internal_with(
+                            "failed to parse upstream responses response",
+                            error,
+                        ),
+                    )
+                    .await);
             }
         };
 
@@ -801,7 +801,11 @@ impl ResponsesRelayService {
             content: openai_error.error.error.message.clone(),
         };
 
-        if let Err(error) = self.log.record_failure(&log_context.token_info, record).await {
+        if let Err(error) = self
+            .log
+            .record_failure(&log_context.token_info, record)
+            .await
+        {
             tracing::warn!(request_id, error = %error, "failed to write responses failure log");
         }
     }
