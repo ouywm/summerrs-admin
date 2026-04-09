@@ -3,6 +3,7 @@
 
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -138,5 +139,42 @@ impl ActiveModelBehavior for ActiveModel {
             self.create_time = sea_orm::Set(now);
         }
         Ok(self)
+    }
+}
+
+impl Entity {
+    pub async fn find_schedulable_by_channel_ids<C>(
+        db: &C,
+        channel_ids: &[i64],
+    ) -> Result<Vec<Model>, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        if channel_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Self::find()
+            .filter(Column::ChannelId.is_in(channel_ids.to_vec()))
+            .filter(Column::DeletedAt.is_null())
+            .filter(Column::Schedulable.eq(true))
+            .filter(Column::Status.eq(ChannelAccountStatus::Enabled))
+            .order_by_asc(Column::ChannelId)
+            .order_by_desc(Column::Priority)
+            .order_by_desc(Column::Weight)
+            .order_by_desc(Column::Id)
+            .all(db)
+            .await
+    }
+}
+
+impl Model {
+    pub fn api_key(&self) -> Option<String> {
+        self.credentials
+            .get("api_key")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
     }
 }

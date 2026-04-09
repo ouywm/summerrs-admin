@@ -2,6 +2,7 @@
 //! 对应 sql/ai/ability.sql
 
 use sea_orm::entity::prelude::*;
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 
 #[sea_orm::model]
@@ -50,5 +51,28 @@ impl ActiveModelBehavior for ActiveModel {
             self.create_time = sea_orm::Set(now);
         }
         Ok(self)
+    }
+}
+
+impl Entity {
+    pub async fn find_enabled_route_candidates<C>(
+        db: &C,
+        channel_group: &str,
+        endpoint_scope: &str,
+        requested_model: &str,
+    ) -> Result<Vec<Model>, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        Self::find()
+            .filter(Column::ChannelGroup.eq(channel_group))
+            .filter(Column::EndpointScope.eq(endpoint_scope))
+            .filter(Column::Model.eq(requested_model.to_string()))
+            .filter(Column::Enabled.eq(true))
+            .order_by_desc(Column::Priority)
+            .order_by_desc(Column::Weight)
+            .order_by_desc(Column::ChannelId)
+            .all(db)
+            .await
     }
 }

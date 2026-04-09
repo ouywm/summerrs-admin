@@ -7,6 +7,7 @@ use summer_ai_core::types::embedding::EmbeddingRequest;
 use summer_ai_core::types::responses::ResponsesRequest;
 use summer_ai_model::entity::request::{self, RequestStatus};
 use summer_ai_model::entity::request_execution::{self, RequestExecutionStatus};
+use summer_ai_model::entity::retry_attempt::{self, RetryAttemptStatus};
 use summer_common::error::ApiResult;
 use summer_sea_orm::DbConn;
 use summer_web::axum::http::HeaderMap;
@@ -55,6 +56,7 @@ impl TrackingService {
         &self,
         ai_request_id: i64,
         request_id: &str,
+        attempt_no: i32,
         request: &ChatCompletionRequest,
         channel_id: i64,
         account_id: i64,
@@ -64,6 +66,7 @@ impl TrackingService {
         CreateChatExecutionTracking {
             ai_request_id,
             request_id,
+            attempt_no,
             request,
             channel_id,
             account_id,
@@ -105,6 +108,7 @@ impl TrackingService {
         &self,
         ai_request_id: i64,
         request_id: &str,
+        attempt_no: i32,
         request: &ResponsesRequest,
         channel_id: i64,
         account_id: i64,
@@ -114,6 +118,7 @@ impl TrackingService {
         CreateResponsesExecutionTracking {
             ai_request_id,
             request_id,
+            attempt_no,
             request,
             channel_id,
             account_id,
@@ -155,6 +160,7 @@ impl TrackingService {
         &self,
         ai_request_id: i64,
         request_id: &str,
+        attempt_no: i32,
         request: &EmbeddingRequest,
         channel_id: i64,
         account_id: i64,
@@ -164,6 +170,7 @@ impl TrackingService {
         CreateEmbeddingsExecutionTracking {
             ai_request_id,
             request_id,
+            attempt_no,
             request,
             channel_id,
             account_id,
@@ -175,6 +182,43 @@ impl TrackingService {
         .await
         .context("创建 request_execution 追踪记录失败")
         .map_err(Into::into)
+    }
+
+    pub async fn create_retry_attempt(
+        &self,
+        input: CreateRetryAttemptTracking<'_>,
+    ) -> ApiResult<retry_attempt::Model> {
+        input
+            .into_active_model()
+            .insert(&self.db)
+            .await
+            .context("创建 retry_attempt 记录失败")
+            .map_err(Into::into)
+    }
+
+    pub async fn finish_retry_attempt(
+        &self,
+        retry_attempt_id: i64,
+        status: RetryAttemptStatus,
+        error_message: &str,
+        payload: serde_json::Value,
+    ) -> ApiResult<()> {
+        let mut active: retry_attempt::ActiveModel =
+            retry_attempt::Entity::find_by_id(retry_attempt_id)
+                .one(&self.db)
+                .await
+                .context("查询 retry_attempt 记录失败")?
+                .context("retry_attempt 记录不存在")?
+                .into();
+
+        active.status = Set(status);
+        active.error_message = Set(error_message.to_string());
+        active.payload = Set(payload);
+        active
+            .update(&self.db)
+            .await
+            .context("更新 retry_attempt 记录失败")?;
+        Ok(())
     }
 
     pub async fn finish_request_success<T: Serialize>(
@@ -525,6 +569,7 @@ impl CreateChatRequestTracking<'_> {
 pub struct CreateChatExecutionTracking<'a> {
     pub ai_request_id: i64,
     pub request_id: &'a str,
+    pub attempt_no: i32,
     pub request: &'a ChatCompletionRequest,
     pub channel_id: i64,
     pub account_id: i64,
@@ -537,7 +582,7 @@ impl CreateChatExecutionTracking<'_> {
         request_execution::ActiveModel {
             ai_request_id: Set(self.ai_request_id),
             request_id: Set(self.request_id.to_string()),
-            attempt_no: Set(1),
+            attempt_no: Set(self.attempt_no.max(1)),
             channel_id: Set(self.channel_id),
             account_id: Set(self.account_id),
             endpoint: Set("/v1/chat/completions".to_string()),
@@ -636,6 +681,7 @@ impl CreateEmbeddingsRequestTracking<'_> {
 pub struct CreateEmbeddingsExecutionTracking<'a> {
     pub ai_request_id: i64,
     pub request_id: &'a str,
+    pub attempt_no: i32,
     pub request: &'a EmbeddingRequest,
     pub channel_id: i64,
     pub account_id: i64,
@@ -648,7 +694,7 @@ impl CreateEmbeddingsExecutionTracking<'_> {
         request_execution::ActiveModel {
             ai_request_id: Set(self.ai_request_id),
             request_id: Set(self.request_id.to_string()),
-            attempt_no: Set(1),
+            attempt_no: Set(self.attempt_no.max(1)),
             channel_id: Set(self.channel_id),
             account_id: Set(self.account_id),
             endpoint: Set(EMBEDDINGS_ENDPOINT.to_string()),
@@ -718,6 +764,7 @@ impl CreateResponsesRequestTracking<'_> {
 pub struct CreateResponsesExecutionTracking<'a> {
     pub ai_request_id: i64,
     pub request_id: &'a str,
+    pub attempt_no: i32,
     pub request: &'a ResponsesRequest,
     pub channel_id: i64,
     pub account_id: i64,
@@ -730,7 +777,7 @@ impl CreateResponsesExecutionTracking<'_> {
         request_execution::ActiveModel {
             ai_request_id: Set(self.ai_request_id),
             request_id: Set(self.request_id.to_string()),
-            attempt_no: Set(1),
+            attempt_no: Set(self.attempt_no.max(1)),
             channel_id: Set(self.channel_id),
             account_id: Set(self.account_id),
             endpoint: Set(RESPONSES_ENDPOINT.to_string()),
@@ -752,6 +799,36 @@ impl CreateResponsesExecutionTracking<'_> {
     }
 }
 
+pub struct CreateRetryAttemptTracking<'a> {
+    pub domain_code: &'a str,
+    pub task_type: &'a str,
+    pub reference_id: &'a str,
+    pub request_id: &'a str,
+    pub attempt_no: i32,
+    pub backoff_seconds: i32,
+    pub error_message: &'a str,
+    pub payload: serde_json::Value,
+    pub next_retry_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+}
+
+impl CreateRetryAttemptTracking<'_> {
+    pub fn into_active_model(self) -> retry_attempt::ActiveModel {
+        retry_attempt::ActiveModel {
+            domain_code: Set(self.domain_code.to_string()),
+            task_type: Set(self.task_type.to_string()),
+            reference_id: Set(self.reference_id.to_string()),
+            request_id: Set(self.request_id.to_string()),
+            attempt_no: Set(self.attempt_no.max(1)),
+            status: Set(RetryAttemptStatus::PendingRetry),
+            backoff_seconds: Set(self.backoff_seconds.max(0)),
+            error_message: Set(self.error_message.to_string()),
+            payload: Set(self.payload),
+            next_retry_at: Set(self.next_retry_at),
+            ..Default::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sea_orm::ActiveValue::Set;
@@ -760,6 +837,7 @@ mod tests {
     use summer_ai_core::types::responses::ResponsesRequest;
     use summer_ai_model::entity::request::RequestStatus;
     use summer_ai_model::entity::request_execution::RequestExecutionStatus;
+    use summer_ai_model::entity::retry_attempt::RetryAttemptStatus;
     use summer_web::axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
     use crate::service::token::TokenInfo;
@@ -767,8 +845,9 @@ mod tests {
     use super::{
         CHAT_COMPLETIONS_FORMAT, CreateChatExecutionTracking, CreateChatRequestTracking,
         CreateEmbeddingsExecutionTracking, CreateEmbeddingsRequestTracking,
-        CreateResponsesExecutionTracking, CreateResponsesRequestTracking, EMBEDDINGS_ENDPOINT,
-        EMBEDDINGS_FORMAT, RESPONSES_ENDPOINT, RESPONSES_FORMAT, snapshot_headers,
+        CreateResponsesExecutionTracking, CreateResponsesRequestTracking,
+        CreateRetryAttemptTracking, EMBEDDINGS_ENDPOINT, EMBEDDINGS_FORMAT, RESPONSES_ENDPOINT,
+        RESPONSES_FORMAT, snapshot_headers,
     };
 
     fn sample_request() -> ChatCompletionRequest {
@@ -858,6 +937,7 @@ mod tests {
         let model = CreateChatExecutionTracking {
             ai_request_id: 11,
             request_id: "req-1",
+            attempt_no: 2,
             request: &request,
             channel_id: 21,
             account_id: 31,
@@ -868,7 +948,7 @@ mod tests {
 
         assert_eq!(model.ai_request_id, Set(11));
         assert_eq!(model.request_id, Set("req-1".to_string()));
-        assert_eq!(model.attempt_no, Set(1));
+        assert_eq!(model.attempt_no, Set(2));
         assert_eq!(model.channel_id, Set(21));
         assert_eq!(model.account_id, Set(31));
         assert_eq!(model.upstream_model, Set("gpt-4o-upstream".to_string()));
@@ -903,6 +983,7 @@ mod tests {
         let model = CreateResponsesExecutionTracking {
             ai_request_id: 22,
             request_id: "resp-1",
+            attempt_no: 3,
             request: &request,
             channel_id: 930011,
             account_id: 930011,
@@ -913,6 +994,7 @@ mod tests {
 
         assert_eq!(model.endpoint, Set(RESPONSES_ENDPOINT.to_string()));
         assert_eq!(model.request_format, Set(RESPONSES_FORMAT.to_string()));
+        assert_eq!(model.attempt_no, Set(3));
         assert_eq!(model.request_body, Set(request_body));
         assert_eq!(model.status, Set(RequestExecutionStatus::Running));
     }
@@ -948,6 +1030,7 @@ mod tests {
         let model = CreateEmbeddingsExecutionTracking {
             ai_request_id: 33,
             request_id: "embedding-1",
+            attempt_no: 4,
             request: &request,
             channel_id: 930011,
             account_id: 930011,
@@ -958,8 +1041,36 @@ mod tests {
 
         assert_eq!(model.endpoint, Set(EMBEDDINGS_ENDPOINT.to_string()));
         assert_eq!(model.request_format, Set(EMBEDDINGS_FORMAT.to_string()));
+        assert_eq!(model.attempt_no, Set(4));
         assert_eq!(model.request_body, Set(request_body));
         assert_eq!(model.status, Set(RequestExecutionStatus::Running));
+    }
+
+    #[test]
+    fn build_retry_attempt_active_model_uses_pending_retry_defaults() {
+        let payload = serde_json::json!({"endpoint": "chat", "channelId": 12});
+        let model = CreateRetryAttemptTracking {
+            domain_code: "relay",
+            task_type: "chat",
+            reference_id: "req_123",
+            request_id: "req_123",
+            attempt_no: 1,
+            backoff_seconds: 0,
+            error_message: "upstream timeout",
+            payload: payload.clone(),
+            next_retry_at: None,
+        }
+        .into_active_model();
+
+        assert_eq!(model.domain_code, Set("relay".to_string()));
+        assert_eq!(model.task_type, Set("chat".to_string()));
+        assert_eq!(model.reference_id, Set("req_123".to_string()));
+        assert_eq!(model.request_id, Set("req_123".to_string()));
+        assert_eq!(model.attempt_no, Set(1));
+        assert_eq!(model.status, Set(RetryAttemptStatus::PendingRetry));
+        assert_eq!(model.backoff_seconds, Set(0));
+        assert_eq!(model.error_message, Set("upstream timeout".to_string()));
+        assert_eq!(model.payload, Set(payload));
     }
 
     #[test]
