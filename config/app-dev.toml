@@ -89,7 +89,9 @@ jwt_secret = "${JWT_SECRET:change-me-in-local-dev}"
 #per_request_deny_check = false
 
 [log-batch]
-batch_size = 100
+batch_size = 200
+capacity = 8192
+flush_interval_ms = 200
 
 [mail]
 stub = true

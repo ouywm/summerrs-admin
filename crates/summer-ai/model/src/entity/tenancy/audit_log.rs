@@ -80,4 +80,16 @@ pub struct Model {
     pub create_time: DateTimeWithTimeZone,
 }
 
-impl ActiveModelBehavior for ActiveModel {}
+#[sea_orm::entity::prelude::async_trait::async_trait]
+impl ActiveModelBehavior for ActiveModel {
+    async fn before_save<C>(mut self, _db: &C, insert: bool) -> Result<Self, sea_orm::DbErr>
+    where
+        C: sea_orm::ConnectionTrait,
+    {
+        if insert {
+            let now = chrono::Utc::now().fixed_offset();
+            self.create_time = sea_orm::Set(now);
+        }
+        Ok(self)
+    }
+}

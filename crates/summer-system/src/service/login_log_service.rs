@@ -5,7 +5,6 @@ use summer::plugin::Service;
 use summer_auth::LoginId;
 use summer_common::error::ApiResult;
 use summer_common::user_agent::UserAgentInfo;
-use summer_plugins::background_task::BackgroundTaskQueue;
 use summer_plugins::ip2region::Ip2RegionSearcher;
 use summer_plugins::log_batch_collector::LoginLogCollector;
 use summer_sea_orm::DbConn;
@@ -21,13 +20,11 @@ pub struct LoginLogService {
     #[inject(component)]
     ip_searcher: Ip2RegionSearcher,
     #[inject(component)]
-    task_queue: BackgroundTaskQueue,
-    #[inject(component)]
     login_collector: LoginLogCollector,
 }
 
 impl LoginLogService {
-    /// 记录登录日志（通过后台任务队列预处理，批量收集器写入）
+    /// 记录登录日志（直接入批量收集器）
     pub fn record_login_async(
         &self,
         user_id: i64,
@@ -38,29 +35,27 @@ impl LoginLogService {
         fail_reason: Option<String>,
     ) {
         let login_location = self.ip_searcher.search_location(&client_ip);
-        let login_collector = self.login_collector.clone();
+        let mut log: sys_login_log::ActiveModel = CreateLoginLogDto {
+            user_id,
+            user_name,
+            client_ip,
+            login_location,
+            ua_info,
+            status,
+            fail_reason,
+        }
+        .into();
 
-        self.task_queue.spawn(async move {
-            let mut log: sys_login_log::ActiveModel = CreateLoginLogDto {
-                user_id,
-                user_name,
-                client_ip,
-                login_location,
-                ua_info,
-                status,
-                fail_reason,
-            }
-            .into();
+        // insert_many 不触发 before_save，手动设置时间戳
+        let now = chrono::Local::now().naive_local();
+        log.create_time = Set(now);
+        if log.login_time.is_not_set() {
+            log.login_time = Set(now);
+        }
 
-            // insert_many 不触发 before_save，手动设置时间戳
-            let now = chrono::Local::now().naive_local();
-            log.create_time = Set(now);
-            if log.login_time.is_not_set() {
-                log.login_time = Set(now);
-            }
-
-            login_collector.push(log);
-        });
+        if let Err(error) = self.login_collector.push(log) {
+            tracing::warn!("登录日志批量入队失败: {:?}", error);
+        }
     }
 
     /// 获取全部登录日志（管理员）
@@ -97,5 +92,17 @@ impl LoginLogService {
             .context("查询登录日志失败")?;
 
         Ok(page.map(LoginLogVo::from_model))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn login_log_service_pushes_directly_to_collector() {
+        let source = include_str!("login_log_service.rs");
+        let prod_source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(!prod_source.contains("task_queue: BackgroundTaskQueue"));
+        assert!(!prod_source.contains("self.task_queue.spawn"));
+        assert!(prod_source.contains("self.login_collector.push"));
     }
 }

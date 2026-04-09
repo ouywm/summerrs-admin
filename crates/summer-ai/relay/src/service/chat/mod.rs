@@ -3,6 +3,8 @@ use std::time::Instant;
 use anyhow::Context;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use summer::plugin::Service;
+use summer_ai_billing::service::channel_model_price::ResolvedModelPrice;
+use summer_ai_billing::service::engine::BillingEngine;
 use summer_ai_core::provider::{
     ChatProvider, ProviderErrorInfo, ProviderErrorKind, ProviderKind, ProviderRegistry,
 };
@@ -24,8 +26,9 @@ use summer_web::axum::response::{IntoResponse, Response};
 
 use self::stream::{TrackedChatSseStream, TrackedChatSseStreamArgs};
 use crate::plugin::RelayStreamTaskTracker;
+use crate::service::log::{FailureLogRecord, LogService, UsageLogRecord};
 use crate::service::shared::request_prep::{
-    PreparedRequestMeta, prepare_request_meta, try_create_tracked_request,
+    prepare_request_meta, try_create_tracked_request, PreparedRequestMeta,
 };
 use crate::service::token::TokenInfo;
 use crate::service::tracking::TrackingService;
@@ -36,15 +39,44 @@ mod stream;
 pub struct ChatRelayService {
     #[inject(component)]
     db: DbConn,
+
     #[inject(component)]
     client: reqwest::Client,
+
+    #[inject(component)]
+    billing: BillingEngine,
+
+    #[inject(component)]
+    log: LogService,
+
     #[inject(component)]
     tracking: TrackingService,
+
     #[inject(component)]
     stream_task_tracker: RelayStreamTaskTracker,
 }
 
 impl ChatRelayService {
+    fn error_context<'a>(
+        &'a self,
+        tracked_request: Option<&'a request::Model>,
+        tracked_execution: Option<&'a request_execution::Model>,
+        log_context: Option<&'a ChatLogContext>,
+        billing: Option<&'a ChatBillingContext>,
+        upstream_model: Option<&'a str>,
+        started_at: &'a Instant,
+    ) -> ChatErrorContext<'a> {
+        ChatErrorContext {
+            service: self,
+            tracked_request,
+            tracked_execution,
+            log_context,
+            billing,
+            upstream_model,
+            started_at,
+        }
+    }
+
     pub async fn relay(
         &self,
         ctx: RelayChatContext,
@@ -55,10 +87,20 @@ impl ChatRelayService {
             started_at,
             tracked_request,
             tracked_execution,
+            billing,
+            log_context,
             target,
             provider,
             request_builder,
         } = self.prepare_chat_relay(&ctx, &request).await?;
+        let error_ctx = self.error_context(
+            tracked_request.as_ref(),
+            tracked_execution.as_ref(),
+            Some(&log_context),
+            Some(&billing),
+            Some(&target.upstream_model),
+            &started_at,
+        );
 
         if request.stream {
             let upstream_response = match self
@@ -66,19 +108,7 @@ impl ChatRelayService {
                 .await
             {
                 Ok(response) => response,
-                Err(error) => {
-                    return Err(self
-                        .finish_with_error(
-                            &self.tracking,
-                            tracked_request.as_ref(),
-                            tracked_execution.as_ref(),
-                            Some(&target.upstream_model),
-                            None,
-                            error,
-                            started_at.elapsed().as_millis() as i32,
-                        )
-                        .await);
-                }
+                Err(error) => return Err(error_ctx.finish(None, error).await),
             };
 
             let (response_status_code, upstream_request_id, response) = match upstream_response {
@@ -90,38 +120,23 @@ impl ChatRelayService {
                 UpstreamChatStreamResponse::Failure {
                     upstream_request_id,
                     error,
-                } => {
-                    return Err(self
-                        .finish_with_error(
-                            &self.tracking,
-                            tracked_request.as_ref(),
-                            tracked_execution.as_ref(),
-                            Some(&target.upstream_model),
-                            upstream_request_id.as_deref(),
-                            error,
-                            started_at.elapsed().as_millis() as i32,
-                        )
-                        .await);
-                }
+                } => return Err(error_ctx.finish(upstream_request_id.as_deref(), error).await),
             };
 
             let chunk_stream = match provider.parse_chat_stream(response, &target.upstream_model) {
                 Ok(stream) => stream,
                 Err(error) => {
-                    return Err(self
-                        .finish_with_error(
-                            &self.tracking,
-                            tracked_request.as_ref(),
-                            tracked_execution.as_ref(),
-                            Some(&target.upstream_model),
-                            upstream_request_id.as_deref(),
-                            OpenAiErrorResponse::internal_with(
-                                "failed to parse upstream chat stream",
-                                error,
-                            ),
-                            started_at.elapsed().as_millis() as i32,
-                        )
-                        .await);
+                    return Err(
+                        error_ctx
+                            .finish(
+                                upstream_request_id.as_deref(),
+                                OpenAiErrorResponse::internal_with(
+                                    "failed to parse upstream chat stream",
+                                    error,
+                                ),
+                            )
+                            .await,
+                    );
                 }
             };
 
@@ -129,6 +144,10 @@ impl ChatRelayService {
                 inner: chunk_stream,
                 task_tracker: self.stream_task_tracker.clone(),
                 tracking: Some(self.tracking.clone()),
+                billing: Some(self.billing.clone()),
+                billing_context: Some(billing.clone()),
+                log: Some(self.log.clone()),
+                log_context: Some(log_context.clone()),
                 tracked_request_id: tracked_request.as_ref().map(|model| model.id),
                 tracked_execution_id: tracked_execution.as_ref().map(|model| model.id),
                 request_id: request_id.clone(),
@@ -167,53 +186,32 @@ impl ChatRelayService {
             .await
         {
             Ok(response) => response,
-            Err(error) => {
-                return Err(self
-                    .finish_with_error(
-                        &self.tracking,
-                        tracked_request.as_ref(),
-                        tracked_execution.as_ref(),
-                        Some(&target.upstream_model),
-                        None,
-                        error,
-                        started_at.elapsed().as_millis() as i32,
-                    )
-                    .await);
-            }
+            Err(error) => return Err(error_ctx.finish(None, error).await),
         };
 
         if let Some(error) = upstream_response.error {
-            return Err(self
-                .finish_with_error(
-                    &self.tracking,
-                    tracked_request.as_ref(),
-                    tracked_execution.as_ref(),
-                    Some(&target.upstream_model),
-                    upstream_response.upstream_request_id.as_deref(),
-                    error,
-                    started_at.elapsed().as_millis() as i32,
-                )
-                .await);
+            return Err(
+                error_ctx
+                    .finish(upstream_response.upstream_request_id.as_deref(), error)
+                    .await,
+            );
         }
 
         let chat_response =
             match provider.parse_chat_response(upstream_response.body, &target.upstream_model) {
                 Ok(response) => response,
                 Err(error) => {
-                    return Err(self
-                        .finish_with_error(
-                            &self.tracking,
-                            tracked_request.as_ref(),
-                            tracked_execution.as_ref(),
-                            Some(&target.upstream_model),
-                            upstream_response.upstream_request_id.as_deref(),
-                            OpenAiErrorResponse::internal_with(
-                                "failed to parse upstream chat response",
-                                error,
-                            ),
-                            started_at.elapsed().as_millis() as i32,
-                        )
-                        .await);
+                    return Err(
+                        error_ctx
+                            .finish(
+                                upstream_response.upstream_request_id.as_deref(),
+                                OpenAiErrorResponse::internal_with(
+                                    "failed to parse upstream chat response",
+                                    error,
+                                ),
+                            )
+                            .await,
+                    );
                 }
             };
 
@@ -233,6 +231,26 @@ impl ChatRelayService {
             upstream_response.upstream_request_id.as_deref(),
             upstream_response.status_code,
             &chat_response,
+            duration_ms,
+        )
+        .await;
+        self.try_settle_chat_billing_success(&request_id, &billing, &chat_response.usage)
+            .await;
+        self.try_record_chat_success_log(
+            &ctx,
+            &target,
+            tracked_execution
+                .as_ref()
+                .map(|model| model.id)
+                .unwrap_or(0),
+            &billing,
+            &request.model,
+            &chat_response,
+            &request_id,
+            upstream_response
+                .upstream_request_id
+                .as_deref()
+                .unwrap_or_default(),
             duration_ms,
         )
         .await;
@@ -262,6 +280,8 @@ impl ChatRelayService {
             ),
         )
         .await;
+        let base_error_ctx =
+            self.error_context(tracked_request.as_ref(), None, None, None, None, &started_at);
 
         let target = match self.resolve_target(&ctx.token_info.group, request).await {
             Ok(target) => target,
@@ -272,17 +292,28 @@ impl ChatRelayService {
                     }
                     other => OpenAiErrorResponse::from_api_error(&other),
                 };
-                return Err(self
-                    .finish_with_error(
-                        &self.tracking,
+                return Err(base_error_ctx.finish(None, openai_error).await);
+            }
+        };
+
+        let billing = match self
+            .prepare_chat_billing(&ctx.token_info, request, &target)
+            .await
+        {
+            Ok(billing) => billing,
+            Err(error) => {
+                return Err(
+                    self.error_context(
                         tracked_request.as_ref(),
                         None,
                         None,
                         None,
-                        openai_error,
-                        started_at.elapsed().as_millis() as i32,
+                        Some(&target.upstream_model),
+                        &started_at,
                     )
-                    .await);
+                    .finish(None, error)
+                    .await,
+                );
             }
         };
 
@@ -311,9 +342,30 @@ impl ChatRelayService {
             None
         };
 
+        let log_context = build_chat_log_context(
+            ctx,
+            target.channel.id,
+            &target.channel.name,
+            target.account.id,
+            &target.account.name,
+            tracked_execution
+                .as_ref()
+                .map(|model| model.id)
+                .unwrap_or(0),
+            &request.model,
+        );
+
         let provider = ProviderRegistry::chat(target.provider_kind).ok_or_else(|| {
             OpenAiErrorResponse::unsupported_endpoint("chat endpoint is disabled")
         })?;
+        let error_ctx = self.error_context(
+            tracked_request.as_ref(),
+            tracked_execution.as_ref(),
+            Some(&log_context),
+            Some(&billing),
+            Some(&target.upstream_model),
+            &started_at,
+        );
 
         let request_builder = match provider.build_chat_request(
             &self.client,
@@ -324,20 +376,17 @@ impl ChatRelayService {
         ) {
             Ok(builder) => builder,
             Err(error) => {
-                return Err(self
-                    .finish_with_error(
-                        &self.tracking,
-                        tracked_request.as_ref(),
-                        tracked_execution.as_ref(),
-                        Some(&target.upstream_model),
-                        None,
-                        OpenAiErrorResponse::internal_with(
-                            "failed to build upstream chat request",
-                            error,
-                        ),
-                        started_at.elapsed().as_millis() as i32,
-                    )
-                    .await);
+                return Err(
+                    error_ctx
+                        .finish(
+                            None,
+                            OpenAiErrorResponse::internal_with(
+                                "failed to build upstream chat request",
+                                error,
+                            ),
+                        )
+                        .await,
+                );
             }
         };
 
@@ -346,6 +395,8 @@ impl ChatRelayService {
             started_at,
             tracked_request,
             tracked_execution,
+            billing,
+            log_context,
             target,
             provider,
             request_builder,
@@ -424,13 +475,28 @@ impl ChatRelayService {
         tracking: &TrackingService,
         tracked_request: Option<&request::Model>,
         tracked_execution: Option<&request_execution::Model>,
+        log_context: Option<&ChatLogContext>,
+        billing: Option<&ChatBillingContext>,
         upstream_model: Option<&str>,
         upstream_request_id: Option<&str>,
         openai_error: OpenAiErrorResponse,
         duration_ms: i32,
     ) -> OpenAiErrorResponse {
+        self.try_refund_chat_billing("chat", billing).await;
         let error_body =
             serde_json::to_value(&openai_error.error).unwrap_or_else(|_| serde_json::json!({}));
+        self.try_record_chat_failure_log(
+            log_context,
+            billing,
+            tracked_request
+                .map(|tracked_request| tracked_request.request_id.as_str())
+                .unwrap_or_default(),
+            upstream_model.unwrap_or_default(),
+            upstream_request_id.unwrap_or_default(),
+            &openai_error,
+            duration_ms,
+        )
+        .await;
         self.try_finish_request_failure(
             tracking,
             tracked_request,
@@ -450,6 +516,178 @@ impl ChatRelayService {
         )
         .await;
         openai_error
+    }
+
+    async fn prepare_chat_billing(
+        &self,
+        token_info: &TokenInfo,
+        request: &ChatCompletionRequest,
+        target: &ResolvedChatTarget,
+    ) -> Result<ChatBillingContext, OpenAiErrorResponse> {
+        let price = self
+            .billing
+            .resolve_effective_price(target.channel.id, &request.model, "chat")
+            .await
+            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
+        let group_ratio = self
+            .billing
+            .get_group_ratio(&token_info.group)
+            .await
+            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
+        let estimated_tokens = BillingEngine::estimate_prompt_tokens(&request.messages);
+        let pre_consumed = self
+            .billing
+            .pre_consume(
+                token_info.token_id,
+                token_info.unlimited_quota,
+                estimated_tokens,
+                price.input_ratio,
+                group_ratio,
+            )
+            .await
+            .map_err(|error| OpenAiErrorResponse::from_api_error(&error))?;
+
+        Ok(ChatBillingContext {
+            token_id: token_info.token_id,
+            unlimited_quota: token_info.unlimited_quota,
+            group_ratio,
+            pre_consumed,
+            estimated_prompt_tokens: estimated_tokens,
+            price,
+        })
+    }
+
+    async fn try_settle_chat_billing_success(
+        &self,
+        request_id: &str,
+        billing: &ChatBillingContext,
+        usage: &summer_ai_core::types::common::Usage,
+    ) {
+        if let Err(error) = self
+            .billing
+            .post_consume(
+                billing.token_id,
+                billing.unlimited_quota,
+                billing.pre_consumed,
+                usage,
+                &billing.price,
+                billing.group_ratio,
+            )
+            .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to settle chat billing");
+        }
+    }
+
+    async fn try_refund_chat_billing(
+        &self,
+        request_id: &str,
+        billing: Option<&ChatBillingContext>,
+    ) {
+        let Some(billing) = billing else {
+            return;
+        };
+
+        if let Err(error) = self
+            .billing
+            .refund(billing.token_id, billing.pre_consumed)
+            .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to refund chat billing reservation");
+        }
+    }
+
+    async fn try_record_chat_success_log(
+        &self,
+        ctx: &RelayChatContext,
+        target: &ResolvedChatTarget,
+        execution_id: i64,
+        billing: &ChatBillingContext,
+        requested_model: &str,
+        response: &ChatCompletionResponse,
+        request_id: &str,
+        upstream_request_id: &str,
+        duration_ms: i32,
+    ) {
+        let quota = BillingEngine::calculate_actual_quota(
+            &response.usage,
+            &billing.price,
+            billing.group_ratio,
+        );
+        let record = UsageLogRecord {
+            channel_id: target.channel.id,
+            channel_name: target.channel.name.clone(),
+            account_id: target.account.id,
+            account_name: target.account.name.clone(),
+            execution_id,
+            endpoint: "/v1/chat/completions".into(),
+            request_format: "openai/chat_completions".into(),
+            requested_model: requested_model.to_string(),
+            upstream_model: target.upstream_model.clone(),
+            model_name: billing.price.model_name.clone(),
+            usage: response.usage.clone(),
+            quota,
+            cost_total: BillingEngine::calculate_cost_total(&response.usage, &billing.price),
+            price_reference: billing.price.price_reference.clone(),
+            elapsed_time: duration_ms,
+            first_token_time: 0,
+            is_stream: false,
+            request_id: request_id.to_string(),
+            upstream_request_id: upstream_request_id.to_string(),
+            status_code: 200,
+            client_ip: ctx.client_ip.clone(),
+            user_agent: ctx.user_agent.clone(),
+            content: String::new(),
+        };
+
+        if let Err(error) = self.log.record_usage(&ctx.token_info, record).await {
+            tracing::warn!(request_id, error = %error, "failed to write chat usage log");
+        }
+    }
+
+    async fn try_record_chat_failure_log(
+        &self,
+        log_context: Option<&ChatLogContext>,
+        billing: Option<&ChatBillingContext>,
+        request_id: &str,
+        upstream_model: &str,
+        upstream_request_id: &str,
+        openai_error: &OpenAiErrorResponse,
+        duration_ms: i32,
+    ) {
+        let (Some(log_context), Some(billing)) = (log_context, billing) else {
+            return;
+        };
+
+        let record = FailureLogRecord {
+            channel_id: log_context.channel_id,
+            channel_name: log_context.channel_name.clone(),
+            account_id: log_context.account_id,
+            account_name: log_context.account_name.clone(),
+            execution_id: log_context.execution_id,
+            endpoint: "/v1/chat/completions".into(),
+            request_format: "openai/chat_completions".into(),
+            requested_model: log_context.requested_model.clone(),
+            upstream_model: upstream_model.to_string(),
+            model_name: billing.price.model_name.clone(),
+            price_reference: billing.price.price_reference.clone(),
+            elapsed_time: duration_ms,
+            is_stream: false,
+            request_id: request_id.to_string(),
+            upstream_request_id: upstream_request_id.to_string(),
+            status_code: openai_error.status as i32,
+            client_ip: log_context.client_ip.clone(),
+            user_agent: log_context.user_agent.clone(),
+            content: openai_error.error.error.message.clone(),
+        };
+
+        if let Err(error) = self
+            .log
+            .record_failure(&log_context.token_info, record)
+            .await
+        {
+            tracing::warn!(request_id, error = %error, "failed to write chat failure log");
+        }
     }
 
     async fn resolve_target(
@@ -759,14 +997,71 @@ struct ResolvedChatTarget {
     api_key: String,
 }
 
+#[derive(Clone)]
+struct ChatBillingContext {
+    token_id: i64,
+    unlimited_quota: bool,
+    group_ratio: f64,
+    pre_consumed: i64,
+    estimated_prompt_tokens: i32,
+    price: ResolvedModelPrice,
+}
+
+#[derive(Clone)]
+pub(crate) struct ChatLogContext {
+    pub(crate) token_info: TokenInfo,
+    pub(crate) channel_id: i64,
+    pub(crate) channel_name: String,
+    pub(crate) account_id: i64,
+    pub(crate) account_name: String,
+    pub(crate) execution_id: i64,
+    pub(crate) requested_model: String,
+    pub(crate) client_ip: String,
+    pub(crate) user_agent: String,
+}
+
 struct PreparedChatRelay {
     request_id: String,
     started_at: Instant,
     tracked_request: Option<request::Model>,
     tracked_execution: Option<request_execution::Model>,
+    billing: ChatBillingContext,
+    log_context: ChatLogContext,
     target: ResolvedChatTarget,
     provider: &'static dyn ChatProvider,
     request_builder: reqwest::RequestBuilder,
+}
+
+struct ChatErrorContext<'a> {
+    service: &'a ChatRelayService,
+    tracked_request: Option<&'a request::Model>,
+    tracked_execution: Option<&'a request_execution::Model>,
+    log_context: Option<&'a ChatLogContext>,
+    billing: Option<&'a ChatBillingContext>,
+    upstream_model: Option<&'a str>,
+    started_at: &'a Instant,
+}
+
+impl<'a> ChatErrorContext<'a> {
+    async fn finish(
+        &self,
+        upstream_request_id: Option<&str>,
+        error: OpenAiErrorResponse,
+    ) -> OpenAiErrorResponse {
+        self.service
+            .finish_with_error(
+                &self.service.tracking,
+                self.tracked_request,
+                self.tracked_execution,
+                self.log_context,
+                self.billing,
+                self.upstream_model,
+                upstream_request_id,
+                error,
+                self.started_at.elapsed().as_millis() as i32,
+            )
+            .await
+    }
 }
 
 enum UpstreamChatStreamResponse {
@@ -822,6 +1117,28 @@ fn build_tracking_upstream_body(
     body
 }
 
+fn build_chat_log_context(
+    ctx: &RelayChatContext,
+    channel_id: i64,
+    channel_name: &str,
+    account_id: i64,
+    account_name: &str,
+    execution_id: i64,
+    requested_model: &str,
+) -> ChatLogContext {
+    ChatLogContext {
+        token_info: ctx.token_info.clone(),
+        channel_id,
+        channel_name: channel_name.to_string(),
+        account_id,
+        account_name: account_name.to_string(),
+        execution_id,
+        requested_model: requested_model.to_string(),
+        client_ip: ctx.client_ip.clone(),
+        user_agent: ctx.user_agent.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -833,7 +1150,7 @@ mod tests {
     use summer_web::axum::http::HeaderMap;
 
     use super::{
-        RelayChatContext, extract_api_key, resolve_upstream_model, select_schedulable_account,
+        extract_api_key, resolve_upstream_model, select_schedulable_account, RelayChatContext,
     };
     use crate::service::token::TokenInfo;
 

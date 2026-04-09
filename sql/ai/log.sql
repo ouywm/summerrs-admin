@@ -39,6 +39,7 @@ CREATE TABLE ai.log (
     first_token_time    INT             NOT NULL DEFAULT 0,
     is_stream           BOOLEAN         NOT NULL DEFAULT FALSE,
     request_id          VARCHAR(64)     NOT NULL DEFAULT '',
+    dedupe_key          VARCHAR(128)    NOT NULL DEFAULT '',
     upstream_request_id VARCHAR(128)    NOT NULL DEFAULT '',
     status_code         INT             NOT NULL DEFAULT 0,
     client_ip           VARCHAR(64)     NOT NULL DEFAULT '',
@@ -63,6 +64,9 @@ CREATE INDEX idx_ai_log_requested_model ON ai.log (requested_model);
 CREATE INDEX idx_ai_log_model_name ON ai.log (model_name);
 CREATE INDEX idx_ai_log_create_time_type ON ai.log (create_time, log_type);
 CREATE INDEX idx_ai_log_request_id ON ai.log (request_id);
+CREATE UNIQUE INDEX uk_ai_log_dedupe_key
+    ON ai.log (dedupe_key)
+    WHERE dedupe_key <> '';
 
 COMMENT ON TABLE ai.log IS 'AI 消费日志表（单次调用的账务/审计摘要）';
 COMMENT ON COLUMN ai.log.id IS '日志ID';
@@ -97,6 +101,7 @@ COMMENT ON COLUMN ai.log.elapsed_time IS '总耗时（毫秒）';
 COMMENT ON COLUMN ai.log.first_token_time IS '首 token 延迟（毫秒）';
 COMMENT ON COLUMN ai.log.is_stream IS '是否流式';
 COMMENT ON COLUMN ai.log.request_id IS '请求唯一标识';
+COMMENT ON COLUMN ai.log.dedupe_key IS '日志幂等键（用于避免重复写最终摘要）';
 COMMENT ON COLUMN ai.log.upstream_request_id IS '上游返回的请求ID';
 COMMENT ON COLUMN ai.log.status_code IS '最终状态码';
 COMMENT ON COLUMN ai.log.client_ip IS '客户端 IP';

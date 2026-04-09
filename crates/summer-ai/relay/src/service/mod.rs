@@ -5,6 +5,7 @@ pub mod channel_account;
 pub mod channel_model_price;
 pub mod chat;
 pub mod embeddings;
+pub mod log;
 pub mod responses;
 pub mod shared;
 pub mod token;

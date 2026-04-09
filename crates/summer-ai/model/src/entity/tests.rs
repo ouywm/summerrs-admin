@@ -527,3 +527,37 @@ fn entities_with_update_time_use_before_save_hooks() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn entities_with_create_time_only_use_before_save_hooks() {
+    let mut failures = Vec::new();
+
+    for path in entity_source_files() {
+        let source =
+            fs::read_to_string(&path).unwrap_or_else(|_| panic!("read {}", path.display()));
+
+        if !source.contains("pub create_time:") || source.contains("pub update_time:") {
+            continue;
+        }
+
+        if !source.contains("before_save<C>") {
+            failures.push(format!(
+                "{}: missing before_save hook for create_time maintenance",
+                path.display()
+            ));
+        }
+
+        if !source.contains("self.create_time = sea_orm::Set(now);") {
+            failures.push(format!(
+                "{}: before_save hook should initialize create_time on insert",
+                path.display()
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "create_time hook issues:\n{}",
+        failures.join("\n")
+    );
+}
