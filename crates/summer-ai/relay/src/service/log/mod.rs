@@ -94,7 +94,7 @@ impl LogService {
             user_id: Set(token_info.user_id),
             token_id: Set(token_info.token_id),
             token_name: Set(token_info.name.clone()),
-            project_id: Set(0),
+            project_id: Set(token_info.project_id),
             conversation_id: Set(0),
             message_id: Set(0),
             session_id: Set(0),
@@ -307,6 +307,8 @@ mod tests {
         TokenInfo {
             token_id: 1,
             user_id: 2,
+            project_id: 3,
+            service_account_id: 4,
             name: "demo-token".into(),
             group: "default".into(),
             remain_quota: 100,

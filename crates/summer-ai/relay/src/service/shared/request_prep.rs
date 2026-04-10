@@ -61,6 +61,8 @@ mod tests {
         TokenInfo {
             token_id: 1,
             user_id: 2,
+            project_id: 3,
+            service_account_id: 4,
             name: "demo".into(),
             group: "default".into(),
             remain_quota: 100,
