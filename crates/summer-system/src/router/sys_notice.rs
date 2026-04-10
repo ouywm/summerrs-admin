@@ -1,5 +1,5 @@
 use summer_admin_macros::log;
-use summer_auth::AdminUser;
+use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -35,7 +35,7 @@ pub async fn detail(
 #[log(module = "系统公告", action = "创建", biz_type = Create)]
 #[post_api("/notice")]
 pub async fn create(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysNoticeService>,
     ValidatedJson(dto): ValidatedJson<CreateNoticeDto>,
 ) -> ApiResult<()> {
@@ -46,7 +46,7 @@ pub async fn create(
 #[log(module = "系统公告", action = "更新", biz_type = Update)]
 #[put_api("/notice/{id}")]
 pub async fn update(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysNoticeService>,
     Path(id): Path<i64>,
     ValidatedJson(dto): ValidatedJson<UpdateNoticeDto>,
@@ -68,7 +68,7 @@ pub async fn delete(
 #[log(module = "系统公告", action = "发布公告", biz_type = Update)]
 #[put_api("/notice/{id}/publish")]
 pub async fn publish(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysNoticeService>,
     Path(id): Path<i64>,
 ) -> ApiResult<()> {
@@ -79,7 +79,7 @@ pub async fn publish(
 #[log(module = "系统公告", action = "撤回公告", biz_type = Update)]
 #[put_api("/notice/{id}/revoke")]
 pub async fn revoke(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysNoticeService>,
     Path(id): Path<i64>,
 ) -> ApiResult<()> {
@@ -90,7 +90,7 @@ pub async fn revoke(
 #[log(module = "系统公告", action = "置顶公告", biz_type = Update)]
 #[put_api("/notice/{id}/pin")]
 pub async fn pin(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysNoticeService>,
     Path(id): Path<i64>,
 ) -> ApiResult<()> {
@@ -101,7 +101,7 @@ pub async fn pin(
 #[log(module = "系统公告", action = "取消置顶", biz_type = Update)]
 #[put_api("/notice/{id}/unpin")]
 pub async fn unpin(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysNoticeService>,
     Path(id): Path<i64>,
 ) -> ApiResult<()> {

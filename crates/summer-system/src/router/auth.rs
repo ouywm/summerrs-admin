@@ -28,7 +28,7 @@ pub async fn login(
 #[log(module = "认证管理", action = "退出登录", biz_type = Auth)]
 #[post_api("/auth/logout")]
 pub async fn logout(
-    LoginUser { session }: LoginUser,
+    LoginUser { session, .. }: LoginUser,
     Component(svc): Component<AuthService>,
 ) -> ApiResult<()> {
     svc.logout(&session.login_id, &session.device).await?;
@@ -50,7 +50,7 @@ pub async fn refresh_token(
 #[log(module = "认证管理", action = "登出所有设备", biz_type = Auth)]
 #[post_api("/auth/logout/all")]
 pub async fn logout_all(
-    LoginUser { session }: LoginUser,
+    LoginUser { session, .. }: LoginUser,
     Component(svc): Component<AuthService>,
 ) -> ApiResult<()> {
     svc.logout_all(&session.login_id).await?;
@@ -61,7 +61,7 @@ pub async fn logout_all(
 #[log(module = "认证管理", action = "查看在线设备", biz_type = Query)]
 #[get_api("/auth/sessions")]
 pub async fn list_sessions(
-    LoginUser { session }: LoginUser,
+    LoginUser { session, .. }: LoginUser,
     Component(svc): Component<AuthService>,
 ) -> ApiResult<Json<Vec<DeviceSessionVo>>> {
     let sessions = svc.get_sessions(&session.login_id).await?;
@@ -72,7 +72,7 @@ pub async fn list_sessions(
 #[log(module = "认证管理", action = "踢下设备", biz_type = Delete)]
 #[delete_api("/auth/sessions/{device}")]
 pub async fn kick_session(
-    LoginUser { session }: LoginUser,
+    LoginUser { session, .. }: LoginUser,
     Component(svc): Component<AuthService>,
     Path(device): Path<String>,
 ) -> ApiResult<()> {

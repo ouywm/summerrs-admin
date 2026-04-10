@@ -1,5 +1,5 @@
 use summer_admin_macros::log;
-use summer_auth::AdminUser;
+use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -37,7 +37,7 @@ pub async fn detail(
 #[log(module = "系统参数分组", action = "创建", biz_type = Create)]
 #[post_api("/config/group")]
 pub async fn create(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysConfigGroupService>,
     ValidatedJson(dto): ValidatedJson<CreateConfigGroupDto>,
 ) -> ApiResult<()> {
@@ -48,7 +48,7 @@ pub async fn create(
 #[log(module = "系统参数分组", action = "更新", biz_type = Update)]
 #[put_api("/config/group/{id}")]
 pub async fn update(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysConfigGroupService>,
     Path(id): Path<i64>,
     ValidatedJson(dto): ValidatedJson<UpdateConfigGroupDto>,

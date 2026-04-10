@@ -329,7 +329,7 @@ impl SysFileUploadService {
         let futs: Vec<_> = files
             .into_iter()
             .map(|(original_name, content_type, data)| {
-                let login_id = login_id.clone();
+                let login_id = *login_id;
                 let operator = operator.to_string();
                 async move {
                     let result = self

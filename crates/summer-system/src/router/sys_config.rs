@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use summer_admin_macros::log;
-use summer_auth::AdminUser;
+use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -57,7 +57,7 @@ pub async fn detail(
 #[log(module = "系统参数配置", action = "创建", biz_type = Create)]
 #[post_api("/config")]
 pub async fn create(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysConfigService>,
     ValidatedJson(dto): ValidatedJson<CreateConfigDto>,
 ) -> ApiResult<()> {
@@ -68,7 +68,7 @@ pub async fn create(
 #[log(module = "系统参数配置", action = "更新", biz_type = Update)]
 #[put_api("/config/{id}")]
 pub async fn update(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysConfigService>,
     Path(id): Path<i64>,
     ValidatedJson(dto): ValidatedJson<UpdateConfigDto>,

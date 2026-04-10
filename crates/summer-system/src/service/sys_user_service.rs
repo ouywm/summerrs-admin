@@ -211,7 +211,7 @@ impl SysUserService {
         let role_ids = dto.role_ids.clone();
         let has_role_change = role_ids.is_some();
         let operator = operator.to_string();
-        let login_id = LoginId::admin(id);
+        let login_id = LoginId::new(id);
 
         let (previous_status, current_status) = self
             .db
@@ -287,7 +287,7 @@ impl SysUserService {
 
     /// 删除用户（物理删除，并清理关联资源）
     pub async fn delete_user(&self, id: i64) -> ApiResult<()> {
-        let login_id = LoginId::admin(id);
+        let login_id = LoginId::new(id);
 
         self.db
             .transaction::<_, (), ApiErrors>(|txn| {

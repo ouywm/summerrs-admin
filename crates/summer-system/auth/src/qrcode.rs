@@ -45,7 +45,7 @@ impl SessionManager {
         }
 
         let new_state = QrCodeState::Scanned {
-            login_id: login_id.clone(),
+            login_id: *login_id,
         };
         let json =
             serde_json::to_string(&new_state).map_err(|e| AuthError::Internal(e.to_string()))?;

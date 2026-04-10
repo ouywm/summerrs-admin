@@ -1,7 +1,7 @@
 use axum_client_ip::ClientIpSource;
 use summer::App;
 use summer::auto_config;
-use summer_auth::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin, UserType};
+use summer_auth::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin};
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
@@ -23,7 +23,7 @@ use summer_system::plugins::{PermBitmapPlugin, RateLimitPlugin, SocketGatewayPlu
 fn app_path_auth_builder() -> PathAuthBuilder {
     PathAuthBuilder::new()
         .include("/**")
-        .exclude_all(UserType::all_login_paths())
+        .exclude("/auth/login")
         .exclude("/auth/refresh")
         .exclude("/api/v1/**")
         .exclude("/v1/**")

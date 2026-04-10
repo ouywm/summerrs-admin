@@ -4,9 +4,7 @@ use sea_orm::{
 };
 use std::net::IpAddr;
 use summer::plugin::Service;
-use summer_auth::{
-    AdminProfile, DeviceType, LoginId, LoginParams, SessionManager, UserProfile, UserType,
-};
+use summer_auth::{DeviceType, LoginId, LoginParams, SessionManager, UserProfile};
 use summer_common::crypto::verify_password;
 use summer_common::error::{ApiErrors, ApiResult};
 use summer_common::user_agent::UserAgentInfo;
@@ -106,7 +104,7 @@ impl AuthService {
         let tenant_id = self.load_default_tenant_id(user.id).await?;
 
         // 登录并获取 TokenPair
-        let login_id = LoginId::admin(user.id);
+        let login_id = LoginId::new(user.id);
         let token_pair = self
             .auth
             .login(LoginParams {
@@ -115,12 +113,12 @@ impl AuthService {
                 login_ip: client_ip.to_string(),
                 user_agent: ua_info.raw.clone(),
                 tenant_id,
-                profile: UserProfile::Admin(AdminProfile {
+                profile: UserProfile {
                     user_name: user.user_name.clone(),
                     nick_name: user.nick_name.clone(),
                     roles,
                     permissions,
-                }),
+                },
             })
             .await
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("{e}")))?;
@@ -159,7 +157,7 @@ impl AuthService {
             .parse_refresh_token(refresh_token)
             .map_err(|e| ApiErrors::Unauthorized(e.to_string()))?;
 
-        // 2. 根据用户类型从 DB 查询最新 profile
+        // 2. 根据用户 ID 从 DB 查询最新 profile
         let profile = self.load_user_profile(&login_id).await?;
         let tenant_id = self.load_default_tenant_id(login_id.user_id).await?;
 
@@ -253,37 +251,30 @@ impl AuthService {
 
     /// 根据 login_id 从 DB 加载最新的用户 Profile（refresh 时使用）
     async fn load_user_profile(&self, login_id: &LoginId) -> ApiResult<UserProfile> {
-        match login_id.user_type {
-            UserType::Admin => {
-                let user = sys_user::Entity::find_by_id(login_id.user_id)
-                    .one(&self.db)
-                    .await
-                    .context("查询管理员失败")?
-                    .ok_or_else(|| ApiErrors::Unauthorized("用户不存在".to_string()))?;
+        let user = sys_user::Entity::find_by_id(login_id.user_id)
+            .one(&self.db)
+            .await
+            .context("查询用户失败")?
+            .ok_or_else(|| ApiErrors::Unauthorized("用户不存在".to_string()))?;
 
-                let roles: Vec<String> = sys_user_role::Entity::find()
-                    .filter(sys_user_role::Column::UserId.eq(user.id))
-                    .find_also_related(sys_role::Entity)
-                    .all(&self.db)
-                    .await
-                    .context("查询用户角色失败")?
-                    .into_iter()
-                    .filter_map(|(_, role)| role.map(|r| r.role_code))
-                    .collect();
+        let roles: Vec<String> = sys_user_role::Entity::find()
+            .filter(sys_user_role::Column::UserId.eq(user.id))
+            .find_also_related(sys_role::Entity)
+            .all(&self.db)
+            .await
+            .context("查询用户角色失败")?
+            .into_iter()
+            .filter_map(|(_, role)| role.map(|r| r.role_code))
+            .collect();
 
-                let permissions = self.get_user_permissions(user.id).await?;
+        let permissions = self.get_user_permissions(user.id).await?;
 
-                Ok(UserProfile::Admin(AdminProfile {
-                    user_name: user.user_name,
-                    nick_name: user.nick_name,
-                    roles,
-                    permissions,
-                }))
-            }
-            UserType::Business | UserType::Customer => Err(ApiErrors::Unauthorized(
-                "当前仅支持管理员会话刷新".to_string(),
-            )),
-        }
+        Ok(UserProfile {
+            user_name: user.user_name,
+            nick_name: user.nick_name,
+            roles,
+            permissions,
+        })
     }
 
     async fn load_default_tenant_id(&self, user_id: i64) -> ApiResult<Option<String>> {

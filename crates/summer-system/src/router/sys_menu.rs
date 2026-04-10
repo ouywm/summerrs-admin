@@ -1,5 +1,5 @@
 use summer_admin_macros::log;
-use summer_auth::AdminUser;
+use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, ValidatedJson};
 use summer_common::response::Json;
@@ -16,7 +16,7 @@ use crate::service::sys_menu_service::SysMenuService;
 #[log(module = "菜单管理", action = "获取菜单树", biz_type = Query)]
 #[get_api("/v3/system/menus")]
 pub async fn get_menu_tree(
-    AdminUser { login_id, .. }: AdminUser,
+    LoginUser { login_id, .. }: LoginUser,
     Component(svc): Component<SysMenuService>,
 ) -> ApiResult<Json<Vec<MenuTreeVo>>> {
     let vo = svc.get_menu_tree(&login_id).await?;

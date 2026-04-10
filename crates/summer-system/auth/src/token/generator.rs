@@ -7,7 +7,7 @@ use crate::session::model::UserProfile;
 use crate::token::jwt::{AccessClaims, JwtHandler, RefreshClaims};
 use crate::user_type::{DeviceType, LoginId};
 
-/// Token 生成器（JWT Only，不再支持 UUID 模式）
+/// Token 生成器（JWT Only）
 ///
 /// 职责边界：
 /// - `JwtHandler` 是纯加密原语包装，只管 encode/decode
@@ -166,19 +166,18 @@ mod tests {
     }
 
     fn test_profile() -> UserProfile {
-        use crate::session::model::AdminProfile;
-        UserProfile::Admin(AdminProfile {
+        UserProfile {
             user_name: "admin".to_string(),
             nick_name: "管理员".to_string(),
             roles: vec!["admin".to_string()],
             permissions: vec!["system:user:list".to_string()],
-        })
+        }
     }
 
     #[test]
     fn generate_access_token() {
         let generator = TokenGenerator::new(&jwt_config());
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
         let profile = test_profile();
 
         let (token, claims) = generator
@@ -186,14 +185,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(token.split('.').count(), 3);
-        assert_eq!(claims.sub, "admin:1");
+        assert_eq!(claims.sub, "1");
         assert_eq!(claims.user_name, "admin");
     }
 
     #[test]
     fn generate_refresh_token() {
         let generator = TokenGenerator::new(&jwt_config());
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
 
         let (token, claims) = generator.generate_refresh(&login_id, 86400).unwrap();
 

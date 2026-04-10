@@ -106,7 +106,7 @@ mod tests {
         task::{Context, Poll},
     };
 
-    use summer_auth::{AdminProfile, DeviceType, LoginId, UserProfile, UserSession};
+    use summer_auth::{DeviceType, LoginId, UserProfile, UserSession};
     use summer_web::axum::{
         body::Body,
         extract::Request,
@@ -223,15 +223,15 @@ mod tests {
 
     fn sample_session() -> UserSession {
         UserSession {
-            login_id: LoginId::admin(7),
+            login_id: LoginId::new(7),
             device: DeviceType::Web,
             tenant_id: Some("T-WEB-001".to_string()),
-            profile: UserProfile::Admin(AdminProfile {
+            profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
                 roles: vec!["admin".to_string()],
                 permissions: vec!["sys:user:list".to_string()],
-            }),
+            },
         }
     }
 

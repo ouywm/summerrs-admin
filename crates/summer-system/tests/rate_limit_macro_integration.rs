@@ -1,6 +1,6 @@
 use std::time::Instant;
 use summer_admin_macros::rate_limit;
-use summer_auth::{AdminProfile, DeviceType, LoginId, UserProfile, UserSession};
+use summer_auth::{DeviceType, LoginId, UserProfile, UserSession};
 use summer_common::error::ApiResult;
 use summer_common::rate_limit::RateLimitEngine;
 use summer_web::axum::{
@@ -62,15 +62,15 @@ async fn throttle_queue_short_handler() -> ApiResult<()> {
 
 fn admin_session(user_id: i64) -> UserSession {
     UserSession {
-        login_id: LoginId::admin(user_id),
+        login_id: LoginId::new(user_id),
         device: DeviceType::Web,
         tenant_id: None,
-        profile: UserProfile::Admin(AdminProfile {
+        profile: UserProfile {
             user_name: format!("admin-{user_id}"),
             nick_name: format!("Admin {user_id}"),
             roles: vec!["admin".to_string()],
             permissions: vec!["*:*:*".to_string()],
-        }),
+        },
     }
 }
 

@@ -41,7 +41,7 @@ impl SocketGatewayService {
             namespace: namespace.to_string(),
             login_id,
             user_id: validated.login_id.user_id,
-            user_type: validated.login_id.user_type.to_string(),
+            user_type: "system".to_string(),
             device: validated.device.to_string(),
             user_name: validated.user_name,
             nick_name: validated.nick_name,

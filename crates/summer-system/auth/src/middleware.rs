@@ -10,12 +10,9 @@ use crate::config::AuthConfig;
 use crate::error::AuthError;
 use crate::path_auth::PathAuthConfig;
 use crate::session::SessionManager;
-use crate::session::model::{
-    AdminProfile, BusinessProfile, CustomerProfile, UserProfile, UserSession,
-};
-use crate::user_type::UserType;
+use crate::session::model::{UserProfile, UserSession, ValidatedAccess};
 
-/// AuthLayer — Axum Layer
+/// `AuthLayer` — Axum Layer
 #[derive(Clone)]
 pub struct AuthLayer {
     manager: SessionManager,
@@ -43,7 +40,7 @@ impl<S: Clone> Layer<S> for AuthLayer {
     }
 }
 
-/// AuthMiddleware — 实际的中间件服务
+/// `AuthMiddleware` — 实际的认证中间件服务
 #[derive(Clone)]
 pub struct AuthMiddleware<S> {
     inner: S,
@@ -79,10 +76,10 @@ where
             let config = manager.config();
 
             // 检查路径是否需要鉴权
-            let requires_auth = match &path_config {
-                Some(config) => config.requires_auth(&path),
-                None => true, // 无配置时默认需要鉴权
-            };
+            let requires_auth = path_config
+                .as_ref()
+                .map(|value| value.requires_auth(&path))
+                .unwrap_or(true);
 
             // 提取 token：优先 Header，其次 Cookie
             let token = extract_token(&req, config);
@@ -91,50 +88,33 @@ where
                 // 有 token，尝试验证
                 match manager.validate_token(&token).await {
                     Ok(validated) => {
-                        // 检查用户类型限制
-                        if let Some(path_config) = &path_config
-                            && let Some(allowed_types) = path_config.allowed_user_types(&path)
-                            && !allowed_types.contains(&validated.login_id.user_type)
-                        {
-                            return Ok(forbidden_response());
-                        }
-
-                        // 从 ValidatedAccess 构造 UserSession 并注入 extensions
-                        let login_id = validated.login_id.clone();
-                        let device = validated.device.clone();
-                        let tenant_id = validated.tenant_id.clone();
-                        let profile = build_profile_from_validated(&validated);
+                        // 从 `ValidatedAccess` 构造 `UserSession` 并注入 extensions
+                        let login_id = validated.login_id;
                         let session = UserSession {
-                            login_id: validated.login_id.clone(),
-                            device,
-                            tenant_id,
-                            profile,
+                            login_id,
+                            device: validated.device.clone(),
+                            tenant_id: validated.tenant_id.clone(),
+                            profile: build_profile_from_validated(&validated),
                         };
 
                         req.extensions_mut().insert(session);
-                        req.extensions_mut().insert(login_id);
                     }
                     Err(AuthError::AccountBanned) if requires_auth => {
                         return Ok(banned_response());
                     }
-                    Err(AuthError::AccountBanned) => {
-                        // 不需要鉴权的路径，封禁用户也继续
-                    }
+                    // 不需要鉴权的路径，封禁用户也继续
                     Err(AuthError::RefreshRequired) if requires_auth => {
                         return Ok(refresh_required_response());
                     }
-                    Err(AuthError::RefreshRequired) => {
-                        // 不需要鉴权的路径，继续
-                    }
+                    // 不需要鉴权的路径，继续
                     Err(_) if requires_auth => {
                         return Ok(unauthorized_response());
                     }
-                    Err(_) => {
-                        // Token 无效 + 不需要鉴权 → 继续
-                    }
+                    // Token 无效 + 不需要鉴权 -> 继续
+                    Err(_) => {}
                 }
             } else if requires_auth {
-                // 无 token + 需要鉴权 → 401
+                // 无 token + 需要鉴权 -> 401
                 return Ok(unauthorized_response());
             }
 
@@ -184,7 +164,6 @@ fn extract_token_from_header(req: &Request, config: &AuthConfig) -> Option<Strin
 fn extract_token_from_cookie(req: &Request, config: &AuthConfig) -> Option<String> {
     let cookie_header = req.headers().get(http::header::COOKIE)?;
     let cookie_str = cookie_header.to_str().ok()?;
-
     let cookie_name = config.cookie_name.as_deref().unwrap_or(&config.token_name);
 
     // 解析 Cookie: name1=value1; name2=value2
@@ -200,24 +179,13 @@ fn extract_token_from_cookie(req: &Request, config: &AuthConfig) -> Option<Strin
     None
 }
 
-/// 根据 ValidatedAccess 中的 login_id 用户类型构建 UserProfile
-fn build_profile_from_validated(validated: &crate::session::model::ValidatedAccess) -> UserProfile {
-    match validated.login_id.user_type {
-        UserType::Admin => UserProfile::Admin(AdminProfile {
-            user_name: validated.user_name.clone(),
-            nick_name: validated.nick_name.clone(),
-            roles: validated.roles.clone(),
-            permissions: validated.permissions.clone(),
-        }),
-        UserType::Business => UserProfile::Business(BusinessProfile {
-            user_name: validated.user_name.clone(),
-            nick_name: validated.nick_name.clone(),
-            roles: validated.roles.clone(),
-            permissions: validated.permissions.clone(),
-        }),
-        UserType::Customer => UserProfile::Customer(CustomerProfile {
-            nick_name: validated.nick_name.clone(),
-        }),
+/// 根据 `ValidatedAccess` 构建统一的 `UserProfile`
+fn build_profile_from_validated(validated: &ValidatedAccess) -> UserProfile {
+    UserProfile {
+        user_name: validated.user_name.clone(),
+        nick_name: validated.nick_name.clone(),
+        roles: validated.roles.clone(),
+        permissions: validated.permissions.clone(),
     }
 }
 
@@ -225,13 +193,6 @@ fn build_profile_from_validated(validated: &crate::session::model::ValidatedAcce
 fn unauthorized_response() -> Response<Body> {
     ProblemDetails::new("not-authenticated", "Unauthorized", 401)
         .with_detail("未登录或登录已过期")
-        .into_response()
-}
-
-/// 构建 403 禁止访问响应
-fn forbidden_response() -> Response<Body> {
-    ProblemDetails::new("forbidden", "Forbidden", 403)
-        .with_detail("无权访问该资源")
         .into_response()
 }
 

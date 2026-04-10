@@ -1,5 +1,5 @@
 use summer_admin_macros::log;
-use summer_auth::AdminUser;
+use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -16,7 +16,7 @@ use summer_sea_orm::pagination::{Page, Pagination};
 #[log(module = "用户管理", action = "获取用户信息", biz_type = Query)]
 #[get_api("/user/info")]
 pub async fn get_user_info(
-    AdminUser { login_id, .. }: AdminUser,
+    LoginUser { login_id, .. }: LoginUser,
     Component(svc): Component<SysUserService>,
 ) -> ApiResult<Json<UserInfoVo>> {
     let vo = svc.get_user_info(&login_id).await?;
@@ -47,7 +47,7 @@ pub async fn get_user_detail(
 #[log(module = "用户管理", action = "创建用户", biz_type = Create)]
 #[post_api("/user")]
 pub async fn create_user(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysUserService>,
     ValidatedJson(dto): ValidatedJson<CreateUserDto>,
 ) -> ApiResult<()> {
@@ -58,7 +58,7 @@ pub async fn create_user(
 #[log(module = "用户管理", action = "更新用户", biz_type = Update)]
 #[put_api("/user/{id}")]
 pub async fn update_user(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysUserService>,
     Path(id): Path<i64>,
     ValidatedJson(dto): ValidatedJson<UpdateUserDto>,

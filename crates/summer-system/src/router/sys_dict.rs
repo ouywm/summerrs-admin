@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use summer_admin_macros::log;
-use summer_auth::AdminUser;
+use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -33,7 +33,7 @@ pub async fn list_dict_types(
 #[log(module = "字典管理", action = "创建字典类型", biz_type = Create)]
 #[post_api("/dict/type")]
 pub async fn create_dict_type(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysDictService>,
     ValidatedJson(dto): ValidatedJson<CreateDictTypeDto>,
 ) -> ApiResult<()> {
@@ -44,7 +44,7 @@ pub async fn create_dict_type(
 #[log(module = "字典管理", action = "更新字典类型", biz_type = Update)]
 #[put_api("/dict/type/{id}")]
 pub async fn update_dict_type(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysDictService>,
     Path(id): Path<i64>,
     ValidatedJson(dto): ValidatedJson<UpdateDictTypeDto>,
@@ -100,7 +100,7 @@ pub async fn get_all_dict_data(
 #[log(module = "字典管理", action = "创建字典数据", biz_type = Create)]
 #[post_api("/dict/data")]
 pub async fn create_dict_data(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysDictService>,
     ValidatedJson(dto): ValidatedJson<CreateDictDataDto>,
 ) -> ApiResult<()> {
@@ -111,7 +111,7 @@ pub async fn create_dict_data(
 #[log(module = "字典管理", action = "更新字典数据", biz_type = Update)]
 #[put_api("/dict/data/{id}")]
 pub async fn update_dict_data(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysDictService>,
     Path(id): Path<i64>,
     ValidatedJson(dto): ValidatedJson<UpdateDictDataDto>,

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
+use summer_auth::UserProfile;
 use summer_auth::config::AuthConfig;
 use summer_auth::error::AuthError;
 use summer_auth::online::OnlineUserQuery;
 use summer_auth::qrcode::QrCodeState;
 use summer_auth::session::{SessionManager, permission_matches};
 use summer_auth::storage::memory::MemoryStorage;
-use summer_auth::user_type::{DeviceType, LoginId, UserType};
-use summer_auth::{AdminProfile, BusinessProfile, CustomerProfile, UserProfile};
+use summer_auth::user_type::{DeviceType, LoginId};
 
 fn default_config() -> AuthConfig {
     serde_json::from_str(
@@ -31,12 +31,12 @@ fn make_manager() -> SessionManager {
 
 fn admin_login_params(user_id: i64) -> summer_auth::session::LoginParams {
     summer_auth::session::LoginParams {
-        login_id: LoginId::admin(user_id),
+        login_id: LoginId::new(user_id),
         device: DeviceType::Web,
         login_ip: "127.0.0.1".to_string(),
         user_agent: "test-agent".to_string(),
         tenant_id: None,
-        profile: UserProfile::Admin(AdminProfile {
+        profile: UserProfile {
             user_name: "test_user".to_string(),
             nick_name: "Test User".to_string(),
             roles: vec!["admin".to_string()],
@@ -44,41 +44,44 @@ fn admin_login_params(user_id: i64) -> summer_auth::session::LoginParams {
                 "system:user:list".to_string(),
                 "system:user:add".to_string(),
             ],
-        }),
+        },
     }
 }
 
 fn biz_login_params(user_id: i64) -> summer_auth::session::LoginParams {
     summer_auth::session::LoginParams {
-        login_id: LoginId::business(user_id),
+        login_id: LoginId::new(user_id),
         device: DeviceType::Web,
         login_ip: "192.168.1.1".to_string(),
         user_agent: "biz-agent".to_string(),
         tenant_id: None,
-        profile: UserProfile::Business(BusinessProfile {
+        profile: UserProfile {
             user_name: "biz_user".to_string(),
             nick_name: "Biz User".to_string(),
             roles: vec!["merchant".to_string()],
             permissions: vec!["order:list".to_string()],
-        }),
+        },
     }
 }
 
 fn customer_login_params(user_id: i64) -> summer_auth::session::LoginParams {
     summer_auth::session::LoginParams {
-        login_id: LoginId::customer(user_id),
+        login_id: LoginId::new(user_id),
         device: DeviceType::Web,
         login_ip: "10.0.0.1".to_string(),
         user_agent: "customer-agent".to_string(),
         tenant_id: None,
-        profile: UserProfile::Customer(CustomerProfile {
+        profile: UserProfile {
+            user_name: "customer_user".to_string(),
             nick_name: "Customer".to_string(),
-        }),
+            roles: vec![],
+            permissions: vec![],
+        },
     }
 }
 
 fn admin_profile() -> UserProfile {
-    UserProfile::Admin(AdminProfile {
+    UserProfile {
         user_name: "test_user".to_string(),
         nick_name: "Test User".to_string(),
         roles: vec!["admin".to_string()],
@@ -86,7 +89,7 @@ fn admin_profile() -> UserProfile {
             "system:user:list".to_string(),
             "system:user:add".to_string(),
         ],
-    })
+    }
 }
 
 // ── 登录/登出 ──
@@ -111,7 +114,7 @@ async fn validate_token_returns_user_info() {
 
     let validated = mgr.validate_token(&pair.access_token).await.unwrap();
 
-    assert_eq!(validated.login_id, LoginId::admin(1));
+    assert_eq!(validated.login_id, LoginId::new(1));
     assert_eq!(validated.device, DeviceType::Web);
     assert_eq!(validated.user_name, "test_user");
     assert_eq!(validated.nick_name, "Test User");
@@ -146,7 +149,7 @@ async fn logout_sets_deny_key() {
     let mgr = make_manager();
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    mgr.logout(&LoginId::admin(1), &DeviceType::Web)
+    mgr.logout(&LoginId::new(1), &DeviceType::Web)
         .await
         .unwrap();
 
@@ -167,7 +170,7 @@ async fn logout_all_invalidates_all_devices() {
     params2.device = DeviceType::Android;
     let pair2 = mgr.login(params2).await.unwrap();
 
-    mgr.logout_all(&LoginId::admin(1)).await.unwrap();
+    mgr.logout_all(&LoginId::new(1)).await.unwrap();
 
     assert!(mgr.validate_token(&pair1.access_token).await.is_err());
     assert!(mgr.validate_token(&pair2.access_token).await.is_err());
@@ -208,7 +211,7 @@ async fn concurrent_login_multiple_devices() {
     assert!(mgr.validate_token(&pair2.access_token).await.is_ok());
 
     // 两个设备都在线
-    let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    let devices = mgr.get_devices(&LoginId::new(1)).await.unwrap();
     assert_eq!(devices.len(), 2);
 }
 
@@ -235,7 +238,7 @@ async fn max_devices_evicts_oldest() {
 
     // Stateless: access JWT 仍然有效（没有 deny key）
     // 但设备列表只剩 3 个，且 Web 的 refresh key 被删
-    let device_list = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    let device_list = mgr.get_devices(&LoginId::new(1)).await.unwrap();
     assert_eq!(device_list.len(), 3);
 
     // 旧 refresh token（Web）不能使用
@@ -263,7 +266,7 @@ async fn same_device_replaces_old_session() {
     assert!(mgr.validate_token(&pair2.access_token).await.is_ok());
 
     // 只有一个设备在线
-    let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    let devices = mgr.get_devices(&LoginId::new(1)).await.unwrap();
     assert_eq!(devices.len(), 1);
 
     // 旧 refresh token 不能使用（rid 已被删除）
@@ -304,7 +307,7 @@ async fn no_concurrent_login_clears_all_devices() {
     );
 
     // 只有 Android 设备在线
-    let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    let devices = mgr.get_devices(&LoginId::new(1)).await.unwrap();
     assert_eq!(devices.len(), 1);
 }
 
@@ -347,7 +350,7 @@ async fn refresh_with_updated_profile() {
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
     // 刷新时传入更新后的 profile
-    let updated_profile = UserProfile::Admin(AdminProfile {
+    let updated_profile = UserProfile {
         user_name: "test_user".to_string(),
         nick_name: "Updated Name".to_string(),
         roles: vec!["admin".to_string(), "editor".to_string()],
@@ -356,7 +359,7 @@ async fn refresh_with_updated_profile() {
             "system:user:add".to_string(),
             "system:user:delete".to_string(),
         ],
-    });
+    };
 
     let new_pair = mgr
         .refresh(&pair.refresh_token, &updated_profile, None)
@@ -389,7 +392,7 @@ async fn parse_refresh_token_returns_login_id() {
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
     let login_id = mgr.parse_refresh_token(&pair.refresh_token).unwrap();
-    assert_eq!(login_id, LoginId::admin(1));
+    assert_eq!(login_id, LoginId::new(1));
 }
 
 #[tokio::test]
@@ -415,7 +418,7 @@ async fn ban_user_blocks_access() {
     let mgr = make_manager();
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    mgr.ban_user(&LoginId::admin(1)).await.unwrap();
+    mgr.ban_user(&LoginId::new(1)).await.unwrap();
 
     // Access token → AccountBanned
     let result = mgr.validate_token(&pair.access_token).await;
@@ -432,8 +435,8 @@ async fn ban_user_blocks_access() {
 async fn unban_user_restores_access() {
     let mgr = make_manager();
 
-    mgr.ban_user(&LoginId::admin(1)).await.unwrap();
-    mgr.unban_user(&LoginId::admin(1)).await.unwrap();
+    mgr.ban_user(&LoginId::new(1)).await.unwrap();
+    mgr.unban_user(&LoginId::new(1)).await.unwrap();
 
     // 重新登录应成功
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
@@ -445,7 +448,7 @@ async fn force_refresh_requires_token_refresh() {
     let mgr = make_manager();
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    mgr.force_refresh(&LoginId::admin(1)).await.unwrap();
+    mgr.force_refresh(&LoginId::new(1)).await.unwrap();
 
     // Access token → RefreshRequired
     let result = mgr.validate_token(&pair.access_token).await;
@@ -468,7 +471,7 @@ async fn ban_during_refresh_blocked() {
     let mgr = make_manager();
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    mgr.ban_user(&LoginId::admin(1)).await.unwrap();
+    mgr.ban_user(&LoginId::new(1)).await.unwrap();
 
     // 封禁后 refresh 也应失败
     let result = mgr
@@ -493,7 +496,7 @@ async fn get_devices_returns_all() {
     p2.login_ip = "2.2.2.2".to_string();
     mgr.login(p2).await.unwrap();
 
-    let devices = mgr.get_devices(&LoginId::admin(1)).await.unwrap();
+    let devices = mgr.get_devices(&LoginId::new(1)).await.unwrap();
     assert_eq!(devices.len(), 2);
 }
 
@@ -505,13 +508,12 @@ async fn online_users_returns_total_and_items() {
 
     for i in 1..=3 {
         let mut p = admin_login_params(i);
-        p.login_id = LoginId::admin(i);
+        p.login_id = LoginId::new(i);
         mgr.login(p).await.unwrap();
     }
 
     let page = mgr
         .online_users(OnlineUserQuery {
-            user_type: Some(UserType::Admin),
             page: 1,
             page_size: 2,
         })
@@ -527,13 +529,12 @@ async fn online_users_page2() {
     let mgr = make_manager();
     for i in 1..=5 {
         let mut p = admin_login_params(i);
-        p.login_id = LoginId::admin(i);
+        p.login_id = LoginId::new(i);
         mgr.login(p).await.unwrap();
     }
 
     let page = mgr
         .online_users(OnlineUserQuery {
-            user_type: None,
             page: 2,
             page_size: 2,
         })
@@ -551,7 +552,7 @@ async fn kick_out_single_device() {
     let mgr = make_manager();
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
-    mgr.kick_out(&LoginId::admin(1), Some(&DeviceType::Web))
+    mgr.kick_out(&LoginId::new(1), Some(&DeviceType::Web))
         .await
         .unwrap();
 
@@ -572,7 +573,7 @@ async fn kick_out_all_devices() {
     p2.device = DeviceType::Android;
     let pair2 = mgr.login(p2).await.unwrap();
 
-    mgr.kick_out(&LoginId::admin(1), None).await.unwrap();
+    mgr.kick_out(&LoginId::new(1), None).await.unwrap();
 
     assert!(mgr.validate_token(&pair1.access_token).await.is_err());
     assert!(mgr.validate_token(&pair2.access_token).await.is_err());
@@ -590,7 +591,7 @@ async fn qr_code_full_flow() {
     let state = mgr.get_qr_code_state(&code).await.unwrap();
     assert!(matches!(state, QrCodeState::Pending));
 
-    let login_id = LoginId::admin(1);
+    let login_id = LoginId::new(1);
     mgr.scan_qr_code(&code, &login_id).await.unwrap();
 
     let state = mgr.get_qr_code_state(&code).await.unwrap();
@@ -638,10 +639,10 @@ async fn qr_code_scan_wrong_user_cannot_confirm() {
     let mgr = make_manager();
     let code = mgr.create_qr_code().await.unwrap();
 
-    mgr.scan_qr_code(&code, &LoginId::admin(1)).await.unwrap();
+    mgr.scan_qr_code(&code, &LoginId::new(1)).await.unwrap();
 
     let mut params = admin_login_params(2);
-    params.login_id = LoginId::admin(2);
+    params.login_id = LoginId::new(2);
     let result = mgr.confirm_qr_code(&code, params).await;
     assert!(matches!(result, Err(AuthError::QrCodeInvalidState)));
 }
@@ -668,29 +669,26 @@ async fn memory_storage_keys_by_prefix() {
     let storage = MemoryStorage::new();
 
     storage
-        .set_string("auth:device:admin:1:web", "d1", 3600)
+        .set_string("auth:device:1:web", "d1", 3600)
         .await
         .unwrap();
     storage
-        .set_string("auth:device:admin:1:android", "d2", 3600)
+        .set_string("auth:device:1:android", "d2", 3600)
         .await
         .unwrap();
     storage
-        .set_string("auth:device:biz:1:web", "d3", 3600)
+        .set_string("auth:device:2:web", "d3", 3600)
         .await
         .unwrap();
 
-    let keys = storage
-        .keys_by_prefix("auth:device:admin:1:")
-        .await
-        .unwrap();
+    let keys = storage.keys_by_prefix("auth:device:1:").await.unwrap();
     assert_eq!(keys.len(), 2);
 
-    let keys = storage.keys_by_prefix("auth:device:biz:").await.unwrap();
+    let keys = storage.keys_by_prefix("auth:device:2:").await.unwrap();
     assert_eq!(keys.len(), 1);
 }
 
-// ── 多用户类型 ──
+// ── 单用户档案差异 ──
 
 #[tokio::test]
 async fn business_user_login_and_validate() {
@@ -699,7 +697,7 @@ async fn business_user_login_and_validate() {
     assert!(!pair.access_token.is_empty());
 
     let validated = mgr.validate_token(&pair.access_token).await.unwrap();
-    assert_eq!(validated.login_id, LoginId::business(1));
+    assert_eq!(validated.login_id, LoginId::new(1));
     assert_eq!(validated.nick_name, "Biz User");
     assert_eq!(validated.user_name, "biz_user");
     assert_eq!(validated.roles, vec!["merchant"]);
@@ -712,69 +710,49 @@ async fn customer_user_login_and_validate() {
     assert!(!pair.access_token.is_empty());
 
     let validated = mgr.validate_token(&pair.access_token).await.unwrap();
-    assert_eq!(validated.login_id, LoginId::customer(1));
+    assert_eq!(validated.login_id, LoginId::new(1));
     assert_eq!(validated.nick_name, "Customer");
-    assert_eq!(validated.user_name, "");
+    assert_eq!(validated.user_name, "customer_user");
     assert!(validated.roles.is_empty());
     assert!(validated.permissions.is_empty());
 }
 
 #[tokio::test]
-async fn different_user_types_isolated() {
+async fn same_login_id_same_device_replaces_old_profile() {
     let mgr = make_manager();
 
     let admin_pair = mgr.login(admin_login_params(1)).await.unwrap();
     let biz_pair = mgr.login(biz_login_params(1)).await.unwrap();
-    let customer_pair = mgr.login(customer_login_params(1)).await.unwrap();
 
-    assert!(mgr.validate_token(&admin_pair.access_token).await.is_ok());
-    assert!(mgr.validate_token(&biz_pair.access_token).await.is_ok());
     assert!(
-        mgr.validate_token(&customer_pair.access_token)
+        mgr.refresh(&admin_pair.refresh_token, &admin_profile(), None)
             .await
-            .is_ok()
+            .is_err()
     );
 
-    // 登出 admin 不影响 biz 和 customer
-    mgr.logout_all(&LoginId::admin(1)).await.unwrap();
-    assert!(mgr.validate_token(&admin_pair.access_token).await.is_err());
-    assert!(mgr.validate_token(&biz_pair.access_token).await.is_ok());
-    assert!(
-        mgr.validate_token(&customer_pair.access_token)
-            .await
-            .is_ok()
-    );
+    let validated = mgr.validate_token(&biz_pair.access_token).await.unwrap();
+    assert_eq!(validated.login_id, LoginId::new(1));
+    assert_eq!(validated.nick_name, "Biz User");
 }
 
-// ── 在线用户：混合类型 ──
+// ── 在线用户 ──
 
 #[tokio::test]
-async fn online_users_mixed_types() {
+async fn online_users_multiple_profiles() {
     let mgr = make_manager();
 
     mgr.login(admin_login_params(1)).await.unwrap();
-    mgr.login(biz_login_params(1)).await.unwrap();
-    mgr.login(customer_login_params(1)).await.unwrap();
+    mgr.login(biz_login_params(2)).await.unwrap();
+    mgr.login(customer_login_params(3)).await.unwrap();
 
     let page = mgr
         .online_users(OnlineUserQuery {
-            user_type: None,
             page: 1,
             page_size: 10,
         })
         .await
         .unwrap();
     assert_eq!(page.total, 3);
-
-    let page = mgr
-        .online_users(OnlineUserQuery {
-            user_type: Some(UserType::Business),
-            page: 1,
-            page_size: 10,
-        })
-        .await
-        .unwrap();
-    assert_eq!(page.total, 1);
 }
 
 // ── permission_matches 纯函数测试 ──
@@ -839,7 +817,7 @@ async fn login_with_bitmap() {
 
     // JWT 应该能验证通过
     let validated = mgr.validate_token(&pair.access_token).await.unwrap();
-    assert_eq!(validated.login_id, LoginId::admin(1));
+    assert_eq!(validated.login_id, LoginId::new(1));
 
     // 权限应该正确解码
     let mut perms = validated.permissions.clone();
@@ -897,7 +875,7 @@ async fn refresh_with_bitmap() {
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
     // 刷新时传入更新后的 profile
-    let updated_profile = UserProfile::Admin(AdminProfile {
+    let updated_profile = UserProfile {
         user_name: "test_user".to_string(),
         nick_name: "Test User".to_string(),
         roles: vec!["admin".to_string()],
@@ -906,7 +884,7 @@ async fn refresh_with_bitmap() {
             "system:user:add".to_string(),
             "system:role:list".to_string(),
         ],
-    });
+    };
 
     let new_pair = mgr
         .refresh(&pair.refresh_token, &updated_profile, None)
@@ -939,7 +917,7 @@ async fn deny_key_multi_device_race_condition_fixed() {
     let pair2 = mgr.login(p2).await.unwrap();
 
     // 管理员修改用户角色 → force_refresh
-    mgr.force_refresh(&LoginId::admin(1)).await.unwrap();
+    mgr.force_refresh(&LoginId::new(1)).await.unwrap();
 
     // 两台设备的旧 token 都应该返回 RefreshRequired
     assert!(matches!(

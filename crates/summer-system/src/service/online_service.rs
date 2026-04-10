@@ -3,7 +3,7 @@ use std::net::IpAddr;
 
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use summer::plugin::Service;
-use summer_auth::{LoginId, OnlineUserQuery, SessionManager, UserType};
+use summer_auth::{LoginId, OnlineUserQuery, SessionManager};
 use summer_common::error::{ApiErrors, ApiResult};
 use summer_system_model::entity::sys_user;
 use summer_system_model::vo::online::OnlineUserVo;
@@ -32,7 +32,6 @@ impl OnlineUserService {
         let result = self
             .auth
             .online_users(OnlineUserQuery {
-                user_type: Some(UserType::Admin),
                 page: (pagination.page + 1) as usize, // Pagination 是 0-based，OnlineUserQuery 是 1-based
                 page_size: pagination.size as usize,
             })

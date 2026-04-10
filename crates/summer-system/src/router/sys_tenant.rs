@@ -1,5 +1,5 @@
 use summer_admin_macros::log;
-use summer_auth::AdminUser;
+use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -41,7 +41,7 @@ pub async fn tenant_detail(
 #[log(module = "租户管理", action = "创建租户", biz_type = Create)]
 #[post_api("/tenant")]
 pub async fn create_tenant(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysTenantService>,
     ValidatedJson(dto): ValidatedJson<CreateTenantDto>,
 ) -> ApiResult<()> {
@@ -52,7 +52,7 @@ pub async fn create_tenant(
 #[log(module = "租户管理", action = "更新租户", biz_type = Update)]
 #[put_api("/tenant/{tenant_id}")]
 pub async fn update_tenant(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysTenantService>,
     Path(tenant_id): Path<String>,
     ValidatedJson(dto): ValidatedJson<UpdateTenantDto>,
@@ -65,7 +65,7 @@ pub async fn update_tenant(
 #[log(module = "租户管理", action = "切换租户状态", biz_type = Update)]
 #[put_api("/tenant/{tenant_id}/status")]
 pub async fn change_tenant_status(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysTenantService>,
     Path(tenant_id): Path<String>,
     ValidatedJson(dto): ValidatedJson<ChangeTenantStatusDto>,
@@ -83,7 +83,7 @@ pub async fn change_tenant_status(
 )]
 #[put_api("/tenant/{tenant_id}/datasource")]
 pub async fn save_tenant_datasource(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysTenantService>,
     Path(tenant_id): Path<String>,
     ValidatedJson(dto): ValidatedJson<SaveTenantDatasourceDto>,
@@ -107,7 +107,7 @@ pub async fn list_tenant_members(
 #[log(module = "租户管理", action = "保存租户成员", biz_type = Update)]
 #[put_api("/tenant/{tenant_id}/members")]
 pub async fn save_tenant_membership(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysTenantService>,
     Path(tenant_id): Path<String>,
     ValidatedJson(dto): ValidatedJson<SaveTenantMembershipDto>,
@@ -125,7 +125,7 @@ pub async fn save_tenant_membership(
 )]
 #[post_api("/tenant/{tenant_id}/provision")]
 pub async fn provision_tenant(
-    AdminUser { profile, .. }: AdminUser,
+    LoginUser { profile, .. }: LoginUser,
     Component(svc): Component<SysTenantService>,
     Path(tenant_id): Path<String>,
     ValidatedJson(dto): ValidatedJson<ProvisionTenantDto>,
@@ -174,7 +174,7 @@ mod tests {
     use summer::plugin::MutableComponentRegistry;
     use summer_auth::config::AuthConfig;
     use summer_auth::storage::memory::MemoryStorage;
-    use summer_auth::{AdminProfile, DeviceType, LoginId, UserProfile, UserSession};
+    use summer_auth::{DeviceType, LoginId, UserProfile, UserSession};
     use summer_plugins::{
         BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin,
     };
@@ -224,15 +224,15 @@ mod tests {
 
     fn admin_session() -> UserSession {
         UserSession {
-            login_id: LoginId::admin(1),
+            login_id: LoginId::new(1),
             device: DeviceType::Web,
             tenant_id: None,
-            profile: UserProfile::Admin(AdminProfile {
+            profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
                 roles: vec!["admin".to_string()],
                 permissions: vec!["system:tenant:*".to_string()],
-            }),
+            },
         }
     }
 

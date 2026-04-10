@@ -1,7 +1,7 @@
 //! 文件上传 / 下载路由
 
 use summer_admin_macros::log;
-use summer_auth::AdminUser;
+use summer_auth::LoginUser;
 use summer_common::error::{ApiErrors, ApiResult};
 use summer_common::extractor::{Multipart, Path, Query, ValidatedJson};
 use summer_common::file_util::read_multipart_files;
@@ -28,7 +28,9 @@ use crate::service::sys_file_upload_service::SysFileUploadService;
 #[log(module = "文件管理", action = "上传文件", biz_type = Create, save_params = false)]
 #[post_api("/file/upload")]
 pub async fn upload_file(
-    AdminUser { login_id, profile }: AdminUser,
+    LoginUser {
+        login_id, profile, ..
+    }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
     Multipart(mut multipart): Multipart,
 ) -> ApiResult<Json<FileUploadVo>> {
@@ -54,7 +56,9 @@ pub async fn upload_file(
 #[log(module = "文件管理", action = "批量上传", biz_type = Create, save_params = false)]
 #[post_api("/file/upload/batch")]
 pub async fn batch_upload(
-    AdminUser { login_id, profile }: AdminUser,
+    LoginUser {
+        login_id, profile, ..
+    }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
     Multipart(mut multipart): Multipart,
 ) -> ApiResult<Json<BatchUploadVo>> {
@@ -81,7 +85,9 @@ pub async fn batch_upload(
 #[log(module = "文件管理", action = "获取上传链接", biz_type = Query)]
 #[post_api("/file/presign/upload")]
 pub async fn presign_upload(
-    AdminUser { login_id, profile }: AdminUser,
+    LoginUser {
+        login_id, profile, ..
+    }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<PresignUploadDto>,
 ) -> ApiResult<Json<PresignedUploadVo>> {
@@ -95,7 +101,9 @@ pub async fn presign_upload(
 #[log(module = "文件管理", action = "确认上传", biz_type = Create)]
 #[post_api("/file/presign/upload/callback")]
 pub async fn presign_upload_callback(
-    AdminUser { login_id, profile }: AdminUser,
+    LoginUser {
+        login_id, profile, ..
+    }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<PresignUploadCallbackDto>,
 ) -> ApiResult<Json<FileUploadVo>> {
@@ -160,7 +168,9 @@ pub async fn download_file(
 #[log(module = "文件管理", action = "初始化分片上传", biz_type = Create)]
 #[post_api("/file/multipart/init")]
 pub async fn multipart_init(
-    AdminUser { login_id, profile }: AdminUser,
+    LoginUser {
+        login_id, profile, ..
+    }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<MultipartInitDto>,
 ) -> ApiResult<Json<MultipartInitVo>> {
@@ -185,7 +195,9 @@ pub async fn multipart_list_parts(
 #[log(module = "文件管理", action = "完成分片上传", biz_type = Create)]
 #[post_api("/file/multipart/complete")]
 pub async fn multipart_complete(
-    AdminUser { login_id, profile }: AdminUser,
+    LoginUser {
+        login_id, profile, ..
+    }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<MultipartCompleteDto>,
 ) -> ApiResult<Json<FileUploadVo>> {
@@ -199,7 +211,7 @@ pub async fn multipart_complete(
 #[log(module = "文件管理", action = "取消分片上传", biz_type = Delete)]
 #[post_api("/file/multipart/abort")]
 pub async fn multipart_abort(
-    AdminUser { .. }: AdminUser,
+    LoginUser { .. }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
     ValidatedJson(dto): ValidatedJson<MultipartAbortDto>,
 ) -> ApiResult<()> {

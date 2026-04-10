@@ -237,8 +237,8 @@ mod tests {
 
     use summer_auth::storage::memory::MemoryStorage;
     use summer_auth::{
-        AdminProfile, AuthConfig, AuthLayer, DeviceType, LoginId, LoginParams, SessionManager,
-        UserProfile, UserSession,
+        AuthConfig, AuthLayer, DeviceType, LoginId, LoginParams, SessionManager, UserProfile,
+        UserSession,
     };
     use summer_web::axum::{
         body::Body,
@@ -438,15 +438,15 @@ mod tests {
             TenantContextLayer::new().layer(CaptureTenantService::new(captured.clone()));
         let mut req = request();
         req.extensions_mut().insert(UserSession {
-            login_id: LoginId::admin(1),
+            login_id: LoginId::new(1),
             device: DeviceType::Web,
             tenant_id: Some("T-AUTH-001".to_string()),
-            profile: UserProfile::Admin(AdminProfile {
+            profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
                 roles: vec!["admin".to_string()],
                 permissions: vec![],
-            }),
+            },
         });
 
         block_on(service.call(req)).expect("call");
@@ -468,17 +468,17 @@ mod tests {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let manager = SessionManager::new(StdArc::new(MemoryStorage::new()), auth_config());
         let token_pair = block_on(manager.login(LoginParams {
-            login_id: LoginId::admin(100),
+            login_id: LoginId::new(100),
             device: DeviceType::Web,
             login_ip: "127.0.0.1".to_string(),
             user_agent: "tenant-auth-test".to_string(),
             tenant_id: Some("T-AUTH-LAYER-001".to_string()),
-            profile: UserProfile::Admin(AdminProfile {
+            profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
                 roles: vec!["admin".to_string()],
                 permissions: vec![],
-            }),
+            },
         }))
         .expect("login");
         let mut service = AuthLayer::new(manager, None)
@@ -505,15 +505,15 @@ mod tests {
             .layer(CaptureTenantService::new(captured.clone()));
         let mut req = request();
         req.extensions_mut().insert(UserSession {
-            login_id: LoginId::admin(9),
+            login_id: LoginId::new(9),
             device: DeviceType::Web,
             tenant_id: Some("T-CLAIM-001".to_string()),
-            profile: UserProfile::Admin(AdminProfile {
+            profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
                 roles: vec!["admin".to_string()],
                 permissions: vec![],
-            }),
+            },
         });
 
         block_on(service.call(req)).expect("call");

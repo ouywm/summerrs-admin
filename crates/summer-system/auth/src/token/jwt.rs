@@ -21,7 +21,7 @@ pub struct AccessClaims {
     pub iss: String,
     /// 受众标识
     pub aud: String,
-    /// Subject — 编码后的 LoginId（如 "admin:123"）
+    /// Subject — 编码后的 LoginId（如 "123"）
     pub sub: String,
     /// Token 类型 — 固定为 Access
     pub typ: TokenType,
@@ -34,11 +34,11 @@ pub struct AccessClaims {
     /// 当前登录态绑定的租户业务标识
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
-    /// 用户名（Customer 为空字符串）
+    /// 用户名
     pub user_name: String,
     /// 昵称
     pub nick_name: String,
-    /// 角色列表（Customer 为空数组）
+    /// 角色列表
     pub roles: Vec<String>,
     /// 权限列表（无 bitmap 时使用）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -51,7 +51,7 @@ pub struct AccessClaims {
 /// Refresh JWT Claims — 仅包含身份标识和 Refresh UUID
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefreshClaims {
-    /// Subject — 编码后的 LoginId（如 "admin:123"）
+    /// Subject — 编码后的 LoginId（如 "123"）
     pub sub: String,
     /// Token 类型 — 固定为 Refresh
     pub typ: TokenType,
@@ -211,13 +211,12 @@ impl JwtHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::model::AdminProfile;
     use crate::user_type::LoginId;
 
     const TEST_SECRET: &str = "test-secret-key-for-jwt-unit-tests";
 
     fn test_profile() -> UserProfile {
-        UserProfile::Admin(AdminProfile {
+        UserProfile {
             user_name: "admin".to_string(),
             nick_name: "管理员".to_string(),
             roles: vec!["admin".to_string()],
@@ -225,13 +224,13 @@ mod tests {
                 "system:user:list".to_string(),
                 "system:user:add".to_string(),
             ],
-        })
+        }
     }
 
     #[test]
     fn encode_decode_access_token() {
         let handler = JwtHandler::hmac(TEST_SECRET);
-        let login_id = LoginId::admin(42);
+        let login_id = LoginId::new(42);
         let device = DeviceType::Web;
         let profile = test_profile();
 
@@ -240,7 +239,7 @@ mod tests {
             .unwrap();
 
         assert!(!token.is_empty());
-        assert_eq!(claims.sub, "admin:42");
+        assert_eq!(claims.sub, "42");
         assert_eq!(claims.typ, TokenType::Access);
         assert_eq!(claims.dev, "web");
         assert_eq!(claims.user_name, "admin");
@@ -263,7 +262,7 @@ mod tests {
     #[test]
     fn encode_decode_refresh_token() {
         let handler = JwtHandler::hmac(TEST_SECRET);
-        let login_id = LoginId::business(10);
+        let login_id = LoginId::new(10);
 
         let (token, claims) = handler.encode_refresh(&login_id, 86400).unwrap();
         assert_eq!(claims.typ, TokenType::Refresh);
@@ -272,14 +271,14 @@ mod tests {
 
         let decoded = handler.decode_refresh(&token).unwrap();
         assert_eq!(decoded.typ, TokenType::Refresh);
-        assert_eq!(decoded.sub, "biz:10");
+        assert_eq!(decoded.sub, "10");
         assert_eq!(decoded.rid, claims.rid);
     }
 
     #[test]
     fn access_token_cannot_decode_as_refresh() {
         let handler = JwtHandler::hmac(TEST_SECRET);
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
         let profile = test_profile();
 
         let (token, _) = handler
@@ -294,7 +293,7 @@ mod tests {
     #[test]
     fn refresh_token_cannot_decode_as_access() {
         let handler = JwtHandler::hmac(TEST_SECRET);
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
 
         let (token, _) = handler.encode_refresh(&login_id, 86400).unwrap();
 
@@ -319,7 +318,7 @@ mod tests {
         let handler1 = JwtHandler::hmac("secret-1");
         let handler2 = JwtHandler::hmac("secret-2");
 
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
         let profile = test_profile();
         let (token, _) = handler1
             .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
@@ -332,7 +331,7 @@ mod tests {
     #[test]
     fn expired_access_token() {
         let handler = JwtHandler::hmac(TEST_SECRET);
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
         let profile = test_profile();
 
         let (token, _) = handler
@@ -346,7 +345,7 @@ mod tests {
     #[test]
     fn expired_refresh_token() {
         let handler = JwtHandler::hmac(TEST_SECRET);
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
 
         let (token, _) = handler.encode_refresh(&login_id, -120).unwrap();
 
@@ -357,7 +356,7 @@ mod tests {
     #[test]
     fn rid_is_unique() {
         let handler = JwtHandler::hmac(TEST_SECRET);
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
 
         let (_, c1) = handler.encode_refresh(&login_id, 86400).unwrap();
         let (_, c2) = handler.encode_refresh(&login_id, 86400).unwrap();
@@ -379,7 +378,7 @@ mod tests {
     #[test]
     fn hs384_encode_decode() {
         let handler = hmac_handler(Algorithm::HS384, TEST_SECRET);
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
         let profile = test_profile();
 
         let (token, claims) = handler
@@ -395,7 +394,7 @@ mod tests {
     #[test]
     fn hs512_encode_decode() {
         let handler = hmac_handler(Algorithm::HS512, TEST_SECRET);
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
         let profile = test_profile();
 
         let (token, claims) = handler
@@ -409,7 +408,7 @@ mod tests {
 
     #[test]
     fn different_algorithms_produce_different_tokens() {
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
         let profile = test_profile();
 
         let h256 = hmac_handler(Algorithm::HS256, TEST_SECRET);
@@ -432,7 +431,7 @@ mod tests {
 
     #[test]
     fn cross_algorithm_verification_fails() {
-        let login_id = LoginId::admin(1);
+        let login_id = LoginId::new(1);
         let profile = test_profile();
 
         let h256 = hmac_handler(Algorithm::HS256, TEST_SECRET);

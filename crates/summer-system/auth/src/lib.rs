@@ -23,14 +23,14 @@ pub use error::{AuthError, AuthResult};
 pub use online::{OnlineUserItem, OnlineUserPage, OnlineUserQuery};
 pub use qrcode::QrCodeState;
 pub use session::{
-    AdminProfile, BusinessProfile, CustomerProfile, DeviceInfo, DeviceSession, LoginParams,
-    SessionManager, UserProfile, UserSession, ValidatedAccess, permission_matches,
+    DeviceInfo, DeviceSession, LoginParams, SessionManager, UserProfile, UserSession,
+    ValidatedAccess, permission_matches,
 };
 pub use token::{AccessClaims, RefreshClaims, TokenPair};
-pub use user_type::{DeviceType, LoginId, UserType};
+pub use user_type::{DeviceType, LoginId};
 
 #[cfg(feature = "web")]
-pub use extractor::{AdminUser, BusinessUser, CustomerUser, LoginUser};
+pub use extractor::{LoginUser, OptionalLoginUser};
 #[cfg(feature = "web")]
 pub use middleware::AuthLayer;
 #[cfg(feature = "web")]

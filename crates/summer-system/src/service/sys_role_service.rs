@@ -207,7 +207,7 @@ impl SysRoleService {
             .collect();
 
         for user_id in user_ids {
-            let _ = self.auth.force_refresh(&LoginId::admin(user_id)).await;
+            let _ = self.auth.force_refresh(&LoginId::new(user_id)).await;
         }
 
         Ok(())
