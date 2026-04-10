@@ -11,6 +11,8 @@ use summer_ai_model::entity::user_quota;
 pub struct TokenInfo {
     pub token_id: i64,
     pub user_id: i64,
+    pub project_id: i64,
+    pub service_account_id: i64,
     pub name: String,
     pub group: String,
     pub remain_quota: i64,
@@ -85,6 +87,8 @@ impl TokenService {
         Ok(TokenInfo {
             token_id: tk.id,
             user_id: tk.user_id,
+            project_id: tk.project_id,
+            service_account_id: tk.service_account_id,
             name: tk.name,
             group,
             remain_quota: tk.remain_quota,
@@ -146,6 +150,8 @@ mod tests {
         TokenInfo {
             token_id: 1,
             user_id: 2,
+            project_id: 3,
+            service_account_id: 4,
             name: "demo".into(),
             group: "default".into(),
             remain_quota: 100,
