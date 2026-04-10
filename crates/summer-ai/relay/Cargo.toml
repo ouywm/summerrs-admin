@@ -16,9 +16,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 summer = { workspace = true }
+summer-ai-billing = { workspace = true }
 summer-ai-core = { workspace = true, features = ["axum"] }
 summer-ai-model = { workspace = true }
 summer-common = { workspace = true }
+summer-job = { workspace = true }
+summer-mail = { workspace = true }
+summer-plugins = { workspace = true }
 summer-sea-orm = { workspace = true, features = [
     "postgres",
     "rustls",

@@ -3,6 +3,7 @@
 
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -208,5 +209,38 @@ impl ActiveModelBehavior for ActiveModel {
             self.create_time = sea_orm::Set(now);
         }
         Ok(self)
+    }
+}
+
+impl Entity {
+    pub async fn find_enabled_undeleted_by_ids<C>(
+        db: &C,
+        channel_ids: &[i64],
+    ) -> Result<Vec<Model>, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        if channel_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Self::find()
+            .filter(Column::Id.is_in(channel_ids.to_vec()))
+            .filter(Column::DeletedAt.is_null())
+            .filter(Column::Status.eq(ChannelStatus::Enabled))
+            .all(db)
+            .await
+    }
+}
+
+impl Model {
+    pub fn resolve_upstream_model(&self, requested_model: &str) -> String {
+        self.model_mapping
+            .get(requested_model)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(requested_model)
+            .to_string()
     }
 }

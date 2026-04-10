@@ -14,6 +14,7 @@
 | 05 | [summer-ai 整体 DDD 架构](./05-overall-ddd-architecture.md) | core + hub + model 三 crate 在 DDD 下的职责划分 |
 | 06 | [Hub DDD 模块清单与优先级](./06-hub-module-inventory.md) | 从 backup 恢复的所有模块的 DDD 归类和实施顺序 |
 | 07 | [实施路线图](./07-implementation-roadmap.md) | 分阶段重构计划与里程碑 |
+| 08 | [AI 缓存总设计](./08-ai-caching-architecture.md) | Provider Prompt Cache / Exact Cache / Semantic Cache 的统一设计 |
 
 ## 快速导航
 
@@ -21,3 +22,4 @@
 - **想看重构后 core 长什么样** → [02-target-architecture](./02-target-architecture.md)
 - **想了解整体 DDD 怎么分层** → [05-overall-ddd-architecture](./05-overall-ddd-architecture.md)
 - **想马上开始干活** → [07-implementation-roadmap](./07-implementation-roadmap.md)
+- **想规划 AI 缓存能力** → [08-ai-caching-architecture](./08-ai-caching-architecture.md)

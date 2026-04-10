@@ -3,7 +3,6 @@ use sea_orm::{EntityTrait, QueryFilter, QueryOrder};
 use std::net::IpAddr;
 use summer::plugin::Service;
 use summer_common::error::ApiResult;
-use summer_plugins::background_task::BackgroundTaskQueue;
 use summer_plugins::ip2region::Ip2RegionSearcher;
 use summer_plugins::log_batch_collector::OperationLogCollector;
 use summer_sea_orm::DbConn;
@@ -21,8 +20,6 @@ pub struct OperationLogService {
     db: DbConn,
     #[inject(component)]
     ip_searcher: Ip2RegionSearcher,
-    #[inject(component)]
-    task_queue: BackgroundTaskQueue,
     #[inject(component)]
     op_collector: OperationLogCollector,
 }
@@ -89,15 +86,16 @@ impl<S: Send + Sync> FromRequestParts<S> for OperationLogContext {
 impl summer_web::aide::OperationInput for OperationLogContext {}
 
 impl OperationLogService {
-    /// 异步记录操作日志（通过后台任务队列预处理，批量收集器写入）
+    /// 异步记录操作日志（直接入批量收集器）
     pub fn record_async(&self, dto: CreateOperationLogDto, nick_name: Option<String>) {
         let ip_location = self.ip_searcher.search_location(&dto.client_ip);
-        let op_collector = self.op_collector.clone();
-
-        self.task_queue.spawn(async move {
-            let user_name = nick_name.or_else(|| Some("未知用户".to_string()));
-            op_collector.push(dto.into_active_model(user_name, ip_location));
-        });
+        let user_name = nick_name.or_else(|| Some("未知用户".to_string()));
+        if let Err(error) = self
+            .op_collector
+            .push(dto.into_active_model(user_name, ip_location))
+        {
+            tracing::warn!("操作日志批量入队失败: {:?}", error);
+        }
     }
 
     /// 查询操作日志（分页 + 条件筛选）
@@ -129,5 +127,18 @@ impl OperationLogService {
             })?;
 
         Ok(OperationLogDetailVo::from_model(model))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn operation_log_service_pushes_directly_to_collector() {
+        let source = include_str!("operation_log_service.rs");
+        let prod_source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(!prod_source.contains("task_queue: BackgroundTaskQueue"));
+        assert!(!prod_source.contains("self.task_queue.spawn"));
+        assert!(prod_source.contains(".op_collector"));
+        assert!(prod_source.contains(".push(dto.into_active_model"));
     }
 }

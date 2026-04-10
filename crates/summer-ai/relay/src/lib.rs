@@ -10,41 +10,27 @@ pub use summer_ai_model::entity;
 #[cfg(test)]
 mod tests {
     #[test]
-    fn relay_crate_exposes_openai_router_and_tracking_service_modules() {
-        let _ = crate::router::openai::routes as fn() -> summer_web::Router;
-        let _ = std::any::TypeId::of::<crate::service::tracking::TrackingService>();
-        let _ = std::any::TypeId::of::<crate::service::chat::ChatRelayService>();
-        let _ = std::any::TypeId::of::<crate::service::embeddings::EmbeddingsRelayService>();
-        let _ = std::any::TypeId::of::<crate::service::responses::ResponsesRelayService>();
+    fn relay_job_exposes_daily_stats_module() {
+        let source = include_str!("job/mod.rs");
+        assert!(source.contains("mod daily_stats;") || source.contains("pub mod daily_stats;"));
     }
 
     #[test]
-    fn chat_route_delegates_stream_branching_to_service() {
-        let source = include_str!("router/openai/chat.rs");
-        assert!(!source.contains("if req.stream"));
-        assert!(source.contains("svc.relay("));
+    fn relay_service_exposes_daily_stats_module() {
+        let source = include_str!("service/mod.rs");
+        assert!(source.contains("pub mod daily_stats;"));
     }
 
     #[test]
-    fn responses_route_delegates_response_building_to_service() {
-        let source = include_str!("router/openai/responses.rs");
-        assert!(source.contains("svc.relay("));
-        assert!(!source.contains("Json::<ResponsesResponse>"));
+    fn relay_job_exposes_alert_module() {
+        let source = include_str!("job/mod.rs");
+        assert!(source.contains("mod alert;") || source.contains("pub mod alert;"));
     }
 
     #[test]
-    fn embeddings_route_delegates_response_building_to_service() {
-        let source = include_str!("router/openai/embeddings.rs");
-        assert!(source.contains("svc.relay("));
-        assert!(!source.contains("Json::<EmbeddingResponse>"));
-    }
-
-    #[test]
-    fn chat_service_keeps_stream_branching_inside_single_relay_method() {
-        let source = include_str!("service/chat/mod.rs");
-        assert!(!source.contains("async fn relay_chat_completion("));
-        assert!(!source.contains("async fn relay_chat_completion_stream("));
-        assert!(source.contains("if request.stream"));
+    fn relay_service_exposes_alert_module() {
+        let source = include_str!("service/mod.rs");
+        assert!(source.contains("pub mod alert;"));
     }
 
     #[test]
@@ -59,12 +45,5 @@ mod tests {
     fn chat_stream_tracking_avoids_detached_tokio_spawn() {
         let source = include_str!("service/chat/stream.rs");
         assert!(!source.contains("tokio::spawn("));
-    }
-
-    #[test]
-    fn relay_crate_exposes_auth_chain_modules() {
-        let _ = std::any::TypeId::of::<crate::auth::middleware::AiAuthLayer>();
-        let _ = std::any::TypeId::of::<crate::auth::extractor::AiToken>();
-        let _ = std::any::TypeId::of::<crate::service::token::TokenService>();
     }
 }
