@@ -4,7 +4,9 @@ use summer_common::extractor::{Path, Query};
 use summer_common::response::Json;
 use summer_system_model::dto::monitor::{CacheDeleteQuery, CacheKeysQuery};
 use summer_system_model::vo::monitor::{CacheInfoVo, CacheKeyDetailVo, CacheKeysVo, ServerInfoVo};
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api};
 
 use crate::service::monitor_service::{CacheMonitorService, ServerMonitorService};
@@ -69,4 +71,14 @@ pub async fn delete_cache_keys_by_pattern(
 ) -> ApiResult<()> {
     svc.delete_cache_keys_by_pattern(query).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(server_info)
+        .typed_route(cache_info)
+        .typed_route(cache_keys)
+        .typed_route(cache_key_detail)
+        .typed_route(delete_cache_key)
+        .typed_route(delete_cache_keys_by_pattern)
 }

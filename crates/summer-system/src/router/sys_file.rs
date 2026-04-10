@@ -6,7 +6,9 @@ use summer_common::extractor::{Path, Query};
 use summer_common::response::Json;
 use summer_system_model::dto::sys_file::FileQueryDto;
 use summer_system_model::vo::sys_file::FileVo;
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api};
 
 use crate::service::sys_file_service::SysFileService;
@@ -44,4 +46,11 @@ pub async fn delete_file(
 ) -> ApiResult<()> {
     svc.delete_file(id).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(list_files)
+        .typed_route(get_file)
+        .typed_route(delete_file)
 }

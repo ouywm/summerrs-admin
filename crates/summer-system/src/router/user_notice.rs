@@ -5,7 +5,9 @@ use summer_common::extractor::{Path, Query};
 use summer_common::response::Json;
 use summer_system_model::dto::sys_notice::{UserNoticeLatestQueryDto, UserNoticeQueryDto};
 use summer_system_model::vo::sys_notice::{NoticeUnreadCountVo, UserNoticeDetailVo, UserNoticeVo};
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{get_api, put_api};
 
 use crate::service::user_notice_service::UserNoticeService;
@@ -74,4 +76,14 @@ pub async fn read_all(
 ) -> ApiResult<()> {
     svc.read_all(&login_id).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(list)
+        .typed_route(latest)
+        .typed_route(unread_count)
+        .typed_route(detail)
+        .typed_route(read)
+        .typed_route(read_all)
 }

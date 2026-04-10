@@ -4,8 +4,10 @@ use summer_common::extractor::Query;
 use summer_common::response::Json;
 use summer_system_model::dto::login_log::LoginLogQueryDto;
 use summer_system_model::vo::login_log::LoginLogVo;
+use summer_web::Router;
 use summer_web::extractor::Component;
 use summer_web::get_api;
+use summer_web::handler::TypeRouter;
 
 use crate::service::login_log_service::LoginLogService;
 use summer_sea_orm::pagination::{Page, Pagination};
@@ -19,4 +21,8 @@ pub async fn list_login_logs(
 ) -> ApiResult<Json<Page<LoginLogVo>>> {
     let page = svc.get_all_login_logs(query, pagination).await?;
     Ok(Json(page))
+}
+
+pub fn routes(router: Router) -> Router {
+    router.typed_route(list_login_logs)
 }

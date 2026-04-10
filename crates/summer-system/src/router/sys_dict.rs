@@ -9,7 +9,9 @@ use summer_system_model::dto::sys_dict::{
     UpdateDictTypeDto,
 };
 use summer_system_model::vo::sys_dict::{DictDataSimpleVo, DictDataVo, DictTypeVo};
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 use crate::service::sys_dict_service::SysDictService;
@@ -128,4 +130,18 @@ pub async fn delete_dict_data(
 ) -> ApiResult<()> {
     svc.delete_dict_data(id).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(list_dict_types)
+        .typed_route(create_dict_type)
+        .typed_route(update_dict_type)
+        .typed_route(delete_dict_type)
+        .typed_route(list_dict_data)
+        .typed_route(get_dict_data_by_type)
+        .typed_route(get_all_dict_data)
+        .typed_route(create_dict_data)
+        .typed_route(update_dict_data)
+        .typed_route(delete_dict_data)
 }

@@ -18,7 +18,8 @@ use tower_http::catch_panic::CatchPanicLayer;
 
 use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
 use summer_sql_rewrite::SummerSqlRewritePlugin;
-use summer_system::plugins::{PermBitmapPlugin, RateLimitPlugin, SocketGatewayPlugin};
+use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
+use summer_system::router::admin_router;
 
 fn app_path_auth_builder() -> PathAuthBuilder {
     PathAuthBuilder::new()
@@ -29,7 +30,7 @@ fn app_path_auth_builder() -> PathAuthBuilder {
         .exclude("/v1/**")
 }
 
-#[auto_config(WebConfigurator, JobConfigurator)]
+#[auto_config(JobConfigurator)]
 #[tokio::main]
 async fn main() {
     App::new()
@@ -42,7 +43,6 @@ async fn main() {
         // .add_plugin(EntitySchemaSyncPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
-        .add_plugin(RateLimitPlugin)
         .add_plugin(PermBitmapPlugin)
         .add_plugin(SocketGatewayPlugin)
         .add_plugin(Ip2RegionPlugin)
@@ -50,6 +50,7 @@ async fn main() {
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
         .add_plugin(McpPlugin)
+        .add_router(admin_router())
         .auth_configure(app_path_auth_builder())
         .add_router_layer(|router| {
             router

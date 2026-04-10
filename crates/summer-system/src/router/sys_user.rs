@@ -7,7 +7,9 @@ use summer_system_model::dto::sys_user::{
     CreateUserDto, ResetPasswordDto, UpdateUserDto, UserQueryDto,
 };
 use summer_system_model::vo::sys_user::{UserDetailVo, UserInfoVo, UserVo};
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 use crate::service::sys_user_service::SysUserService;
@@ -86,4 +88,15 @@ pub async fn reset_user_password(
 ) -> ApiResult<()> {
     svc.reset_password(id, dto).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(get_user_info)
+        .typed_route(list_users)
+        .typed_route(get_user_detail)
+        .typed_route(create_user)
+        .typed_route(update_user)
+        .typed_route(delete_user)
+        .typed_route(reset_user_password)
 }

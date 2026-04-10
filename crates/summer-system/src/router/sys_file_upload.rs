@@ -14,10 +14,12 @@ use summer_system_model::vo::sys_file::{
     BatchUploadVo, FileUploadVo, MultipartInitVo, MultipartListPartsVo, PresignedDownloadVo,
     PresignedUploadVo,
 };
+use summer_web::Router;
 use summer_web::axum::body::Body;
 use summer_web::axum::http::{StatusCode, header};
 use summer_web::axum::response::IntoResponse;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{get_api, post_api};
 
 use crate::service::sys_file_upload_service::SysFileUploadService;
@@ -217,4 +219,18 @@ pub async fn multipart_abort(
 ) -> ApiResult<()> {
     svc.abort_multipart_upload(dto).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(upload_file)
+        .typed_route(batch_upload)
+        .typed_route(presign_upload)
+        .typed_route(presign_upload_callback)
+        .typed_route(presign_download)
+        .typed_route(download_file)
+        .typed_route(multipart_init)
+        .typed_route(multipart_list_parts)
+        .typed_route(multipart_complete)
+        .typed_route(multipart_abort)
 }

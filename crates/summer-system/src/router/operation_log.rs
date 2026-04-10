@@ -4,8 +4,10 @@ use summer_common::extractor::{Path, Query};
 use summer_common::response::Json;
 use summer_system_model::dto::operation_log::OperationLogQueryDto;
 use summer_system_model::vo::operation_log::{OperationLogDetailVo, OperationLogVo};
+use summer_web::Router;
 use summer_web::extractor::Component;
 use summer_web::get_api;
+use summer_web::handler::TypeRouter;
 
 use crate::service::operation_log_service::OperationLogService;
 use summer_sea_orm::pagination::{Page, Pagination};
@@ -29,4 +31,10 @@ pub async fn get_operation_log_detail(
 ) -> ApiResult<Json<OperationLogDetailVo>> {
     let detail = svc.get_operation_log_detail(id).await?;
     Ok(Json(detail))
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(list_operation_logs)
+        .typed_route(get_operation_log_detail)
 }

@@ -12,7 +12,7 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 garde = { workspace = true }
-governor = "0.8"
+governor = { workspace = true }
 indexmap = { workspace = true }
 md-5 = { workspace = true }
 mime = { workspace = true }

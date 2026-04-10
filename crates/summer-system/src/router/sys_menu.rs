@@ -7,7 +7,9 @@ use summer_system_model::dto::sys_menu::{
     CreateButtonDto, CreateMenuDto, UpdateButtonDto, UpdateMenuDto,
 };
 use summer_system_model::vo::sys_menu::MenuTreeVo;
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 use crate::service::sys_menu_service::SysMenuService;
@@ -88,4 +90,15 @@ pub async fn delete_menu(
 ) -> ApiResult<()> {
     svc.delete_menu(id).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(get_menu_tree)
+        .typed_route(list_menus)
+        .typed_route(create_menu)
+        .typed_route(create_button)
+        .typed_route(update_menu)
+        .typed_route(update_button)
+        .typed_route(delete_menu)
 }

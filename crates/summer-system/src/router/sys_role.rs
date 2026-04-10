@@ -6,7 +6,9 @@ use summer_system_model::dto::sys_role::{
     CreateRoleDto, RolePermissionDto, RoleQueryDto, UpdateRoleDto,
 };
 use summer_system_model::vo::sys_role::{RolePermissionVo, RoleVo};
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 use crate::service::sys_role_service::SysRoleService;
@@ -73,4 +75,14 @@ pub async fn save_role_permissions(
 ) -> ApiResult<()> {
     svc.save_role_permissions(role_id, dto).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(list_roles)
+        .typed_route(create_role)
+        .typed_route(update_role)
+        .typed_route(delete_role)
+        .typed_route(get_role_permissions)
+        .typed_route(save_role_permissions)
 }

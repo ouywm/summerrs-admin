@@ -1,16 +1,16 @@
 [workspace]
 members = [
     "crates/app",
-    "crates/summer-system/model",
-    "crates/summer-common",
     "crates/summer-admin-macros",
+    "crates/summer-common",
+    "crates/summer-domain",
     "crates/summer-sharding",
     "crates/summer-sql-rewrite",
-    "crates/summer-domain",
-    "crates/summer-system/auth",
     "crates/summer-mcp",
-    "crates/summer-system",
     "crates/summer-plugins",
+    "crates/summer-system",
+    "crates/summer-system/auth",
+    "crates/summer-system/model",
 ]
 resolver = "2"
 
@@ -29,10 +29,12 @@ base64 = "0.22.1"
 bytes = "1.11.1"
 calamine = "0.31.0"
 chrono = "0.4.43"
+clap = "4"
 criterion = "0.5"
 flume = "0.12"
 futures = "0.3.32"
 garde = "0.22.1"
+governor = "0.8"
 hex = "0.4"
 hotpath = "0.14"
 http = "1"
@@ -46,9 +48,12 @@ lettre = "0.11"
 md-5 = "0.10"
 mime = "0.3.17"
 mime_guess = "2"
+minijinja = "2"
 parking_lot = "0.12.5"
 password-hash = "0.5"
 pgwire-replication = "0.2.0"
+proc-macro2 = "1"
+quote = "1"
 rand = "0.10.0"
 regex = "1.12.3"
 reqwest = "0.13.2"
@@ -83,6 +88,7 @@ summer-sql-rewrite = { path = "crates/summer-sql-rewrite" }
 summer-system = { path = "crates/summer-system" }
 summer-system-model = { path = "crates/summer-system/model" }
 summer-web = "0.5.0"
+syn = "2"
 sysinfo = "0.35"
 thiserror = "2.0.18"
 tokio = "1.49.0"
@@ -93,6 +99,7 @@ tower-http = "0.6.8"
 tower-layer = "0.3"
 tower-service = "0.3"
 tracing = "0.1.41"
+tracing-subscriber = "0.3"
 url = "2.5.8"
 uuid = "1.21.0"
 validator = "0.20.0"

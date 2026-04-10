@@ -12,7 +12,9 @@ use summer_system_model::vo::sys_tenant::{
     TenantDatasourceVo, TenantDetailVo, TenantMembershipVo, TenantProvisionResultVo,
     TenantRouteStateVo, TenantRuntimeDatasourceVo, TenantRuntimeRefreshVo, TenantVo,
 };
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{get_api, post_api, put_api};
 
 use crate::service::sys_tenant_service::SysTenantService;
@@ -161,6 +163,22 @@ pub async fn tenant_runtime_routes(
 ) -> ApiResult<Json<Vec<TenantRouteStateVo>>> {
     let items = svc.runtime_routes().await?;
     Ok(Json(items))
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(list_tenants)
+        .typed_route(tenant_detail)
+        .typed_route(create_tenant)
+        .typed_route(update_tenant)
+        .typed_route(change_tenant_status)
+        .typed_route(save_tenant_datasource)
+        .typed_route(list_tenant_members)
+        .typed_route(save_tenant_membership)
+        .typed_route(provision_tenant)
+        .typed_route(refresh_tenant_runtime)
+        .typed_route(tenant_runtime_health)
+        .typed_route(tenant_runtime_routes)
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ summer-sea-orm = { workspace = true, features = [
 ] }
 summer-system-model = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 

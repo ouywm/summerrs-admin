@@ -8,7 +8,9 @@ use summer_system_model::dto::sys_config::{
     ConfigGroupFilterQueryDto, ConfigKeysDto, ConfigQueryDto, CreateConfigDto, UpdateConfigDto,
 };
 use summer_system_model::vo::sys_config::{ConfigDetailVo, ConfigGroupBlockVo, ConfigValueVo};
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 use crate::service::sys_config_service::SysConfigService;
@@ -85,4 +87,15 @@ pub async fn delete(
 ) -> ApiResult<()> {
     svc.delete(id).await?;
     Ok(())
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(grouped)
+        .typed_route(get_by_key)
+        .typed_route(get_by_keys)
+        .typed_route(detail)
+        .typed_route(create)
+        .typed_route(update)
+        .typed_route(delete)
 }

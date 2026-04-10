@@ -16,8 +16,8 @@ path = "src/bin/main.rs"
 required-features = ["standalone"]
 
 [dependencies]
-minijinja = "2"
-quote = "1"
+minijinja = { workspace = true }
+quote = { workspace = true }
 regex = { workspace = true }
 rmcp = { workspace = true, features = [
     "server",
@@ -39,14 +39,14 @@ summer-domain = { workspace = true }
 summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
 summer-system-model = { workspace = true }
 summer-web = { workspace = true }
-syn = { version = "2", features = ["full", "parsing"] }
+syn = { workspace = true, features = ["full", "parsing"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 anyhow = { workspace = true, optional = true }
-clap = { version = "4", features = ["derive", "env"], optional = true }
-tracing-subscriber = { version = "0.3", features = [
+clap = { workspace = true, features = ["derive", "env"], optional = true }
+tracing-subscriber = { workspace = true, features = [
     "env-filter",
 ], optional = true }
 

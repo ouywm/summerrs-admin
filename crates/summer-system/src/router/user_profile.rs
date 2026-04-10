@@ -7,7 +7,9 @@ use summer_system_model::dto::login_log::LoginLogQueryDto;
 use summer_system_model::dto::user_profile::{ChangePasswordDto, UpdateProfileDto};
 use summer_system_model::vo::login_log::LoginLogVo;
 use summer_system_model::vo::user_profile::UserProfileVo;
+use summer_web::Router;
 use summer_web::extractor::Component;
+use summer_web::handler::TypeRouter;
 use summer_web::{get_api, put_api};
 
 use crate::service::login_log_service::LoginLogService;
@@ -51,4 +53,11 @@ pub async fn get_login_logs(
         .get_user_login_logs(&login_id, query, pagination)
         .await?;
     Ok(Json(logs))
+}
+
+pub fn routes(router: Router) -> Router {
+    router
+        .typed_route(change_password)
+        .typed_route(update_profile)
+        .typed_route(get_login_logs)
 }
