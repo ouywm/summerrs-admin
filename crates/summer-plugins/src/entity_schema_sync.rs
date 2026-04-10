@@ -24,9 +24,6 @@ impl Plugin for EntitySchemaSyncPlugin {
 
         let system_prefix = summer_system_model::schema_registry_prefix();
         finish_sync(system_prefix, summer_system_model::sync_schema(&db).await);
-
-        let ai_prefix = summer_ai_model::schema_registry_prefix();
-        finish_sync(ai_prefix, summer_ai_model::sync_schema(&db).await);
     }
 
     fn name(&self) -> &str {
@@ -45,7 +42,7 @@ fn finish_sync(prefix: String, result: Result<(), sea_orm::DbErr>) {
 }
 
 fn schema_sync_env_enabled() -> bool {
-    ["SUMMER_ENTITY_SCHEMA_SYNC", "SUMMER_SYSTEM_SCHEMA_SYNC"]
+    ["SUMMER_SYSTEM_SCHEMA_SYNC"]
         .into_iter()
         .find_map(|key| std::env::var(key).ok())
         .is_some_and(|value| {

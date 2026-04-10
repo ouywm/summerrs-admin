@@ -17,8 +17,6 @@ run_clippy() {
     summer-common
     summer-auth
     summer-system-model
-    summer-ai-model
-    summer-ai-hub
     summer-domain
     summer-system
   )

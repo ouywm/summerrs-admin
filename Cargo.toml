@@ -2,13 +2,6 @@
 members = [
     "crates/app",
     "crates/summer-system-model",
-    "crates/summer-ai",
-    "crates/summer-ai/admin",
-    "crates/summer-ai/billing",
-    "crates/summer-ai/model",
-    "crates/summer-ai/core",
-    "crates/summer-ai/hub",
-    "crates/summer-ai/relay",
     "crates/summer-model",
     "crates/summer-common",
     "crates/summer-admin-macros",
@@ -76,13 +69,6 @@ sha2 = "0.10"
 sqlparser = "0.54.0"
 summer = "0.5.0"
 summer-admin-macros = { path = "crates/summer-admin-macros" }
-summer-ai = { path = "crates/summer-ai" }
-summer-ai-admin = { path = "crates/summer-ai/admin" }
-summer-ai-billing = { path = "crates/summer-ai/billing" }
-summer-ai-core = { path = "crates/summer-ai/core" }
-summer-ai-hub = { path = "crates/summer-ai/hub" }
-summer-ai-model = { path = "crates/summer-ai/model" }
-summer-ai-relay = { path = "crates/summer-ai/relay" }
 summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }

@@ -1,7 +1,6 @@
 use axum_client_ip::ClientIpSource;
 use summer::App;
 use summer::auto_config;
-use summer_ai::summer_ai_hub::SummerAiHubPlugin;
 use summer_auth::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin, UserType};
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
@@ -41,7 +40,6 @@ async fn main() {
         .add_plugin(SummerShardingPlugin)
         .add_plugin(SummerSqlRewritePlugin)
         // .add_plugin(EntitySchemaSyncPlugin)
-        .add_plugin(SummerAiHubPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
         .add_plugin(RateLimitPlugin)
