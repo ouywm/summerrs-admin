@@ -17,19 +17,25 @@ mod tests {
     #[test]
     fn admin_router_exposes_request_modules() {
         let source = include_str!("router/mod.rs");
+        assert!(source.contains("pub mod guardrail;"));
         assert!(source.contains("pub mod request;"));
         assert!(source.contains("pub mod request_execution;"));
         assert!(source.contains("pub mod retry_attempt;"));
+        assert!(source.contains("pub mod daily_stats;"));
+        assert!(source.contains("guardrail::routes()"));
         assert!(source.contains("request::routes()"));
         assert!(source.contains("request_execution::routes()"));
         assert!(source.contains("retry_attempt::routes()"));
+        assert!(source.contains("daily_stats::routes()"));
     }
 
     #[test]
     fn admin_service_exposes_request_modules() {
         let source = include_str!("service/mod.rs");
+        assert!(source.contains("pub mod guardrail;"));
         assert!(source.contains("pub mod request;"));
         assert!(source.contains("pub mod request_execution;"));
         assert!(source.contains("pub mod retry_attempt;"));
+        assert!(source.contains("pub mod daily_stats;"));
     }
 }
