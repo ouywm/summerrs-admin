@@ -16,7 +16,6 @@ run_clippy() {
     summer-admin-macros
     summer-common
     summer-auth
-    summer-rig
     summer-system-model
     summer-ai-model
     summer-ai-hub
