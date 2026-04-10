@@ -15,8 +15,8 @@ current Summerrs Admin workspace.
 
 - System routes: `crates/summer-system/src/router/*.rs`
 - System services: `crates/summer-system/src/service/*.rs`
-- DTO/VO contracts: `crates/summer-system-model/src/dto` and
-  `crates/summer-system-model/src/vo`
+- DTO/VO contracts: `crates/summer-system/model/src/dto` and
+  `crates/summer-system/model/src/vo`
 - The app assembly root remains `crates/app/src/main.rs`
 
 When you add a new route, the common flow is:

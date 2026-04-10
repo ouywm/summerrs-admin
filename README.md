@@ -23,7 +23,7 @@ summerrs-admin/
 ├── crates/
 │   ├── app/                      # 应用装配入口
 │   ├── summer-system/            # 系统模块（路由、服务、插件）
-│   ├── summer-system-model/      # 系统模块数据模型（Entity/DTO/VO）
+│   │   └── model/                # summer-system-model 子 crate（Entity/DTO/VO）
 │   ├── summer-auth/              # 认证授权（JWT、多设备、Token 刷新）
 │   ├── summer-ai/                # AI 聚合包
 │   │   ├── core/                 # AI Provider 适配层
@@ -32,7 +32,6 @@ summerrs-admin/
 │   ├── summer-mcp/               # MCP 服务器（Schema 工具、代码生成）
 │   ├── summer-rig/               # Rig LLM 框架集成
 │   ├── summer-domain/            # 领域模型
-│   ├── summer-model/             # 通用数据模型
 │   ├── summer-common/            # 通用工具（校验、密码、Response）
 │   ├── summer-plugins/           # 通用插件（S3、任务、日志、IP 查询）
 │   ├── summer-sharding/          # 数据分片

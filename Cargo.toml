@@ -1,8 +1,7 @@
 [workspace]
 members = [
     "crates/app",
-    "crates/summer-system-model",
-    "crates/summer-model",
+    "crates/summer-system/model",
     "crates/summer-common",
     "crates/summer-admin-macros",
     "crates/summer-sharding",
@@ -82,7 +81,7 @@ summer-sea-orm = { version = "0.5.0-rc.1", default-features = false }
 summer-sharding = { path = "crates/summer-sharding" }
 summer-sql-rewrite = { path = "crates/summer-sql-rewrite" }
 summer-system = { path = "crates/summer-system" }
-summer-system-model = { path = "crates/summer-system-model" }
+summer-system-model = { path = "crates/summer-system/model" }
 summer-web = "0.5.0"
 sysinfo = "0.35"
 thiserror = "2.0.18"

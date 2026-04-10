@@ -48,12 +48,11 @@ the task is generic Rust work.
 - `crates/app/src/main.rs` is the assembly root. Do not treat the entire
   `crates/app` crate as a business-logic crate.
 - System business code belongs in `crates/summer-system`.
-- System DTO/VO/entity code belongs in `crates/summer-system-model`.
+- System DTO/VO/entity code belongs in `crates/summer-system/model`.
 - AI model contracts live under `crates/summer-ai/model`; AI runtime and relay
   behavior live under `crates/summer-ai/hub`.
 - Shared infrastructure plugins belong in `crates/summer-plugins`.
-- Generated raw entities belong in `src/entity_gen`; stable application code
-  should depend on `src/entity`.
+- Stable application code should depend on `src/entity`.
 - Do not rely on database foreign keys. Use SeaORM relations with `skip_fk`
   where appropriate.
 - Prefer MCP business tools for menus and dictionaries instead of hand-written
@@ -82,11 +81,10 @@ the task is generic Rust work.
   `crates/summer-system/src/socketio/connection/*`,
   `crates/summer-system/src/socketio/core/*`
 - System model layer:
-  `crates/summer-system-model/src/entity/*`,
-  `crates/summer-system-model/src/entity_gen/*`,
-  `crates/summer-system-model/src/dto/*`,
-  `crates/summer-system-model/src/vo/*`,
-  `crates/summer-system-model/src/views/*`
+  `crates/summer-system/model/src/entity/*`,
+  `crates/summer-system/model/src/dto/*`,
+  `crates/summer-system/model/src/vo/*`,
+  `crates/summer-system/model/src/views/*`
 - Shared schema sync plugin:
   `crates/summer-plugins/src/entity_schema_sync.rs`
 - MCP entry points:

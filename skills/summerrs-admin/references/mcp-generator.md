@@ -72,10 +72,9 @@ Do not skip schema discovery and guess field layouts.
 
 For system code, the intended repo-native landing zones are:
 
-- raw entities: `crates/summer-system-model/src/entity_gen`
-- stable entities: `crates/summer-system-model/src/entity`
-- DTOs: `crates/summer-system-model/src/dto`
-- VOs: `crates/summer-system-model/src/vo`
+- stable entities: `crates/summer-system/model/src/entity`
+- DTOs: `crates/summer-system/model/src/dto`
+- VOs: `crates/summer-system/model/src/vo`
 - routes: `crates/summer-system/src/router`
 - services: `crates/summer-system/src/service`
 - frontend route modules: `crates/summer-system/frontend-routes`
@@ -93,7 +92,7 @@ Before integrating generator output, verify whether it targeted legacy paths suc
 - `crates/app/frontend-routes`
 
 If that happens, move and adapt the generated output into the current layout under
-`summer-system`, `summer-system-model`, and `crates/summer-system/frontend-routes`.
+`summer-system`, `crates/summer-system/model`, and `crates/summer-system/frontend-routes`.
 
 ## Backend CRUD Generation
 

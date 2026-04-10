@@ -1,45 +1,33 @@
 # Entity, DTO, VO, And Schema Sync Patterns
 
 This reference focuses on the workspace's current data-model conventions:
-SeaORM 2.0, entity-first modeling, `entity_gen + entity`, and no database
-foreign keys.
+SeaORM 2.0, entity-first modeling, and no database foreign keys.
 
 ## Canonical Examples
 
-- System entity extension entry: `crates/summer-system-model/src/entity/sys_user.rs`
-- System raw entity source: `crates/summer-system-model/src/entity_gen/sys_user.rs`
-- System DTO: `crates/summer-system-model/src/dto/sys_user.rs`
-- System VO: `crates/summer-system-model/src/vo/sys_user.rs`
+- System entity extension entry: `crates/summer-system/model/src/entity/sys_user.rs`
+- System DTO: `crates/summer-system/model/src/dto/sys_user.rs`
+- System VO: `crates/summer-system/model/src/vo/sys_user.rs`
 - Shared schema sync plugin: `crates/summer-plugins/src/entity_schema_sync.rs`
 
 ## Model Crate Split
 
-- `crates/summer-system-model`: system entities, DTOs, VOs, and `views`
+- `crates/summer-system/model`: system entities, DTOs, VOs, and `views`
 - `crates/summer-ai/model`: AI domain entities, DTOs, and VOs
 - Future business model crates can reuse the same pattern, but do not cite
   non-existent crates as if they already exist
 
-## `entity_gen + entity` Convention
+## `src/entity` Convention
 
-### `src/entity_gen`
-
-- Stores raw entity source files
-- May be overwritten by codegen, MCP, or CLI tools
-- Should not hold stable business behavior
-
-### `src/entity`
-
-- This is the stable entity layer that application code should depend on
-- Each entity module can include the raw source and add behavior or helpers
-- Put `ActiveModelBehavior` and stable extensions here
+- `src/entity` is the stable entity layer that application code should depend on
+- Put generated entity definitions and `ActiveModelBehavior` extensions together
+  in the same module file
 
 ### Import Rule
 
 Business code should use:
 
 - `summer_system_model::entity::sys_user`
-
-Do not depend directly on `entity_gen` from application code.
 
 ## SeaORM 2.0 Entity-First Rules
 
@@ -140,8 +128,7 @@ Common patterns:
 
 ## Minimal Flow For A New Entity
 
-1. Decide whether the raw entity is generated or written directly into
-   `entity_gen`
+1. Generate or update the entity definitions directly in `entity`
 2. Add stable behavior in `entity`
 3. Add DTOs for input and validation
 4. Add VOs for output contracts
@@ -151,7 +138,6 @@ Common patterns:
 
 ## Anti-Patterns
 
-- Do not import `entity_gen` directly in business code
 - Do not add database foreign keys just because SeaORM supports relations
 - Do not push frontend-only fields into entities
 - Do not let routers mutate `ActiveModel`

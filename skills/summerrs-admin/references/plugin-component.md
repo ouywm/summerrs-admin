@@ -59,8 +59,8 @@ Startup-time wiring that can:
 - `crates/summer-rig/src/plugin.rs` owns Rig-related provider wiring
 
 If the work is just "add business behavior", do not default to `crates/app`.
-Decide first whether it belongs in `summer-system`, `summer-plugins`, `summer-ai`,
-or another dedicated crate.
+Decide first whether it belongs in `summer-system`, `summer-plugins`, or another
+dedicated crate.
 
 ## Standard Plugin Template
 
