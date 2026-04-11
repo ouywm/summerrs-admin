@@ -28,6 +28,7 @@ impl Clone for SocketEmitter {
             io: self.io.clone(),
             config: SocketIOConfig {
                 default_namespace: self.config.default_namespace.clone(),
+                request_path: self.config.request_path.clone(),
             },
         }
     }

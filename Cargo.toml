@@ -107,3 +107,6 @@ woothee = "0.13"
 
 [patch.crates-io]
 sea-orm = { path = "/Volumes/990pro/code/rust/sea-orm" }
+summer = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6e" }
+summer-macros = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6e" }
+summer-web = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6e" }
