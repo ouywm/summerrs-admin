@@ -27,6 +27,7 @@ CREATE TABLE sys.menu (
     active_path     VARCHAR(256)    NOT NULL DEFAULT '',
     auth_name       VARCHAR(64)     NOT NULL DEFAULT '',
     auth_mark       VARCHAR(64)     NOT NULL DEFAULT '',
+    bit_position    INTEGER,
     sort            INT             NOT NULL DEFAULT 0,
     enabled         BOOLEAN         NOT NULL DEFAULT TRUE,
     create_time     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -58,6 +59,7 @@ COMMENT ON COLUMN sys.menu.show_text_badge IS '文本徽章内容';
 COMMENT ON COLUMN sys.menu.active_path IS '高亮的菜单路径';
 COMMENT ON COLUMN sys.menu.auth_name IS '按钮权限名称（menu_type=2时使用）';
 COMMENT ON COLUMN sys.menu.auth_mark IS '按钮权限标识（menu_type=2时使用，如 btn_add）';
+COMMENT ON COLUMN sys.menu.bit_position IS '权限位图位置（按钮权限专用，从0开始）';
 COMMENT ON COLUMN sys.menu.sort IS '排序（数值越小越靠前）';
 COMMENT ON COLUMN sys.menu.enabled IS '是否启用';
 COMMENT ON COLUMN sys.menu.create_time IS '创建时间';
@@ -89,12 +91,12 @@ VALUES
     (7, 4, 1, 'SystemMenu', 'menu', 'system/menu/index', '菜单管理', 3);
 
 -- 按钮权限：用户管理下的操作按钮
-INSERT INTO sys.menu (id, parent_id, menu_type, title, auth_name, auth_mark, sort)
+INSERT INTO sys.menu (id, parent_id, menu_type, title, auth_name, auth_mark, bit_position, sort)
 VALUES
-    (8,  5, 2, '新增用户', '新增', 'btn_add',    1),
-    (9,  5, 2, '编辑用户', '编辑', 'btn_edit',   2),
-    (10, 5, 2, '删除用户', '删除', 'btn_delete', 3),
-    (11, 5, 2, '导出用户', '导出', 'btn_export', 4);
+    (8,  5, 2, '新增用户', '新增', 'btn_add',    0, 1),
+    (9,  5, 2, '编辑用户', '编辑', 'btn_edit',   1, 2),
+    (10, 5, 2, '删除用户', '删除', 'btn_delete', 2, 3),
+    (11, 5, 2, '导出用户', '导出', 'btn_export', 3, 4);
 
 -- 重置序列
 SELECT setval('sys.menu_id_seq', (SELECT MAX(id) FROM sys.menu));
