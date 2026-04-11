@@ -19,7 +19,9 @@ impl Plugin for PermBitmapPlugin {
 
         let auth: SessionManager = app
             .get_component::<SessionManager>()
-            .expect("SessionManager 未找到，请确保 SummerAuthPlugin 在 PermBitmapPlugin 之前注册");
+            .expect(
+                "SessionManager 未找到，请确保 summer_system::SystemAdminAuthRouterPlugin 在 PermBitmapPlugin 之前注册",
+            );
 
         let mappings = MenuDomainService::new(db)
             .load_permission_mappings()
@@ -41,7 +43,7 @@ impl Plugin for PermBitmapPlugin {
     fn dependencies(&self) -> Vec<&str> {
         vec![
             "summer_sea_orm::SeaOrmPlugin",
-            "summer_auth::SummerAuthPlugin",
+            "summer_system::SystemAdminAuthRouterPlugin",
         ]
     }
 }

@@ -45,7 +45,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sqlparser = { workspace = true }
 summer = { workspace = true }
-summer-auth = { workspace = true, optional = true, features = ["web"] }
+summer-auth = { workspace = true, optional = true }
 summer-sql-rewrite = { workspace = true, features = ["summer"] }
 summer-web = { workspace = true, optional = true }
 thiserror = { workspace = true }

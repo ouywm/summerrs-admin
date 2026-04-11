@@ -15,20 +15,13 @@ schemars = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 summer = { workspace = true }
-summer-redis = { workspace = true, optional = true }
-summer-web = { workspace = true, features = ["openapi"], optional = true }
+summer-redis = { workspace = true }
+summer-web = { workspace = true, features = ["openapi"] }
 thiserror = { workspace = true }
-tower-layer = { workspace = true, optional = true }
-tower-service = { workspace = true, optional = true }
+tower-layer = { workspace = true }
+tower-service = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-
-[features]
-default = ["memory", "web"]
-memory = []
-openapi = ["summer-web/openapi"]
-redis = ["summer-redis"]
-web = ["summer-web", "tower-layer", "tower-service"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

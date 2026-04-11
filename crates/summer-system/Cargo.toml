@@ -30,7 +30,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 summer = { workspace = true }
 summer-admin-macros = { workspace = true }
-summer-auth = { workspace = true, features = ["web", "redis", "openapi"] }
+summer-auth = { workspace = true }
 summer-common = { workspace = true }
 summer-domain = { workspace = true }
 summer-job = { workspace = true }

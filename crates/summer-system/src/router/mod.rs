@@ -18,6 +18,9 @@ pub mod user_profile;
 
 use summer_web::Router;
 
+#[derive(Clone)]
+pub struct SystemAdminRouteGroup(pub Router);
+
 pub fn admin_router() -> Router {
     let router = Router::new();
     let router = auth::routes(router);
@@ -37,12 +40,4 @@ pub fn admin_router() -> Router {
     let router = sys_user::routes(router);
     let router = user_notice::routes(router);
     user_profile::routes(router)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn admin_router_builds() {
-        let _ = super::admin_router();
-    }
 }

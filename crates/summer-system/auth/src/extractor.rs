@@ -46,7 +46,6 @@ impl LoginUser {
 }
 
 /// `LoginUser` 对 OpenAPI 文档透明
-#[cfg(feature = "openapi")]
 impl summer_web::aide::OperationInput for LoginUser {}
 
 /// 可选用户提取器
@@ -64,7 +63,6 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalLoginUser {
 }
 
 /// `OptionalLoginUser` 对 OpenAPI 文档透明
-#[cfg(feature = "openapi")]
 impl summer_web::aide::OperationInput for OptionalLoginUser {}
 
 /// 401 未登录响应

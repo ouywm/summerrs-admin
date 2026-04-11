@@ -1,6 +1,4 @@
-#[cfg(feature = "memory")]
 pub mod memory;
-#[cfg(feature = "redis")]
 pub mod redis;
 
 /// 认证存储抽象 trait

@@ -1,20 +1,10 @@
 use summer_web::extractor::Component;
-use summer_web::on_connection;
 use summer_web::on_disconnect;
 use summer_web::socketioxide::extract::SocketRef;
 use summer_web::socketioxide::socket::DisconnectReason;
 use tracing::{info, warn};
 
 use super::service::SocketGatewayService;
-
-#[on_connection]
-async fn on_connection(socket: SocketRef) {
-    info!(
-        socket_id = %socket.id,
-        namespace = socket.ns(),
-        "Socket.IO connected"
-    );
-}
 
 #[on_disconnect]
 async fn on_disconnect(

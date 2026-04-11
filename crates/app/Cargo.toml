@@ -5,7 +5,6 @@ version = "0.0.1"
 
 [dependencies]
 summer = { workspace = true }
-summer-auth = { workspace = true, features = ["web", "redis", "openapi"] }
 summer-job = { workspace = true }
 summer-mail = { workspace = true }
 summer-redis = { workspace = true }

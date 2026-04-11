@@ -27,7 +27,7 @@ sea-orm = { workspace = true, features = [
 ] }
 sqlparser = { workspace = true, features = ["visitor"] }
 summer = { workspace = true, optional = true }
-summer-auth = { workspace = true, optional = true, features = ["web"] }
+summer-auth = { workspace = true, optional = true }
 summer-web = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tower-layer = { workspace = true, optional = true }
