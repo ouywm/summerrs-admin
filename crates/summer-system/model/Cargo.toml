@@ -16,7 +16,6 @@ sea-orm = { workspace = true, features = [
     "postgres-array",
     "debug-print",
     "with-ipnetwork",
-    "with-bigdecimal",
     "entity-registry",
     "schema-sync",
     "sqlx-postgres",
