@@ -79,7 +79,6 @@ impl DefaultSqlRouter {
 }
 
 impl SqlRouter for DefaultSqlRouter {
-    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn route(&self, analysis: &StatementContext, force_primary: bool) -> Result<RoutePlan> {
         let Some(primary_table) = analysis.primary_table().cloned() else {
             let datasource = self

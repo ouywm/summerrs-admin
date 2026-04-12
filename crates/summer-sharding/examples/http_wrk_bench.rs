@@ -7,8 +7,9 @@ use sea_orm::{
 };
 use serde::Deserialize;
 use summer_sharding::{
-    CurrentTenant, DataSourcePool, ShardingConfig, ShardingConnection, SummerShardingConfig,
-    TenantContext, TenantContextLayer, TenantIsolationLevel, TenantShardingConnection,
+    CurrentTenant, DataSourcePool, SeaOrmTenantMetadataLoader, ShardingConfig, ShardingConnection,
+    SummerShardingConfig, TenantContext, TenantContextLayer, TenantIsolationLevel,
+    TenantMetadataLoader, TenantMetadataRecord, TenantMetadataSchema, TenantShardingConnection,
 };
 use summer_web::axum::{
     Extension, Router, extract::Query, http::HeaderMap, response::IntoResponse, routing::get,
@@ -45,6 +46,77 @@ mod bench_tenant_probe_entity {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+mod bench_tenant_datasource_entity {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(schema_name = "sys", table_name = "tenant_datasource")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i64,
+        pub tenant_id: String,
+        pub isolation_level: i16,
+        pub status: Option<String>,
+        pub schema_name: Option<String>,
+        pub datasource_name: Option<String>,
+        pub db_uri: Option<String>,
+        pub db_enable_logging: Option<bool>,
+        pub db_min_conns: Option<i32>,
+        pub db_max_conns: Option<i32>,
+        pub db_connect_timeout_ms: Option<i64>,
+        pub db_idle_timeout_ms: Option<i64>,
+        pub db_acquire_timeout_ms: Option<i64>,
+        pub db_test_before_acquire: Option<bool>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BenchTenantMetadataSchema;
+
+impl TenantMetadataSchema for BenchTenantMetadataSchema {
+    type Entity = bench_tenant_datasource_entity::Entity;
+    fn into_record(model: bench_tenant_datasource_entity::Model) -> TenantMetadataRecord {
+        let isolation_level = match model.isolation_level {
+            1 => TenantIsolationLevel::SharedRow,
+            2 => TenantIsolationLevel::SeparateTable,
+            3 => TenantIsolationLevel::SeparateSchema,
+            4 => TenantIsolationLevel::SeparateDatabase,
+            _ => TenantIsolationLevel::SharedRow,
+        };
+
+        TenantMetadataRecord {
+            tenant_id: model.tenant_id,
+            isolation_level,
+            status: model.status,
+            schema_name: model.schema_name,
+            datasource_name: model.datasource_name,
+            db_uri: model.db_uri,
+            db_enable_logging: model.db_enable_logging,
+            db_min_conns: model
+                .db_min_conns
+                .and_then(|value| u32::try_from(value).ok()),
+            db_max_conns: model
+                .db_max_conns
+                .and_then(|value| u32::try_from(value).ok()),
+            db_connect_timeout_ms: model
+                .db_connect_timeout_ms
+                .and_then(|value| u64::try_from(value).ok()),
+            db_idle_timeout_ms: model
+                .db_idle_timeout_ms
+                .and_then(|value| u64::try_from(value).ok()),
+            db_acquire_timeout_ms: model
+                .db_acquire_timeout_ms
+                .and_then(|value| u64::try_from(value).ok()),
+            db_test_before_acquire: model.db_test_before_acquire,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct IdQuery {
     id: i64,
@@ -56,31 +128,16 @@ struct RangeQuery {
     end: i64,
 }
 
-#[cfg_attr(
-    feature = "hotpath",
-    hotpath::main(limit = 40, percentiles = [50, 95, 99])
-)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     build_runtime()?.block_on(run())
 }
 
 fn build_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
-    #[cfg(feature = "hotpath-alloc")]
-    {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-    }
-
-    #[cfg(not(feature = "hotpath-alloc"))]
-    {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
 }
 
-#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = env::var("SUMMER_SHARDING_BENCH_DATABASE_URL")
         .or_else(|_| env::var("SUMMER_SHARDING_E2E_DATABASE_URL"))
@@ -103,6 +160,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         BTreeMap::from([("ds_bench".to_string(), raw.clone())]),
     )?;
     let sharding = ShardingConnection::with_pool(runtime_config, pool)?;
+    let metadata_loader: Arc<dyn TenantMetadataLoader> =
+        Arc::new(SeaOrmTenantMetadataLoader::<BenchTenantMetadataSchema>::new());
+    sharding.set_metadata_loader(metadata_loader);
     sharding.reload_tenant_metadata(&raw).await?;
     prewarm_benchmark_paths(&raw, &sharding, &connect_options).await?;
 

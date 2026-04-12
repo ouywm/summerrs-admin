@@ -36,7 +36,6 @@ futures = "0.3.32"
 garde = "0.22.1"
 governor = "0.8"
 hex = "0.4"
-hotpath = "0.14"
 http = "1"
 indexmap = "2.13.0"
 ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master" }

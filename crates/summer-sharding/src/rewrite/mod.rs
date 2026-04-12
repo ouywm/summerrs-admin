@@ -48,7 +48,6 @@ impl DefaultSqlRewriter {
 }
 
 impl SqlRewriter for DefaultSqlRewriter {
-    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn rewrite(
         &self,
         stmt: &Statement,

@@ -13,7 +13,6 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct ScatterGatherExecutor;
 
-#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
 async fn execute_measured(
     raw: &dyn RawStatementExecutor,
     units: Vec<ExecutionUnit>,
@@ -57,7 +56,6 @@ async fn execute_measured(
     .into())
 }
 
-#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
 async fn query_one_measured(
     raw: &dyn RawStatementExecutor,
     units: Vec<ExecutionUnit>,
@@ -69,7 +67,6 @@ async fn query_one_measured(
     Ok(rows.into_iter().next())
 }
 
-#[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
 async fn query_all_measured(
     raw: &dyn RawStatementExecutor,
     units: Vec<ExecutionUnit>,

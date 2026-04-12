@@ -39,7 +39,6 @@ impl DefaultResultMerger {
 }
 
 impl ResultMerger for DefaultResultMerger {
-    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn merge(
         &self,
         shards: Vec<Vec<QueryResult>>,

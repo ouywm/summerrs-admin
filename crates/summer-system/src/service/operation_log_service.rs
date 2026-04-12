@@ -104,9 +104,9 @@ impl OperationLogService {
         query: OperationLogQueryDto,
         pagination: Pagination,
     ) -> ApiResult<Page<OperationLogVo>> {
-        let mut select = sys_operation_log::Entity::find().filter(query);
-
-        select = select.order_by_desc(sys_operation_log::Column::CreateTime);
+        let select = sys_operation_log::Entity::find()
+            .filter(query)
+            .order_by_desc(sys_operation_log::Column::CreateTime);
 
         let page = select
             .page(&self.db, &pagination)

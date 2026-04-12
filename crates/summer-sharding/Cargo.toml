@@ -5,8 +5,6 @@ version = "0.0.1"
 
 [features]
 default = []
-hotpath = ["dep:hotpath", "hotpath/hotpath"]
-hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 web = [
     "summer-auth",
     "summer-sql-rewrite/web",
@@ -24,7 +22,6 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
-hotpath = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pgwire-replication = { workspace = true }
 rand = { workspace = true }

@@ -5,9 +5,91 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use crate::{
+    ShardingConnection,
     algorithm::normalize_tenant_suffix,
     error::{Result, ShardingError},
+    tenant::{
+        SeaOrmTenantMetadataLoader, TenantMetadataLoader, TenantMetadataRecord,
+        TenantMetadataSchema,
+    },
 };
+
+mod tenant_datasource_entity {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(schema_name = "sys", table_name = "tenant_datasource")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i64,
+        pub tenant_id: String,
+        pub isolation_level: i16,
+        pub status: Option<String>,
+        pub schema_name: Option<String>,
+        pub datasource_name: Option<String>,
+        pub db_uri: Option<String>,
+        pub db_enable_logging: Option<bool>,
+        pub db_min_conns: Option<i32>,
+        pub db_max_conns: Option<i32>,
+        pub db_connect_timeout_ms: Option<i64>,
+        pub db_idle_timeout_ms: Option<i64>,
+        pub db_acquire_timeout_ms: Option<i64>,
+        pub db_test_before_acquire: Option<bool>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TestTenantMetadataSchema;
+
+impl TenantMetadataSchema for TestTenantMetadataSchema {
+    type Entity = tenant_datasource_entity::Entity;
+    fn into_record(model: tenant_datasource_entity::Model) -> TenantMetadataRecord {
+        let isolation_level = match model.isolation_level {
+            1 => crate::config::TenantIsolationLevel::SharedRow,
+            2 => crate::config::TenantIsolationLevel::SeparateTable,
+            3 => crate::config::TenantIsolationLevel::SeparateSchema,
+            4 => crate::config::TenantIsolationLevel::SeparateDatabase,
+            _ => crate::config::TenantIsolationLevel::SharedRow,
+        };
+
+        TenantMetadataRecord {
+            tenant_id: model.tenant_id,
+            isolation_level,
+            status: model.status,
+            schema_name: model.schema_name,
+            datasource_name: model.datasource_name,
+            db_uri: model.db_uri,
+            db_enable_logging: model.db_enable_logging,
+            db_min_conns: model
+                .db_min_conns
+                .and_then(|value| u32::try_from(value).ok()),
+            db_max_conns: model
+                .db_max_conns
+                .and_then(|value| u32::try_from(value).ok()),
+            db_connect_timeout_ms: model
+                .db_connect_timeout_ms
+                .and_then(|value| u64::try_from(value).ok()),
+            db_idle_timeout_ms: model
+                .db_idle_timeout_ms
+                .and_then(|value| u64::try_from(value).ok()),
+            db_acquire_timeout_ms: model
+                .db_acquire_timeout_ms
+                .and_then(|value| u64::try_from(value).ok()),
+            db_test_before_acquire: model.db_test_before_acquire,
+        }
+    }
+}
+
+pub(crate) fn register_test_metadata_loader(connection: &ShardingConnection) {
+    let loader: std::sync::Arc<dyn TenantMetadataLoader> =
+        std::sync::Arc::new(SeaOrmTenantMetadataLoader::<TestTenantMetadataSchema>::new());
+    connection.set_metadata_loader(loader);
+}
 
 const DEFAULT_E2E_DATABASE_URL: &str =
     "postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai";

@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
+use async_trait::async_trait;
 use parking_lot::RwLock;
-use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
+use sea_orm::{DatabaseConnection, DbErr, EntityTrait};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -54,6 +56,48 @@ pub struct TenantMetadataStore {
     records: RwLock<BTreeMap<String, TenantMetadataRecord>>,
 }
 
+pub trait TenantMetadataSchema {
+    type Entity: EntityTrait;
+
+    fn into_record(model: <Self::Entity as EntityTrait>::Model) -> TenantMetadataRecord;
+
+    fn load_models(
+        connection: &DatabaseConnection,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<Vec<<Self::Entity as EntityTrait>::Model>, DbErr>,
+    > + Send {
+        async move { Self::Entity::find().all(connection).await }
+    }
+}
+
+#[async_trait]
+pub trait TenantMetadataLoader: Send + Sync + 'static {
+    async fn load_store(&self, connection: &DatabaseConnection) -> Result<TenantMetadataStore>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SeaOrmTenantMetadataLoader<S> {
+    _schema: PhantomData<S>,
+}
+
+impl<S> SeaOrmTenantMetadataLoader<S> {
+    pub fn new() -> Self {
+        Self {
+            _schema: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<S> TenantMetadataLoader for SeaOrmTenantMetadataLoader<S>
+where
+    S: TenantMetadataSchema + Send + Sync + 'static,
+{
+    async fn load_store(&self, connection: &DatabaseConnection) -> Result<TenantMetadataStore> {
+        TenantMetadataStore::load_from_connection::<S>(connection).await
+    }
+}
+
 impl TenantMetadataStore {
     pub fn new() -> Self {
         Self::default()
@@ -85,53 +129,29 @@ impl TenantMetadataStore {
         self.records.read().values().cloned().collect()
     }
 
-    pub async fn load_from_connection(connection: &DatabaseConnection) -> Result<Self> {
-        let rows = connection
-            .query_all_raw(Statement::from_string(
-                connection.get_database_backend(),
-                "SELECT tenant_id, isolation_level, status, schema_name, datasource_name, db_uri, db_enable_logging, db_min_conns, db_max_conns, db_connect_timeout_ms, db_idle_timeout_ms, db_acquire_timeout_ms, db_test_before_acquire FROM sys.tenant_datasource",
-            ))
-            .await?;
-        let mut records = Vec::with_capacity(rows.len());
-        for row in rows {
-            let isolation_level = row
-                .try_get::<Option<i16>>("", "isolation_level")
-                .ok()
-                .flatten()
-                .and_then(parse_isolation)
-                .unwrap_or(TenantIsolationLevel::SharedRow);
-            records.push(TenantMetadataRecord {
-                tenant_id: row.try_get::<String>("", "tenant_id")?,
-                isolation_level,
-                status: row.try_get::<Option<String>>("", "status")?,
-                schema_name: row.try_get::<Option<String>>("", "schema_name")?,
-                datasource_name: row.try_get::<Option<String>>("", "datasource_name")?,
-                db_uri: row.try_get::<Option<String>>("", "db_uri")?,
-                db_enable_logging: row.try_get::<Option<bool>>("", "db_enable_logging")?,
-                db_min_conns: row
-                    .try_get::<Option<i32>>("", "db_min_conns")?
-                    .and_then(|value| u32::try_from(value).ok()),
-                db_max_conns: row
-                    .try_get::<Option<i32>>("", "db_max_conns")?
-                    .and_then(|value| u32::try_from(value).ok()),
-                db_connect_timeout_ms: row
-                    .try_get::<Option<i64>>("", "db_connect_timeout_ms")?
-                    .and_then(|value| u64::try_from(value).ok()),
-                db_idle_timeout_ms: row
-                    .try_get::<Option<i64>>("", "db_idle_timeout_ms")?
-                    .and_then(|value| u64::try_from(value).ok()),
-                db_acquire_timeout_ms: row
-                    .try_get::<Option<i64>>("", "db_acquire_timeout_ms")?
-                    .and_then(|value| u64::try_from(value).ok()),
-                db_test_before_acquire: row
-                    .try_get::<Option<bool>>("", "db_test_before_acquire")?,
-            });
-        }
-        Ok(Self::from_records(records))
+    pub async fn load_from_connection<S>(connection: &DatabaseConnection) -> Result<Self>
+    where
+        S: TenantMetadataSchema,
+    {
+        let models = S::load_models(connection).await?;
+        Ok(Self::from_records(models.into_iter().map(S::into_record)))
     }
 
-    pub async fn refresh_from_connection(&self, connection: &DatabaseConnection) -> Result<()> {
-        let other = Self::load_from_connection(connection).await?;
+    pub async fn refresh_from_connection<S>(&self, connection: &DatabaseConnection) -> Result<()>
+    where
+        S: TenantMetadataSchema,
+    {
+        let other = Self::load_from_connection::<S>(connection).await?;
+        *self.records.write() = other.records.read().clone();
+        Ok(())
+    }
+
+    pub async fn replace_with_loader(
+        &self,
+        connection: &DatabaseConnection,
+        loader: &dyn TenantMetadataLoader,
+    ) -> Result<()> {
+        let other = loader.load_store(connection).await?;
         *self.records.write() = other.records.read().clone();
         Ok(())
     }
@@ -201,16 +221,6 @@ impl TenantMetadataStore {
     }
 }
 
-fn parse_isolation(value: i16) -> Option<TenantIsolationLevel> {
-    match value {
-        1 => Some(TenantIsolationLevel::SharedRow),
-        2 => Some(TenantIsolationLevel::SeparateTable),
-        3 => Some(TenantIsolationLevel::SeparateSchema),
-        4 => Some(TenantIsolationLevel::SeparateDatabase),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use sea_orm::{DbBackend, MockDatabase};
@@ -218,37 +228,106 @@ mod tests {
     use crate::config::{DataSourceConfig, DataSourceRole};
     use crate::tenant::{
         TenantMetadataApplyOutcome, TenantMetadataEvent, TenantMetadataEventKind,
-        TenantMetadataRecord, TenantMetadataStore,
+        TenantMetadataRecord, TenantMetadataSchema, TenantMetadataStore,
     };
 
     use crate::config::TenantIsolationLevel;
 
+    mod test_tenant_datasource_entity {
+        use sea_orm::entity::prelude::*;
+
+        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+        #[sea_orm(schema_name = "sys", table_name = "tenant_datasource")]
+        pub struct Model {
+            #[sea_orm(primary_key)]
+            pub id: i64,
+            pub tenant_id: String,
+            pub isolation_level: i16,
+            pub status: Option<String>,
+            pub schema_name: Option<String>,
+            pub datasource_name: Option<String>,
+            pub db_uri: Option<String>,
+            pub db_enable_logging: Option<bool>,
+            pub db_min_conns: Option<i32>,
+            pub db_max_conns: Option<i32>,
+            pub db_connect_timeout_ms: Option<i64>,
+            pub db_idle_timeout_ms: Option<i64>,
+            pub db_acquire_timeout_ms: Option<i64>,
+            pub db_test_before_acquire: Option<bool>,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+    }
+
+    struct TestTenantMetadataSchema;
+
+    impl TenantMetadataSchema for TestTenantMetadataSchema {
+        type Entity = test_tenant_datasource_entity::Entity;
+        fn into_record(model: test_tenant_datasource_entity::Model) -> TenantMetadataRecord {
+            let isolation_level = match model.isolation_level {
+                1 => TenantIsolationLevel::SharedRow,
+                2 => TenantIsolationLevel::SeparateTable,
+                3 => TenantIsolationLevel::SeparateSchema,
+                4 => TenantIsolationLevel::SeparateDatabase,
+                _ => TenantIsolationLevel::SharedRow,
+            };
+
+            TenantMetadataRecord {
+                tenant_id: model.tenant_id,
+                isolation_level,
+                status: model.status,
+                schema_name: model.schema_name,
+                datasource_name: model.datasource_name,
+                db_uri: model.db_uri,
+                db_enable_logging: model.db_enable_logging,
+                db_min_conns: model
+                    .db_min_conns
+                    .and_then(|value| u32::try_from(value).ok()),
+                db_max_conns: model
+                    .db_max_conns
+                    .and_then(|value| u32::try_from(value).ok()),
+                db_connect_timeout_ms: model
+                    .db_connect_timeout_ms
+                    .and_then(|value| u64::try_from(value).ok()),
+                db_idle_timeout_ms: model
+                    .db_idle_timeout_ms
+                    .and_then(|value| u64::try_from(value).ok()),
+                db_acquire_timeout_ms: model
+                    .db_acquire_timeout_ms
+                    .and_then(|value| u64::try_from(value).ok()),
+                db_test_before_acquire: model.db_test_before_acquire,
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn metadata_store_loads_rows_from_database() {
+    async fn metadata_store_loads_models_from_database() {
         let connection = MockDatabase::new(DbBackend::Postgres)
-            .append_query_results([[std::collections::BTreeMap::from([
-                ("tenant_id".to_string(), "T-001".into()),
-                ("isolation_level".to_string(), Some(3_i16).into()),
-                ("status".to_string(), Some("active".to_string()).into()),
-                (
-                    "schema_name".to_string(),
-                    Some("tenant_001".to_string()).into(),
-                ),
-                ("datasource_name".to_string(), Option::<String>::None.into()),
-                ("db_uri".to_string(), Option::<String>::None.into()),
-                ("db_enable_logging".to_string(), Some(true).into()),
-                ("db_min_conns".to_string(), Some(3_i32).into()),
-                ("db_max_conns".to_string(), Option::<i32>::None.into()),
-                ("db_connect_timeout_ms".to_string(), Some(1_500_i64).into()),
-                ("db_idle_timeout_ms".to_string(), Some(2_500_i64).into()),
-                ("db_acquire_timeout_ms".to_string(), Some(3_500_i64).into()),
-                ("db_test_before_acquire".to_string(), Some(false).into()),
-            ])]])
+            .append_query_results([[test_tenant_datasource_entity::Model {
+                id: 1,
+                tenant_id: "T-001".to_string(),
+                isolation_level: 3,
+                status: Some("active".to_string()),
+                schema_name: Some("tenant_001".to_string()),
+                datasource_name: None,
+                db_uri: None,
+                db_enable_logging: Some(true),
+                db_min_conns: Some(3),
+                db_max_conns: None,
+                db_connect_timeout_ms: Some(1_500),
+                db_idle_timeout_ms: Some(2_500),
+                db_acquire_timeout_ms: Some(3_500),
+                db_test_before_acquire: Some(false),
+            }]])
             .into_connection();
 
-        let store = TenantMetadataStore::load_from_connection(&connection)
-            .await
-            .expect("metadata");
+        let store =
+            TenantMetadataStore::load_from_connection::<TestTenantMetadataSchema>(&connection)
+                .await
+                .expect("metadata");
         let record = store.get("T-001").expect("tenant");
         assert_eq!(record.schema_name.as_deref(), Some("tenant_001"));
         assert_eq!(record.db_enable_logging, Some(true));
@@ -256,6 +335,43 @@ mod tests {
         assert_eq!(record.db_connect_timeout_ms, Some(1_500));
         assert_eq!(record.db_idle_timeout_ms, Some(2_500));
         assert_eq!(record.db_acquire_timeout_ms, Some(3_500));
+        assert_eq!(record.db_test_before_acquire, Some(false));
+    }
+
+    #[tokio::test]
+    async fn metadata_store_loads_models_from_generic_schema() {
+        let connection = MockDatabase::new(DbBackend::Postgres)
+            .append_query_results([[test_tenant_datasource_entity::Model {
+                id: 10,
+                tenant_id: "T-010".to_string(),
+                isolation_level: 4,
+                status: Some("active".to_string()),
+                schema_name: None,
+                datasource_name: Some("tenant_t010".to_string()),
+                db_uri: Some("postgres://tenant-t010".to_string()),
+                db_enable_logging: Some(true),
+                db_min_conns: Some(2),
+                db_max_conns: Some(8),
+                db_connect_timeout_ms: Some(1_000),
+                db_idle_timeout_ms: Some(2_000),
+                db_acquire_timeout_ms: Some(3_000),
+                db_test_before_acquire: Some(false),
+            }]])
+            .into_connection();
+
+        let store =
+            TenantMetadataStore::load_from_connection::<TestTenantMetadataSchema>(&connection)
+                .await
+                .expect("metadata");
+        let record = store.get("T-010").expect("tenant");
+
+        assert_eq!(
+            record.isolation_level,
+            TenantIsolationLevel::SeparateDatabase
+        );
+        assert_eq!(record.datasource_name.as_deref(), Some("tenant_t010"));
+        assert_eq!(record.db_uri.as_deref(), Some("postgres://tenant-t010"));
+        assert_eq!(record.db_max_conns, Some(8));
         assert_eq!(record.db_test_before_acquire, Some(false));
     }
 

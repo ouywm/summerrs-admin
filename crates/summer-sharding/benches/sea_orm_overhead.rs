@@ -71,19 +71,22 @@ impl BenchmarkEnvironment {
         prepare_benchmark_schema(&raw).await;
         seed_benchmark_data(&raw).await;
 
-        let passthrough = ShardingConnection::build(runtime_config_from_str(
-            passthrough_config(database_url.as_str()).as_str(),
-        ))
+        let passthrough = ShardingConnection::build(
+            runtime_config_from_str(passthrough_config(database_url.as_str()).as_str()),
+            raw.clone(),
+        )
         .await
         .expect("build passthrough sharding connection");
-        let tenant = ShardingConnection::build(runtime_config_from_str(
-            tenant_config(database_url.as_str()).as_str(),
-        ))
+        let tenant = ShardingConnection::build(
+            runtime_config_from_str(tenant_config(database_url.as_str()).as_str()),
+            raw.clone(),
+        )
         .await
         .expect("build tenant sharding connection");
-        let sharded = ShardingConnection::build(runtime_config_from_str(
-            sharded_config(database_url.as_str()).as_str(),
-        ))
+        let sharded = ShardingConnection::build(
+            runtime_config_from_str(sharded_config(database_url.as_str()).as_str()),
+            raw.clone(),
+        )
         .await
         .expect("build sharded connection");
 

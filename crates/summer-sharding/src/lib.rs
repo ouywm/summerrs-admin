@@ -87,8 +87,9 @@ pub use router::{
     SqlRouter, TableRewrite,
 };
 pub use tenant::{
-    TenantContext, TenantLifecycleManager, TenantMetadataApplyOutcome, TenantMetadataEvent,
-    TenantMetadataEventKind, TenantMetadataRecord, TenantMetadataStore, TenantRouter,
+    SeaOrmTenantMetadataLoader, TenantContext, TenantLifecycleManager, TenantMetadataApplyOutcome,
+    TenantMetadataEvent, TenantMetadataEventKind, TenantMetadataLoader, TenantMetadataRecord,
+    TenantMetadataSchema, TenantMetadataStore, TenantRouter,
 };
 #[cfg(feature = "web")]
 pub use web::{CurrentTenant, OptionalCurrentTenant, TenantContextLayer, TenantShardingConnection};
