@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use sea_orm::DatabaseConnection;
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, ExecResult, QueryResult, Statement, Values};
 
 use crate::{
@@ -28,7 +29,7 @@ use crate::{
     rewrite_plugin::PluginRegistry,
     router::{DefaultSqlRouter, RoutePlan, SqlOperation, SqlRouter},
     shadow::ShadowRouter,
-    tenant::{TenantMetadataStore, TenantRouter},
+    tenant::{TenantMetadataLoader, TenantMetadataStore, TenantRouter},
 };
 
 #[derive(Clone)]
@@ -58,6 +59,7 @@ pub(crate) struct ShardingConnectionInner {
     pub(crate) key_generators: BTreeMap<String, Arc<dyn KeyGenerator>>,
     pub(crate) lookup_index: Arc<LookupIndex>,
     pub(crate) tenant_metadata: Arc<TenantMetadataStore>,
+    pub(crate) metadata_loader: OnceLock<Arc<dyn TenantMetadataLoader>>,
     pub(crate) tenant_router: TenantRouter,
     pub(crate) shadow_router: ShadowRouter,
     pub(crate) auditor: Arc<dyn SqlAuditor>,
@@ -89,9 +91,16 @@ impl ShardingConnection {
         }
     }
 
-    pub async fn build(config: ShardingConfig) -> Result<Self> {
+    pub async fn build(
+        config: ShardingConfig,
+        bootstrap_connection: DatabaseConnection,
+    ) -> Result<Self> {
         let config = Arc::new(config);
-        let pool = DataSourcePool::build(config.clone()).await?;
+        let bootstrap_name = config
+            .default_datasource_name()
+            .unwrap_or("__bootstrap_primary")
+            .to_string();
+        let pool = DataSourcePool::build(config.clone(), bootstrap_name, bootstrap_connection)?;
         Self::with_pool(config, pool)
     }
 
@@ -119,6 +128,7 @@ impl ShardingConnection {
             tenant_router: TenantRouter::new(config.clone(), tenant_metadata.clone()),
             shadow_router: ShadowRouter::new(config.clone()),
             tenant_metadata,
+            metadata_loader: OnceLock::new(),
             auditor: Arc::new(DefaultSqlAuditor::default()),
             plugin_registry: OnceLock::new(),
             config,
@@ -143,6 +153,12 @@ impl ShardingConnection {
     pub fn set_plugin_registry(&self, registry: PluginRegistry) {
         if self.inner.plugin_registry.set(registry).is_err() {
             tracing::warn!("sql rewrite plugin registry was already initialized");
+        }
+    }
+
+    pub fn set_metadata_loader(&self, loader: Arc<dyn TenantMetadataLoader>) {
+        if self.inner.metadata_loader.set(loader).is_err() {
+            tracing::warn!("tenant metadata loader was already initialized");
         }
     }
 
@@ -243,9 +259,18 @@ impl ShardingConnection {
         &self,
         metadata_connection: &sea_orm::DatabaseConnection,
     ) -> Result<()> {
+        let loader = self
+            .inner
+            .metadata_loader
+            .get()
+            .ok_or_else(|| {
+                ShardingError::Config(
+                    "tenant metadata loader is not configured; register an Arc<dyn TenantMetadataLoader> before reloading metadata".to_string(),
+                )
+            })?;
         self.inner
             .tenant_metadata
-            .refresh_from_connection(metadata_connection)
+            .replace_with_loader(metadata_connection, loader.as_ref())
             .await?;
         self.inner
             .pool
@@ -292,7 +317,6 @@ impl ShardingConnection {
     }
 
     #[allow(dead_code)]
-    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn prepare_statement(
         &self,
         stmt: &Statement,
@@ -308,7 +332,6 @@ impl ShardingConnection {
             .await
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn execute_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -320,7 +343,6 @@ impl ShardingConnection {
             .await
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn query_one_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -332,7 +354,6 @@ impl ShardingConnection {
             .await
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn query_all_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -363,7 +384,6 @@ impl ShardingConnectionInner {
         }
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn prepare_statement(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -488,7 +508,6 @@ impl ShardingConnectionInner {
         }
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn execute_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -509,7 +528,6 @@ impl ShardingConnectionInner {
         result
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn query_one_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -530,7 +548,6 @@ impl ShardingConnectionInner {
         result
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(future = true))]
     pub(crate) async fn query_all_with_raw(
         &self,
         raw: &dyn RawStatementExecutor,
@@ -911,7 +928,7 @@ impl ConnectionTrait for ShardingConnection {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, sync::Arc};
 
     use chrono::TimeZone;
     use futures::executor::block_on;
@@ -1407,12 +1424,13 @@ mod tests {
         )
         .expect("config");
 
-        let sharding = ShardingConnection::build(config)
-            .await
-            .expect("build sharding connection");
         let metadata_connection = Database::connect(&database_url)
             .await
             .expect("connect metadata database");
+        let sharding = ShardingConnection::build(config, metadata_connection.clone())
+            .await
+            .expect("build sharding connection");
+        crate::tenant::test_support::register_test_metadata_loader(&sharding);
 
         sharding
             .reload_tenant_metadata(&metadata_connection)
@@ -1465,12 +1483,13 @@ mod tests {
         )
         .expect("config");
 
-        let sharding = ShardingConnection::build(config)
-            .await
-            .expect("build sharding connection");
         let metadata_connection = Database::connect(&database_url)
             .await
             .expect("connect metadata database");
+        let sharding = ShardingConnection::build(config, metadata_connection.clone())
+            .await
+            .expect("build sharding connection");
+        crate::tenant::test_support::register_test_metadata_loader(&sharding);
 
         sharding
             .reload_tenant_metadata(&metadata_connection)
@@ -1523,12 +1542,13 @@ mod tests {
         )
         .expect("config");
 
-        let sharding = ShardingConnection::build(config)
-            .await
-            .expect("build sharding connection");
         let metadata_connection = Database::connect(&database_url)
             .await
             .expect("connect metadata database");
+        let sharding = ShardingConnection::build(config, metadata_connection.clone())
+            .await
+            .expect("build sharding connection");
+        crate::tenant::test_support::register_test_metadata_loader(&sharding);
 
         sharding
             .reload_tenant_metadata(&metadata_connection)
@@ -1581,12 +1601,13 @@ mod tests {
         )
         .expect("config");
 
-        let sharding = ShardingConnection::build(config)
-            .await
-            .expect("build sharding connection");
         let metadata_connection = Database::connect(&database_url)
             .await
             .expect("connect metadata database");
+        let sharding = ShardingConnection::build(config, metadata_connection.clone())
+            .await
+            .expect("build sharding connection");
+        crate::tenant::test_support::register_test_metadata_loader(&sharding);
 
         sharding
             .reload_tenant_metadata(&metadata_connection)
@@ -1645,9 +1666,22 @@ mod tests {
         )
         .expect("config");
 
-        let sharding = ShardingConnection::build(config)
+        let primary_connection = Database::connect(&primary_url)
             .await
-            .expect("build sharding connection");
+            .expect("connect primary");
+        let replica_connection = Database::connect(&replica_url)
+            .await
+            .expect("connect replica");
+        let config = Arc::new(config);
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([
+                ("ds_primary".to_string(), primary_connection),
+                ("ds_replica".to_string(), replica_connection),
+            ]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool).expect("build sharding connection");
 
         let replica_rows = sharding
             .query_all_raw(Statement::from_string(
@@ -1710,9 +1744,22 @@ mod tests {
             .as_str(),
         )
         .expect("config");
-        let sharding = ShardingConnection::build(config)
+        let primary_connection = Database::connect(cluster.primary_database_url())
             .await
-            .expect("build sharding connection");
+            .expect("connect primary");
+        let replica_connection = Database::connect(cluster.replica_database_url())
+            .await
+            .expect("connect replica");
+        let config = Arc::new(config);
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([
+                ("ds_primary".to_string(), primary_connection),
+                ("ds_replica".to_string(), replica_connection),
+            ]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool).expect("build sharding connection");
 
         let initial_states = sharding.inner.pool.refresh_read_write_route_states().await;
         assert_eq!(
@@ -1792,10 +1839,13 @@ mod tests {
         )
         .expect("config");
 
-        let normal = ShardingConnection::build(config.clone())
+        let metadata_connection = Database::connect(&database_url)
+            .await
+            .expect("connect metadata database");
+        let normal = ShardingConnection::build(config.clone(), metadata_connection.clone())
             .await
             .expect("build normal connection");
-        let shadow = ShardingConnection::build(config)
+        let shadow = ShardingConnection::build(config, metadata_connection)
             .await
             .expect("build shadow connection")
             .with_hint(ShardingHint::Shadow);

@@ -43,10 +43,15 @@ impl Plugin for SummerShardingPlugin {
             return;
         }
 
+        let metadata_connection: DatabaseConnection = app
+            .get_component::<DatabaseConnection>()
+            .expect("DatabaseConnection not found; ensure SeaOrmPlugin is registered before SummerShardingPlugin");
+
         let connection = ShardingConnection::build(
             config
                 .into_runtime_config()
                 .expect("summer-sharding runtime config build failed"),
+            metadata_connection.clone(),
         )
         .await
         .expect("summer-sharding connection build failed");
@@ -60,10 +65,13 @@ impl Plugin for SummerShardingPlugin {
             connection.set_plugin_registry(registry);
         }
 
-        let metadata_connection: DatabaseConnection = app
-            .get_component::<DatabaseConnection>()
-            .expect("DatabaseConnection not found; ensure SeaOrmPlugin is registered before SummerShardingPlugin");
+        let metadata_loader = app
+            .get_component::<Arc<dyn crate::tenant::TenantMetadataLoader>>()
+            .expect(
+                "TenantMetadataLoader not found; register an Arc<dyn TenantMetadataLoader> component before SummerShardingPlugin",
+            );
 
+        connection.set_metadata_loader(metadata_loader.clone());
         connection
             .reload_tenant_metadata(&metadata_connection)
             .await

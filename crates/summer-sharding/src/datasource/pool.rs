@@ -11,7 +11,7 @@ use parking_lot::RwLock;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 
 use crate::{
-    config::{DataSourceConfig, DataSourceRole, ShardingConfig},
+    config::{DataSourceConfig, ShardingConfig},
     datasource::{
         DataSourceDiscovery, DataSourceHealth, DataSourceRouteState, SlowQueryMetric,
         record_slow_query, set_route_state,
@@ -24,6 +24,7 @@ use crate::{
 #[derive(Clone)]
 pub struct DataSourcePool {
     config: ShardingConfig,
+    fixed_names: Arc<BTreeSet<String>>,
     connections: Arc<RwLock<BTreeMap<String, DatabaseConnection>>>,
 }
 
@@ -39,14 +40,16 @@ impl std::fmt::Debug for DataSourcePool {
 }
 
 impl DataSourcePool {
-    pub async fn build(config: Arc<ShardingConfig>) -> Result<Self> {
-        let mut connections = BTreeMap::new();
-        for (name, datasource) in &config.datasources {
-            let connection = connect_datasource(datasource).await?;
-            connections.insert(name.clone(), connection);
-        }
+    pub fn build(
+        config: Arc<ShardingConfig>,
+        bootstrap_name: impl Into<String>,
+        bootstrap_connection: DatabaseConnection,
+    ) -> Result<Self> {
+        let bootstrap_name = bootstrap_name.into();
+        let connections = BTreeMap::from([(bootstrap_name.clone(), bootstrap_connection)]);
         Ok(Self {
             config: config.as_ref().clone(),
+            fixed_names: Arc::new(BTreeSet::from([bootstrap_name])),
             connections: Arc::new(RwLock::new(connections)),
         })
     }
@@ -55,13 +58,23 @@ impl DataSourcePool {
         config: Arc<ShardingConfig>,
         connections: BTreeMap<String, DatabaseConnection>,
     ) -> Result<Self> {
-        for name in config.datasources.keys() {
-            if !connections.contains_key(name) {
-                return Err(ShardingError::DataSourceNotFound(name.clone()));
-            }
+        let fixed_names = connections.keys().cloned().collect();
+        Self::from_connections_with_fixed_names(config, connections, fixed_names)
+    }
+
+    pub fn from_connections_with_fixed_names(
+        config: Arc<ShardingConfig>,
+        connections: BTreeMap<String, DatabaseConnection>,
+        fixed_names: BTreeSet<String>,
+    ) -> Result<Self> {
+        if connections.is_empty() {
+            return Err(ShardingError::Config(
+                "datasource pool requires at least one bootstrap connection".to_string(),
+            ));
         }
         Ok(Self {
             config: config.as_ref().clone(),
+            fixed_names: Arc::new(fixed_names),
             connections: Arc::new(RwLock::new(connections)),
         })
     }
@@ -97,17 +110,10 @@ impl DataSourcePool {
             .map(|(name, _)| name.clone())
             .collect::<BTreeSet<_>>();
 
-        let static_names = self
-            .config
-            .datasources
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-
         let mut guard = self.connections.write();
         let to_remove = guard
             .keys()
-            .filter(|name| !static_names.contains(*name) && !dynamic_names.contains(*name))
+            .filter(|name| !self.fixed_names.contains(*name) && !dynamic_names.contains(*name))
             .cloned()
             .collect::<Vec<_>>();
         for name in to_remove {
@@ -151,14 +157,19 @@ impl DataSourcePool {
     pub fn primary_datasource_names(&self) -> Vec<String> {
         let mut names = self
             .config
-            .datasources
+            .read_write_splitting
+            .rules
             .iter()
-            .filter(|(_, config)| config.role == DataSourceRole::Primary)
-            .map(|(name, _)| name.clone())
+            .map(|rule| rule.primary.clone())
             .collect::<Vec<_>>();
+        if names.is_empty() {
+            names.extend(self.fixed_names.iter().cloned());
+        }
         if names.is_empty() {
             names.extend(self.connections.read().keys().cloned());
         }
+        names.sort();
+        names.dedup();
         names
     }
 
@@ -253,32 +264,38 @@ impl RawStatementExecutor for DataSourcePool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Arc, time::Instant};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::Arc,
+        time::Instant,
+    };
 
     use sea_orm::{DbBackend, MockDatabase};
     use tokio::time::{Duration, sleep};
 
     use crate::{
-        config::{DataSourceConfig, DataSourceRole, ShardingConfig, TenantIsolationLevel},
+        config::{ShardingConfig, TenantIsolationLevel},
         datasource::{DataSourceHealth, DataSourcePool, clear_route_states, route_state},
         tenant::{TenantMetadataRecord, TenantMetadataStore},
     };
 
+    #[test]
+    fn build_uses_bootstrap_connection_as_fixed_datasource() {
+        let config = Arc::new(ShardingConfig::default());
+        let bootstrap = MockDatabase::new(DbBackend::Postgres).into_connection();
+
+        let pool = DataSourcePool::build(config, "bootstrap", bootstrap).expect("pool");
+
+        assert!(pool.connection("bootstrap").is_ok());
+        assert_eq!(
+            pool.primary_datasource_names(),
+            vec!["bootstrap".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn sync_tenant_datasources_removes_inactive_dynamic_connections() {
-        let mut datasources = BTreeMap::new();
-        datasources.insert(
-            "primary".to_string(),
-            DataSourceConfig {
-                role: DataSourceRole::Primary,
-                ..DataSourceConfig::new("sqlite::memory:")
-            },
-        );
-
-        let config = Arc::new(ShardingConfig {
-            datasources,
-            ..Default::default()
-        });
+        let config = Arc::new(ShardingConfig::default());
 
         let primary_conn = MockDatabase::new(DbBackend::Postgres).into_connection();
         let dynamic_conn = MockDatabase::new(DbBackend::Postgres).into_connection();
@@ -287,7 +304,12 @@ mod tests {
         connections.insert("primary".to_string(), primary_conn);
         connections.insert("tenant_t001".to_string(), dynamic_conn);
 
-        let pool = DataSourcePool::from_connections(config.clone(), connections).expect("pool");
+        let pool = DataSourcePool::from_connections_with_fixed_names(
+            config.clone(),
+            connections,
+            BTreeSet::from(["primary".to_string()]),
+        )
+        .expect("pool");
 
         let record = TenantMetadataRecord {
             tenant_id: "T-001".to_string(),
@@ -315,26 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn discovery_detects_primary_and_replicas() {
-        let mut datasources = BTreeMap::new();
-        datasources.insert(
-            "primary".to_string(),
-            DataSourceConfig {
-                role: DataSourceRole::Primary,
-                ..DataSourceConfig::new("mock://primary")
-            },
-        );
-        datasources.insert(
-            "replica".to_string(),
-            DataSourceConfig {
-                role: DataSourceRole::Replica,
-                ..DataSourceConfig::new("mock://replica")
-            },
-        );
-
-        let config = Arc::new(ShardingConfig {
-            datasources,
-            ..Default::default()
-        });
+        let config = Arc::new(ShardingConfig::default());
 
         let pool = DataSourcePool::from_connections(
             config,

@@ -704,7 +704,7 @@ mod saga_tests {
     };
     use crate::{
         cdc::test_support::PreparedTransactionTestDatabases,
-        config::{DataSourceConfig, DataSourceRole, ShardingConfig, TenantIsolationLevel},
+        config::{ShardingConfig, TenantIsolationLevel},
         connector::ShardingConnection,
         datasource::DataSourcePool,
         error::ShardingError,
@@ -812,20 +812,7 @@ mod saga_tests {
 
     #[tokio::test]
     async fn begin_is_lazy_and_does_not_eagerly_enlist_pool_datasources() {
-        let mut datasources = BTreeMap::new();
-        datasources.insert(
-            "ds_primary".to_string(),
-            DataSourceConfig {
-                schema: Some("test".to_string()),
-                role: DataSourceRole::Primary,
-                ..DataSourceConfig::new("mock://primary")
-            },
-        );
-
-        let config = Arc::new(ShardingConfig {
-            datasources,
-            ..Default::default()
-        });
+        let config = Arc::new(ShardingConfig::default());
 
         let primary = MockDatabase::new(DbBackend::Postgres).into_connection();
         let tenant_db = MockDatabase::new(DbBackend::Postgres).into_connection();
@@ -846,20 +833,7 @@ mod saga_tests {
 
     #[tokio::test]
     async fn standard_transaction_rejects_touching_multiple_datasources() {
-        let mut datasources = BTreeMap::new();
-        datasources.insert(
-            "ds_primary".to_string(),
-            DataSourceConfig {
-                schema: Some("test".to_string()),
-                role: DataSourceRole::Primary,
-                ..DataSourceConfig::new("mock://primary")
-            },
-        );
-
-        let config = Arc::new(ShardingConfig {
-            datasources,
-            ..Default::default()
-        });
+        let config = Arc::new(ShardingConfig::default());
 
         let primary = MockDatabase::new(DbBackend::Postgres)
             .append_exec_results([sea_orm::MockExecResult {
@@ -904,20 +878,7 @@ mod saga_tests {
 
     #[tokio::test]
     async fn standard_transaction_rejects_concurrent_first_touch_on_different_datasources() {
-        let mut datasources = BTreeMap::new();
-        datasources.insert(
-            "ds_primary".to_string(),
-            DataSourceConfig {
-                schema: Some("test".to_string()),
-                role: DataSourceRole::Primary,
-                ..DataSourceConfig::new("mock://primary")
-            },
-        );
-
-        let config = Arc::new(ShardingConfig {
-            datasources,
-            ..Default::default()
-        });
+        let config = Arc::new(ShardingConfig::default());
 
         let primary = MockDatabase::new(DbBackend::Postgres)
             .append_exec_results([sea_orm::MockExecResult {
@@ -1110,12 +1071,13 @@ mod saga_tests {
         )
         .expect("config");
 
-        let sharding = ShardingConnection::build(config)
-            .await
-            .expect("build sharding connection");
         let metadata_connection = Database::connect(&primary_url)
             .await
             .expect("connect metadata db");
+        let sharding = ShardingConnection::build(config, metadata_connection.clone())
+            .await
+            .expect("build sharding connection");
+        crate::tenant::test_support::register_test_metadata_loader(&sharding);
         sharding
             .reload_tenant_metadata(&metadata_connection)
             .await
@@ -1216,12 +1178,13 @@ mod saga_tests {
         )
         .expect("config");
 
-        let sharding = ShardingConnection::build(config)
-            .await
-            .expect("build sharding connection");
         let metadata_connection = Database::connect(&primary_url)
             .await
             .expect("connect metadata db");
+        let sharding = ShardingConnection::build(config, metadata_connection.clone())
+            .await
+            .expect("build sharding connection");
+        crate::tenant::test_support::register_test_metadata_loader(&sharding);
         sharding
             .reload_tenant_metadata(&metadata_connection)
             .await
@@ -1317,9 +1280,22 @@ mod saga_tests {
             .as_str(),
         )
         .expect("config");
-        let sharding = ShardingConnection::build(config)
+        let primary_connection = Database::connect(&primary_url)
             .await
-            .expect("build sharding connection");
+            .expect("connect primary");
+        let secondary_connection = Database::connect(&secondary_url)
+            .await
+            .expect("connect secondary");
+        let config = Arc::new(config);
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([
+                ("ds_primary".to_string(), primary_connection),
+                ("ds_secondary".to_string(), secondary_connection),
+            ]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool).expect("build sharding connection");
 
         sharding
             .two_phase_transaction::<_, (), String>(|tx| {
@@ -1393,9 +1369,22 @@ mod saga_tests {
             .as_str(),
         )
         .expect("config");
-        let sharding = ShardingConnection::build(config)
+        let primary_connection = Database::connect(&primary_url)
             .await
-            .expect("build sharding connection");
+            .expect("connect primary");
+        let secondary_connection = Database::connect(&secondary_url)
+            .await
+            .expect("connect secondary");
+        let config = Arc::new(config);
+        let pool = DataSourcePool::from_connections(
+            config.clone(),
+            BTreeMap::from([
+                ("ds_primary".to_string(), primary_connection),
+                ("ds_secondary".to_string(), secondary_connection),
+            ]),
+        )
+        .expect("pool");
+        let sharding = ShardingConnection::with_pool(config, pool).expect("build sharding connection");
 
         let err = sharding
             .two_phase_transaction::<_, (), String>(|tx| {

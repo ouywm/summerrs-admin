@@ -39,15 +39,10 @@ session_ttl_seconds = 86400
 
 [sea-orm]
 enable_logging = true
-uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai}"
+uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin}"
 
 [summer-sharding]
 enabled = true
-
-[summer-sharding.datasources.ds_test]
-role = "primary"
-schema = "test"
-uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin?options=-c%20TimeZone%3DAsia%2FShanghai}"
 
 [summer-sharding.tenant]
 default_isolation = "shared_row"

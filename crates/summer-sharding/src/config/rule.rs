@@ -5,144 +5,213 @@ use summer::config::Configurable;
 
 use crate::error::{Result, ShardingError};
 
-use super::{
-    DataSourceConfig, DataSourceRole, ReadWriteRuleConfig, TenantConfig, TenantIsolationLevel,
-};
+use super::{ReadWriteRuleConfig, TenantConfig, TenantIsolationLevel};
 
+const DEFAULT_BOOTSTRAP_DATASOURCE: &str = "__bootstrap_primary";
+
+/// 通用配置属性映射，用于承载算法或扩展能力的自定义参数。
 pub type ConfigProps = BTreeMap<String, serde_json::Value>;
 
+/// 物理表集合配置。
+///
+/// 支持直接给出显式表名列表，或提供一个带占位符的模式字符串，
+/// 由后续规则在运行时展开。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ActualTablesConfig {
+    /// 物理表模式，例如 `ai.log_${yyyyMM}`。
     Pattern(String),
+    /// 显式列出的物理表名列表。
     Explicit(Vec<String>),
 }
 
+/// 绑定表组配置。
+///
+/// 同一绑定组中的表应使用相同的分片键和路由结果，
+/// 用于避免关联查询跨分片失配。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BindingGroupConfig {
+    /// 参与绑定的逻辑表列表。
     #[serde(default)]
     pub tables: Vec<String>,
+    /// 绑定组共用的分片键列名。
     #[serde(default)]
     pub sharding_column: String,
 }
 
+/// 主键生成器配置。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct KeyGeneratorConfig {
+    /// 主键生成器类型，例如 `snowflake`、`tsid`。
     #[serde(rename = "type")]
     pub kind: String,
+    /// 主键生成器的扩展参数。
     #[serde(flatten)]
     pub props: ConfigProps,
 }
 
+/// 逻辑表分片规则配置。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TableRuleConfig {
+    /// 逻辑表名，支持带 schema 的限定名。
     pub logic_table: String,
+    /// 物理表集合定义，可以是模式或显式列表。
     pub actual_tables: ActualTablesConfig,
+    /// 路由该逻辑表时使用的分片键列。
     pub sharding_column: String,
+    /// 分片算法类型。
     pub algorithm: String,
+    /// 分片算法的扩展参数。
     #[serde(default)]
     pub algorithm_props: ConfigProps,
+    /// 该表可选的主键生成器配置。
     #[serde(default)]
     pub key_generator: Option<KeyGeneratorConfig>,
 }
 
+/// 字段加密规则。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EncryptRuleConfig {
+    /// 需要加密的逻辑表。
     pub table: String,
+    /// 明文字段名。
     pub column: String,
+    /// 密文字段名。
     pub cipher_column: String,
+    /// 辅助查询字段名，例如用于等值匹配或模糊检索。
     #[serde(default)]
     pub assisted_query_column: Option<String>,
+    /// 加密算法名称。
     #[serde(default)]
     pub algorithm: String,
+    /// 存放密钥的环境变量名。
     #[serde(default)]
     pub key_env: String,
 }
 
+/// 加密模块配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EncryptConfig {
+    /// 是否启用字段加密。
     #[serde(default)]
     pub enabled: bool,
+    /// 加密规则列表。
     #[serde(default)]
     pub rules: Vec<EncryptRuleConfig>,
 }
 
+/// 查询列到分片列的 lookup 索引配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LookupIndexConfig {
+    /// 被查询的逻辑表。
     pub logic_table: String,
+    /// 用于 lookup 的查询列。
     pub lookup_column: String,
+    /// 存储 lookup 关系的索引表。
     pub lookup_table: String,
+    /// 真正参与分片计算的列。
     pub sharding_column: String,
 }
 
+/// 脱敏规则配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MaskingRuleConfig {
+    /// 需要脱敏的逻辑表。
     pub table: String,
+    /// 需要脱敏的字段名。
     pub column: String,
+    /// 脱敏算法名称。
     pub algorithm: String,
+    /// 保留前缀字符数。
     #[serde(default)]
     pub show_first: usize,
+    /// 保留后缀字符数。
     #[serde(default)]
     pub show_last: usize,
+    /// 用于填充的脱敏字符。
     #[serde(default = "default_mask_char")]
     pub mask_char: String,
 }
 
+/// 脱敏模块配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MaskingConfig {
+    /// 是否启用脱敏。
     #[serde(default)]
     pub enabled: bool,
+    /// 脱敏规则列表。
     #[serde(default)]
     pub rules: Vec<MaskingRuleConfig>,
 }
 
+/// 影子流量命中条件类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ShadowConditionKind {
+    /// 从请求头判断是否进入影子链路。
     #[default]
     Header,
+    /// 从 SQL 条件列判断是否进入影子链路。
     Column,
+    /// 从 hint 判断是否进入影子链路。
     Hint,
 }
 
+/// 影子流量命中条件配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ShadowConditionConfig {
+    /// 条件类型。
     #[serde(rename = "type", default)]
     pub kind: ShadowConditionKind,
+    /// 请求头键名或 hint 键名。
     #[serde(default)]
     pub key: Option<String>,
+    /// SQL 条件列名。
     #[serde(default)]
     pub column: Option<String>,
+    /// 命中条件的目标值。
     #[serde(default)]
     pub value: Option<String>,
 }
 
+/// 影子表模式配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ShadowTableModeConfig {
+    /// 是否启用影子表模式。
     #[serde(default)]
     pub enabled: bool,
+    /// 需要路由到影子表的逻辑表列表。
     #[serde(default)]
     pub tables: Vec<String>,
 }
 
+/// 影子库模式配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ShadowDatabaseModeConfig {
+    /// 是否启用影子库模式。
     #[serde(default)]
     pub enabled: bool,
+    /// 影子流量使用的数据源名称。
     #[serde(default)]
     pub datasource: Option<String>,
 }
 
+/// 影子流量总配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowConfig {
+    /// 是否启用影子链路。
     #[serde(default)]
     pub enabled: bool,
+    /// 影子表后缀。
     #[serde(default = "default_shadow_suffix")]
     pub shadow_suffix: String,
+    /// 影子表模式配置。
     #[serde(default)]
     pub table_mode: ShadowTableModeConfig,
+    /// 影子库模式配置。
     #[serde(default)]
     pub database_mode: ShadowDatabaseModeConfig,
+    /// 影子命中条件列表。
     #[serde(default)]
     pub conditions: Vec<ShadowConditionConfig>,
 }
@@ -159,16 +228,22 @@ impl Default for ShadowConfig {
     }
 }
 
+/// 在线 DDL 配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OnlineDdlConfig {
+    /// 是否启用在线 DDL。
     #[serde(default)]
     pub enabled: bool,
+    /// 并发执行的分片任务数。
     #[serde(default = "default_online_ddl_concurrency")]
     pub concurrency: usize,
+    /// 单批次处理的数据量。
     #[serde(default = "default_online_ddl_batch_size")]
     pub batch_size: usize,
+    /// cutover 阶段获取锁的超时时间，单位毫秒。
     #[serde(default = "default_online_ddl_cutover_lock_timeout_ms")]
     pub cutover_lock_timeout_ms: u64,
+    /// 清理旧表或临时资源的延迟时间，单位小时。
     #[serde(default = "default_online_ddl_cleanup_delay_hours")]
     pub cleanup_delay_hours: u64,
 }
@@ -185,25 +260,36 @@ impl Default for OnlineDdlConfig {
     }
 }
 
+/// 单个 CDC 任务配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CdcTaskConfig {
+    /// 任务名称。
     pub name: String,
+    /// 源表列表。
     #[serde(default)]
     pub source_tables: Vec<String>,
+    /// 目标表列表。
     #[serde(default)]
     pub sink_tables: Vec<String>,
+    /// 行转换器名称。
     #[serde(default)]
     pub transformer: Option<String>,
+    /// 每批处理的记录数。
     #[serde(default = "default_cdc_batch_size")]
     pub batch_size: usize,
+    /// 源端过滤表达式。
     #[serde(default)]
     pub source_filter: Option<String>,
+    /// 目标端 schema。
     #[serde(default)]
     pub sink_schema: Option<String>,
+    /// 目标 sink 类型。
     #[serde(default)]
     pub sink_type: Option<String>,
+    /// 目标 sink 连接地址。
     #[serde(default)]
     pub sink_uri: Option<String>,
+    /// 迁移完成后是否删除源数据。
     #[serde(default)]
     pub delete_after_migrate: bool,
 }
@@ -225,22 +311,30 @@ impl Default for CdcTaskConfig {
     }
 }
 
+/// CDC 总配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CdcConfig {
+    /// 是否启用 CDC。
     #[serde(default)]
     pub enabled: bool,
+    /// CDC 任务列表。
     #[serde(default)]
     pub tasks: Vec<CdcTaskConfig>,
 }
 
+/// 审计配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditConfig {
+    /// 是否启用审计。
     #[serde(default)]
     pub enabled: bool,
+    /// 慢查询阈值，单位毫秒。
     #[serde(default = "default_slow_query_threshold_ms")]
     pub slow_query_threshold_ms: u64,
+    /// 是否记录全散射查询。
     #[serde(default)]
     pub log_full_scatter: bool,
+    /// 是否记录缺失分片键的 SQL。
     #[serde(default)]
     pub log_no_sharding_key: bool,
 }
@@ -256,81 +350,115 @@ impl Default for AuditConfig {
     }
 }
 
+/// 分片全局配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ShardingGlobalConfig {
+    /// 广播表列表。
     #[serde(default)]
     pub broadcast_tables: Vec<String>,
+    /// 默认数据源名称。
     #[serde(default)]
     pub default_datasource: Option<String>,
 }
 
+/// 分片规则主配置段。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ShardingSectionConfig {
+    /// 表分片规则列表。
     #[serde(default)]
     pub tables: Vec<TableRuleConfig>,
+    /// 绑定表组列表。
     #[serde(default)]
     pub binding_groups: Vec<BindingGroupConfig>,
+    /// lookup 索引配置列表。
     #[serde(default)]
     pub lookup_indexes: Vec<LookupIndexConfig>,
+    /// 全局分片配置。
     #[serde(default)]
     pub global: ShardingGlobalConfig,
 }
 
+/// 读写分离配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ReadWriteSplittingConfig {
+    /// 是否启用读写分离。
     #[serde(default)]
     pub enabled: bool,
+    /// 读写分离规则列表。
     #[serde(default)]
     pub rules: Vec<ReadWriteRuleConfig>,
 }
 
+/// 运行时分片配置。
+///
+/// 这是经过启动配置归一化并验证后的内部配置对象，
+/// 用于真正驱动路由、改写和执行流程。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ShardingConfig {
-    #[serde(default)]
-    pub datasources: BTreeMap<String, DataSourceConfig>,
+    /// 多租户相关配置。
     #[serde(default)]
     pub tenant: TenantConfig,
+    /// 分片规则配置。
     #[serde(default)]
     pub sharding: ShardingSectionConfig,
+    /// 读写分离配置。
     #[serde(default)]
     pub read_write_splitting: ReadWriteSplittingConfig,
+    /// 加密配置。
     #[serde(default)]
     pub encrypt: EncryptConfig,
+    /// 脱敏配置。
     #[serde(default)]
     pub masking: MaskingConfig,
+    /// 影子流量配置。
     #[serde(default)]
     pub shadow: ShadowConfig,
+    /// 在线 DDL 配置。
     #[serde(default)]
     pub online_ddl: OnlineDdlConfig,
+    /// CDC 配置。
     #[serde(default)]
     pub cdc: CdcConfig,
+    /// 审计配置。
     #[serde(default)]
     pub audit: AuditConfig,
 }
 
+/// Summer 框架启动期分片配置。
+///
+/// 该结构体负责从配置中心或 TOML 中反序列化，
+/// 随后通过 `into_runtime_config()` 转成运行时使用的 `ShardingConfig`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, Configurable)]
 #[config_prefix = "summer-sharding"]
 pub struct SummerShardingConfig {
+    /// 是否启用分片插件。
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
-    pub datasources: BTreeMap<String, DataSourceConfig>,
+    /// 多租户相关配置。
     #[serde(default)]
     pub tenant: TenantConfig,
+    /// 分片规则配置。
     #[serde(default)]
     pub sharding: ShardingSectionConfig,
+    /// 读写分离配置。
     #[serde(default)]
     pub read_write_splitting: ReadWriteSplittingConfig,
+    /// 加密配置。
     #[serde(default)]
     pub encrypt: EncryptConfig,
+    /// 脱敏配置。
     #[serde(default)]
     pub masking: MaskingConfig,
+    /// 影子流量配置。
     #[serde(default)]
     pub shadow: ShadowConfig,
+    /// 在线 DDL 配置。
     #[serde(default)]
     pub online_ddl: OnlineDdlConfig,
+    /// CDC 配置。
     #[serde(default)]
     pub cdc: CdcConfig,
+    /// 审计配置。
     #[serde(default)]
     pub audit: AuditConfig,
 }
@@ -338,7 +466,6 @@ pub struct SummerShardingConfig {
 impl SummerShardingConfig {
     pub fn into_runtime_config(self) -> Result<ShardingConfig> {
         let config = ShardingConfig {
-            datasources: self.datasources,
             tenant: self.tenant,
             sharding: self.sharding,
             read_write_splitting: self.read_write_splitting,
@@ -387,20 +514,6 @@ impl TableRuleConfig {
 
 impl ShardingConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.datasources.is_empty() {
-            return Err(ShardingError::Config(
-                "at least one datasource must be configured".to_string(),
-            ));
-        }
-
-        if let Some(default_datasource) = self.sharding.global.default_datasource.as_deref()
-            && !self.datasources.contains_key(default_datasource)
-        {
-            return Err(ShardingError::Config(format!(
-                "default datasource `{default_datasource}` is not defined"
-            )));
-        }
-
         let mut seen_logic_tables = BTreeSet::new();
         for rule in &self.sharding.tables {
             if rule.logic_table.trim().is_empty() {
@@ -430,17 +543,17 @@ impl ShardingConfig {
 
         if self.read_write_splitting.enabled {
             for rule in &self.read_write_splitting.rules {
-                if !self.datasources.contains_key(rule.primary.as_str()) {
+                if rule.primary.trim().is_empty() {
                     return Err(ShardingError::Config(format!(
-                        "read/write rule `{}` references missing primary `{}`",
-                        rule.name, rule.primary
+                        "read/write rule `{}` primary cannot be empty",
+                        rule.name
                     )));
                 }
                 for replica in &rule.replicas {
-                    if !self.datasources.contains_key(replica.as_str()) {
+                    if replica.trim().is_empty() {
                         return Err(ShardingError::Config(format!(
-                            "read/write rule `{}` references missing replica `{}`",
-                            rule.name, replica
+                            "read/write rule `{}` contains an empty replica name",
+                            rule.name
                         )));
                     }
                 }
@@ -636,38 +749,18 @@ impl ShardingConfig {
     }
 
     pub fn default_datasource_name(&self) -> Option<&str> {
-        if let Some(default) = self.sharding.global.default_datasource.as_deref() {
-            return Some(default);
-        }
-        self.datasources
-            .iter()
-            .find(|(_, config)| config.role == DataSourceRole::Primary)
-            .map(|(name, _)| name.as_str())
-            .or_else(|| self.datasources.keys().next().map(String::as_str))
+        Some(
+            self.sharding
+                .global
+                .default_datasource
+                .as_deref()
+                .unwrap_or(DEFAULT_BOOTSTRAP_DATASOURCE),
+        )
     }
 
     pub fn schema_primary_datasource(&self, schema: &str) -> Option<&str> {
-        self.datasources
-            .iter()
-            .find(|(_, config)| {
-                config.role == DataSourceRole::Primary
-                    && config
-                        .schema
-                        .as_deref()
-                        .is_some_and(|value| value.eq_ignore_ascii_case(schema))
-            })
-            .map(|(name, _)| name.as_str())
-            .or_else(|| {
-                self.datasources
-                    .iter()
-                    .find(|(_, config)| {
-                        config
-                            .schema
-                            .as_deref()
-                            .is_some_and(|value| value.eq_ignore_ascii_case(schema))
-                    })
-                    .map(|(name, _)| name.as_str())
-            })
+        let _ = schema;
+        self.default_datasource_name()
     }
 
     pub fn default_tenant_isolation(&self) -> TenantIsolationLevel {
@@ -777,11 +870,6 @@ mod tests {
     fn config_expands_env_and_matches_short_logic_table() {
         let config = ShardingConfig::from_test_str(
             r#"
-            [datasources.ds_default]
-            uri = "${TEST_SHARDING_DATABASE_URL:postgres://localhost/app}"
-            schema = "ai"
-            role = "primary"
-
             [[sharding.tables]]
             logic_table = "ai.log"
             actual_tables = "ai.log_${yyyyMM}"
@@ -791,23 +879,17 @@ mod tests {
         )
         .expect("config should parse");
 
-        assert_eq!(
-            config.datasources["ds_default"].uri,
-            "postgres://localhost/app"
-        );
         assert!(config.table_rule("log").is_some());
-        assert_eq!(config.schema_primary_datasource("ai"), Some("ds_default"));
+        assert_eq!(
+            config.schema_primary_datasource("ai"),
+            Some(super::DEFAULT_BOOTSTRAP_DATASOURCE)
+        );
     }
 
     #[test]
     fn config_parses_lookup_masking_shadow_and_cdc_sections() {
         let config = ShardingConfig::from_test_str(
             r#"
-            [datasources.ds_default]
-            uri = "mock://db"
-            schema = "ai"
-            role = "primary"
-
             [[sharding.tables]]
             logic_table = "ai.log"
             actual_tables = "ai.log_${yyyyMM}"
@@ -836,9 +918,9 @@ mod tests {
               enabled = true
               tables = ["ai.log"]
 
-              [shadow.database_mode]
-              enabled = true
-              datasource = "ds_default"
+            [shadow.database_mode]
+            enabled = true
+            datasource = "shadow_dynamic"
 
               [[shadow.conditions]]
               type = "column"
@@ -875,31 +957,18 @@ mod tests {
     }
 
     #[test]
-    fn config_parses_datasource_pool_settings() {
+    fn config_defaults_bootstrap_datasource_name() {
         let config = ShardingConfig::from_test_str(
             r#"
-            [datasources.ds_default]
-            uri = "mock://db"
-            schema = "ai"
-            role = "primary"
-            enable_logging = true
-            min_connections = 4
-            max_connections = 32
-            connect_timeout = 1000
-            idle_timeout = 2000
-            acquire_timeout = 3000
-            test_before_acquire = false
+            [tenant]
+            enabled = true
             "#,
         )
         .expect("config should parse");
 
-        let datasource = &config.datasources["ds_default"];
-        assert!(datasource.enable_logging);
-        assert_eq!(datasource.min_connections, 4);
-        assert_eq!(datasource.max_connections, 32);
-        assert_eq!(datasource.connect_timeout, Some(1000));
-        assert_eq!(datasource.idle_timeout, Some(2000));
-        assert_eq!(datasource.acquire_timeout, Some(3000));
-        assert!(!datasource.test_before_acquire);
+        assert_eq!(
+            config.default_datasource_name(),
+            Some(super::DEFAULT_BOOTSTRAP_DATASOURCE)
+        );
     }
 }

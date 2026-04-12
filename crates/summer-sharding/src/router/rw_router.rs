@@ -93,24 +93,12 @@ impl ReadWriteRouter {
                 replicas[index].clone()
             }
             LoadBalanceKind::Weight => {
-                let mut weighted = Vec::new();
-                for replica in &replicas {
-                    let weight = self
-                        .config
-                        .datasources
-                        .get(replica.as_str())
-                        .map(|config| config.weight.max(1))
-                        .unwrap_or(1);
-                    for _ in 0..weight {
-                        weighted.push(replica.clone());
-                    }
-                }
-                if weighted.is_empty() {
-                    effective_primary.clone()
-                } else {
-                    let index = rand::random_range(0..weighted.len());
-                    weighted[index].clone()
-                }
+                let index = self
+                    .counters
+                    .get(rule.name.as_str())
+                    .map(|counter| counter.fetch_add(1, Ordering::Relaxed))
+                    .unwrap_or(0);
+                replicas[index % replicas.len()].clone()
             }
         };
 
@@ -152,16 +140,10 @@ impl ReadWriteRouter {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        sync::{Arc, Mutex, OnceLock},
-    };
+    use std::sync::{Arc, Mutex, OnceLock};
 
     use crate::{
-        config::{
-            DataSourceConfig, DataSourceRole, LoadBalanceKind, ReadWriteRuleConfig,
-            ReadWriteSplittingConfig, ShardingConfig,
-        },
+        config::{LoadBalanceKind, ReadWriteRuleConfig, ReadWriteSplittingConfig, ShardingConfig},
         datasource::{
             DataSourceRouteState, InMemoryRuntimeRecorder, clear_route_states,
             reset_runtime_recorder, set_route_state, set_runtime_recorder,
@@ -170,31 +152,7 @@ mod tests {
     };
 
     fn build_config() -> ShardingConfig {
-        let mut datasources = BTreeMap::new();
-        datasources.insert(
-            "ds_ai_primary".to_string(),
-            DataSourceConfig {
-                role: DataSourceRole::Primary,
-                ..DataSourceConfig::new("mock://primary")
-            },
-        );
-        datasources.insert(
-            "ds_ai_replica_a".to_string(),
-            DataSourceConfig {
-                role: DataSourceRole::Replica,
-                ..DataSourceConfig::new("mock://replica-a")
-            },
-        );
-        datasources.insert(
-            "ds_ai_replica_b".to_string(),
-            DataSourceConfig {
-                role: DataSourceRole::Replica,
-                ..DataSourceConfig::new("mock://replica-b")
-            },
-        );
-
         ShardingConfig {
-            datasources,
             read_write_splitting: ReadWriteSplittingConfig {
                 enabled: true,
                 rules: vec![ReadWriteRuleConfig {
