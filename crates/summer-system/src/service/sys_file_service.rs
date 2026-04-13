@@ -84,7 +84,8 @@ impl SysFileService {
         let mut active: summer_system_model::entity::sys_file::ActiveModel = file.into();
         active.deleted_at = Set(Some(now));
         active.deleted_by = Set(deleted_by);
-        active.purge_status = Set("PENDING".to_string());
+        // 先置为 NONE，后续若确认无引用再置为 PENDING 并触发异步清理
+        active.purge_status = Set("NONE".to_string());
         active.purge_error = Set(None);
         active.update(&self.db).await.context("删除文件记录失败")?;
 
@@ -99,6 +100,17 @@ impl SysFileService {
 
         // 无引用时才删除 S3 对象（后台异步，失败仅记日志）
         if ref_count == 0 {
+            // 标记为待清理
+            summer_system_model::entity::sys_file::Entity::update_many()
+                .set(summer_system_model::entity::sys_file::ActiveModel {
+                    purge_status: Set("PENDING".to_string()),
+                    ..Default::default()
+                })
+                .filter(summer_system_model::entity::sys_file::Column::Id.eq(file_id))
+                .exec(&self.db)
+                .await
+                .context("更新文件清理状态失败")?;
+
             let s3 = self.s3.clone();
             let bucket = bucket.clone();
             let object_key = object_key.clone();
