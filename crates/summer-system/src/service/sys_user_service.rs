@@ -332,13 +332,24 @@ impl SysUserService {
 
                     sys_file::Entity::update_many()
                         .set(sys_file::ActiveModel {
-                            upload_by_id: Set(None),
+                            creator_id: Set(None),
                             ..Default::default()
                         })
-                        .filter(sys_file::Column::UploadById.eq(id))
+                        .filter(sys_file::Column::CreatorId.eq(id))
                         .exec(txn)
                         .await
                         .context("清理用户文件归属失败")
+                        .map_err(ApiErrors::Internal)?;
+
+                    sys_file::Entity::update_many()
+                        .set(sys_file::ActiveModel {
+                            deleted_by: Set(None),
+                            ..Default::default()
+                        })
+                        .filter(sys_file::Column::DeletedBy.eq(id))
+                        .exec(txn)
+                        .await
+                        .context("清理用户文件删除人信息失败")
                         .map_err(ApiErrors::Internal)?;
 
                     sys_user::Entity::delete_by_id(id)

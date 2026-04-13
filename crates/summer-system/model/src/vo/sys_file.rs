@@ -12,10 +12,11 @@ use crate::entity::sys_file;
 #[serde(rename_all = "camelCase")]
 pub struct FileUploadVo {
     pub file_id: i64,
+    pub file_no: String,
     pub original_name: String,
     /// 文件访问 URL（公开桶直链）
     pub url: String,
-    pub file_size: i64,
+    pub size: i64,
 }
 
 /// 文件详情
@@ -23,18 +24,44 @@ pub struct FileUploadVo {
 #[serde(rename_all = "camelCase")]
 pub struct FileVo {
     pub id: i64,
-    pub file_name: String,
-    pub original_name: String,
-    pub file_path: String,
-    pub file_size: i64,
-    pub file_suffix: String,
-    pub mime_type: String,
+    pub file_no: String,
+    pub provider: String,
     pub bucket: String,
+    pub object_key: String,
+    pub etag: String,
+    pub original_name: String,
+    pub display_name: String,
+    pub extension: String,
+    pub mime_type: String,
+    pub kind: String,
+    pub size: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub duration: Option<i32>,
+    pub page_count: Option<i32>,
+    pub visibility: String,
+    pub status: String,
+    pub public_token: String,
+    #[serde(serialize_with = "datetime_format::serialize_option")]
+    pub public_url_expires_at: Option<NaiveDateTime>,
+    pub tags: sea_orm::prelude::Json,
+    pub remark: String,
+    pub metadata: sea_orm::prelude::Json,
+    #[serde(serialize_with = "datetime_format::serialize_option")]
+    pub deleted_at: Option<NaiveDateTime>,
+    pub deleted_by: Option<i64>,
+    pub purge_status: String,
+    #[serde(serialize_with = "datetime_format::serialize_option")]
+    pub purged_at: Option<NaiveDateTime>,
+    pub purge_error: Option<String>,
+    pub folder_id: Option<i64>,
+    pub creator_id: Option<i64>,
     /// 文件访问 URL（公开桶直链）
     pub url: String,
-    pub upload_by: String,
     #[serde(serialize_with = "datetime_format::serialize")]
     pub create_time: NaiveDateTime,
+    #[serde(serialize_with = "datetime_format::serialize")]
+    pub update_time: NaiveDateTime,
 }
 
 impl FileVo {
@@ -42,16 +69,38 @@ impl FileVo {
     pub fn from_model_with_url(model: sys_file::Model, url: String) -> Self {
         Self {
             id: model.id,
-            file_name: model.file_name,
-            original_name: model.original_name,
-            file_path: model.file_path,
-            file_size: model.file_size,
-            file_suffix: model.file_suffix,
-            mime_type: model.mime_type,
+            file_no: model.file_no,
+            provider: model.provider,
             bucket: model.bucket,
+            object_key: model.object_key,
+            etag: model.etag,
+            original_name: model.original_name,
+            display_name: model.display_name,
+            extension: model.extension,
+            mime_type: model.mime_type,
+            kind: model.kind,
+            size: model.size,
+            width: model.width,
+            height: model.height,
+            duration: model.duration,
+            page_count: model.page_count,
+            visibility: model.visibility,
+            status: model.status,
+            public_token: model.public_token,
+            public_url_expires_at: model.public_url_expires_at,
+            tags: model.tags,
+            remark: model.remark,
+            metadata: model.metadata,
+            deleted_at: model.deleted_at,
+            deleted_by: model.deleted_by,
+            purge_status: model.purge_status,
+            purged_at: model.purged_at,
+            purge_error: model.purge_error,
+            folder_id: model.folder_id,
+            creator_id: model.creator_id,
             url,
-            upload_by: model.upload_by,
             create_time: model.create_time,
+            update_time: model.update_time,
         }
     }
 }
@@ -67,7 +116,7 @@ pub struct PresignedUploadVo {
     /// presigned PUT URL
     pub upload_url: Option<String>,
     /// 生成的 object key，回调时需要
-    pub file_path: Option<String>,
+    pub object_key: Option<String>,
     /// 有效期（秒）
     pub expires_in: Option<u64>,
 }
@@ -105,7 +154,7 @@ pub struct MultipartInitVo {
     pub fast_uploaded: bool,
     pub file: Option<FileUploadVo>,
     pub upload_id: Option<String>,
-    pub file_path: Option<String>,
+    pub object_key: Option<String>,
     pub chunk_size: Option<u64>,
     pub total_parts: Option<i32>,
     pub part_urls: Option<Vec<PartPresignedUrl>>,

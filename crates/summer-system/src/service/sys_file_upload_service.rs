@@ -5,7 +5,7 @@ use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_smithy_types::byte_stream::ByteStream;
 use bytes::Bytes;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use std::time::Duration;
 use summer::plugin::Service;
 use summer_auth::LoginId;
@@ -42,56 +42,18 @@ pub struct SysFileUploadService {
 }
 
 impl SysFileUploadService {
-    /// 秒传检查：MD5 + bucket 命中已有文件时，复用 S3 key 创建新 DB 记录
-    async fn try_fast_upload(
-        &self,
-        file_md5: &str,
-        original_name: &str,
-        suffix: &str,
-        login_id: &LoginId,
-        operator: &str,
-    ) -> ApiResult<Option<FileUploadVo>> {
-        let bucket_name = self.bucket();
-
-        let existing = sys_file::Entity::find()
-            .filter(sys_file::Column::FileMd5.eq(file_md5))
-            .filter(sys_file::Column::Bucket.eq(bucket_name))
-            .one(&self.db)
-            .await
-            .context("秒传查询失败")?;
-
-        let Some(existing) = existing else {
-            return Ok(None);
-        };
-
-        let upload_by_id: Option<i64> = Some(login_id.user_id);
-        let file_name = file_util::generate_file_name(suffix);
-
-        let active = sys_file::ActiveModel {
-            file_name: Set(file_name),
-            original_name: Set(original_name.to_string()),
-            file_path: Set(existing.file_path.clone()),
-            file_size: Set(existing.file_size),
-            file_suffix: Set(suffix.to_string()),
-            mime_type: Set(existing.mime_type.clone()),
-            bucket: Set(bucket_name.to_string()),
-            file_md5: Set(file_md5.to_string()),
-            upload_by: Set(operator.to_string()),
-            upload_by_id: Set(upload_by_id),
-            ..Default::default()
-        };
-        let model = active
-            .insert(&self.db)
-            .await
-            .context("保存秒传文件记录失败")?;
-
-        let url = self.s3_config.file_url(&model.file_path);
-        Ok(Some(FileUploadVo {
-            file_id: model.id,
-            original_name: model.original_name,
-            url,
-            file_size: model.file_size,
-        }))
+    fn infer_kind(mime: &str) -> &'static str {
+        if mime.starts_with("image/") {
+            "IMAGE"
+        } else if mime.starts_with("video/") {
+            "VIDEO"
+        } else if mime.starts_with("audio/") {
+            "AUDIO"
+        } else if mime == "application/pdf" {
+            "DOCUMENT"
+        } else {
+            "FILE"
+        }
     }
 
     /// 校验文件大小和后缀
@@ -157,27 +119,17 @@ impl SysFileUploadService {
         content_type: Option<&str>,
         data: Bytes,
         login_id: &LoginId,
-        operator: &str,
+        _operator: &str,
     ) -> ApiResult<FileUploadVo> {
-        let suffix = file_util::extract_suffix(original_name);
+        let extension = file_util::extract_suffix(original_name);
         let file_size = data.len() as i64;
 
-        self.validate_file(file_size, &suffix)?;
-
-        let file_md5 = file_util::compute_md5(&data);
-
-        // 秒传检查
-        if let Some(vo) = self
-            .try_fast_upload(&file_md5, original_name, &suffix, login_id, operator)
-            .await?
-        {
-            return Ok(vo);
-        }
+        self.validate_file(file_size, &extension)?;
 
         let bucket_name = self.bucket();
-        let object_key = file_util::generate_object_key(&suffix);
-        let file_name = file_util::generate_file_name(&suffix);
+        let object_key = file_util::generate_object_key(&extension);
         let mime = file_util::resolve_mime(content_type);
+        let kind = Self::infer_kind(mime);
 
         // 上传到 S3
         if file_size as u64 > self.s3_config.multipart_threshold {
@@ -190,7 +142,8 @@ impl SysFileUploadService {
             )
             .await?;
         } else {
-            self.s3
+            let _ = self
+                .s3
                 .put_object()
                 .bucket(bucket_name)
                 .key(&object_key)
@@ -201,20 +154,34 @@ impl SysFileUploadService {
                 .context("S3 上传失败")?;
         }
 
-        let upload_by_id: Option<i64> = Some(login_id.user_id);
+        let head = self
+            .s3
+            .head_object()
+            .bucket(bucket_name)
+            .key(&object_key)
+            .send()
+            .await
+            .context("S3 HeadObject 失败")?;
+        let etag = head.e_tag().unwrap_or_default().to_string();
 
         let url = self.s3_config.file_url(&object_key);
+        let creator_id: Option<i64> = Some(login_id.user_id);
+        let file_no = file_util::generate_file_no();
         let active = sys_file::ActiveModel {
-            file_name: Set(file_name),
-            original_name: Set(original_name.to_string()),
-            file_path: Set(object_key),
-            file_size: Set(file_size),
-            file_suffix: Set(suffix),
-            mime_type: Set(mime.to_string()),
+            file_no: Set(file_no),
+            provider: Set("S3".to_string()),
             bucket: Set(bucket_name.to_string()),
-            file_md5: Set(file_md5),
-            upload_by: Set(operator.to_string()),
-            upload_by_id: Set(upload_by_id),
+            object_key: Set(object_key),
+            etag: Set(etag),
+            original_name: Set(original_name.to_string()),
+            display_name: Set(original_name.to_string()),
+            extension: Set(extension),
+            mime_type: Set(mime.to_string()),
+            kind: Set(kind.to_string()),
+            size: Set(file_size),
+            visibility: Set("PUBLIC".to_string()),
+            status: Set("NORMAL".to_string()),
+            creator_id: Set(creator_id),
             ..Default::default()
         };
 
@@ -222,9 +189,10 @@ impl SysFileUploadService {
 
         Ok(FileUploadVo {
             file_id: model.id,
+            file_no: model.file_no,
             original_name: model.original_name,
             url,
-            file_size: model.file_size,
+            size: model.size,
         })
     }
 
@@ -368,30 +336,15 @@ impl SysFileUploadService {
     pub async fn generate_presigned_upload(
         &self,
         dto: PresignUploadDto,
-        login_id: &LoginId,
-        operator: &str,
+        _login_id: &LoginId,
+        _operator: &str,
     ) -> ApiResult<PresignedUploadVo> {
-        let suffix = file_util::extract_suffix(&dto.file_name);
-        self.validate_file(dto.file_size, &suffix)?;
-
-        // 秒传检查（前端传入 file_md5 时触发）
-        if let Some(ref file_md5) = dto.file_md5
-            && let Some(vo) = self
-                .try_fast_upload(file_md5, &dto.file_name, &suffix, login_id, operator)
-                .await?
-        {
-            return Ok(PresignedUploadVo {
-                fast_uploaded: true,
-                file: Some(vo),
-                upload_url: None,
-                file_path: None,
-                expires_in: None,
-            });
-        }
+        let extension = file_util::extract_suffix(&dto.file_name);
+        self.validate_file(dto.file_size, &extension)?;
 
         let bucket_name = self.bucket();
-        let object_key = file_util::generate_object_key(&suffix);
-        let content_type = file_util::resolve_mime_by_suffix(&suffix);
+        let object_key = file_util::generate_object_key(&extension);
+        let content_type = file_util::resolve_mime_by_suffix(&extension);
 
         let expiry = self.s3_config.presign_expiry;
         let presigning_config = PresigningConfig::expires_in(Duration::from_secs(expiry))
@@ -411,7 +364,7 @@ impl SysFileUploadService {
             fast_uploaded: false,
             file: None,
             upload_url: Some(presigned.uri().to_string()),
-            file_path: Some(object_key),
+            object_key: Some(object_key),
             expires_in: Some(expiry),
         })
     }
@@ -422,7 +375,7 @@ impl SysFileUploadService {
         &self,
         dto: PresignUploadCallbackDto,
         login_id: &LoginId,
-        operator: &str,
+        _operator: &str,
     ) -> ApiResult<FileUploadVo> {
         let bucket_name = self.bucket();
 
@@ -430,44 +383,49 @@ impl SysFileUploadService {
             .s3
             .head_object()
             .bucket(bucket_name)
-            .key(&dto.file_path)
+            .key(&dto.object_key)
             .send()
             .await
             .context("文件不存在于 S3，请确认上传是否成功")?;
 
         let file_size = head.content_length().unwrap_or(dto.file_size);
-        let suffix = file_util::extract_suffix(&dto.original_name);
+        let extension = file_util::extract_suffix(&dto.original_name);
         let content_type = head
             .content_type()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| file_util::resolve_mime_by_suffix(&suffix));
+            .unwrap_or_else(|| file_util::resolve_mime_by_suffix(&extension));
+        let kind = Self::infer_kind(&content_type);
+        let etag = head.e_tag().unwrap_or_default().to_string();
 
-        let file_name = file_util::extract_file_name_from_path(&dto.file_path).to_string();
-
-        let upload_by_id: Option<i64> = Some(login_id.user_id);
-
+        let creator_id: Option<i64> = Some(login_id.user_id);
+        let file_no = file_util::generate_file_no();
         let active = sys_file::ActiveModel {
-            file_name: Set(file_name),
-            original_name: Set(dto.original_name.clone()),
-            file_path: Set(dto.file_path.clone()),
-            file_size: Set(file_size),
-            file_suffix: Set(suffix),
-            mime_type: Set(content_type),
+            file_no: Set(file_no),
+            provider: Set("S3".to_string()),
             bucket: Set(bucket_name.to_string()),
-            file_md5: Set(dto.file_md5.unwrap_or_default()),
-            upload_by: Set(operator.to_string()),
-            upload_by_id: Set(upload_by_id),
+            object_key: Set(dto.object_key.clone()),
+            etag: Set(etag),
+            original_name: Set(dto.original_name.clone()),
+            display_name: Set(dto.original_name.clone()),
+            extension: Set(extension),
+            mime_type: Set(content_type),
+            kind: Set(kind.to_string()),
+            size: Set(file_size),
+            visibility: Set("PUBLIC".to_string()),
+            status: Set("NORMAL".to_string()),
+            creator_id: Set(creator_id),
             ..Default::default()
         };
 
         let model = active.insert(&self.db).await.context("保存文件记录失败")?;
 
-        let url = self.s3_config.file_url(&dto.file_path);
+        let url = self.s3_config.file_url(&dto.object_key);
         Ok(FileUploadVo {
             file_id: model.id,
+            file_no: model.file_no,
             original_name: dto.original_name,
             url,
-            file_size: model.file_size,
+            size: model.size,
         })
     }
 
@@ -491,7 +449,7 @@ impl SysFileUploadService {
             .s3
             .get_object()
             .bucket(&file.bucket)
-            .key(&file.file_path)
+            .key(&file.object_key)
             .presigned(presigning_config)
             .await
             .context("生成下载 presigned URL 失败")?;
@@ -513,7 +471,7 @@ impl SysFileUploadService {
             .s3
             .get_object()
             .bucket(&file.bucket)
-            .key(&file.file_path)
+            .key(&file.object_key)
             .send()
             .await
             .context("从 S3 下载文件失败")?;
@@ -526,32 +484,15 @@ impl SysFileUploadService {
     pub async fn init_multipart_upload(
         &self,
         dto: MultipartInitDto,
-        login_id: &LoginId,
-        operator: &str,
+        _login_id: &LoginId,
+        _operator: &str,
     ) -> ApiResult<MultipartInitVo> {
-        let suffix = file_util::extract_suffix(&dto.file_name);
-        self.validate_file(dto.file_size, &suffix)?;
-
-        // 秒传检查
-        if let Some(vo) = self
-            .try_fast_upload(&dto.file_md5, &dto.file_name, &suffix, login_id, operator)
-            .await?
-        {
-            return Ok(MultipartInitVo {
-                fast_uploaded: true,
-                file: Some(vo),
-                upload_id: None,
-                file_path: None,
-                chunk_size: None,
-                total_parts: None,
-                part_urls: None,
-                expires_in: None,
-            });
-        }
+        let extension = file_util::extract_suffix(&dto.file_name);
+        self.validate_file(dto.file_size, &extension)?;
 
         let bucket_name = self.bucket();
-        let object_key = file_util::generate_object_key(&suffix);
-        let content_type = file_util::resolve_mime_by_suffix(&suffix);
+        let object_key = file_util::generate_object_key(&extension);
+        let content_type = file_util::resolve_mime_by_suffix(&extension);
 
         let create_resp = self
             .s3
@@ -598,7 +539,7 @@ impl SysFileUploadService {
             fast_uploaded: false,
             file: None,
             upload_id: Some(upload_id),
-            file_path: Some(object_key),
+            object_key: Some(object_key),
             chunk_size: Some(chunk_size),
             total_parts: Some(total_parts),
             part_urls: Some(part_urls),
@@ -615,7 +556,7 @@ impl SysFileUploadService {
         let total_parts = (dto.file_size as u64).div_ceil(chunk_size) as i32;
 
         let parts = self
-            .fetch_all_parts(bucket_name, &dto.file_path, &dto.upload_id)
+            .fetch_all_parts(bucket_name, &dto.object_key, &dto.upload_id)
             .await?;
 
         let uploaded_parts: Vec<UploadedPartVo> = parts
@@ -644,7 +585,7 @@ impl SysFileUploadService {
                     .s3
                     .upload_part()
                     .bucket(bucket_name)
-                    .key(&dto.file_path)
+                    .key(&dto.object_key)
                     .upload_id(&dto.upload_id)
                     .part_number(part_number)
                     .presigned(presigning_config)
@@ -669,14 +610,14 @@ impl SysFileUploadService {
         &self,
         dto: MultipartCompleteDto,
         login_id: &LoginId,
-        operator: &str,
+        _operator: &str,
     ) -> ApiResult<FileUploadVo> {
         let client = &self.s3;
         let bucket_name = self.bucket();
 
         // 从 S3 获取已上传的分片列表
         let parts = self
-            .fetch_all_parts(bucket_name, &dto.file_path, &dto.upload_id)
+            .fetch_all_parts(bucket_name, &dto.object_key, &dto.upload_id)
             .await?;
 
         if parts.is_empty() {
@@ -718,7 +659,7 @@ impl SysFileUploadService {
         client
             .complete_multipart_upload()
             .bucket(bucket_name)
-            .key(&dto.file_path)
+            .key(&dto.object_key)
             .upload_id(&dto.upload_id)
             .multipart_upload(completed)
             .send()
@@ -728,44 +669,49 @@ impl SysFileUploadService {
         let head = client
             .head_object()
             .bucket(bucket_name)
-            .key(&dto.file_path)
+            .key(&dto.object_key)
             .send()
             .await
             .context("文件不存在于 S3，请确认上传是否成功")?;
 
         let file_size = head.content_length().unwrap_or_default();
-        let suffix = file_util::extract_suffix(&dto.original_name);
+        let extension = file_util::extract_suffix(&dto.original_name);
         let content_type = head
             .content_type()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| file_util::resolve_mime_by_suffix(&suffix));
+            .unwrap_or_else(|| file_util::resolve_mime_by_suffix(&extension));
+        let kind = Self::infer_kind(&content_type);
+        let etag = head.e_tag().unwrap_or_default().to_string();
 
-        let file_name = file_util::extract_file_name_from_path(&dto.file_path).to_string();
-
-        let upload_by_id: Option<i64> = Some(login_id.user_id);
-
+        let creator_id: Option<i64> = Some(login_id.user_id);
+        let file_no = file_util::generate_file_no();
         let active = sys_file::ActiveModel {
-            file_name: Set(file_name),
-            original_name: Set(dto.original_name.clone()),
-            file_path: Set(dto.file_path.clone()),
-            file_size: Set(file_size),
-            file_suffix: Set(suffix),
-            mime_type: Set(content_type),
+            file_no: Set(file_no),
+            provider: Set("S3".to_string()),
             bucket: Set(bucket_name.to_string()),
-            file_md5: Set(dto.file_md5.unwrap_or_default()),
-            upload_by: Set(operator.to_string()),
-            upload_by_id: Set(upload_by_id),
+            object_key: Set(dto.object_key.clone()),
+            etag: Set(etag),
+            original_name: Set(dto.original_name.clone()),
+            display_name: Set(dto.original_name.clone()),
+            extension: Set(extension),
+            mime_type: Set(content_type),
+            kind: Set(kind.to_string()),
+            size: Set(file_size),
+            visibility: Set("PUBLIC".to_string()),
+            status: Set("NORMAL".to_string()),
+            creator_id: Set(creator_id),
             ..Default::default()
         };
 
         let model = active.insert(&self.db).await.context("保存文件记录失败")?;
 
-        let url = self.s3_config.file_url(&dto.file_path);
+        let url = self.s3_config.file_url(&dto.object_key);
         Ok(FileUploadVo {
             file_id: model.id,
+            file_no: model.file_no,
             original_name: dto.original_name,
             url,
-            file_size: model.file_size,
+            size: model.size,
         })
     }
 
@@ -773,7 +719,7 @@ impl SysFileUploadService {
         self.s3
             .abort_multipart_upload()
             .bucket(self.bucket())
-            .key(&dto.file_path)
+            .key(&dto.object_key)
             .upload_id(&dto.upload_id)
             .send()
             .await

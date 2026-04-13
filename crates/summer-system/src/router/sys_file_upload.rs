@@ -157,7 +157,7 @@ pub async fn download_file(
         [
             (header::CONTENT_TYPE, content_type),
             (header::CONTENT_DISPOSITION, disposition),
-            (header::CONTENT_LENGTH, file.file_size.to_string()),
+            (header::CONTENT_LENGTH, file.size.to_string()),
         ],
         body,
     )

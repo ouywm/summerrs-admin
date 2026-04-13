@@ -10,31 +10,66 @@ use validator::Validate;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FileQueryDto {
+    /// 业务编号（精确匹配）
+    pub file_no: Option<String>,
     /// 原始文件名（模糊搜索）
     pub original_name: Option<String>,
-    /// 文件后缀（精确匹配）
-    pub file_suffix: Option<String>,
+    /// 展示名（模糊搜索）
+    pub display_name: Option<String>,
+    /// 文件扩展名（精确匹配）
+    pub extension: Option<String>,
     /// 存储桶（精确匹配）
     pub bucket: Option<String>,
-    /// 上传人（模糊搜索）
-    pub upload_by: Option<String>,
+    /// 存储提供方（精确匹配）
+    pub provider: Option<String>,
+    /// 文件分类（精确匹配）
+    pub kind: Option<String>,
+    /// 可见性（精确匹配）
+    pub visibility: Option<String>,
+    /// 状态（精确匹配）
+    pub status: Option<String>,
+    /// 文件夹ID（精确匹配）
+    pub folder_id: Option<i64>,
+    /// 创建人ID（精确匹配）
+    pub creator_id: Option<i64>,
 }
 
 impl From<FileQueryDto> for Condition {
     fn from(query: FileQueryDto) -> Self {
         let mut cond = Condition::all();
+        if let Some(file_no) = query.file_no {
+            cond = cond.add(sys_file::Column::FileNo.eq(file_no));
+        }
         if let Some(name) = query.original_name {
             cond = cond.add(sys_file::Column::OriginalName.contains(name));
         }
-        if let Some(suffix) = query.file_suffix {
-            let suffix = suffix.strip_prefix('.').map(String::from).unwrap_or(suffix);
-            cond = cond.add(sys_file::Column::FileSuffix.eq(suffix));
+        if let Some(name) = query.display_name {
+            cond = cond.add(sys_file::Column::DisplayName.contains(name));
+        }
+        if let Some(ext) = query.extension {
+            let ext = ext.strip_prefix('.').map(String::from).unwrap_or(ext);
+            cond = cond.add(sys_file::Column::Extension.eq(ext));
         }
         if let Some(bucket) = query.bucket {
             cond = cond.add(sys_file::Column::Bucket.eq(bucket));
         }
-        if let Some(upload_by) = query.upload_by {
-            cond = cond.add(sys_file::Column::UploadBy.contains(upload_by));
+        if let Some(provider) = query.provider {
+            cond = cond.add(sys_file::Column::Provider.eq(provider));
+        }
+        if let Some(kind) = query.kind {
+            cond = cond.add(sys_file::Column::Kind.eq(kind));
+        }
+        if let Some(visibility) = query.visibility {
+            cond = cond.add(sys_file::Column::Visibility.eq(visibility));
+        }
+        if let Some(status) = query.status {
+            cond = cond.add(sys_file::Column::Status.eq(status));
+        }
+        if let Some(folder_id) = query.folder_id {
+            cond = cond.add(sys_file::Column::FolderId.eq(folder_id));
+        }
+        if let Some(creator_id) = query.creator_id {
+            cond = cond.add(sys_file::Column::CreatorId.eq(creator_id));
         }
         cond
     }
@@ -59,7 +94,7 @@ pub struct PresignUploadDto {
 #[serde(rename_all = "camelCase")]
 pub struct PresignUploadCallbackDto {
     /// 上传时返回的 object key
-    pub file_path: String,
+    pub object_key: String,
     /// 原始文件名
     #[validate(length(min = 1, message = "文件名不能为空"))]
     pub original_name: String,
@@ -87,7 +122,7 @@ pub struct MultipartInitDto {
 #[serde(rename_all = "camelCase")]
 pub struct MultipartListPartsDto {
     pub upload_id: String,
-    pub file_path: String,
+    pub object_key: String,
     pub file_size: i64,
 }
 
@@ -96,7 +131,7 @@ pub struct MultipartListPartsDto {
 #[serde(rename_all = "camelCase")]
 pub struct MultipartCompleteDto {
     pub upload_id: String,
-    pub file_path: String,
+    pub object_key: String,
     #[validate(length(min = 1, message = "文件名不能为空"))]
     pub original_name: String,
     /// 文件总大小（用于校验分片完整性）
@@ -109,5 +144,5 @@ pub struct MultipartCompleteDto {
 #[serde(rename_all = "camelCase")]
 pub struct MultipartAbortDto {
     pub upload_id: String,
-    pub file_path: String,
+    pub object_key: String,
 }

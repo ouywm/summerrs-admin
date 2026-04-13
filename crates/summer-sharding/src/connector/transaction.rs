@@ -1295,7 +1295,8 @@ mod saga_tests {
             ]),
         )
         .expect("pool");
-        let sharding = ShardingConnection::with_pool(config, pool).expect("build sharding connection");
+        let sharding =
+            ShardingConnection::with_pool(config, pool).expect("build sharding connection");
 
         sharding
             .two_phase_transaction::<_, (), String>(|tx| {
@@ -1384,7 +1385,8 @@ mod saga_tests {
             ]),
         )
         .expect("pool");
-        let sharding = ShardingConnection::with_pool(config, pool).expect("build sharding connection");
+        let sharding =
+            ShardingConnection::with_pool(config, pool).expect("build sharding connection");
 
         let err = sharding
             .two_phase_transaction::<_, (), String>(|tx| {

@@ -1681,7 +1681,8 @@ mod tests {
             ]),
         )
         .expect("pool");
-        let sharding = ShardingConnection::with_pool(config, pool).expect("build sharding connection");
+        let sharding =
+            ShardingConnection::with_pool(config, pool).expect("build sharding connection");
 
         let replica_rows = sharding
             .query_all_raw(Statement::from_string(
@@ -1759,7 +1760,8 @@ mod tests {
             ]),
         )
         .expect("pool");
-        let sharding = ShardingConnection::with_pool(config, pool).expect("build sharding connection");
+        let sharding =
+            ShardingConnection::with_pool(config, pool).expect("build sharding connection");
 
         let initial_states = sharding.inner.pool.refresh_read_write_route_states().await;
         assert_eq!(

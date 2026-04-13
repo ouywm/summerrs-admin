@@ -1,6 +1,7 @@
 //! 系统文件管理路由（列表、详情、删除）
 
 use summer_admin_macros::log;
+use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query};
 use summer_common::response::Json;
@@ -41,10 +42,11 @@ pub async fn get_file(
 #[log(module = "文件管理", action = "删除文件", biz_type = Delete)]
 #[delete_api("/file/{id}")]
 pub async fn delete_file(
+    LoginUser { login_id, .. }: LoginUser,
     Component(svc): Component<SysFileService>,
     Path(id): Path<i64>,
 ) -> ApiResult<()> {
-    svc.delete_file(id).await?;
+    svc.delete_file(id, Some(login_id.user_id)).await?;
     Ok(())
 }
 

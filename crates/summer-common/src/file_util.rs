@@ -12,7 +12,7 @@ use crate::error::{ApiErrors, ApiResult};
 /// 控制生成 S3 object key / 文件名的组合方式。
 ///
 /// ```
-/// use common::file_util::NamingStrategy;
+/// use summer_common::file_util::NamingStrategy;
 ///
 /// // UUID 文件名
 /// let name = NamingStrategy::Uuid.generate("jpg");
@@ -90,6 +90,15 @@ pub fn generate_file_name(suffix: &str) -> String {
     NamingStrategy::Uuid.generate(suffix)
 }
 
+/// 生成文件业务编号（对外稳定标识）
+///
+/// 格式：`F<YYYYMMDDHHMMSS>_<8位随机hex>`
+pub fn generate_file_no() -> String {
+    let ts = chrono::Local::now().format("%Y%m%d%H%M%S");
+    let rand = uuid::Uuid::new_v4().simple().to_string();
+    format!("F{}_{}", ts, &rand[..8])
+}
+
 // ─── 文件名 / 路径工具 ──────────────────────────────────────────────────────
 
 /// 从文件名提取后缀（小写，不含点号）
@@ -97,9 +106,9 @@ pub fn generate_file_name(suffix: &str) -> String {
 /// 使用 `std::path::Path::extension()` 提取，对 `.gitignore` 等隐藏文件返回空。
 ///
 /// ```
-/// assert_eq!(common::file_util::extract_suffix("photo.JPG"), "jpg");
-/// assert_eq!(common::file_util::extract_suffix("Makefile"), "");
-/// assert_eq!(common::file_util::extract_suffix(".gitignore"), "");
+/// assert_eq!(summer_common::file_util::extract_suffix("photo.JPG"), "jpg");
+/// assert_eq!(summer_common::file_util::extract_suffix("Makefile"), "");
+/// assert_eq!(summer_common::file_util::extract_suffix(".gitignore"), "");
 /// ```
 pub fn extract_suffix(file_name: &str) -> String {
     std::path::Path::new(file_name)
@@ -221,6 +230,19 @@ mod tests {
         let name = NamingStrategy::Uuid.generate("");
         assert_eq!(name.len(), 36);
         assert!(!name.contains('.'));
+    }
+
+    #[test]
+    fn test_generate_file_no_format_and_uniqueness() {
+        let a = generate_file_no();
+        let b = generate_file_no();
+
+        assert_ne!(a, b, "file_no 应该包含随机部分，避免同秒冲突");
+        assert_eq!(a.len(), 24, "格式应为 F + 14位时间戳 + '_' + 8位hex: {a}");
+        assert!(a.starts_with('F'));
+        assert_eq!(&a[15..16], "_");
+        assert!(a[1..15].chars().all(|c| c.is_ascii_digit()));
+        assert!(a[16..].chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
     }
 
     #[test]
