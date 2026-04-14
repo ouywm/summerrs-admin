@@ -2,6 +2,7 @@
 members = [
     "crates/app",
     "crates/summer-admin-macros",
+    "crates/summer-auth",
     "crates/summer-common",
     "crates/summer-domain",
     "crates/summer-sharding",
@@ -9,7 +10,6 @@ members = [
     "crates/summer-mcp",
     "crates/summer-plugins",
     "crates/summer-system",
-    "crates/summer-system/auth",
     "crates/summer-system/model",
 ]
 resolver = "2"
@@ -73,7 +73,7 @@ sha2 = "0.10"
 sqlparser = "0.54.0"
 summer = "0.5.0"
 summer-admin-macros = { path = "crates/summer-admin-macros" }
-summer-auth = { path = "crates/summer-system/auth" }
+summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
 summer-job = "0.5.0"

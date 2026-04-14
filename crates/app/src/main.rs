@@ -16,9 +16,11 @@ use summer_web::axum::body::Body;
 use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
 
+use summer_auth::plugin::SummerAuthPlugin;
+use summer_auth::{PathAuthBuilder, SummerAuthConfigurator};
 use summer_sql_rewrite::SummerSqlRewritePlugin;
 use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
-use summer_system::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin};
+
 fn auth_path_config() -> PathAuthBuilder {
     PathAuthBuilder {
         include: vec!["/**".to_string()],
