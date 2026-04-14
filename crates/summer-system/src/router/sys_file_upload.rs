@@ -7,19 +7,19 @@ use summer_common::extractor::{Multipart, Path, Query, ValidatedJson};
 use summer_common::file_util::read_multipart_files;
 use summer_common::response::Json;
 use summer_system_model::dto::sys_file::{
-    MultipartAbortDto, MultipartCompleteDto, MultipartInitDto, MultipartListPartsDto,
-    PresignUploadCallbackDto, PresignUploadDto,
+    FileUploadQueryDto, MultipartAbortDto, MultipartCompleteDto, MultipartInitDto,
+    MultipartListPartsDto, PresignUploadCallbackDto, PresignUploadDto,
 };
 use summer_system_model::vo::sys_file::{
     BatchUploadVo, FileUploadVo, MultipartInitVo, MultipartListPartsVo, PresignedDownloadVo,
     PresignedUploadVo,
 };
-use summer_web::Router;
 use summer_web::axum::body::Body;
-use summer_web::axum::http::{StatusCode, header};
+use summer_web::axum::http::{header, StatusCode};
 use summer_web::axum::response::IntoResponse;
 use summer_web::extractor::Component;
 use summer_web::handler::TypeRouter;
+use summer_web::Router;
 use summer_web::{get_api, post_api};
 
 use crate::service::sys_file_upload_service::SysFileUploadService;
@@ -34,6 +34,7 @@ pub async fn upload_file(
         login_id, profile, ..
     }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
+    Query(query): Query<FileUploadQueryDto>,
     Multipart(mut multipart): Multipart,
 ) -> ApiResult<Json<FileUploadVo>> {
     let mut files = read_multipart_files(&mut multipart).await?;
@@ -41,11 +42,16 @@ pub async fn upload_file(
         .pop()
         .ok_or_else(|| ApiErrors::BadRequest("未找到上传文件".to_string()))?;
 
+    let (original_name, folder_id) = svc
+        .resolve_upload_target(query.folder_id, query.preserve_path, &file.file_name)
+        .await?;
+
     let vo = svc
         .upload_file(
-            &file.file_name,
+            &original_name,
             file.content_type.as_deref(),
             file.data,
+            folder_id,
             &login_id,
             &profile.nick_name,
         )
@@ -62,6 +68,7 @@ pub async fn batch_upload(
         login_id, profile, ..
     }: LoginUser,
     Component(svc): Component<SysFileUploadService>,
+    Query(query): Query<FileUploadQueryDto>,
     Multipart(mut multipart): Multipart,
 ) -> ApiResult<Json<BatchUploadVo>> {
     let files = read_multipart_files(&mut multipart).await?;
@@ -75,7 +82,13 @@ pub async fn batch_upload(
         .collect();
 
     let vo = svc
-        .batch_upload(files, &login_id, &profile.nick_name)
+        .batch_upload(
+            files,
+            query.folder_id,
+            query.preserve_path,
+            &login_id,
+            &profile.nick_name,
+        )
         .await?;
 
     Ok(Json(vo))

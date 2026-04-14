@@ -34,6 +34,17 @@ pub struct FileQueryDto {
     pub creator_id: Option<i64>,
 }
 
+/// 上传参数（用于 multipart 上传接口的 query string）
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUploadQueryDto {
+    /// 目标文件夹 ID，不传或为 0 表示根（不归属任何文件夹）
+    pub folder_id: Option<i64>,
+    /// 是否解析 `filename` 中的相对路径（如 `docs/public/a.pdf`），并自动创建子文件夹
+    #[serde(default)]
+    pub preserve_path: bool,
+}
+
 impl From<FileQueryDto> for Condition {
     fn from(query: FileQueryDto) -> Self {
         let mut cond = Condition::all();
@@ -145,4 +156,45 @@ pub struct MultipartCompleteDto {
 pub struct MultipartAbortDto {
     pub upload_id: String,
     pub object_key: String,
+}
+
+// ─── 文件中心动作 DTO ─────────────────────────────────────────────────────────
+
+/// 生成公开分享链接
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratePublicLinkDto {
+    /// 公开链接有效期（秒），不传表示永不过期
+    pub expires_in: Option<u64>,
+}
+
+/// 更新文件可见性
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFileVisibilityDto {
+    #[validate(length(min = 1, max = 32, message = "visibility不能为空"))]
+    pub visibility: String,
+}
+
+/// 更新文件状态
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFileStatusDto {
+    #[validate(length(min = 1, max = 32, message = "status不能为空"))]
+    pub status: String,
+}
+
+/// 更新展示名称
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFileDisplayNameDto {
+    #[validate(length(min = 1, max = 255, message = "displayName不能为空"))]
+    pub display_name: String,
+}
+
+/// 移动文件到文件夹
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveFileDto {
+    pub folder_id: Option<i64>,
 }

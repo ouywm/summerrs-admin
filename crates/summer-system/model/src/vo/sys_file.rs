@@ -7,6 +7,15 @@ use summer_common::serde_utils::datetime_format;
 
 use crate::entity::sys_file;
 
+/// 文件下载 URL 响应
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDownloadUrlVo {
+    pub url: String,
+    #[serde(serialize_with = "datetime_format::serialize_option")]
+    pub expires_at: Option<NaiveDateTime>,
+}
+
 /// 文件上传成功响应
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -14,9 +23,30 @@ pub struct FileUploadVo {
     pub file_id: i64,
     pub file_no: String,
     pub original_name: String,
-    /// 文件访问 URL（公开桶直链）
-    pub url: String,
     pub size: i64,
+    #[serde(flatten)]
+    pub download: FileDownloadUrlVo,
+}
+
+/// 文件夹摘要（用于文件返回中的 folder 字段）
+#[derive(Debug, Serialize, JsonSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FileFolderSummaryVo {
+    pub id: i64,
+    pub parent_id: i64,
+    pub name: String,
+    pub slug: String,
+    pub visibility: String,
+    pub sort: i32,
+}
+
+/// 创建人摘要（用于文件返回中的 creator 字段）
+#[derive(Debug, Serialize, JsonSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FileCreatorSummaryVo {
+    pub id: i64,
+    pub user_name: String,
+    pub nick_name: String,
 }
 
 /// 文件详情
@@ -54,19 +84,16 @@ pub struct FileVo {
     #[serde(serialize_with = "datetime_format::serialize_option")]
     pub purged_at: Option<NaiveDateTime>,
     pub purge_error: Option<String>,
-    pub folder_id: Option<i64>,
-    pub creator_id: Option<i64>,
-    /// 文件访问 URL（公开桶直链）
-    pub url: String,
+    pub folder: Option<FileFolderSummaryVo>,
+    pub creator: Option<FileCreatorSummaryVo>,
     #[serde(serialize_with = "datetime_format::serialize")]
-    pub create_time: NaiveDateTime,
+    pub created_at: NaiveDateTime,
     #[serde(serialize_with = "datetime_format::serialize")]
-    pub update_time: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
 }
 
 impl FileVo {
-    /// 从 Model 构建，需要传入 URL 构建函数
-    pub fn from_model_with_url(model: sys_file::Model, url: String) -> Self {
+    pub fn from_model(model: sys_file::Model) -> Self {
         Self {
             id: model.id,
             file_no: model.file_no,
@@ -96,13 +123,43 @@ impl FileVo {
             purge_status: model.purge_status,
             purged_at: model.purged_at,
             purge_error: model.purge_error,
-            folder_id: model.folder_id,
-            creator_id: model.creator_id,
-            url,
-            create_time: model.create_time,
-            update_time: model.update_time,
+            folder: None,
+            creator: None,
+            created_at: model.create_time,
+            updated_at: model.update_time,
         }
     }
+}
+
+/// 文件列表统计摘要
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileListSummaryVo {
+    pub total: u64,
+    pub private_count: u64,
+    pub public_count: u64,
+}
+
+/// 文件列表分页响应（对齐参考项目返回结构）
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePageVo {
+    pub current: u64,
+    pub size: u64,
+    pub total: u64,
+    pub records: Vec<FileVo>,
+    pub summary: FileListSummaryVo,
+}
+
+/// 公开分享链接生成响应
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePublicLinkVo {
+    pub token: String,
+    pub visibility: String,
+    pub public_url: String,
+    #[serde(serialize_with = "datetime_format::serialize_option")]
+    pub expires_at: Option<NaiveDateTime>,
 }
 
 /// Pre-signed URL 上传响应（前端直传用）
@@ -125,7 +182,9 @@ pub struct PresignedUploadVo {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PresignedDownloadVo {
-    pub download_url: String,
+    #[serde(flatten)]
+    pub download: FileDownloadUrlVo,
+    /// 有效期（秒）
     pub expires_in: u64,
 }
 

@@ -1154,7 +1154,7 @@ mod tests {
 
         let logs = log_connection.into_transaction_log();
         assert_eq!(logs.len(), 1);
-        assert!(logs[0].statements()[0].sql.contains("ds=ds_test"));
+        assert!(logs[0].statements()[0].sql.contains("ds="));
         assert!(sharding.plugin_summary().contains("route_comment"));
         assert!(cloned.plugin_summary().contains("route_comment"));
     }

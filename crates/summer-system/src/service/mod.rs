@@ -7,6 +7,7 @@ pub mod sys_config_group_service;
 pub mod sys_config_service;
 pub mod sys_dict_service;
 pub mod sys_file_service;
+pub mod sys_file_folder_service;
 pub mod sys_file_upload_service;
 pub mod sys_menu_service;
 pub mod sys_notice_service;

@@ -12,7 +12,6 @@ CREATE TABLE sys.file_folder (
     slug        VARCHAR(128)    NOT NULL,
     visibility  VARCHAR(32)     NOT NULL DEFAULT 'PRIVATE',
     sort        INT             NOT NULL DEFAULT 0,
-    file_count  BIGINT          NOT NULL DEFAULT 0,
     create_time TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -31,7 +30,6 @@ COMMENT ON COLUMN sys.file_folder.name IS '文件夹名称';
 COMMENT ON COLUMN sys.file_folder.slug IS '文件夹slug（同级唯一，可用于路由/检索）';
 COMMENT ON COLUMN sys.file_folder.visibility IS '可见性（如 PUBLIC/PRIVATE）';
 COMMENT ON COLUMN sys.file_folder.sort IS '排序（数值越小越靠前）';
-COMMENT ON COLUMN sys.file_folder.file_count IS '文件数量聚合字段（可选冗余）';
 COMMENT ON COLUMN sys.file_folder.create_time IS '创建时间';
 COMMENT ON COLUMN sys.file_folder.update_time IS '更新时间';
 
@@ -59,6 +57,7 @@ CREATE TABLE sys.file (
     mime_type           VARCHAR(128)    NOT NULL DEFAULT '',
     kind                VARCHAR(32)     NOT NULL DEFAULT '',
     size                BIGINT          NOT NULL DEFAULT 0,
+    file_md5            VARCHAR(32)     NOT NULL DEFAULT '',
 
     -- 媒体扩展信息
     width               INT,
@@ -103,6 +102,9 @@ CREATE INDEX idx_sys_file_object
 CREATE INDEX idx_sys_file_folder_id ON sys.file (folder_id);
 CREATE INDEX idx_sys_file_creator_id ON sys.file (creator_id);
 CREATE INDEX idx_sys_file_visibility_status ON sys.file (visibility, status);
+CREATE INDEX idx_sys_file_md5_size
+    ON sys.file (file_md5, size)
+    WHERE file_md5 <> '' AND deleted_at IS NULL;
 CREATE INDEX idx_sys_file_create_time ON sys.file (create_time);
 CREATE INDEX idx_sys_file_deleted_at ON sys.file (deleted_at);
 CREATE INDEX idx_sys_file_purge_status ON sys.file (purge_status);
@@ -120,6 +122,7 @@ COMMENT ON COLUMN sys.file.extension IS '文件扩展名（小写，不含点号
 COMMENT ON COLUMN sys.file.mime_type IS 'MIME类型';
 COMMENT ON COLUMN sys.file.kind IS '文件业务分类（如 IMAGE/VIDEO/DOC 等）';
 COMMENT ON COLUMN sys.file.size IS '文件大小（字节）';
+COMMENT ON COLUMN sys.file.file_md5 IS '文件内容MD5（32位小写hex，用于内容去重/秒传）';
 COMMENT ON COLUMN sys.file.width IS '宽度（图片/视频）';
 COMMENT ON COLUMN sys.file.height IS '高度（图片/视频）';
 COMMENT ON COLUMN sys.file.duration IS '时长（视频/音频/媒体类）';

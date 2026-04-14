@@ -20,12 +20,14 @@ pub struct Model {
     pub visibility: String,
     /// 排序（数值越小越靠前）
     pub sort: i32,
-    /// 文件数量聚合字段（可选冗余）
-    pub file_count: i64,
     /// 创建时间
     pub create_time: DateTime,
     /// 更新时间
     pub update_time: DateTime,
+
+    /// sys_file_folder -> sys_file（一对多）
+    #[sea_orm(has_many)]
+    pub files: HasMany<super::sys_file::Entity>,
 }
 
 #[sea_orm::entity::prelude::async_trait::async_trait]

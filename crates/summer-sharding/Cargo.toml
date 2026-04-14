@@ -59,3 +59,7 @@ tower = { workspace = true }
 [[bench]]
 harness = false
 name = "sea_orm_overhead"
+
+[[example]]
+name = "http_wrk_bench"
+required-features = ["web"]

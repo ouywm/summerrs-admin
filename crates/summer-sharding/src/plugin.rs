@@ -16,7 +16,7 @@ use crate::{
     rewrite_plugin::PluginRegistry,
     tenant::{
         PgTenantMetadataListener, TENANT_METADATA_CHANNEL, TenantMetadataListener,
-        TenantMetadataNotificationHandler,
+        SysTenantDatasourceMetadataLoader, TenantMetadataNotificationHandler,
     },
 };
 
@@ -67,9 +67,12 @@ impl Plugin for SummerShardingPlugin {
 
         let metadata_loader = app
             .get_component::<Arc<dyn crate::tenant::TenantMetadataLoader>>()
-            .expect(
-                "TenantMetadataLoader not found; register an Arc<dyn TenantMetadataLoader> component before SummerShardingPlugin",
-            );
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "TenantMetadataLoader not found; using built-in SysTenantDatasourceMetadataLoader"
+                );
+                Arc::new(SysTenantDatasourceMetadataLoader::default())
+            });
 
         connection.set_metadata_loader(metadata_loader.clone());
         connection

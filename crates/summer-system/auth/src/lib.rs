@@ -10,6 +10,7 @@ pub mod session;
 pub mod storage;
 pub mod token;
 pub mod user_type;
+pub mod plugin;
 
 pub use bitmap::PermissionMap;
 pub use config::{AuthConfig, JwtAlgorithm};

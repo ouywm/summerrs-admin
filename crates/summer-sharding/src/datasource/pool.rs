@@ -21,6 +21,8 @@ use crate::{
     tenant::TenantMetadataStore,
 };
 
+const DEFAULT_BOOTSTRAP_DATASOURCE: &str = "__bootstrap_primary";
+
 #[derive(Clone)]
 pub struct DataSourcePool {
     config: ShardingConfig,
@@ -64,14 +66,36 @@ impl DataSourcePool {
 
     pub fn from_connections_with_fixed_names(
         config: Arc<ShardingConfig>,
-        connections: BTreeMap<String, DatabaseConnection>,
-        fixed_names: BTreeSet<String>,
+        mut connections: BTreeMap<String, DatabaseConnection>,
+        mut fixed_names: BTreeSet<String>,
     ) -> Result<Self> {
         if connections.is_empty() {
             return Err(ShardingError::Config(
                 "datasource pool requires at least one bootstrap connection".to_string(),
             ));
         }
+
+        // Most unit tests (and many simple apps) build a pool from an existing connection map
+        // without explicitly setting `sharding.global.default_datasource`. In that case the
+        // routing default becomes `__bootstrap_primary`, so we provide an alias to the only
+        // available datasource to keep the pool usable out of the box.
+        let default_name = config
+            .default_datasource_name()
+            .unwrap_or(DEFAULT_BOOTSTRAP_DATASOURCE);
+        if config.sharding.global.default_datasource.is_none()
+            && default_name == DEFAULT_BOOTSTRAP_DATASOURCE
+            && !connections.contains_key(default_name)
+            && connections.len() == 1
+        {
+            let connection = connections
+                .values()
+                .next()
+                .cloned()
+                .expect("connections must contain one datasource");
+            connections.insert(default_name.to_string(), connection);
+            fixed_names.insert(default_name.to_string());
+        }
+
         Ok(Self {
             config: config.as_ref().clone(),
             fixed_names: Arc::new(fixed_names),

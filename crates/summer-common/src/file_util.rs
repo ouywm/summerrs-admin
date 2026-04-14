@@ -181,6 +181,16 @@ pub struct UploadedFile {
     pub data: Bytes,
 }
 
+fn map_multipart_err(ctx: &str, e: summer_web::axum::extract::multipart::MultipartError) -> ApiErrors {
+    let detail = e.body_text();
+    let msg = format!("{ctx}: {detail}");
+
+    match e.status() {
+        summer_web::axum::http::StatusCode::PAYLOAD_TOO_LARGE => ApiErrors::PayloadTooLarge(msg),
+        _ => ApiErrors::BadRequest(msg),
+    }
+}
+
 /// 从 multipart 请求中读取所有文件字段，跳过非文件字段和空文件
 pub async fn read_multipart_files(
     multipart: &mut summer_web::axum::extract::Multipart,
@@ -189,7 +199,7 @@ pub async fn read_multipart_files(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| ApiErrors::BadRequest(format!("读取上传文件失败: {}", e)))?
+        .map_err(|e| map_multipart_err("读取上传文件失败", e))?
     {
         let file_name = match field.file_name() {
             Some(name) => name.to_string(),
@@ -199,7 +209,7 @@ pub async fn read_multipart_files(
         let data: Bytes = field
             .bytes()
             .await
-            .map_err(|e| ApiErrors::BadRequest(format!("读取文件内容失败: {}", e)))?;
+            .map_err(|e| map_multipart_err("读取文件内容失败", e))?;
         if !data.is_empty() {
             files.push(UploadedFile {
                 file_name,

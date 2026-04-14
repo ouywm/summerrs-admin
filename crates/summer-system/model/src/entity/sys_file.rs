@@ -1,7 +1,4 @@
 //! 系统文件实体（文件中心）
-//!
-//! 字段设计对齐 `sql/sys/file.sql` 与参考文档 `docs/research/file-module-reference-summary.md`。
-
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -13,12 +10,10 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
 
-    // ── 业务标识 ────────────────────────────────────────────────────────────
     /// 对外业务编号
     #[sea_orm(unique)]
     pub file_no: String,
 
-    // ── 存储定位信息 ──────────────────────────────────────────────────────
     /// 存储服务提供方（如 ALIYUN_OSS/S3/MINIO 等）
     pub provider: String,
     /// 存储桶名称
@@ -28,7 +23,6 @@ pub struct Model {
     /// 对象存储 ETag
     pub etag: String,
 
-    // ── 文件展示信息 ──────────────────────────────────────────────────────
     /// 上传原始文件名
     pub original_name: String,
     /// 展示文件名
@@ -41,8 +35,9 @@ pub struct Model {
     pub kind: String,
     /// 文件大小（字节）
     pub size: i64,
+    /// 文件内容 MD5（32 位小写 hex，用于内容去重/秒传）
+    pub file_md5: String,
 
-    // ── 媒体扩展信息 ──────────────────────────────────────────────────────
     /// 宽度（图片/视频）
     pub width: Option<i32>,
     /// 高度（图片/视频）
@@ -52,7 +47,6 @@ pub struct Model {
     /// 页数（文档）
     pub page_count: Option<i32>,
 
-    // ── 访问控制与分享 ────────────────────────────────────────────────────
     /// 可见性（如 PUBLIC/PRIVATE）
     pub visibility: String,
     /// 状态（如 NORMAL/DISABLED）
@@ -62,7 +56,6 @@ pub struct Model {
     /// 公开链接过期时间
     pub public_url_expires_at: Option<DateTime>,
 
-    // ── 管理与扩展 ──────────────────────────────────────────────────────
     /// 标签（JSON数组）
     #[sea_orm(column_type = "JsonBinary")]
     pub tags: Json,
@@ -71,8 +64,6 @@ pub struct Model {
     /// 扩展元数据（JSON对象）
     #[sea_orm(column_type = "JsonBinary")]
     pub metadata: Json,
-
-    // ── 删除与清理 ──────────────────────────────────────────────────────
     /// 删除时间（软删除）
     pub deleted_at: Option<DateTime>,
     /// 删除人ID（对应 sys."user".id）
@@ -84,17 +75,22 @@ pub struct Model {
     /// 清理失败原因
     pub purge_error: Option<String>,
 
-    // ── 关联信息 ────────────────────────────────────────────────────────────
     /// 文件夹ID（对应 sys.file_folder.id）
     pub folder_id: Option<i64>,
     /// 创建人ID（对应 sys."user".id）
     pub creator_id: Option<i64>,
 
-    // ── 审计时间 ────────────────────────────────────────────────────────────
     /// 创建时间
     pub create_time: DateTime,
     /// 更新时间
     pub update_time: DateTime,
+
+    /// 关联文件夹（多对一）
+    #[sea_orm(belongs_to, from = "folder_id", to = "id", skip_fk)]
+    pub folder: Option<super::sys_file_folder::Entity>,
+    /// 关联创建人（多对一）
+    #[sea_orm(belongs_to, from = "creator_id", to = "id", skip_fk)]
+    pub creator: Option<super::sys_user::Entity>,
 }
 
 #[sea_orm::entity::prelude::async_trait::async_trait]

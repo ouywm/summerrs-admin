@@ -1,7 +1,6 @@
 use axum_client_ip::ClientIpSource;
-use summer::App;
 use summer::auto_config;
-use summer::plugin::MutableComponentRegistry;
+use summer::App;
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
@@ -10,32 +9,39 @@ use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlu
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
 use summer_sharding::SummerShardingPlugin;
-use summer_web::LayerConfigurator;
-use summer_web::WebPlugin;
 use summer_web::axum::body::Body;
 use summer_web::axum::http;
+use summer_web::LayerConfigurator;
+use summer_web::WebConfigurator;
+use summer_web::WebPlugin;
 use tower_http::catch_panic::CatchPanicLayer;
 
 use summer_sql_rewrite::SummerSqlRewritePlugin;
-use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin, SystemAdminAuthRouterPlugin};
-use summer_system::router::{SystemAdminRouteGroup, admin_router};
-
-#[auto_config(JobConfigurator)]
+use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
+use summer_system::{PathAuthBuilder, SummerAuthConfigurator, SummerAuthPlugin};
+fn auth_path_config() -> PathAuthBuilder {
+    PathAuthBuilder {
+        include: vec!["/**".to_string()],
+        exclude: vec![
+            "/auth/login".to_string(),
+            "/auth/refresh".to_string(),
+            // 公开文件访问：用于分享链接直链下载
+            "/public/file/**".to_string(),
+        ],
+    }
+}
+#[auto_config(JobConfigurator, WebConfigurator)]
 #[tokio::main]
 async fn main() {
-    let admin_route_group = SystemAdminRouteGroup(admin_router());
-
     App::new()
-        .add_component(admin_route_group)
         .add_plugin(WebPlugin)
         .add_plugin(SeaOrmPlugin)
         .add_plugin(RedisPlugin)
         .add_plugin(SummerShardingPlugin)
         .add_plugin(SummerSqlRewritePlugin)
-        // .add_plugin(EntitySchemaSyncPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
-        .add_plugin(SystemAdminAuthRouterPlugin)
+        .add_plugin(SummerAuthPlugin)
         .add_plugin(PermBitmapPlugin)
         .add_plugin(SocketGatewayPlugin)
         .add_plugin(Ip2RegionPlugin)
@@ -43,6 +49,7 @@ async fn main() {
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
         .add_plugin(McpPlugin)
+        .auth_configure(auth_path_config())
         .add_router_layer(|router| {
             router
                 .layer(ClientIpSource::ConnectInfo.into_extension())

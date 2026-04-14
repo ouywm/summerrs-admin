@@ -2209,6 +2209,13 @@ fn api_error_to_mcp(error: ApiErrors) -> McpError {
             Some(message),
             None,
         ),
+        ApiErrors::PayloadTooLarge(message) => invalid_params_error(
+            "payload_too_large",
+            "Payload too large",
+            Some("Reduce payload size or adjust the server request body limit before retrying."),
+            Some(message),
+            None,
+        ),
         ApiErrors::TooManyRequests(message) => invalid_params_error(
             "rate_limited",
             "Too many requests",

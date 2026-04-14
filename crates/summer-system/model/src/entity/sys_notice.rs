@@ -84,7 +84,7 @@ pub enum PublishStatus {
     #[sea_orm(num_value = 3)]
     Revoked = 3,
 }
-// TODO oy: 不会自动创建schema 不确定是否为bug，表确实是会自动创建
+
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
 #[sea_orm(schema_name = "sys", table_name = "notice")]

@@ -15,9 +15,9 @@ pub use listener::{
     TenantMetadataNotificationHandler,
 };
 pub use metadata::{
-    SeaOrmTenantMetadataLoader, TenantMetadataApplyOutcome, TenantMetadataEvent,
-    TenantMetadataEventKind, TenantMetadataLoader, TenantMetadataRecord, TenantMetadataSchema,
-    TenantMetadataStore,
+    SeaOrmTenantMetadataLoader, SysTenantDatasourceMetadataLoader, TenantMetadataApplyOutcome,
+    TenantMetadataEvent, TenantMetadataEventKind, TenantMetadataLoader, TenantMetadataRecord,
+    TenantMetadataSchema, TenantMetadataStore,
 };
 pub use rewrite::apply_tenant_rewrite;
 pub use rls::TenantRlsManager;

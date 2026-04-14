@@ -502,6 +502,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                     summer_common::error::ApiErrors::Conflict(_) => 409i16,
                     summer_common::error::ApiErrors::IncompleteUpload(_) => 409i16,
                     summer_common::error::ApiErrors::ValidationFailed(_) => 422i16,
+                    summer_common::error::ApiErrors::PayloadTooLarge(_) => 413i16,
                     summer_common::error::ApiErrors::TooManyRequests(_) => 429i16,
                     summer_common::error::ApiErrors::Internal(_) => 500i16,
                     summer_common::error::ApiErrors::ServiceUnavailable(_) => 503i16,

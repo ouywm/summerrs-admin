@@ -41,6 +41,11 @@ pub enum ApiErrors {
     #[error("{0}")]
     ValidationFailed(String),
 
+    #[status_code(413)]
+    #[problem_type("payload-too-large")]
+    #[error("{0}")]
+    PayloadTooLarge(String),
+
     #[status_code(429)]
     #[problem_type("too-many-requests")]
     #[error("{0}")]
