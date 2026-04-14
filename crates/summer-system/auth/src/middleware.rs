@@ -1,3 +1,5 @@
+use axum_extra::headers::authorization::Bearer;
+use axum_extra::headers::{Authorization, HeaderMapExt};
 use summer_web::axum::body::Body;
 use summer_web::axum::extract::Request;
 use summer_web::axum::http;
@@ -145,6 +147,14 @@ fn extract_token(req: &Request, config: &AuthConfig) -> Option<String> {
 /// 从 Header 提取 token
 fn extract_token_from_header(req: &Request, config: &AuthConfig) -> Option<String> {
     let header_name = &config.token_name;
+
+    // 标准场景：Authorization: Bearer <token>
+    if header_name.eq_ignore_ascii_case(http::header::AUTHORIZATION.as_str())
+        && let Some(Authorization(bearer)) = req.headers().typed_get::<Authorization<Bearer>>()
+    {
+        return Some(bearer.token().to_string());
+    }
+
     let header = req.headers().get(header_name)?;
     let value = header.to_str().ok()?;
 
