@@ -4,11 +4,11 @@ use summer_admin_macros::log;
 use summer_common::error::ApiErrors;
 use summer_common::extractor::Path;
 use summer_web::axum::body::Body;
-use summer_web::axum::http::{header, StatusCode};
+use summer_web::axum::http::{StatusCode, header};
 use summer_web::axum::response::IntoResponse;
 use summer_web::extractor::Component;
 use summer_web::handler::TypeRouter;
-use summer_web::{get_api, Router};
+use summer_web::{Router, get_api};
 
 use crate::service::sys_file_upload_service::SysFileUploadService;
 

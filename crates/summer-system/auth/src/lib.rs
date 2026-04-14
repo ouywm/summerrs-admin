@@ -5,12 +5,12 @@ pub mod extractor;
 pub mod middleware;
 pub mod online;
 pub mod path_auth;
+pub mod plugin;
 pub mod qrcode;
 pub mod session;
 pub mod storage;
 pub mod token;
 pub mod user_type;
-pub mod plugin;
 
 pub use bitmap::PermissionMap;
 pub use config::{AuthConfig, JwtAlgorithm};

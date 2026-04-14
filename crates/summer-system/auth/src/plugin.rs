@@ -11,8 +11,8 @@ use crate::config::AuthConfig;
 use crate::middleware::AuthLayer;
 use crate::path_auth::PathAuthConfig;
 use crate::session::SessionManager;
-use crate::storage::redis::RedisStorage;
 use crate::storage::AuthStorage;
+use crate::storage::redis::RedisStorage;
 
 pub struct SummerAuthPlugin;
 
@@ -27,8 +27,7 @@ impl Plugin for SummerAuthPlugin {
 
         let redis: Redis = app
             .get_component::<Redis>()
-            .expect("redis component load failed")
-            .into();
+            .expect("redis component load failed");
 
         // 创建存储后端
         let storage: Arc<dyn AuthStorage> = Arc::new(RedisStorage::new(redis));

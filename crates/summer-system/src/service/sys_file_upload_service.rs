@@ -100,12 +100,14 @@ impl SysFileUploadService {
         let normalized = normalized.trim_matches('/');
 
         // Browser "fakepath" (regular <input type="file">) should never be treated as folder upload.
-        if normalized.as_bytes().len() >= 11 {
+        if normalized.len() >= 11 {
             let bytes = normalized.as_bytes();
             if bytes[1] == b':'
                 && bytes[2] == b'/'
                 && bytes[0].is_ascii_alphabetic()
-                && normalized[3..].to_ascii_lowercase().starts_with("fakepath/")
+                && normalized[3..]
+                    .to_ascii_lowercase()
+                    .starts_with("fakepath/")
             {
                 return Ok(Vec::new());
             }
@@ -157,9 +159,7 @@ impl SysFileUploadService {
             .await
             .context("查询文件夹失败")?
         {
-            cache
-                .by_parent_slug
-                .insert((parent_id, slug), model.id);
+            cache.by_parent_slug.insert((parent_id, slug), model.id);
             return Ok(model.id);
         }
 
@@ -174,9 +174,7 @@ impl SysFileUploadService {
 
         match active.insert(&self.db).await {
             Ok(model) => {
-                cache
-                    .by_parent_slug
-                    .insert((parent_id, slug), model.id);
+                cache.by_parent_slug.insert((parent_id, slug), model.id);
                 Ok(model.id)
             }
             Err(err) => {
@@ -188,10 +186,10 @@ impl SysFileUploadService {
                     .one(&self.db)
                     .await
                     .context("查询文件夹失败")?
-                    .ok_or_else(|| ApiErrors::Internal(anyhow::anyhow!("创建文件夹失败: {}", err)))?;
-                cache
-                    .by_parent_slug
-                    .insert((parent_id, slug), model.id);
+                    .ok_or_else(|| {
+                        ApiErrors::Internal(anyhow::anyhow!("创建文件夹失败: {}", err))
+                    })?;
+                cache.by_parent_slug.insert((parent_id, slug), model.id);
                 Ok(model.id)
             }
         }
@@ -207,19 +205,18 @@ impl SysFileUploadService {
             return Ok(base_folder_id);
         }
 
-        let (mut parent_id, visibility, base_name, base_slug) = if let Some(folder_id) =
-            base_folder_id
-        {
-            let base = self.get_folder_by_id(folder_id).await?;
-            (
-                base.id,
-                base.visibility.clone(),
-                Some(base.name),
-                Some(base.slug),
-            )
-        } else {
-            (0_i64, "PRIVATE".to_string(), None, None)
-        };
+        let (mut parent_id, visibility, base_name, base_slug) =
+            if let Some(folder_id) = base_folder_id {
+                let base = self.get_folder_by_id(folder_id).await?;
+                (
+                    base.id,
+                    base.visibility.clone(),
+                    Some(base.name),
+                    Some(base.slug),
+                )
+            } else {
+                (0_i64, "PRIVATE".to_string(), None, None)
+            };
 
         // If the user selected a target folder on UI, the browser's `webkitRelativePath`
         // typically includes the selected directory name as the first segment. Dropping it
@@ -227,8 +224,12 @@ impl SysFileUploadService {
         let mut start_idx = 0usize;
         if base_folder_id.is_some() && !dirs.is_empty() {
             let first = dirs[0].as_str();
-            if base_name.as_ref().is_some_and(|n| n.eq_ignore_ascii_case(first))
-                || base_slug.as_ref().is_some_and(|s| s.eq_ignore_ascii_case(first))
+            if base_name
+                .as_ref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(first))
+                || base_slug
+                    .as_ref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(first))
             {
                 start_idx = 1;
             }
@@ -338,7 +339,11 @@ impl SysFileUploadService {
         Ok(())
     }
 
-    async fn presign_download_url(&self, bucket: &str, object_key: &str) -> ApiResult<FileDownloadUrlVo> {
+    async fn presign_download_url(
+        &self,
+        bucket: &str,
+        object_key: &str,
+    ) -> ApiResult<FileDownloadUrlVo> {
         let expiry = self.s3_config.presign_expiry;
         let presigning_config = PresigningConfig::expires_in(Duration::from_secs(expiry))
             .map_err(|e| ApiErrors::Internal(anyhow::anyhow!("Presign 配置错误: {}", e)))?;
@@ -352,7 +357,8 @@ impl SysFileUploadService {
             .await
             .context("生成下载 presigned URL 失败")?;
 
-        let expires_at = chrono::Local::now().naive_local() + chrono::Duration::seconds(expiry as i64);
+        let expires_at =
+            chrono::Local::now().naive_local() + chrono::Duration::seconds(expiry as i64);
         Ok(FileDownloadUrlVo {
             url: presigned.uri().to_string(),
             expires_at: Some(expires_at),
@@ -671,10 +677,7 @@ impl SysFileUploadService {
 
             let target_folder_id = if preserve_path {
                 match Self::parse_relative_dirs(&client_file_name) {
-                    Ok(dirs) => match self
-                        .ensure_folder_path(folder_id, &dirs, &mut cache)
-                        .await
-                    {
+                    Ok(dirs) => match self.ensure_folder_path(folder_id, &dirs, &mut cache).await {
                         Ok(id) => id,
                         Err(e) => {
                             failed.push(UploadFailureVo {
@@ -753,51 +756,50 @@ impl SysFileUploadService {
         let kind = Self::infer_kind(&content_type);
 
         // 秒传：若前端提供了 md5，并且服务端已存在同内容对象，则跳过上传，直接复用对象并生成一条新的业务记录。
-        if let Some(ref md5) = dto.file_md5 {
-            if let Some(existing) = self
+        if let Some(ref md5) = dto.file_md5
+            && let Some(existing) = self
                 .find_existing_object(md5.as_str(), dto.file_size, bucket_name)
                 .await?
-            {
-                let creator_id: Option<i64> = Some(login_id.user_id);
-                let file_no = file_util::generate_file_no();
-                let active = sys_file::ActiveModel {
-                    file_no: Set(file_no),
-                    provider: Set(existing.provider),
-                    bucket: Set(existing.bucket),
-                    object_key: Set(existing.object_key),
-                    etag: Set(existing.etag),
-                    original_name: Set(dto.file_name.clone()),
-                    display_name: Set(dto.file_name.clone()),
-                    extension: Set(extension.clone()),
-                    mime_type: Set(content_type.clone()),
-                    kind: Set(kind.to_string()),
-                    size: Set(dto.file_size),
-                    file_md5: Set(md5.clone()),
-                    visibility: Set("PRIVATE".to_string()),
-                    status: Set("NORMAL".to_string()),
-                    creator_id: Set(creator_id),
-                    ..Default::default()
-                };
+        {
+            let creator_id: Option<i64> = Some(login_id.user_id);
+            let file_no = file_util::generate_file_no();
+            let active = sys_file::ActiveModel {
+                file_no: Set(file_no),
+                provider: Set(existing.provider),
+                bucket: Set(existing.bucket),
+                object_key: Set(existing.object_key),
+                etag: Set(existing.etag),
+                original_name: Set(dto.file_name.clone()),
+                display_name: Set(dto.file_name.clone()),
+                extension: Set(extension.clone()),
+                mime_type: Set(content_type.clone()),
+                kind: Set(kind.to_string()),
+                size: Set(dto.file_size),
+                file_md5: Set(md5.clone()),
+                visibility: Set("PRIVATE".to_string()),
+                status: Set("NORMAL".to_string()),
+                creator_id: Set(creator_id),
+                ..Default::default()
+            };
 
-                let model = active.insert(&self.db).await.context("保存文件记录失败")?;
-                let download = self
-                    .presign_download_url(&model.bucket, &model.object_key)
-                    .await?;
+            let model = active.insert(&self.db).await.context("保存文件记录失败")?;
+            let download = self
+                .presign_download_url(&model.bucket, &model.object_key)
+                .await?;
 
-                return Ok(PresignedUploadVo {
-                    fast_uploaded: true,
-                    file: Some(FileUploadVo {
-                        file_id: model.id,
-                        file_no: model.file_no,
-                        original_name: model.original_name,
-                        size: model.size,
-                        download,
-                    }),
-                    upload_url: None,
-                    object_key: None,
-                    expires_in: None,
-                });
-            }
+            return Ok(PresignedUploadVo {
+                fast_uploaded: true,
+                file: Some(FileUploadVo {
+                    file_id: model.id,
+                    file_no: model.file_no,
+                    original_name: model.original_name,
+                    size: model.size,
+                    download,
+                }),
+                upload_url: None,
+                object_key: None,
+                expires_in: None,
+            });
         }
 
         let object_key = file_util::generate_object_key(&extension);
@@ -902,7 +904,9 @@ impl SysFileUploadService {
             .ok_or_else(|| ApiErrors::NotFound("文件不存在".to_string()))?;
 
         let expiry = self.s3_config.presign_expiry;
-        let download = self.presign_download_url(&file.bucket, &file.object_key).await?;
+        let download = self
+            .presign_download_url(&file.bucket, &file.object_key)
+            .await?;
 
         Ok(PresignedDownloadVo {
             download,

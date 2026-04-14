@@ -75,4 +75,3 @@ pub fn routes(router: Router) -> Router {
         .typed_route(update_folder)
         .typed_route(delete_folder)
 }
-

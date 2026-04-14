@@ -15,8 +15,8 @@ use crate::{
     config::SummerShardingConfig,
     rewrite_plugin::PluginRegistry,
     tenant::{
-        PgTenantMetadataListener, TENANT_METADATA_CHANNEL, TenantMetadataListener,
-        SysTenantDatasourceMetadataLoader, TenantMetadataNotificationHandler,
+        PgTenantMetadataListener, SysTenantDatasourceMetadataLoader, TENANT_METADATA_CHANNEL,
+        TenantMetadataListener, TenantMetadataNotificationHandler,
     },
 };
 

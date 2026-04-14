@@ -41,6 +41,9 @@ impl Plugin for PermBitmapPlugin {
     }
 
     fn dependencies(&self) -> Vec<&str> {
-        vec!["summer_sea_orm::SeaOrmPlugin", "summer_auth::SummerAuthPlugin"]
+        vec![
+            "summer_sea_orm::SeaOrmPlugin",
+            "summer_auth::SummerAuthPlugin",
+        ]
     }
 }

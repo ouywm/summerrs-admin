@@ -6,4 +6,3 @@ pub mod socketio;
 
 pub use summer_auth::path_auth::{PathAuthBuilder, SummerAuthConfigurator};
 pub use summer_auth::plugin::SummerAuthPlugin;
-

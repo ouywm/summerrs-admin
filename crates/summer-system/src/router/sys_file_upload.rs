@@ -14,12 +14,12 @@ use summer_system_model::vo::sys_file::{
     BatchUploadVo, FileUploadVo, MultipartInitVo, MultipartListPartsVo, PresignedDownloadVo,
     PresignedUploadVo,
 };
+use summer_web::Router;
 use summer_web::axum::body::Body;
-use summer_web::axum::http::{header, StatusCode};
+use summer_web::axum::http::{StatusCode, header};
 use summer_web::axum::response::IntoResponse;
 use summer_web::extractor::Component;
 use summer_web::handler::TypeRouter;
-use summer_web::Router;
 use summer_web::{get_api, post_api};
 
 use crate::service::sys_file_upload_service::SysFileUploadService;

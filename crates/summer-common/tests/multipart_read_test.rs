@@ -21,10 +21,8 @@ fn multipart_ok(boundary: &str, filename: &str, content_type: &str, content: &[u
 
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
-        format!(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
-        )
-        .as_bytes(),
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+            .as_bytes(),
     );
     body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
     body.extend_from_slice(b"\r\n");
@@ -40,10 +38,8 @@ fn multipart_incomplete_stream(boundary: &str, filename: &str, content_type: &st
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
-        format!(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
-        )
-        .as_bytes(),
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+            .as_bytes(),
     );
     body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
     body.extend_from_slice(b"\r\n");
@@ -91,7 +87,10 @@ async fn read_multipart_files_ok_utf8_filename() {
         .expect("read_multipart_files failed");
 
     assert_eq!(files.len(), 1);
-    assert_eq!(files[0].file_name, "大模型应用!算法学习路线+八股+面试实战_2.pdf");
+    assert_eq!(
+        files[0].file_name,
+        "大模型应用!算法学习路线+八股+面试实战_2.pdf"
+    );
 }
 
 #[tokio::test]

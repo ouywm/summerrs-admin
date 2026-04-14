@@ -181,7 +181,10 @@ pub struct UploadedFile {
     pub data: Bytes,
 }
 
-fn map_multipart_err(ctx: &str, e: summer_web::axum::extract::multipart::MultipartError) -> ApiErrors {
+fn map_multipart_err(
+    ctx: &str,
+    e: summer_web::axum::extract::multipart::MultipartError,
+) -> ApiErrors {
     let detail = e.body_text();
     let msg = format!("{ctx}: {detail}");
 

@@ -164,7 +164,8 @@ FROM {table}
                 db_acquire_timeout_ms: row
                     .try_get::<Option<i64>>("", "db_acquire_timeout_ms")?
                     .and_then(|value| u64::try_from(value).ok()),
-                db_test_before_acquire: row.try_get::<Option<bool>>("", "db_test_before_acquire")?,
+                db_test_before_acquire: row
+                    .try_get::<Option<bool>>("", "db_test_before_acquire")?,
             };
             records.push(record);
         }

@@ -88,9 +88,9 @@ pub use router::{
 };
 pub use tenant::{
     SeaOrmTenantMetadataLoader, SysTenantDatasourceMetadataLoader, TenantContext,
-    TenantLifecycleManager, TenantMetadataApplyOutcome, TenantMetadataEvent, TenantMetadataEventKind,
-    TenantMetadataLoader, TenantMetadataRecord, TenantMetadataSchema, TenantMetadataStore,
-    TenantRouter,
+    TenantLifecycleManager, TenantMetadataApplyOutcome, TenantMetadataEvent,
+    TenantMetadataEventKind, TenantMetadataLoader, TenantMetadataRecord, TenantMetadataSchema,
+    TenantMetadataStore, TenantRouter,
 };
 #[cfg(feature = "web")]
 pub use web::{CurrentTenant, OptionalCurrentTenant, TenantContextLayer, TenantShardingConnection};

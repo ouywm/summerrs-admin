@@ -147,16 +147,8 @@ impl SysFileService {
             .context("统计公开文件数量失败")?;
 
         // 批量加载 folder / creator 摘要，避免 N+1
-        let folder_ids: Vec<i64> = page
-            .content
-            .iter()
-            .filter_map(|m| m.folder_id)
-            .collect();
-        let creator_ids: Vec<i64> = page
-            .content
-            .iter()
-            .filter_map(|m| m.creator_id)
-            .collect();
+        let folder_ids: Vec<i64> = page.content.iter().filter_map(|m| m.folder_id).collect();
+        let creator_ids: Vec<i64> = page.content.iter().filter_map(|m| m.creator_id).collect();
 
         let folders = if folder_ids.is_empty() {
             Vec::new()
@@ -390,10 +382,7 @@ impl SysFileService {
 
         let mut active: sys_file::ActiveModel = file.into();
         active.display_name = Set(dto.display_name);
-        active
-            .update(&self.db)
-            .await
-            .context("更新展示名称失败")?;
+        active.update(&self.db).await.context("更新展示名称失败")?;
         Ok(())
     }
 

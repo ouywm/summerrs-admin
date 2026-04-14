@@ -1,6 +1,6 @@
 use axum_client_ip::ClientIpSource;
-use summer::auto_config;
 use summer::App;
+use summer::auto_config;
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
@@ -9,11 +9,11 @@ use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlu
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
 use summer_sharding::SummerShardingPlugin;
-use summer_web::axum::body::Body;
-use summer_web::axum::http;
 use summer_web::LayerConfigurator;
 use summer_web::WebConfigurator;
 use summer_web::WebPlugin;
+use summer_web::axum::body::Body;
+use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
 
 use summer_sql_rewrite::SummerSqlRewritePlugin;
