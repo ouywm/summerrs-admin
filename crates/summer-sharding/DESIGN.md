@@ -152,7 +152,7 @@ summer-sharding/
     │   ├── rewrite.rs                ← 租户级 SQL 改写（注入 tenant_id 条件）
     │   ├── rls.rs                    ← PostgreSQL RLS 策略管理
     │   ├── lifecycle.rs              ← 租户 onboard/offboard（创建/删除 schema/db）
-    │   └── metadata.rs               ← 租户元数据存储（sys.tenant_config 表操作）
+    │   └── metadata.rs               ← 租户元数据存储（tenant.tenant_datasource 表操作）
     │
     ├── keygen/                        ← 分布式 ID 生成
     │   ├── mod.rs                     ← KeyGenerator trait
@@ -550,7 +550,7 @@ SQL 改写:
 
 连接管理:
   DataSourcePool 中动态管理多个 DatabaseConnection
-  租户 → 数据源映射存储在 sys.tenant_datasource_mapping 表中
+  租户 → 数据源映射存储在 tenant.tenant_datasource 表中
 ```
 
 **适用场景**：VIP/企业级租户、数据主权要求、独立 SLA
@@ -567,7 +567,7 @@ SQL 改写:
 ┌─────────────────────────────────────────────┐
 │              TenantRouter                    │
 │                                              │
-│  运行时从 sys.tenant_datasource 加载:        │
+│  运行时从 tenant.tenant_datasource 加载:        │
 │                                              │
 │  免费用户 ──→ Level 1 (共享表 + tenant_id)   │
 │  付费用户 ──→ Level 2 (独立表) 或 Level 3    │
@@ -576,7 +576,7 @@ SQL 改写:
 │                                              │
 │  租户数据源表:                                │
 │  ┌──────────────────────────────────────┐    │
-│  │ sys.tenant_datasource                │    │
+│  │ tenant.tenant_datasource                │    │
 │  │                                      │    │
 │  │ id │ tenant_id │ tier │ isolation    │    │
 │  │ 1  │ T-001     │ free │ shared_row   │    │
@@ -715,7 +715,7 @@ sharding_conn
 
 # ═══════════════════════════════════════
 #  数据源定义（仅配置基础设施级别的数据源）
-#  租户专属数据源从 sys.tenant_datasource 表动态加载，不在此配置
+#  租户专属数据源从 tenant.tenant_datasource 表动态加载，不在此配置
 # ═══════════════════════════════════════
 [datasources.ds_default]
 uri = "${DATABASE_URL}"
@@ -731,7 +731,7 @@ weight = 10
 # ═══════════════════════════════════════
 #  多租户配置
 #  注意：租户的具体隔离级别和数据源连接信息
-#  存储在 sys.tenant_datasource 表中，运行时动态加载
+#  存储在 tenant.tenant_datasource 表中，运行时动态加载
 #  此处仅配置全局默认行为和提取策略
 # ═══════════════════════════════════════
 [tenant]
@@ -752,7 +752,7 @@ strategy = "sql_rewrite"      # sql_rewrite / rls
 
 # 租户数据源表结构（框架自动读取，无需手动配置每个租户）
 # ┌──────────────────────────────────────────────────────────────┐
-# │ sys.tenant_datasource                                        │
+# │ tenant.tenant_datasource                                        │
 # │                                                              │
 # │ id │ tenant_id │ tier       │ isolation_level │ status       │
 # │    │           │            │                 │              │
@@ -770,7 +770,7 @@ strategy = "sql_rewrite"      # sql_rewrite / rls
 # └──────────────────────────────────────────────────────────────┘
 #
 # 运行时行为:
-#   1. 启动时加载 sys.tenant_datasource 全量数据到内存
+#   1. 启动时加载 tenant.tenant_datasource 全量数据到内存
 #   2. 为 separate_db 租户动态创建 DatabaseConnection 并加入 DataSourcePool
 #   3. 通过 LISTEN/NOTIFY 或定时轮询监听租户表变更，热加载
 #   4. 新租户 onboard 时自动：创建 schema/表 → 写入 tenant_datasource → 热加载
@@ -1040,7 +1040,7 @@ pub struct Model {
 - [ ] 实现 DataSourcePool（管理多个 SeaORM DatabaseConnection）
 - [ ] 实现 Schema 路由（sys/biz/ai → 对应数据源）
 - [ ] 实现 TenantContext + tenant_id 自动注入（Level 1: SharedRow）
-- [ ] 实现 sys.tenant_datasource 表读取 + PG LISTEN/NOTIFY 热加载
+- [ ] 实现 tenant.tenant_datasource 表读取 + PG LISTEN/NOTIFY 热加载
 - [ ] 实现 ShardingConnection（impl ConnectionTrait）
 - [ ] 集成测试：现有业务通过 ShardingConnection + 租户过滤正常工作
 
@@ -1679,7 +1679,7 @@ A: 需要。流程：
 1. 创建租户独立 Schema（tenant_lifecycle::onboard）
 2. 从共享表导出该租户数据（带 tenant_id 过滤）
 3. 导入到独立 Schema 的对应表
-4. 更新 sys.tenant_config 的 isolation_level
+4. 更新 tenant.tenant_datasource 的 isolation_level
 5. 删除共享表中的该租户数据
 6. ShardingConnection 热加载新配置 → 后续请求自动路由到新 Schema
 

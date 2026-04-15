@@ -96,7 +96,6 @@ where
                         let session = UserSession {
                             login_id,
                             device: validated.device.clone(),
-                            tenant_id: validated.tenant_id.clone(),
                             profile: build_profile_from_validated(&validated),
                         };
 

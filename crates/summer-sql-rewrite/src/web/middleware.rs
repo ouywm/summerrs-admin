@@ -153,10 +153,9 @@ mod tests {
                 .get::<RewriteConnection>()
                 .cloned()
                 .expect("rewrite connection should be injected");
-            let session = conn.extensions().get::<UserSession>().cloned();
             let marker = conn.extensions().get::<RequestMarker>().cloned();
             *self.captured.lock().expect("capture lock") = Some(CapturedContext {
-                tenant_id: session.and_then(|value| value.tenant_id),
+                tenant_id: None,
                 marker: marker.map(|value| value.0),
             });
 
@@ -225,7 +224,6 @@ mod tests {
         UserSession {
             login_id: LoginId::new(7),
             device: DeviceType::Web,
-            tenant_id: Some("T-WEB-001".to_string()),
             profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),

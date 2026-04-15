@@ -64,7 +64,6 @@ fn admin_session(user_id: i64) -> UserSession {
     UserSession {
         login_id: LoginId::new(user_id),
         device: DeviceType::Web,
-        tenant_id: None,
         profile: UserProfile {
             user_name: format!("admin-{user_id}"),
             nick_name: format!("Admin {user_id}"),

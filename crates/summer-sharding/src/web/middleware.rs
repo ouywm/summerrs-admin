@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, future::Future, pin::Pin};
 
-use summer_auth::UserSession;
 use summer_web::axum::{body::Body, extract::Request, response::Response};
 use tower_layer::Layer;
 use url::form_urlencoded;
@@ -172,16 +171,10 @@ fn resolve_tenant_context(
 
 fn resolve_extension_tenant(
     req: &Request,
-    default_isolation: TenantIsolationLevel,
+    _default_isolation: TenantIsolationLevel,
 ) -> Option<TenantContext> {
     if let Some(tenant) = req.extensions().get::<TenantContext>() {
         return Some(tenant.clone());
-    }
-
-    if let Some(session) = req.extensions().get::<UserSession>()
-        && let Some(tenant_id) = session.tenant_id.as_deref()
-    {
-        return Some(TenantContext::new(tenant_id, default_isolation));
     }
 
     None
@@ -202,12 +195,7 @@ fn resolve_source_tenant(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|tenant_id| TenantContext::new(tenant_id, default_isolation)),
-        TenantIdSource::JwtClaim => req
-            .extensions()
-            .get::<UserSession>()
-            .and_then(|value| value.tenant_id.as_deref())
-            .filter(|value| !value.is_empty())
-            .map(|tenant_id| TenantContext::new(tenant_id, default_isolation)),
+        TenantIdSource::JwtClaim => None,
         TenantIdSource::QueryParam => req
             .uri()
             .query()
@@ -440,7 +428,6 @@ mod tests {
         req.extensions_mut().insert(UserSession {
             login_id: LoginId::new(1),
             device: DeviceType::Web,
-            tenant_id: Some("T-AUTH-001".to_string()),
             profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
@@ -452,14 +439,7 @@ mod tests {
         block_on(service.call(req)).expect("call");
 
         let records = captured.lock();
-        assert_eq!(
-            records[0]
-                .extension_tenant
-                .clone()
-                .expect("tenant in extensions")
-                .tenant_id,
-            "T-AUTH-001"
-        );
+        assert!(records[0].extension_tenant.is_none());
         assert!(!records[0].extension_sharding);
     }
 
@@ -472,7 +452,6 @@ mod tests {
             device: DeviceType::Web,
             login_ip: "127.0.0.1".to_string(),
             user_agent: "tenant-auth-test".to_string(),
-            tenant_id: Some("T-AUTH-LAYER-001".to_string()),
             profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
@@ -488,14 +467,7 @@ mod tests {
             .expect("call");
 
         let records = captured.lock();
-        assert_eq!(
-            records[0]
-                .extension_tenant
-                .clone()
-                .expect("tenant in extensions")
-                .tenant_id,
-            "T-AUTH-LAYER-001"
-        );
+        assert!(records[0].extension_tenant.is_none());
     }
 
     #[test]
@@ -507,7 +479,6 @@ mod tests {
         req.extensions_mut().insert(UserSession {
             login_id: LoginId::new(9),
             device: DeviceType::Web,
-            tenant_id: Some("T-CLAIM-001".to_string()),
             profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
@@ -519,14 +490,7 @@ mod tests {
         block_on(service.call(req)).expect("call");
 
         let records = captured.lock();
-        assert_eq!(
-            records[0]
-                .extension_tenant
-                .clone()
-                .expect("tenant in extensions")
-                .tenant_id,
-            "T-CLAIM-001"
-        );
+        assert!(records[0].extension_tenant.is_none());
         assert!(!records[0].extension_sharding);
     }
 

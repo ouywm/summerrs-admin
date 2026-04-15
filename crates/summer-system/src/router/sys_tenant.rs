@@ -244,7 +244,6 @@ mod tests {
         UserSession {
             login_id: LoginId::new(1),
             device: DeviceType::Web,
-            tenant_id: None,
             profile: UserProfile {
                 user_name: "admin".to_string(),
                 nick_name: "Admin".to_string(),
@@ -376,9 +375,9 @@ mod tests {
         let db = Database::connect(db_url).await?;
         db.execute_unprepared(
             r#"
-            CREATE SCHEMA IF NOT EXISTS sys;
+            CREATE SCHEMA IF NOT EXISTS tenant;
 
-            CREATE TABLE IF NOT EXISTS sys.tenant_datasource (
+            CREATE TABLE IF NOT EXISTS tenant.tenant_datasource (
                 id BIGSERIAL PRIMARY KEY,
                 tenant_id VARCHAR(64) NOT NULL,
                 isolation_level SMALLINT NOT NULL DEFAULT 1,
@@ -403,24 +402,24 @@ mod tests {
                 update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_tenant_datasource_tenant_id
-                ON sys.tenant_datasource (tenant_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uk_tenant_tenant_datasource_tenant_id
+                ON tenant.tenant_datasource (tenant_id);
 
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_enable_logging BOOLEAN;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_min_conns INT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_max_conns INT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_connect_timeout_ms BIGINT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_idle_timeout_ms BIGINT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_acquire_timeout_ms BIGINT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_test_before_acquire BOOLEAN;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS readonly_config JSONB NOT NULL DEFAULT '{}'::jsonb;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS extra_config JSONB NOT NULL DEFAULT '{}'::jsonb;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS last_sync_time TIMESTAMP;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS remark VARCHAR(500) NOT NULL DEFAULT '';
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS create_by VARCHAR(64) NOT NULL DEFAULT '';
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS update_by VARCHAR(64) NOT NULL DEFAULT '';
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_enable_logging BOOLEAN;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_min_conns INT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_max_conns INT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_connect_timeout_ms BIGINT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_idle_timeout_ms BIGINT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_acquire_timeout_ms BIGINT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_test_before_acquire BOOLEAN;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS readonly_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS extra_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS last_sync_time TIMESTAMP;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS remark VARCHAR(500) NOT NULL DEFAULT '';
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS create_by VARCHAR(64) NOT NULL DEFAULT '';
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS update_by VARCHAR(64) NOT NULL DEFAULT '';
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
             "#,
         )
         .await?;

@@ -31,9 +31,6 @@ pub struct AccessClaims {
     pub exp: i64,
     /// 设备类型
     pub dev: String,
-    /// 当前登录态绑定的租户业务标识
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_id: Option<String>,
     /// 用户名
     pub user_name: String,
     /// 昵称
@@ -108,7 +105,6 @@ impl JwtHandler {
         &self,
         login_id: &LoginId,
         device: &DeviceType,
-        tenant_id: Option<&str>,
         profile: &UserProfile,
         pb: Option<&str>,
         ttl_seconds: i64,
@@ -122,7 +118,6 @@ impl JwtHandler {
             iat: now,
             exp: now + ttl_seconds,
             dev: device.as_str().to_string(),
-            tenant_id: tenant_id.map(str::to_string),
             user_name: profile.user_name().to_string(),
             nick_name: profile.nick_name().to_string(),
             roles: profile.roles().to_vec(),
@@ -235,7 +230,7 @@ mod tests {
         let profile = test_profile();
 
         let (token, claims) = handler
-            .encode_access(&login_id, &device, None, &profile, None, 3600)
+            .encode_access(&login_id, &device, &profile, None, 3600)
             .unwrap();
 
         assert!(!token.is_empty());
@@ -282,7 +277,7 @@ mod tests {
         let profile = test_profile();
 
         let (token, _) = handler
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
 
         // Access token 解码为 Refresh 应该失败
@@ -321,7 +316,7 @@ mod tests {
         let login_id = LoginId::new(1);
         let profile = test_profile();
         let (token, _) = handler1
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
 
         let result = handler2.decode_access(&token);
@@ -335,7 +330,7 @@ mod tests {
         let profile = test_profile();
 
         let (token, _) = handler
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, -120)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, -120)
             .unwrap();
 
         let result = handler.decode_access(&token);
@@ -382,7 +377,7 @@ mod tests {
         let profile = test_profile();
 
         let (token, claims) = handler
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
         assert_eq!(token.split('.').count(), 3);
 
@@ -398,7 +393,7 @@ mod tests {
         let profile = test_profile();
 
         let (token, claims) = handler
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
         assert_eq!(token.split('.').count(), 3);
 
@@ -416,13 +411,13 @@ mod tests {
         let h512 = hmac_handler(Algorithm::HS512, TEST_SECRET);
 
         let (t256, _) = h256
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
         let (t384, _) = h384
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
         let (t512, _) = h512
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
 
         assert_ne!(t256.split('.').next(), t384.split('.').next());
@@ -438,7 +433,7 @@ mod tests {
         let h384 = hmac_handler(Algorithm::HS384, TEST_SECRET);
 
         let (token, _) = h256
-            .encode_access(&login_id, &DeviceType::Web, None, &profile, None, 3600)
+            .encode_access(&login_id, &DeviceType::Web, &profile, None, 3600)
             .unwrap();
         let result = h384.decode_access(&token);
         assert!(matches!(result, Err(AuthError::InvalidToken)));

@@ -84,7 +84,6 @@ pub struct LoginParams {
     pub device: DeviceType,
     pub login_ip: String,
     pub user_agent: String,
-    pub tenant_id: Option<String>,
     pub profile: UserProfile,
 }
 
@@ -238,7 +237,6 @@ impl SessionManager {
         let (access_token, _access_claims) = self.token_gen.generate_access(
             &params.login_id,
             &params.device,
-            params.tenant_id.as_deref(),
             &params.profile,
             pb.as_deref(),
             self.config.access_timeout,
@@ -325,7 +323,6 @@ impl SessionManager {
         &self,
         refresh_token: &str,
         profile: &UserProfile,
-        tenant_id: Option<&str>,
     ) -> AuthResult<TokenPair> {
         // 1. 解码 Refresh JWT
         let refresh_claims = self.token_gen.jwt().decode_refresh(refresh_token)?;
@@ -365,7 +362,6 @@ impl SessionManager {
         let (new_access_token, _) = self.token_gen.generate_access(
             &login_id,
             &device,
-            tenant_id,
             profile,
             pb.as_deref(),
             self.config.access_timeout,
@@ -469,7 +465,6 @@ impl SessionManager {
         Ok(ValidatedAccess {
             login_id,
             device: DeviceType::from(claims.dev.as_str()),
-            tenant_id: claims.tenant_id,
             user_name: claims.user_name,
             nick_name: claims.nick_name,
             roles: claims.roles,

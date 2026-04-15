@@ -13,7 +13,6 @@
 当前主要表：
 
 - 账号与权限：`sys."user"`、`sys."role"`、`sys.user_role`、`sys.menu`、`sys.role_menu`
-- 租户控制面：`sys.tenant`、`sys.tenant_datasource`、`sys.tenant_membership`
 - 配置与字典：`sys.config_group`、`sys.config`、`sys.dict_type`、`sys.dict_data`
 - 日志与文件：`sys.login_log`、`sys.operation_log`、`sys.notice`、`sys.notice_target`、`sys.notice_user`、`sys.file`
 - 认证层：`sys.verification_token`、`sys.two_factor`、`sys.two_factor_backup_code`、`sys.custom_oauth_provider`、`sys.user_oauth_binding`、`sys.passkey_credential`

@@ -58,13 +58,13 @@ pub enum TenantMembershipSource {
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(schema_name = "sys", table_name = "tenant_membership")]
+#[sea_orm(schema_name = "tenant", table_name = "tenant_membership")]
 pub struct Model {
     /// 主键 ID
     #[sea_orm(primary_key)]
     pub id: i64,
     /// 租户业务唯一标识
-    #[sea_orm(unique_key = "uk_sys_tenant_membership_tenant_user")]
+    #[sea_orm(unique_key = "uk_tenant_tenant_membership_tenant_user")]
     pub tenant_id: String,
     /// 用户 ID
     pub user_id: i64,

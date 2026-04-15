@@ -35,7 +35,6 @@ fn admin_login_params(user_id: i64) -> summer_auth::session::LoginParams {
         device: DeviceType::Web,
         login_ip: "127.0.0.1".to_string(),
         user_agent: "test-agent".to_string(),
-        tenant_id: None,
         profile: UserProfile {
             user_name: "test_user".to_string(),
             nick_name: "Test User".to_string(),
@@ -54,7 +53,6 @@ fn biz_login_params(user_id: i64) -> summer_auth::session::LoginParams {
         device: DeviceType::Web,
         login_ip: "192.168.1.1".to_string(),
         user_agent: "biz-agent".to_string(),
-        tenant_id: None,
         profile: UserProfile {
             user_name: "biz_user".to_string(),
             nick_name: "Biz User".to_string(),
@@ -70,7 +68,6 @@ fn customer_login_params(user_id: i64) -> summer_auth::session::LoginParams {
         device: DeviceType::Web,
         login_ip: "10.0.0.1".to_string(),
         user_agent: "customer-agent".to_string(),
-        tenant_id: None,
         profile: UserProfile {
             user_name: "customer_user".to_string(),
             nick_name: "Customer".to_string(),
@@ -126,18 +123,6 @@ async fn validate_token_returns_user_info() {
 }
 
 #[tokio::test]
-async fn validate_token_preserves_tenant_id() {
-    let mgr = make_manager();
-    let mut params = admin_login_params(1);
-    params.tenant_id = Some("T-001".to_string());
-
-    let pair = mgr.login(params).await.unwrap();
-    let validated = mgr.validate_token(&pair.access_token).await.unwrap();
-
-    assert_eq!(validated.tenant_id.as_deref(), Some("T-001"));
-}
-
-#[tokio::test]
 async fn validate_invalid_token_fails() {
     let mgr = make_manager();
     let result = mgr.validate_token("not.a.valid-jwt").await;
@@ -174,22 +159,6 @@ async fn logout_all_invalidates_all_devices() {
 
     assert!(mgr.validate_token(&pair1.access_token).await.is_err());
     assert!(mgr.validate_token(&pair2.access_token).await.is_err());
-}
-
-#[tokio::test]
-async fn refresh_preserves_tenant_id() {
-    let mgr = make_manager();
-    let mut params = admin_login_params(1);
-    params.tenant_id = Some("T-REFRESH-001".to_string());
-
-    let pair = mgr.login(params).await.unwrap();
-    let refreshed = mgr
-        .refresh(&pair.refresh_token, &admin_profile(), Some("T-REFRESH-001"))
-        .await
-        .unwrap();
-    let validated = mgr.validate_token(&refreshed.access_token).await.unwrap();
-
-    assert_eq!(validated.tenant_id.as_deref(), Some("T-REFRESH-001"));
 }
 
 // ── 多设备 ──
@@ -243,13 +212,13 @@ async fn max_devices_evicts_oldest() {
 
     // 旧 refresh token（Web）不能使用
     assert!(
-        mgr.refresh(&tokens[0].refresh_token, &admin_profile(), None)
+        mgr.refresh(&tokens[0].refresh_token, &admin_profile())
             .await
             .is_err()
     );
     // 新 refresh token（后 3 个）可以使用
     assert!(
-        mgr.refresh(&tokens[3].refresh_token, &admin_profile(), None)
+        mgr.refresh(&tokens[3].refresh_token, &admin_profile())
             .await
             .is_ok()
     );
@@ -271,13 +240,13 @@ async fn same_device_replaces_old_session() {
 
     // 旧 refresh token 不能使用（rid 已被删除）
     assert!(
-        mgr.refresh(&pair1.refresh_token, &admin_profile(), None)
+        mgr.refresh(&pair1.refresh_token, &admin_profile())
             .await
             .is_err()
     );
     // 新 refresh token 可以使用
     assert!(
-        mgr.refresh(&pair2.refresh_token, &admin_profile(), None)
+        mgr.refresh(&pair2.refresh_token, &admin_profile())
             .await
             .is_ok()
     );
@@ -301,7 +270,7 @@ async fn no_concurrent_login_clears_all_devices() {
 
     // Web 的 refresh token 应该失效
     assert!(
-        mgr.refresh(&pair1.refresh_token, &admin_profile(), None)
+        mgr.refresh(&pair1.refresh_token, &admin_profile())
             .await
             .is_err()
     );
@@ -319,7 +288,7 @@ async fn refresh_token_works() {
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
     let new_pair = mgr
-        .refresh(&pair.refresh_token, &admin_profile(), None)
+        .refresh(&pair.refresh_token, &admin_profile())
         .await
         .unwrap();
 
@@ -331,13 +300,13 @@ async fn refresh_token_works() {
     assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
     // 旧 refresh token 不能再次使用（rid 已删除）
     assert!(
-        mgr.refresh(&pair.refresh_token, &admin_profile(), None)
+        mgr.refresh(&pair.refresh_token, &admin_profile())
             .await
             .is_err()
     );
     // 新 refresh token 可以继续刷新
     let third_pair = mgr
-        .refresh(&new_pair.refresh_token, &admin_profile(), None)
+        .refresh(&new_pair.refresh_token, &admin_profile())
         .await
         .unwrap();
     assert_ne!(third_pair.refresh_token, new_pair.refresh_token);
@@ -362,7 +331,7 @@ async fn refresh_with_updated_profile() {
     };
 
     let new_pair = mgr
-        .refresh(&pair.refresh_token, &updated_profile, None)
+        .refresh(&pair.refresh_token, &updated_profile)
         .await
         .unwrap();
 
@@ -380,9 +349,7 @@ async fn refresh_with_updated_profile() {
 #[tokio::test]
 async fn refresh_with_invalid_token_fails() {
     let mgr = make_manager();
-    let result = mgr
-        .refresh("invalid-refresh-token", &admin_profile(), None)
-        .await;
+    let result = mgr.refresh("invalid-refresh-token", &admin_profile()).await;
     assert!(matches!(result, Err(AuthError::InvalidRefreshToken)));
 }
 
@@ -401,9 +368,7 @@ async fn refresh_cross_type_rejected() {
     let pair = mgr.login(admin_login_params(1)).await.unwrap();
 
     // Access token 不能作为 refresh token
-    let result = mgr
-        .refresh(&pair.access_token, &admin_profile(), None)
-        .await;
+    let result = mgr.refresh(&pair.access_token, &admin_profile()).await;
     assert!(matches!(result, Err(AuthError::InvalidRefreshToken)));
 
     // Refresh token 不能作为 access token
@@ -425,9 +390,7 @@ async fn ban_user_blocks_access() {
     assert!(matches!(result, Err(AuthError::AccountBanned)));
 
     // Refresh 也失败（rid 被清理 or deny=banned）
-    let result = mgr
-        .refresh(&pair.refresh_token, &admin_profile(), None)
-        .await;
+    let result = mgr.refresh(&pair.refresh_token, &admin_profile()).await;
     assert!(result.is_err());
 }
 
@@ -460,7 +423,7 @@ async fn force_refresh_requires_token_refresh() {
 
     // Refresh 仍然可以成功（deny="refresh:xxx" 不阻止 refresh 操作）
     let new_pair = mgr
-        .refresh(&pair.refresh_token, &admin_profile(), None)
+        .refresh(&pair.refresh_token, &admin_profile())
         .await
         .unwrap();
     assert!(mgr.validate_token(&new_pair.access_token).await.is_ok());
@@ -474,9 +437,7 @@ async fn ban_during_refresh_blocked() {
     mgr.ban_user(&LoginId::new(1)).await.unwrap();
 
     // 封禁后 refresh 也应失败
-    let result = mgr
-        .refresh(&pair.refresh_token, &admin_profile(), None)
-        .await;
+    let result = mgr.refresh(&pair.refresh_token, &admin_profile()).await;
     assert!(result.is_err());
 }
 
@@ -725,7 +686,7 @@ async fn same_login_id_same_device_replaces_old_profile() {
     let biz_pair = mgr.login(biz_login_params(1)).await.unwrap();
 
     assert!(
-        mgr.refresh(&admin_pair.refresh_token, &admin_profile(), None)
+        mgr.refresh(&admin_pair.refresh_token, &admin_profile())
             .await
             .is_err()
     );
@@ -887,7 +848,7 @@ async fn refresh_with_bitmap() {
     };
 
     let new_pair = mgr
-        .refresh(&pair.refresh_token, &updated_profile, None)
+        .refresh(&pair.refresh_token, &updated_profile)
         .await
         .unwrap();
     let validated = mgr.validate_token(&new_pair.access_token).await.unwrap();
@@ -934,7 +895,7 @@ async fn deny_key_multi_device_race_condition_fixed() {
 
     // 设备 A 刷新 → 获得新 token
     let new_pair1 = mgr
-        .refresh(&pair1.refresh_token, &admin_profile(), None)
+        .refresh(&pair1.refresh_token, &admin_profile())
         .await
         .unwrap();
 
@@ -949,7 +910,7 @@ async fn deny_key_multi_device_race_condition_fixed() {
 
     // 设备 B 也刷新 → 获得新 token
     let new_pair2 = mgr
-        .refresh(&pair2.refresh_token, &admin_profile(), None)
+        .refresh(&pair2.refresh_token, &admin_profile())
         .await
         .unwrap();
 

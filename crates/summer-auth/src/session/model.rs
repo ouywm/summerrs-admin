@@ -39,8 +39,6 @@ pub struct UserSession {
     pub login_id: LoginId,
     /// 当前请求的设备类型
     pub device: DeviceType,
-    /// 当前登录态绑定的租户业务标识
-    pub tenant_id: Option<String>,
     /// 当前登录用户的档案信息
     pub profile: UserProfile,
 }
@@ -76,7 +74,6 @@ pub struct DeviceSession {
 pub struct ValidatedAccess {
     pub login_id: LoginId,
     pub device: DeviceType,
-    pub tenant_id: Option<String>,
     pub user_name: String,
     pub nick_name: String,
     pub roles: Vec<String>,

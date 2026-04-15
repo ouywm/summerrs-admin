@@ -107,7 +107,6 @@ impl AuthService {
                 device: DeviceType::Web,
                 login_ip: client_ip.to_string(),
                 user_agent: ua_info.raw.clone(),
-                tenant_id: None,
                 profile: UserProfile {
                     user_name: user.user_name.clone(),
                     nick_name: user.nick_name.clone(),
@@ -154,12 +153,11 @@ impl AuthService {
 
         // 2. 根据用户 ID 从 DB 查询最新 profile
         let profile = self.load_user_profile(&login_id).await?;
-        let tenant_id: Option<String> = None;
 
         // 3. 调用 refresh（会验证 Redis 中 refresh key + deny check + 轮转）
         let pair = self
             .auth
-            .refresh(refresh_token, &profile, tenant_id.as_deref())
+            .refresh(refresh_token, &profile)
             .await
             .map_err(|e| ApiErrors::Unauthorized(e.to_string()))?;
 

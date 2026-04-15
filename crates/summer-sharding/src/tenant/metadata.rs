@@ -77,7 +77,7 @@ pub trait TenantMetadataLoader: Send + Sync + 'static {
 
 /// Built-in tenant metadata loader.
 ///
-/// - Tries to load from Postgres table `sys.tenant_datasource` (the default metadata table in this repo).
+/// - Tries to load from Postgres table `tenant.tenant_datasource` (the default metadata table in this repo).
 /// - If the table does not exist, returns an empty store instead of failing startup.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SysTenantDatasourceMetadataLoader;
@@ -88,7 +88,7 @@ impl TenantMetadataLoader for SysTenantDatasourceMetadataLoader {
         // Keep the SQL minimal: we only read the columns we actually map into TenantMetadataRecord.
         let backend = connection.get_database_backend();
         let table = match backend {
-            DbBackend::Postgres => "sys.tenant_datasource",
+            DbBackend::Postgres => "tenant.tenant_datasource",
             // Best-effort fallback for other backends. If the table doesn't exist, we'll return empty.
             _ => "tenant_datasource",
         };
@@ -120,7 +120,7 @@ FROM {table}
             Ok(rows) => rows,
             Err(err) => {
                 let message = err.to_string();
-                // Postgres: `relation "sys.tenant_datasource" does not exist`
+                // Postgres: `relation "tenant.tenant_datasource" does not exist`
                 // SQLite: `no such table: tenant_datasource`
                 // MySQL: `Table '...' doesn't exist`
                 if message.contains("does not exist") || message.contains("no such table") {

@@ -57,7 +57,7 @@ pub enum TenantDatasourceStatus {
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(schema_name = "sys", table_name = "tenant_datasource")]
+#[sea_orm(schema_name = "tenant", table_name = "tenant_datasource")]
 pub struct Model {
     /// 主键 ID
     #[sea_orm(primary_key)]

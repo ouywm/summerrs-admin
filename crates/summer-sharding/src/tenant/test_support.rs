@@ -212,8 +212,8 @@ async fn ensure_tenant_datasource_table(database_url: &str) -> Result<()> {
     connection
         .execute_unprepared(
             r#"
-            CREATE SCHEMA IF NOT EXISTS sys;
-            CREATE TABLE IF NOT EXISTS sys.tenant_datasource (
+            CREATE SCHEMA IF NOT EXISTS tenant;
+            CREATE TABLE IF NOT EXISTS tenant.tenant_datasource (
                 id BIGSERIAL PRIMARY KEY,
                 tenant_id VARCHAR(64) NOT NULL,
                 isolation_level SMALLINT NOT NULL DEFAULT 1,
@@ -237,23 +237,23 @@ async fn ensure_tenant_datasource_table(database_url: &str) -> Result<()> {
                 update_by VARCHAR(64) NOT NULL DEFAULT '',
                 update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_tenant_datasource_tenant_id
-                ON sys.tenant_datasource (tenant_id);
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_enable_logging BOOLEAN;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_min_conns INT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_max_conns INT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_connect_timeout_ms BIGINT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_idle_timeout_ms BIGINT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_acquire_timeout_ms BIGINT;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS db_test_before_acquire BOOLEAN;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS readonly_config JSONB NOT NULL DEFAULT '{}'::jsonb;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS extra_config JSONB NOT NULL DEFAULT '{}'::jsonb;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS last_sync_time TIMESTAMP;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS remark VARCHAR(500) NOT NULL DEFAULT '';
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS create_by VARCHAR(64) NOT NULL DEFAULT '';
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS update_by VARCHAR(64) NOT NULL DEFAULT '';
-            ALTER TABLE sys.tenant_datasource ADD COLUMN IF NOT EXISTS update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+            CREATE UNIQUE INDEX IF NOT EXISTS uk_tenant_tenant_datasource_tenant_id
+                ON tenant.tenant_datasource (tenant_id);
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_enable_logging BOOLEAN;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_min_conns INT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_max_conns INT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_connect_timeout_ms BIGINT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_idle_timeout_ms BIGINT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_acquire_timeout_ms BIGINT;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS db_test_before_acquire BOOLEAN;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS readonly_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS extra_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS last_sync_time TIMESTAMP;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS remark VARCHAR(500) NOT NULL DEFAULT '';
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS create_by VARCHAR(64) NOT NULL DEFAULT '';
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS update_by VARCHAR(64) NOT NULL DEFAULT '';
+            ALTER TABLE tenant.tenant_datasource ADD COLUMN IF NOT EXISTS update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
             "#,
         )
         .await?;
@@ -367,10 +367,10 @@ async fn upsert_probe_tenant_metadata(
         .execute_unprepared(
             format!(
                 r#"
-                DELETE FROM sys.tenant_datasource
+                DELETE FROM tenant.tenant_datasource
                 WHERE tenant_id IN ('T-SEED-SCHEMA', 'T-SEED-TABLE', 'T-SEED-DB');
 
-                INSERT INTO sys.tenant_datasource (
+                INSERT INTO tenant.tenant_datasource (
                     tenant_id,
                     isolation_level,
                     status,

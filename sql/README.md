@@ -5,6 +5,7 @@
 当前 SQL 已按业务域拆目录，也是仓库内数据库结构的 source of truth：
 
 - `sql/sys/`：系统管理、后台账号、菜单、日志、字典、通知、文件、认证层
+- `sql/tenant/`：租户控制面（租户主表、租户数据源/隔离元数据、租户成员关系等）
 - `sql/biz/`：B/C 端业务账号与业务域
 - `sql/ai/`：AI relay / gateway / control-plane
 - `sql/migration/`：一次性迁移、修复、时区调整脚本
@@ -23,13 +24,14 @@
 推荐执行顺序：
 
 1. `sql/sys/`
-2. `sql/biz/`
-3. `sql/ai/`
-4. 按需导入 `sql/sys/menu_data_all.sql`
-5. 仅在老库改造时执行 `sql/migration/`
+2. `sql/tenant/`
+3. `sql/biz/`
+4. `sql/ai/`
+5. 按需导入 `sql/sys/menu_data_all.sql`
+6. 仅在老库改造时执行 `sql/migration/`
 
 关于 PostgreSQL schema：
 
-- 当前方案已经确定使用 `sys` / `biz` / `ai` 物理 schema
+- 当前方案已经确定使用 `sys` / `tenant` / `biz` / `ai` 物理 schema
 - `public` 只建议保留 `seaql_migrations`、扩展对象和少量非业务公共对象
 - 老库从 `public.sys_*` / `public.biz_*` / `public.ai_*` 迁移时，统一通过 `sql/migration/20260321_split_public_to_sys_biz_ai_schema.sql` 完成“迁移到 schema + 去掉重复前缀”
