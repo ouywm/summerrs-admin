@@ -22,15 +22,13 @@ use summer_sql_rewrite::SummerSqlRewritePlugin;
 use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 
 fn auth_path_config() -> PathAuthBuilder {
-    PathAuthBuilder {
-        include: vec!["/**".to_string()],
-        exclude: vec![
-            "/auth/login".to_string(),
-            "/auth/refresh".to_string(),
-            // 公开文件访问：用于分享链接直链下载
-            "/public/file/**".to_string(),
-        ],
-    }
+    // 接口不需要授权：已由宏接管 `#[no_auth]` / `#[public]`
+    //
+    // 如需手动排除（不推荐），可参考：
+    // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/login")`
+    // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/refresh")`
+    // - `.exclude("/public/file/**")`
+    PathAuthBuilder::new().include("/**")
 }
 #[auto_config(JobConfigurator, WebConfigurator)]
 #[tokio::main]

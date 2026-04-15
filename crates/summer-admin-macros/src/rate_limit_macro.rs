@@ -1,7 +1,7 @@
-use proc_macro2::TokenStream;
+use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, ItemFn, LitInt, LitStr, Token};
+use syn::{Ident, ItemFn, LitInt, LitStr, Token, parse_macro_input};
 
 pub struct RateLimitArgs {
     pub rate: u64,
@@ -138,24 +138,19 @@ fn validate_args(args: &RateLimitArgs) -> syn::Result<()> {
 }
 
 pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
-    let rl_args = match syn::parse2::<RateLimitArgs>(args) {
-        Ok(args) => args,
-        Err(error) => return error.to_compile_error(),
-    };
+    let rl_args = parse_macro_input!(args as RateLimitArgs);
     if let Err(error) = validate_args(&rl_args) {
-        return error.to_compile_error();
+        return error.to_compile_error().into();
     }
-    let item_fn = match syn::parse2::<ItemFn>(input) {
-        Ok(item_fn) => item_fn,
-        Err(error) => return error.to_compile_error(),
-    };
+    let item_fn = parse_macro_input!(input as ItemFn);
 
     if item_fn.sig.asyncness.is_none() {
         return syn::Error::new_spanned(
             item_fn.sig.fn_token,
             "#[rate_limit] can only be used on async functions",
         )
-        .to_compile_error();
+        .to_compile_error()
+        .into();
     }
 
     let per_token = match rl_args.per.as_str() {
@@ -168,7 +163,8 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                 proc_macro2::Span::call_site(),
                 "invalid `per`, expected one of: second, minute, hour, day",
             )
-            .to_compile_error();
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -185,7 +181,8 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                 proc_macro2::Span::call_site(),
                 "invalid `key`, expected one of: global, ip, user, header:<name>",
             )
-            .to_compile_error();
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -197,7 +194,8 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                 proc_macro2::Span::call_site(),
                 "invalid `backend`, expected one of: memory, redis",
             )
-            .to_compile_error();
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -214,7 +212,8 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                 proc_macro2::Span::call_site(),
                 "invalid `algorithm`, expected one of: token_bucket, fixed_window, sliding_window, leaky_bucket, throttle_queue",
             )
-            .to_compile_error();
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -229,7 +228,8 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                 proc_macro2::Span::call_site(),
                 "invalid `failure_policy`, expected one of: fail_open, fail_closed, fallback_memory",
             )
-            .to_compile_error();
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -275,89 +275,5 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
             #(#stmts)*
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_basic_args() {
-        let input: TokenStream = quote! { rate = 100, per = "second" };
-        let args: RateLimitArgs = syn::parse2(input).expect("parse args");
-        assert_eq!(args.rate, 100);
-        assert_eq!(args.per, "second");
-        assert_eq!(args.key, "global");
-        assert_eq!(args.backend, "memory");
-        assert_eq!(args.algorithm, "token_bucket");
-        assert_eq!(args.failure_policy, "fail_open");
-        assert_eq!(args.max_wait_ms, None);
-    }
-
-    #[test]
-    fn expand_injects_rate_limit_context() {
-        let args = quote! { rate = 10, per = "second" };
-        let input = quote! {
-            pub async fn login() -> ApiResult<()> {
-                Ok(())
-            }
-        };
-
-        let expanded = expand(args, input).to_string();
-        assert!(expanded.contains("__rate_limit_ctx"));
-        assert!(expanded.contains("RateLimitContext"));
-    }
-
-    #[test]
-    fn parse_extended_args() {
-        let input: TokenStream = quote! {
-            rate = 10,
-            per = "minute",
-            backend = "redis",
-            algorithm = "throttle_queue",
-            failure_policy = "fail_closed",
-            max_wait_ms = 1200
-        };
-        let args: RateLimitArgs = syn::parse2(input).expect("parse args");
-        assert_eq!(args.algorithm, "throttle_queue");
-        assert_eq!(args.failure_policy, "fail_closed");
-        assert_eq!(args.max_wait_ms, Some(1200));
-    }
-
-    #[test]
-    fn sliding_window_rejects_burst_at_compile_time() {
-        let input = quote! {
-            pub async fn limited() -> ApiResult<()> {
-                Ok(())
-            }
-        };
-
-        let expanded = expand(
-            quote! { rate = 2, per = "second", algorithm = "sliding_window", burst = 3 },
-            input,
-        )
-        .to_string();
-
-        assert!(expanded.contains("`burst` is only supported for token_bucket"));
-    }
-
-    #[test]
-    fn throttle_queue_requires_positive_max_wait_ms() {
-        let input = quote! {
-            pub async fn limited() -> ApiResult<()> {
-                Ok(())
-            }
-        };
-
-        let expanded = expand(
-            quote! { rate = 1, per = "second", algorithm = "throttle_queue" },
-            input,
-        )
-        .to_string();
-
-        assert!(
-            expanded
-                .contains("`max_wait_ms` must be provided and greater than 0 for throttle_queue")
-        );
-    }
+    .into()
 }

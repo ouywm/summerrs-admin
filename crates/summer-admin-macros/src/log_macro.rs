@@ -1,9 +1,10 @@
-use proc_macro2::{Span, TokenStream};
+use proc_macro::TokenStream;
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{
     Expr, ExprLit, FnArg, Ident, ItemFn, Lit, LitBool, LitStr, Meta, MetaNameValue, Pat,
-    ReturnType, Token, parse_quote,
+    ReturnType, Token, parse_macro_input, parse_quote,
 };
 
 /// 操作类型枚举，对应数据库 business_type 字段
@@ -43,7 +44,7 @@ impl BusinessType {
 
 /// 生成实体枚举路径 `model::entity::sys_operation_log::BusinessType::Xxx`
 impl quote::ToTokens for BusinessType {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
         let variant = match self {
             Self::Other => quote! { Other },
             Self::Create => quote! { Create },
@@ -334,16 +335,10 @@ fn infer_log_status_code_strategy(output: &syn::ReturnType) -> (bool, bool) {
 /// 4. 返回原始执行结果；若为 panic 则 `resume_unwind` 恢复原始 panic，不影响业务逻辑
 pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     // 1. 解析宏参数
-    let log_args = match syn::parse2::<LogArgs>(args) {
-        Ok(args) => args,
-        Err(e) => return e.to_compile_error(),
-    };
+    let log_args = parse_macro_input!(args as LogArgs);
 
     // 2. 解析 handler 函数
-    let mut item_fn = match syn::parse2::<ItemFn>(input) {
-        Ok(f) => f,
-        Err(e) => return e.to_compile_error(),
-    };
+    let mut item_fn = parse_macro_input!(input as ItemFn);
 
     // 3. 校验 #[log] 在路由宏上方（attrs 中应能看到未展开的 *_api）
     let has_api_attr = item_fn.attrs.iter().any(|a| {
@@ -357,7 +352,8 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
             &item_fn.sig.ident,
             "#[log] 必须放在路由宏（如 #[get_api]）的上方，否则生成的 doc 注释无法正确传递",
         )
-        .to_compile_error();
+        .to_compile_error()
+        .into();
     }
 
     // 4. 提取宏参数
@@ -598,7 +594,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
                 Err(__log_panic_payload) => std::panic::resume_unwind(__log_panic_payload),
             }
         }
-    }
+    }.into()
 }
 
 #[cfg(test)]

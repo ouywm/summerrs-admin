@@ -1,8 +1,9 @@
-use proc_macro2::TokenStream;
+use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Ident, ItemFn, LitStr, Token};
+use syn::{Attribute, Ident, ItemFn, LitStr, Token, parse_macro_input};
 
 // ── 参数解析 ──
 
@@ -64,6 +65,45 @@ impl Parse for MultiArgs {
     }
 }
 
+/// `#[public]` / `#[no_auth]` 参数：
+/// - 空：自动从路由属性推导
+/// - `"/path"`：method=Any
+/// - `GET, "/path"`：指定 method+path
+pub struct PublicArgs {
+    pub method: Option<String>,
+    pub path: Option<String>,
+}
+
+impl Parse for PublicArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Self {
+                method: None,
+                path: None,
+            });
+        }
+
+        // Try parse as single string: "/path"
+        if input.peek(LitStr) {
+            let lit: LitStr = input.parse()?;
+            return Ok(Self {
+                method: None,
+                path: Some(lit.value()),
+            });
+        }
+
+        // Parse as: METHOD, "/path"
+        let method_ident: Ident = input.parse()?;
+        let _comma: Token![,] = input.parse()?;
+        let path_lit: LitStr = input.parse()?;
+
+        Ok(Self {
+            method: Some(method_ident.to_string()),
+            path: Some(path_lit.value()),
+        })
+    }
+}
+
 // ── 宏展开 ──
 
 /// `#[login]` — 注入 LoginUser 提取器确保已登录
@@ -71,10 +111,7 @@ impl Parse for MultiArgs {
 /// 展开后在参数列表中注入 `_: summer_auth::LoginUser`，
 /// 如果用户未登录，LoginUser 提取器会返回 401。
 pub fn expand_check_login(_args: TokenStream, input: TokenStream) -> TokenStream {
-    let item_fn = match syn::parse2::<ItemFn>(input) {
-        Ok(f) => f,
-        Err(e) => return e.to_compile_error(),
-    };
+    let item_fn = parse_macro_input!(input as ItemFn);
 
     let attrs = &item_fn.attrs;
     let vis = &item_fn.vis;
@@ -96,19 +133,186 @@ pub fn expand_check_login(_args: TokenStream, input: TokenStream) -> TokenStream
             #(#stmts)*
         }
     }
+    .into()
+}
+
+/// `#[public]` / `#[no_auth]` — 注册公开路由到 inventory
+pub fn expand_public_route(args: TokenStream, input: TokenStream) -> TokenStream {
+    let arg = parse_macro_input!(args as PublicArgs);
+    let item_fn = parse_macro_input!(input as ItemFn);
+
+    let routes =
+        match resolve_public_routes(&item_fn.attrs, arg.method.as_deref(), arg.path.as_deref()) {
+            Ok(v) => v,
+            Err(e) => return e.to_compile_error().into(),
+        };
+
+    let regs = routes.into_iter().map(|(method_expr, path)| {
+        let path_lit = LitStr::new(&path, proc_macro2::Span::call_site());
+        quote! { summer_auth::register_public_route!(#method_expr, #path_lit); }
+    });
+
+    quote! {
+        #item_fn
+        #(#regs)*
+    }
+    .into()
+}
+
+#[derive(Debug)]
+struct RouteMultiArgs {
+    path: String,
+    methods: Vec<String>,
+}
+
+impl Parse for RouteMultiArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let path_lit: LitStr = input.parse()?;
+        let path = path_lit.value();
+
+        let mut methods = Vec::new();
+        while !input.is_empty() {
+            input.parse::<Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            if key != "method" {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "Unsupported argument. Only `method = ...` is supported.",
+                ));
+            }
+
+            if input.peek(LitStr) {
+                let v: LitStr = input.parse()?;
+                methods.push(v.value());
+            } else {
+                let v: Ident = input.parse()?;
+                methods.push(v.to_string());
+            }
+        }
+
+        Ok(Self { path, methods })
+    }
+}
+
+fn resolve_public_routes(
+    attrs: &[Attribute],
+    manual_method: Option<&str>,
+    manual_path: Option<&str>,
+) -> syn::Result<Vec<(TokenStream2, String)>> {
+    // Manual path always wins.
+    if let Some(path) = manual_path {
+        let method_expr = if let Some(m) = manual_method {
+            method_tag_expr(m)?
+        } else {
+            quote!(summer_auth::public_routes::MethodTag::Any)
+        };
+        return Ok(vec![(method_expr, path.to_string())]);
+    }
+
+    // Auto infer from route attrs.
+    let mut found: Vec<(TokenStream2, String)> = Vec::new();
+    for attr in attrs {
+        let ident = attr
+            .path()
+            .get_ident()
+            .map(|i| i.to_string())
+            .unwrap_or_default();
+
+        macro_rules! route_attr_to_method_expr {
+            ($s:expr) => {
+                match $s {
+                    // summer-web typed routes
+                    "get_api" => Some(quote!(summer_auth::public_routes::MethodTag::Get)),
+                    "post_api" => Some(quote!(summer_auth::public_routes::MethodTag::Post)),
+                    "put_api" => Some(quote!(summer_auth::public_routes::MethodTag::Put)),
+                    "delete_api" => Some(quote!(summer_auth::public_routes::MethodTag::Delete)),
+                    "patch_api" => Some(quote!(summer_auth::public_routes::MethodTag::Patch)),
+                    "head_api" => Some(quote!(summer_auth::public_routes::MethodTag::Head)),
+                    "trace_api" => Some(quote!(summer_auth::public_routes::MethodTag::Trace)),
+                    "options_api" => Some(quote!(summer_auth::public_routes::MethodTag::Options)),
+                    "get" => Some(quote!(summer_auth::public_routes::MethodTag::Get)),
+                    "post" => Some(quote!(summer_auth::public_routes::MethodTag::Post)),
+                    "put" => Some(quote!(summer_auth::public_routes::MethodTag::Put)),
+                    "delete" => Some(quote!(summer_auth::public_routes::MethodTag::Delete)),
+                    "patch" => Some(quote!(summer_auth::public_routes::MethodTag::Patch)),
+                    "head" => Some(quote!(summer_auth::public_routes::MethodTag::Head)),
+                    "trace" => Some(quote!(summer_auth::public_routes::MethodTag::Trace)),
+                    "options" => Some(quote!(summer_auth::public_routes::MethodTag::Options)),
+                    _ => None,
+                }
+            };
+        }
+
+        let method_expr = route_attr_to_method_expr!(ident.as_str());
+
+        if let Some(method_expr) = method_expr {
+            let path_lit: LitStr = attr.parse_args().map_err(|_| {
+                syn::Error::new_spanned(
+                    attr,
+                    "Failed to parse route path. Expected e.g. #[post_api(\"/path\")] or #[post(\"/path\")]. You can also use #[public(POST, \"/path\")].",
+                )
+            })?;
+            found.push((method_expr, path_lit.value()));
+            continue;
+        }
+
+        // route/api_route("/test", method="GET", method="HEAD")
+        if ident == "route" || ident == "api_route" {
+            let route_args: RouteMultiArgs = attr.parse_args().map_err(|_| {
+                syn::Error::new_spanned(
+                    attr,
+                    "Failed to parse route(...) arguments. Expected e.g. #[route(\"/x\", method = \"GET\", method = \"HEAD\")].",
+                )
+            })?;
+            if route_args.methods.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "route/api_route requires at least one `method = ...` entry.",
+                ));
+            }
+            for m in route_args.methods {
+                found.push((method_tag_expr(&m)?, route_args.path.clone()));
+            }
+        }
+    }
+
+    if found.is_empty() {
+        Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "No route attribute found for auto-infer. Put #[public] above #[get_api]/#[post_api]/... (or #[get]/#[post]/...), or use #[public(METHOD, \"/path\")].",
+        ))
+    } else {
+        Ok(found)
+    }
+}
+
+fn method_tag_expr(method: &str) -> syn::Result<TokenStream2> {
+    match method.to_ascii_uppercase().as_str() {
+        "GET" => Ok(quote!(summer_auth::public_routes::MethodTag::Get)),
+        "POST" => Ok(quote!(summer_auth::public_routes::MethodTag::Post)),
+        "PUT" => Ok(quote!(summer_auth::public_routes::MethodTag::Put)),
+        "DELETE" => Ok(quote!(summer_auth::public_routes::MethodTag::Delete)),
+        "PATCH" => Ok(quote!(summer_auth::public_routes::MethodTag::Patch)),
+        "HEAD" => Ok(quote!(summer_auth::public_routes::MethodTag::Head)),
+        "TRACE" => Ok(quote!(summer_auth::public_routes::MethodTag::Trace)),
+        "OPTIONS" => Ok(quote!(summer_auth::public_routes::MethodTag::Options)),
+        "*" | "ANY" => Ok(quote!(summer_auth::public_routes::MethodTag::Any)),
+        _ => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "Unsupported method. Expected GET/POST/PUT/DELETE/PATCH/HEAD/TRACE/OPTIONS/ANY.",
+        )),
+    }
 }
 
 /// `#[has_perm("perm")]` — 单权限检查（支持通配符匹配）
 pub fn expand_check_permission(args: TokenStream, input: TokenStream) -> TokenStream {
-    let arg = match syn::parse2::<SingleArg>(args) {
-        Ok(a) => a,
-        Err(e) => return e.to_compile_error(),
-    };
-
-    let item_fn = match syn::parse2::<ItemFn>(input) {
-        Ok(f) => f,
-        Err(e) => return e.to_compile_error(),
-    };
+    let arg = parse_macro_input!(args as SingleArg);
+    let item_fn = parse_macro_input!(input as ItemFn);
 
     let perm = &arg.value;
     let check_code = quote! {
@@ -122,20 +326,13 @@ pub fn expand_check_permission(args: TokenStream, input: TokenStream) -> TokenSt
         }
     };
 
-    wrap_with_guard(&item_fn, check_code)
+    wrap_with_guard(&item_fn, check_code).into()
 }
 
 /// `#[has_role("role")]` — 单角色检查
 pub fn expand_check_role(args: TokenStream, input: TokenStream) -> TokenStream {
-    let arg = match syn::parse2::<SingleArg>(args) {
-        Ok(a) => a,
-        Err(e) => return e.to_compile_error(),
-    };
-
-    let item_fn = match syn::parse2::<ItemFn>(input) {
-        Ok(f) => f,
-        Err(e) => return e.to_compile_error(),
-    };
+    let arg = parse_macro_input!(args as SingleArg);
+    let item_fn = parse_macro_input!(input as ItemFn);
 
     let role = &arg.value;
     let check_code = quote! {
@@ -147,20 +344,13 @@ pub fn expand_check_role(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
-    wrap_with_guard(&item_fn, check_code)
+    wrap_with_guard(&item_fn, check_code).into()
 }
 
 /// `#[has_perms(and("a", "b"))]` 或 `#[has_perms(or("a", "b"))]`
 pub fn expand_check_permissions(args: TokenStream, input: TokenStream) -> TokenStream {
-    let multi = match syn::parse2::<MultiArgs>(args) {
-        Ok(a) => a,
-        Err(e) => return e.to_compile_error(),
-    };
-
-    let item_fn = match syn::parse2::<ItemFn>(input) {
-        Ok(f) => f,
-        Err(e) => return e.to_compile_error(),
-    };
+    let multi = parse_macro_input!(args as MultiArgs);
+    let item_fn = parse_macro_input!(input as ItemFn);
 
     let values = &multi.values;
     let check_code = match multi.mode {
@@ -195,20 +385,13 @@ pub fn expand_check_permissions(args: TokenStream, input: TokenStream) -> TokenS
         }
     };
 
-    wrap_with_guard(&item_fn, check_code)
+    wrap_with_guard(&item_fn, check_code).into()
 }
 
 /// `#[has_roles(and("a", "b"))]` 或 `#[has_roles(or("a", "b"))]`
 pub fn expand_check_roles(args: TokenStream, input: TokenStream) -> TokenStream {
-    let multi = match syn::parse2::<MultiArgs>(args) {
-        Ok(a) => a,
-        Err(e) => return e.to_compile_error(),
-    };
-
-    let item_fn = match syn::parse2::<ItemFn>(input) {
-        Ok(f) => f,
-        Err(e) => return e.to_compile_error(),
-    };
+    let multi = parse_macro_input!(args as MultiArgs);
+    let item_fn = parse_macro_input!(input as ItemFn);
 
     let values = &multi.values;
     let check_code = match multi.mode {
@@ -241,14 +424,14 @@ pub fn expand_check_roles(args: TokenStream, input: TokenStream) -> TokenStream 
         }
     };
 
-    wrap_with_guard(&item_fn, check_code)
+    wrap_with_guard(&item_fn, check_code).into()
 }
 
 // ── 内部辅助 ──
 
 /// 在函数参数列表前注入 `__auth_guard: summer_auth::LoginUser`，
 /// 并在函数体开头注入检查代码
-fn wrap_with_guard(item_fn: &ItemFn, check_code: TokenStream) -> TokenStream {
+fn wrap_with_guard(item_fn: &ItemFn, check_code: TokenStream2) -> TokenStream2 {
     let attrs = &item_fn.attrs;
     let vis = &item_fn.vis;
     let sig = &item_fn.sig;

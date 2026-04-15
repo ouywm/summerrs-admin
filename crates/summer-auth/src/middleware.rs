@@ -74,13 +74,14 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
+            let method = req.method().clone();
             let path = req.uri().path().to_string();
             let config = manager.config();
 
             // 检查路径是否需要鉴权
             let requires_auth = path_config
                 .as_ref()
-                .map(|value| value.requires_auth(&path))
+                .map(|value| value.requires_auth(&method, &path))
                 .unwrap_or(true);
 
             // 提取 token：优先 Header，其次 Cookie

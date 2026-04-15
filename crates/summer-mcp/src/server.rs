@@ -1,9 +1,6 @@
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
-    handler::server::{
-        prompt::PromptContext,
-        router::{prompt::PromptRouter, tool::ToolRouter},
-    },
+    handler::server::{prompt::PromptContext, router::prompt::PromptRouter},
     model::{
         AnnotateAble, GetPromptRequestParams, GetPromptResult, Implementation, ListPromptsResult,
         ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams, RawResource,
@@ -61,7 +58,6 @@ impl McpServerInfo {
 pub struct AdminMcpServer {
     info: McpServerInfo,
     config: McpConfig,
-    tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
     db: DatabaseConnection,
 }
@@ -71,7 +67,6 @@ impl AdminMcpServer {
         Self {
             info: McpServerInfo::from_config(config),
             config: config.clone(),
-            tool_router: Self::tool_router(),
             prompt_router: prompts::build_prompt_router(),
             db,
         }

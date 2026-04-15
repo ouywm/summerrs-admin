@@ -29,7 +29,7 @@ use proc_macro::TokenStream;
 /// ```
 #[proc_macro_attribute]
 pub fn log(args: TokenStream, input: TokenStream) -> TokenStream {
-    log_macro::expand(args.into(), input.into()).into()
+    log_macro::expand(args, input)
 }
 
 /// 登录校验属性宏
@@ -45,7 +45,26 @@ pub fn log(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn login(args: TokenStream, input: TokenStream) -> TokenStream {
-    auth_macro::expand_check_login(args.into(), input.into()).into()
+    auth_macro::expand_check_login(args, input)
+}
+
+/// 公共接口（免鉴权）属性宏
+///
+/// 将该 handler 标记为“无需携带 token 也可访问”，用于配合 `summer-auth` 中间件的
+/// PathAuthConfig.exclude 规则。
+///
+/// 支持两种模式：
+/// - 自动：`#[public]`（从 `#[get_api("/x")]` / `#[post_api("/y")]` 等路由宏推导 method+path）
+/// - 手动：`#[public(GET, "/x")]` / `#[public("/x")]`
+#[proc_macro_attribute]
+pub fn public(args: TokenStream, input: TokenStream) -> TokenStream {
+    auth_macro::expand_public_route(args, input)
+}
+
+/// `#[no_auth]` 等价于 `#[public]`
+#[proc_macro_attribute]
+pub fn no_auth(args: TokenStream, input: TokenStream) -> TokenStream {
+    auth_macro::expand_public_route(args, input)
 }
 
 /// 单权限校验属性宏（支持通配符匹配）
@@ -62,7 +81,7 @@ pub fn login(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn has_perm(args: TokenStream, input: TokenStream) -> TokenStream {
-    auth_macro::expand_check_permission(args.into(), input.into()).into()
+    auth_macro::expand_check_permission(args, input)
 }
 
 /// 单角色校验属性宏
@@ -78,7 +97,7 @@ pub fn has_perm(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn has_role(args: TokenStream, input: TokenStream) -> TokenStream {
-    auth_macro::expand_check_role(args.into(), input.into()).into()
+    auth_macro::expand_check_role(args, input)
 }
 
 /// 多权限校验属性宏（支持 AND/OR 逻辑 + 通配符）
@@ -99,7 +118,7 @@ pub fn has_role(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn has_perms(args: TokenStream, input: TokenStream) -> TokenStream {
-    auth_macro::expand_check_permissions(args.into(), input.into()).into()
+    auth_macro::expand_check_permissions(args, input)
 }
 
 /// 多角色校验属性宏（支持 AND/OR 逻辑）
@@ -120,7 +139,7 @@ pub fn has_perms(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
-    auth_macro::expand_check_roles(args.into(), input.into()).into()
+    auth_macro::expand_check_roles(args, input)
 }
 
 /// 限流属性宏
@@ -128,5 +147,5 @@ pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
 /// 为 HTTP handler 注入 `RateLimitContext` 并在业务逻辑前执行声明式限流检查。
 #[proc_macro_attribute]
 pub fn rate_limit(args: TokenStream, input: TokenStream) -> TokenStream {
-    rate_limit_macro::expand(args.into(), input.into()).into()
+    rate_limit_macro::expand(args, input)
 }

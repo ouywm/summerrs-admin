@@ -1,6 +1,6 @@
 //! 公开文件访问路由（无需登录）
 
-use summer_admin_macros::log;
+use summer_admin_macros::{log, public};
 use summer_common::error::ApiErrors;
 use summer_common::extractor::Path;
 use summer_web::axum::body::Body;
@@ -13,6 +13,7 @@ use summer_web::{Router, get_api};
 use crate::service::sys_file_upload_service::SysFileUploadService;
 
 /// 公开分享链接下载（无需登录）
+#[public]
 #[log(module = "文件管理", action = "公开分享下载", biz_type = Query, save_response = false)]
 #[get_api("/public/file/{token}")]
 pub async fn download_public_file(

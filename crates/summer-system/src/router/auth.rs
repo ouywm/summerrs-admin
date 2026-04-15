@@ -1,5 +1,5 @@
 use crate::service::auth_service::AuthService;
-use summer_admin_macros::log;
+use summer_admin_macros::{log, no_auth};
 use summer_auth::{DeviceType, LoginUser};
 use summer_common::error::ApiResult;
 use summer_common::extractor::{ClientIp, ValidatedJson};
@@ -14,6 +14,7 @@ use summer_web::extractor::Component;
 use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api};
 
+#[no_auth]
 #[log(module = "认证管理", action = "管理员登录", biz_type = Auth, save_params = false)]
 #[post_api("/auth/login")]
 pub async fn login(
@@ -38,6 +39,7 @@ pub async fn logout(
 }
 
 /// 刷新 Token
+#[no_auth]
 #[log(module = "认证管理", action = "刷新Token", biz_type = Auth)]
 #[post_api("/auth/refresh")]
 pub async fn refresh_token(
