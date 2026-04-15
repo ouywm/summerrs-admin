@@ -736,8 +736,12 @@ weight = 10
 # ═══════════════════════════════════════
 [tenant]
 enabled = true
-# 租户 ID 来源：header / jwt_claim / query_param / context
-tenant_id_source = "jwt_claim"
+# 租户 ID 来源：request_extension / header / query_param / context
+#
+# NOTE:
+# - `jwt_claim` 需要业务侧在认证层把 tenant 信息注入到请求（或扩展 claims）才能生效；
+#   本仓库默认不从 summer-auth 的 JWT claims 推导 tenant（system 用户不绑定租户）。
+tenant_id_source = "header"
 tenant_id_field = "tenant_id"
 # 默认隔离级别（租户表中未配置时的兜底）
 default_isolation = "shared_row"

@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn tenant_context_layer_reads_tenant_from_auth_session_when_jwt_claim_mode_is_configured() {
+    fn tenant_context_layer_jwt_claim_mode_does_not_infer_tenant_without_claims_support() {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let mut service = TenantContextLayer::from_source(TenantIdSource::JwtClaim)
             .layer(CaptureTenantService::new(captured.clone()));

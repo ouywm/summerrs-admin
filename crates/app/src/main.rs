@@ -24,12 +24,13 @@ use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 fn auth_path_config() -> PathAuthBuilder {
     // 接口不需要授权：已由宏接管 `#[no_auth]` / `#[public]`
     //
-    // 如需手动排除（不推荐），可参考：
+    // 如需手动排除，可参考：
     // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/login")`
     // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/refresh")`
     // - `.exclude("/public/file/**")`
     PathAuthBuilder::new().include("/**")
 }
+
 #[auto_config(JobConfigurator, WebConfigurator)]
 #[tokio::main]
 async fn main() {
