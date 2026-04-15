@@ -1,25 +1,182 @@
-# Production Configuration
-# Override settings from app.toml for production environment
+[logger]
+level = "debug"
+
+[web]
+connect_info = true
+global_prefix = "/api"
+graceful = true
+port = 8080
+
+[web.openapi]
+doc_prefix = "/docs"
+info = { title = "summerrs-admin", version = "0.0.1" }
 
 [web.middlewares]
+catch_panic = { enable = false }
+compression = { enable = true }
+cors = { enable = true, allow_origins = [
+    "*",
+], allow_headers = [
+    "Authorization",
+    "Content-Type",
+], allow_methods = [
+    "GET",
+    "POST",
+    "PUT",
+    "DELETE",
+], max_age = 60 }
 limit_payload = { enable = true, body_limit = "1GB" }
+logger = { enable = true, level = "warn" }
+static = { enable = true }
+timeout_request = { enable = true, timeout = 30000 }
+
+[socket_io]
+default_namespace = "/summer-admin"
+
+[socket-gateway]
+redis_prefix = "summerrs:socket"
+session_ttl_seconds = 86400
+
+[sea-orm]
+enable_logging = true
+uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin}"
+
+[summer-sharding]
+enabled = true
+
+[summer-sharding.tenant]
+default_isolation = "shared_row"
+enabled = true
+tenant_id_source = "request_extension"
+
+[summer-sharding.tenant.row_level]
+column_name = "tenant_id"
+strategy = "sql_rewrite"
+
+[sea-orm-web]
+default_page_size = 20
+max_page_size = 2000
+one_indexed = true
+
+[redis]
+uri = "redis://127.0.0.1/"
+
+[ip2region]
+ipv4_db_path = "./data/ip2region_v4.xdb"
+# ipv6_db_path = "./data/ip2region_v6.xdb"
+
+[auth]
+access_timeout = 7200         # 秒（开发调试用，生产建议 7200）
+concurrent_login = true
+is_read_cookie = false
+jwt_audience = "summer-admin"
+jwt_issuer = "summer-admin"
+max_devices = 5
+refresh_timeout = 604800      # 秒（开发调试用，生产建议 604800）
+token_name = "Authorization"
+token_prefix = "Bearer "
+# cookie_name = "token"
+jwt_algorithm = "HS256"
+jwt_secret = "${JWT_SECRET:change-me-in-local-dev}"
+#jwt_algorithm = "RS256"
+#jwt_private_key = "./data/rsa_private.pem"
+#jwt_public_key = "./data/rsa_public.pem"
+#per_request_deny_check = false
+
+[log-batch]
+batch_size = 100
 
 [mail]
-auth = { user = "noreply@example.com", password = "your-password" }
-host = "smtp.example.com"
-port = 465
-secure = true
-stub = false
-test_connection = true
+stub = true
+test_connection = false
 
 [s3]
-access_key = "minioadmin"
-allowed_extensions = []
-bucket = "public"
+access_key = "${S3_ACCESS_KEY}"
+bucket = "summer-admin"
 endpoint = "http://localhost:9000"
-max_file_size = 524288000
-multipart_chunk_size = 10485760
-multipart_threshold = 10485760
-presign_expiry = 3600
 region = "us-east-1"
-secret_key = "minioadmin"
+secret_key = "${S3_SECRET_KEY}"
+
+# ── 传输层（全部可选，不写则用 SDK 默认值） ──
+# force_path_style = true          # MinIO/RustFS 必须 true（默认 true）
+# connect_timeout = 5000           # 连接超时 5s
+# operation_timeout = 30000        # 操作超时 30s
+# operation_attempt_timeout = 10000
+
+# ── 重试（可选） ──
+# max_attempts = 3
+# retry_mode = "standard"          # "standard" | "adaptive"
+
+# ── 流保护（可选） ──
+# stalled_stream_protection = true
+# stalled_stream_grace_period = 5  # 秒
+
+# ── 校验（可选） ──
+# request_checksum = "when_supported"   # "when_supported" | "when_required"
+# response_checksum = "when_supported"  # "when_supported" | "when_required"
+
+# ── CDN / 自定义域名（可选） ──
+# custom_domain = "https://static.oywm.top"  # 设置后 public_url 使用此域名，格式: {domain}/{key}
+
+# ── 业务层 ──
+allowed_extensions = []         # 为空则不限制，否则白名单如 ["jpg","png","pdf"]
+max_file_size = 5242880000      # 5000MB
+multipart_chunk_size = 10485760 # 每个分片 10MB
+multipart_max_age = 86400       # 分片上传最大存活时间（秒），默认 24 小时
+multipart_threshold = 10485760  # 10MB，超过此大小使用分片上传
+presign_expiry = 3600           # presigned URL 有效期（秒）
+
+[mcp]
+enabled = true
+http_mode = "embedded" # "embedded" | "standalone"
+transport = "http"     # "stdio" | "http"
+
+# ── 服务器元信息（ServerInfo / Implementation） ──
+description = "summerrs-admin 后台管理系统 MCP Server，提供库表发现、通用表工具、代码生成和菜单/字典业务工具"
+instructions = """
+这是 summerrs-admin 管理系统的 MCP Server。
+优先先读资源：schema://tables 和 schema://table/{table}，确认真实表结构后再调用工具。
+通用数据工具：table_get、table_query、table_insert、table_update、table_delete。
+SQL 工具：sql_query_readonly 用于复杂只读查询；sql_exec 用于显式 DDL/DML，不用于读取。
+代码生成工具：generate_entity_from_table、generate_admin_module_from_table、generate_frontend_bundle_from_table。
+业务工具：menu_tool、dict_tool，优先使用 plan/export/apply 这类结构化动作，而不是手写 SQL。
+可用 prompt templates：discover_table_workflow、generate_crud_bundle_workflow、rollout_menu_dict_workflow。
+"""
+server_name = "summerrs-admin-mcp" # MCP 协议中上报给客户端的名称
+server_version = "0.0.1"
+title = "Summerrs Admin MCP" # 人类可读标题
+
+# ── Streamable HTTP 模式专用（transport = "http" 时生效） ──
+# embedded 模式下实际访问地址会跟随 [web].global_prefix，例如 /api/mcp
+# standalone 模式下才会独立监听 binding:port
+binding = "127.0.0.1"
+json_response = false # 无状态模式下返回 JSON 而非 SSE
+path = "/mcp"         # MCP 服务路由路径
+port = 9090
+sse_keep_alive = 15   # SSE 心跳间隔（秒）
+sse_retry = 3         # SSE 重连间隔（秒）
+stateful_mode = true  # 有状态会话模式
+
+# ── 会话配置（SessionConfig） ──
+session_channel_capacity = 16 # 会话通道缓冲容量
+# session_keep_alive = 3600             # 会话不活动超时（秒），不设置则永不超时
+
+# ── Rig LLM 框架配置 ──
+[rig]
+default_provider = "openai"
+
+[rig.providers.openai]
+api_key = "${RIG_OPENAI_API_KEY}"
+base_url = "https://codex-api.packycode.com/v1"
+default_model = "gpt-5.4"
+provider_type = "openai"
+
+#[rig.providers.deepseek]
+#provider_type = "deepseek"
+#api_key = "sk-xxx"
+#default_model = "deepseek-chat"
+
+#[rig.providers.local]
+#provider_type = "ollama"
+#base_url = "http://localhost:11434"
+#default_model = "qwen2.5:14b"
