@@ -24,10 +24,9 @@ pub async fn login(
     ValidatedJson(dto): ValidatedJson<LoginDto>,
 ) -> ApiResult<Json<LoginVo>> {
     let ua_info = UserAgentInfo::from_headers(&headers);
-    let vo = svc.admin_login(dto, client_ip, ua_info).await?;
+    let vo = svc.login(dto, client_ip, ua_info).await?;
     Ok(Json(vo))
 }
-
 #[log(module = "认证管理", action = "退出登录", biz_type = Auth)]
 #[post_api("/auth/logout")]
 pub async fn logout(

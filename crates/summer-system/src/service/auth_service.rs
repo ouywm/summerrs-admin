@@ -28,8 +28,8 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    /// Admin 登录（原 login 方法）
-    pub async fn admin_login(
+    /// login
+    pub async fn login(
         &self,
         dto: LoginDto,
         client_ip: IpAddr,
