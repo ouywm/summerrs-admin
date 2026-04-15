@@ -142,9 +142,65 @@ pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
     auth_macro::expand_check_roles(args, input)
 }
 
-/// 限流属性宏
+/// `#[rate_limit]` - 声明式限流（对 HTTP handler 生效）
 ///
-/// 为 HTTP handler 注入 `RateLimitContext` 并在业务逻辑前执行声明式限流检查。
+/// 该宏会：
+///
+/// - 为 handler **自动注入** `summer_common::rate_limit::RateLimitContext` extractor
+/// - 在业务逻辑执行前调用 `RateLimitContext::check(...)` 进行限流
+///
+/// # 前置条件
+///
+/// 需要在应用里提供 `summer_common::rate_limit::RateLimitEngine`（二选一）：
+///
+/// 1. 作为 axum layer 注入：`router.layer(Extension(RateLimitEngine::new(...)))`
+/// 2. 作为 summer 组件注册：`app.add_component(RateLimitEngine::new(...))`
+///
+/// # 语法
+///
+/// ```plain
+/// #[rate_limit(rate = <u64>, per = "second|minute|hour|day", ...)]
+/// ```
+///
+/// # 参数
+///
+/// - `rate` (**required**): 每个窗口允许的请求数
+/// - `per` (**required**): 窗口大小，支持 `"second" | "minute" | "hour" | "day"`
+/// - `key` (*optional*): 限流 key 类型，默认 `"global"`
+///   - `"global"`：全局（所有请求共享）
+///   - `"ip"`：按客户端 IP
+///   - `"user"`：按用户（未登录时回退到 IP）
+///   - `"header:<name>"`：按某个 Header 值（缺失时用 `"unknown"`）
+/// - `backend` (*optional*): `"memory" | "redis"`，默认 `"memory"`
+/// - `algorithm` (*optional*): 默认 `"token_bucket"`
+///   - `"token_bucket" | "fixed_window" | "sliding_window" | "leaky_bucket" | "throttle_queue"`
+/// - `failure_policy` (*optional*): 默认 `"fail_open"`
+///   - `"fail_open" | "fail_closed" | "fallback_memory"`
+/// - `burst` (*optional*): 仅 `token_bucket` 支持；默认等于 `rate`
+/// - `max_wait_ms` (*optional*): 仅 `throttle_queue` 支持且必须提供；最大排队等待时间（毫秒）
+/// - `message` (*optional*): 被限流时返回的提示文案（默认 `"请求过于频繁"`）
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// use summer_admin_macros::rate_limit;
+/// use summer_common::error::ApiResult;
+/// use summer_web::get_api;
+///
+/// // 单 IP 每秒 2 次
+/// #[rate_limit(rate = 2, per = "second", key = "ip")]
+/// #[get_api("/limited")]
+/// async fn limited_handler() -> ApiResult<()> {
+///     Ok(())
+/// }
+///
+/// // 对登录用户隔离（未登录回退到 IP）
+/// #[rate_limit(rate = 1, per = "second", key = "user")]
+/// #[get_api("/user-limited")]
+/// async fn user_limited_handler() -> ApiResult<()> {
+///     Ok(())
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn rate_limit(args: TokenStream, input: TokenStream) -> TokenStream {
     rate_limit_macro::expand(args, input)
