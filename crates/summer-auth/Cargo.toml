@@ -11,7 +11,7 @@ axum-extra = { workspace = true, features = ["typed-header"] }
 base64 = { workspace = true }
 chrono = { workspace = true }
 inventory = { workspace = true }
-jsonwebtoken = { workspace = true }
+jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 matchit = { workspace = true }
 parking_lot = { workspace = true }
 schemars = { workspace = true, features = ["derive"] }

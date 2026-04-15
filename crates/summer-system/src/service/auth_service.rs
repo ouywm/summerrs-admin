@@ -269,6 +269,4 @@ impl AuthService {
             permissions,
         })
     }
-
-    // system 用户与租户用户体系分离：此处不再绑定默认租户
 }
