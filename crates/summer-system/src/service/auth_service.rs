@@ -1,7 +1,5 @@
 use anyhow::Context;
-use sea_orm::{
-    ColumnTrait, EntityTrait, JoinType, QueryFilter, QueryOrder, QuerySelect, RelationTrait,
-};
+use sea_orm::{ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
 use std::net::IpAddr;
 use summer::plugin::Service;
 use summer_auth::{DeviceType, LoginId, LoginParams, SessionManager, UserProfile};
@@ -12,7 +10,6 @@ use summer_system_model::dto::auth::LoginDto;
 use summer_system_model::entity::sys_login_log;
 use summer_system_model::entity::sys_menu;
 use summer_system_model::entity::sys_role;
-use summer_system_model::entity::sys_tenant_membership;
 use summer_system_model::entity::sys_user;
 use summer_system_model::entity::sys_user_role;
 use summer_system_model::vo::auth::{DeviceSessionVo, LoginVo};
@@ -101,8 +98,6 @@ impl AuthService {
 
         // 查询用户权限（按钮权限标识）
         let permissions: Vec<String> = self.get_user_permissions(user.id).await?;
-        let tenant_id = self.load_default_tenant_id(user.id).await?;
-
         // 登录并获取 TokenPair
         let login_id = LoginId::new(user.id);
         let token_pair = self
@@ -112,7 +107,7 @@ impl AuthService {
                 device: DeviceType::Web,
                 login_ip: client_ip.to_string(),
                 user_agent: ua_info.raw.clone(),
-                tenant_id,
+                tenant_id: None,
                 profile: UserProfile {
                     user_name: user.user_name.clone(),
                     nick_name: user.nick_name.clone(),
@@ -159,7 +154,7 @@ impl AuthService {
 
         // 2. 根据用户 ID 从 DB 查询最新 profile
         let profile = self.load_user_profile(&login_id).await?;
-        let tenant_id = self.load_default_tenant_id(login_id.user_id).await?;
+        let tenant_id: Option<String> = None;
 
         // 3. 调用 refresh（会验证 Redis 中 refresh key + deny check + 轮转）
         let pair = self
@@ -277,19 +272,5 @@ impl AuthService {
         })
     }
 
-    async fn load_default_tenant_id(&self, user_id: i64) -> ApiResult<Option<String>> {
-        let membership = sys_tenant_membership::Entity::find()
-            .filter(sys_tenant_membership::Column::UserId.eq(user_id))
-            .filter(
-                sys_tenant_membership::Column::Status
-                    .eq(sys_tenant_membership::TenantMembershipStatus::Enabled),
-            )
-            .order_by_desc(sys_tenant_membership::Column::IsDefault)
-            .order_by_asc(sys_tenant_membership::Column::Id)
-            .one(&self.db)
-            .await
-            .context("查询用户默认租户失败")?;
-
-        Ok(membership.map(|value| value.tenant_id))
-    }
+    // system 用户与租户用户体系分离：此处不再绑定默认租户
 }
