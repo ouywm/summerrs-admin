@@ -1,6 +1,7 @@
 use serde::de::DeserializeOwned;
 use summer_web::axum::Json;
 use summer_web::axum::extract::{FromRequest, FromRequestParts, Request};
+use summer_web::axum::http::header;
 use summer_web::axum::http::request::Parts;
 use validator::Validate;
 
@@ -195,3 +196,94 @@ impl<S: Send + Sync> FromRequest<S> for Multipart {
 
 /// Multipart 对 OpenAPI 文档透明（不生成参数描述）
 impl summer_web::aide::OperationInput for Multipart {}
+
+// ─── Locale ─────────────────────────────────────────────────────────────────
+
+static X_LANG_HEADER: header::HeaderName = header::HeaderName::from_static("x-lang");
+
+/// Locale 提取器（从请求中解析当前语言）
+///
+/// 解析优先级：
+///
+/// 1. 自定义 Header：`X-Lang`（前端显式控制语言）
+/// 2. 浏览器默认 Header：`Accept-Language`
+/// 3. 都没有时返回 `None`（由业务层决定默认语言）
+///
+/// 注意：这里不会调用 `rust_i18n::set_locale()`，因为 `set_locale` 是进程级全局状态
+/// Web 并发场景会导致不同请求互相污染语言。推荐在业务代码里使用：
+///
+/// ```rust,ignore
+/// use rust_i18n::t;
+/// use summer_common::extractor::Locale;
+///
+/// pub async fn handler(Locale(locale): Locale) -> String {
+///     t!("greeting", locale = locale.as_str()).to_string()
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct Locale(pub String);
+
+impl std::ops::Deref for Locale {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_str()
+    }
+}
+
+impl Locale {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    fn from_custom(value: &str) -> Option<String> {
+        let first = value.split(',').next()?.trim();
+        if first.is_empty() {
+            None
+        } else {
+            Some(first.to_string())
+        }
+    }
+
+    fn from_accept_language(value: &str) -> Option<String> {
+        // 使用 crate 解析 Accept-Language（按 q 权重排序），避免手写解析规则产生偏差。
+        accept_language::parse(value)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .find(|s| !s.is_empty() && s != "*")
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Locale {
+    type Rejection = ApiErrors;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // 1) 显式自定义 header：优先（前端可控）
+        //
+        // 约定：只支持一个 header：X-Lang
+        // 例如：X-Lang: zh-CN
+        if let Some(value) = parts
+            .headers
+            .get(&X_LANG_HEADER)
+            .and_then(|v| v.to_str().ok())
+            && let Some(locale) = Self::from_custom(value)
+        {
+            return Ok(Locale(locale));
+        }
+
+        // 2) 浏览器默认：Accept-Language（例如：zh-CN,zh;q=0.9,en;q=0.8）q 权重
+        if let Some(value) = parts
+            .headers
+            .get(header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok())
+            && let Some(locale) = Self::from_accept_language(value)
+        {
+            return Ok(Locale(locale));
+        }
+
+        // 3) 没有任何语言信息时，回退到 rust-i18n 的进程默认 locale
+        Ok(Locale(rust_i18n::locale().to_string()))
+    }
+}
+
+/// Locale 对 OpenAPI 文档透明（不生成参数描述）
+impl summer_web::aide::OperationInput for Locale {}

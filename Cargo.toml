@@ -15,6 +15,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+accept-language = "3.1.0"
 anyhow = "1.0.102"
 argon2 = "0.5"
 async-stream = "0.3"
@@ -63,6 +64,7 @@ reqwest-eventsource = "0.6"
 rig-core = "0.33.0"
 ring = "0.17.14"
 rmcp = "1.2.0"
+rust-i18n = "4.0.0"
 rust_xlsxwriter = "0.91.0"
 rustc-hash = "2"
 schema = "0.1.0"

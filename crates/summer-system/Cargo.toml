@@ -19,6 +19,7 @@ futures = { workspace = true }
 md-5 = { workspace = true }
 mime = { workspace = true }
 regex = { workspace = true }
+rust-i18n = { workspace = true }
 schema = { workspace = true }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
 sea-orm = { workspace = true, features = [

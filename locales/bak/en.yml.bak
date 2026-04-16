@@ -1,0 +1,17 @@
+_version: 1
+
+common:
+  ok: "OK"
+
+errors:
+  bad_request: "Bad request"
+  unauthorized: "Unauthorized"
+  forbidden: "Forbidden"
+  not_found: "Not found"
+  internal: "Internal server error"
+  validation_failed: "Validation failed"
+
+auth:
+  invalid_token: "Invalid token"
+  token_missing: "Token not found"
+

@@ -1,0 +1,34 @@
+_version: 2
+
+# 通用
+common.ok:
+  zh: 成功
+  en: OK
+
+# 错误码 / 通用错误
+errors.bad_request:
+  zh: 请求参数错误
+  en: Bad request
+errors.unauthorized:
+  zh: 未登录或登录已过期
+  en: Unauthorized
+errors.forbidden:
+  zh: 无权限访问
+  en: Forbidden
+errors.not_found:
+  zh: 资源不存在
+  en: Not found
+errors.internal:
+  zh: 服务器内部错误
+  en: Internal server error
+errors.validation_failed:
+  zh: 校验失败
+  en: Validation failed
+
+# 鉴权
+auth.invalid_token:
+  zh: 令牌无效
+  en: Invalid token
+auth.token_missing:
+  zh: 令牌不存在
+  en: Token not found

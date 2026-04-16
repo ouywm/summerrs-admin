@@ -21,6 +21,9 @@ use summer_auth::{PathAuthBuilder, SummerAuthConfigurator};
 use summer_sql_rewrite::SummerSqlRewritePlugin;
 use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 
+// 初始化 rust-i18n（编译期加载 `locales/` 下的翻译文件到二进制）
+rust_i18n::i18n!("../../locales", fallback = "en");
+
 fn auth_path_config() -> PathAuthBuilder {
     // 接口不需要授权：已由宏接管 `#[no_auth]` / `#[public]`
     //

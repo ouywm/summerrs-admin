@@ -4,6 +4,7 @@ name = "summer-common"
 version = "0.0.1"
 
 [dependencies]
+accept-language = { workspace = true }
 anyhow = { workspace = true }
 argon2 = { workspace = true }
 axum-client-ip = { workspace = true }
@@ -21,6 +22,7 @@ parking_lot = { workspace = true }
 password-hash = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
+rust-i18n = { workspace = true }
 schemars = { workspace = true, features = ["derive", "chrono04"] }
 sea-orm = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

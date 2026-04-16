@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod i18n;
 pub mod login_log;
 pub mod monitor;
 pub mod online;
@@ -26,6 +27,7 @@ pub struct SystemAdminRouteGroup(pub Router);
 pub fn admin_router() -> Router {
     let router = Router::new();
     let router = auth::routes(router);
+    let router = i18n::routes(router);
     let router = login_log::routes(router);
     let router = monitor::routes(router);
     let router = online::routes(router);
