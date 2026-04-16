@@ -26,6 +26,7 @@ summer-web = { workspace = true, features = [
 summer-auth = { workspace = true }
 summer-mcp = { workspace = true }
 summer-plugins = { workspace = true }
+summer-rig = { workspace = true }
 summer-system = { workspace = true }
 
 axum-client-ip = { workspace = true, features = ["connect-info"] }
