@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use summer::config::Configurable;
 
+use crate::error::RigError;
+
 #[derive(Debug, Clone, Deserialize, Configurable)]
 #[config_prefix = "rig"]
 pub struct RigConfig {
@@ -12,10 +14,54 @@ pub struct RigConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
+    #[serde(default)]
+    pub backend: ProviderBackend,
     pub provider_type: String,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub default_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderBackend {
+    #[default]
+    Rig,
+}
+
+impl ProviderBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProviderBackend::Rig => "rig",
+        }
+    }
+}
+
+impl RigConfig {
+    pub fn validate(&self) -> Result<(), RigError> {
+        if self.providers.is_empty() {
+            return Err(RigError::Config(
+                "rig.providers must not be empty".to_string(),
+            ));
+        }
+
+        if !self.providers.contains_key(&self.default_provider) {
+            return Err(RigError::Config(format!(
+                "rig.default_provider '{}' is not present in providers",
+                self.default_provider
+            )));
+        }
+
+        for (name, provider) in &self.providers {
+            if provider.provider_type.trim().is_empty() {
+                return Err(RigError::Config(format!(
+                    "provider '{name}' has an empty provider_type"
+                )));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -37,12 +83,14 @@ mod tests {
             default_provider = "openai"
 
             [rig.providers.openai]
+            backend = "rig"
             provider_type = "openai"
             api_key = "sk-test"
             base_url = "https://api.openai.com/v1"
             default_model = "gpt-4o"
 
             [rig.providers.local]
+            backend = "rig"
             provider_type = "ollama"
             base_url = "http://localhost:11434"
             default_model = "qwen2.5:14b"
@@ -54,6 +102,7 @@ mod tests {
         assert_eq!(config.providers.len(), 2);
 
         let openai = config.providers.get("openai").unwrap();
+        assert_eq!(openai.backend, ProviderBackend::Rig);
         assert_eq!(openai.provider_type, "openai");
         assert_eq!(openai.api_key.as_deref(), Some("sk-test"));
         assert_eq!(
@@ -76,6 +125,7 @@ mod tests {
             default_provider = "ds"
 
             [rig.providers.ds]
+            backend = "rig"
             provider_type = "deepseek"
             api_key = "sk-xxx"
         "#;
@@ -86,6 +136,7 @@ mod tests {
         assert_eq!(config.providers.len(), 1);
 
         let ds = config.providers.get("ds").unwrap();
+        assert_eq!(ds.backend, ProviderBackend::Rig);
         assert_eq!(ds.provider_type, "deepseek");
         assert!(ds.base_url.is_none());
         assert!(ds.default_model.is_none());
@@ -98,20 +149,24 @@ mod tests {
             default_provider = "main"
 
             [rig.providers.main]
+            backend = "rig"
             provider_type = "openai"
             api_key = "sk-1"
             default_model = "gpt-4o"
 
             [rig.providers.backup]
+            backend = "rig"
             provider_type = "anthropic"
             api_key = "sk-ant-1"
             default_model = "claude-sonnet-4-20250514"
 
             [rig.providers.search]
+            backend = "rig"
             provider_type = "perplexity"
             api_key = "ppl-1"
 
             [rig.providers.local]
+            backend = "rig"
             provider_type = "ollama"
             base_url = "http://gpu-box:11434"
             default_model = "llama3:70b"
@@ -124,5 +179,15 @@ mod tests {
         assert!(config.providers.contains_key("backup"));
         assert!(config.providers.contains_key("search"));
         assert!(config.providers.contains_key("local"));
+    }
+
+    #[test]
+    fn validate_rejects_missing_default_provider() {
+        let config = RigConfig {
+            default_provider: "missing".into(),
+            providers: HashMap::new(),
+        };
+
+        assert!(config.validate().is_err());
     }
 }

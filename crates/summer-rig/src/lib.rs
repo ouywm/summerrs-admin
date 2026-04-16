@@ -1,10 +1,12 @@
-pub mod client;
+mod backend;
 pub mod config;
+pub mod error;
+mod factory;
 pub mod plugin;
-pub mod provider;
-pub mod registry;
+mod provider;
+mod registry;
+pub mod service;
 
-pub use client::{AnyClient, ProviderEntry};
 pub use config::RigConfig;
 pub use plugin::SummerRigPlugin;
-pub use registry::RigRegistry;
+pub use service::{PromptOptions, PromptStream, ProviderMetadata, RigService, StreamChunk};
