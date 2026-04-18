@@ -4,6 +4,9 @@ use crate::{
     tenant::{TenantMetadataEvent, TenantMetadataEventKind, TenantMetadataRecord},
 };
 
+const METADATA_CHANNEL: &str = "summer_sharding_tenant_metadata";
+const RELOAD_FALLBACK_PAYLOAD: &str = r#"{"event":"reload"}"#;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TenantLifecyclePlan {
     pub resource_sql: Vec<String>,
@@ -19,52 +22,10 @@ impl TenantLifecycleManager {
         record: &TenantMetadataRecord,
         base_tables: &[String],
     ) -> TenantLifecyclePlan {
-        let tenant_suffix = normalize_tenant_suffix(record.tenant_id.as_str());
-        let schema_name = record
-            .schema_name
-            .clone()
-            .unwrap_or_else(|| format!("tenant_{tenant_suffix}"));
-        let datasource_name = record
-            .datasource_name
-            .clone()
-            .unwrap_or_else(|| format!("tenant_{tenant_suffix}"));
-        let database_name = database_name(record, datasource_name.as_str());
-
-        let resource_sql = match record.isolation_level {
-            TenantIsolationLevel::SharedRow => Vec::new(),
-            TenantIsolationLevel::SeparateTable => base_tables
-                .iter()
-                .map(|table| {
-                    format!(
-                        "CREATE TABLE IF NOT EXISTS {}_{} (LIKE {} INCLUDING ALL)",
-                        table, tenant_suffix, table
-                    )
-                })
-                .collect(),
-            TenantIsolationLevel::SeparateSchema => {
-                let mut statements = vec![format!("CREATE SCHEMA IF NOT EXISTS {schema_name}")];
-                statements.extend(base_tables.iter().map(|table| {
-                    let table_name = table.rsplit('.').next().unwrap_or(table.as_str());
-                    format!(
-                        "CREATE TABLE IF NOT EXISTS {schema_name}.{table_name} (LIKE {table} INCLUDING ALL)"
-                    )
-                }));
-                statements
-            }
-            TenantIsolationLevel::SeparateDatabase => {
-                vec![format!("CREATE DATABASE {database_name}")]
-            }
-        };
-
-        let notify_sql = vec![notify_sql(TenantMetadataEvent {
-            event: TenantMetadataEventKind::Upsert,
-            tenant_id: Some(record.tenant_id.clone()),
-            record: Some(record.clone()),
-        })];
-
+        let naming = TenantNaming::from_record(record);
         TenantLifecyclePlan {
-            resource_sql,
-            notify_sql,
+            resource_sql: naming.onboard_sql(record.isolation_level, base_tables),
+            notify_sql: vec![pg_notify_sql(upsert_event(record))],
         }
     }
 
@@ -73,40 +34,10 @@ impl TenantLifecycleManager {
         record: &TenantMetadataRecord,
         base_tables: &[String],
     ) -> TenantLifecyclePlan {
-        let tenant_suffix = normalize_tenant_suffix(record.tenant_id.as_str());
-        let schema_name = record
-            .schema_name
-            .clone()
-            .unwrap_or_else(|| format!("tenant_{tenant_suffix}"));
-        let datasource_name = record
-            .datasource_name
-            .clone()
-            .unwrap_or_else(|| format!("tenant_{tenant_suffix}"));
-        let database_name = database_name(record, datasource_name.as_str());
-
-        let resource_sql = match record.isolation_level {
-            TenantIsolationLevel::SharedRow => Vec::new(),
-            TenantIsolationLevel::SeparateTable => base_tables
-                .iter()
-                .map(|table| format!("DROP TABLE IF EXISTS {}_{}", table, tenant_suffix))
-                .collect(),
-            TenantIsolationLevel::SeparateSchema => {
-                vec![format!("DROP SCHEMA IF EXISTS {schema_name} CASCADE")]
-            }
-            TenantIsolationLevel::SeparateDatabase => {
-                vec![format!("DROP DATABASE IF EXISTS {database_name}")]
-            }
-        };
-
-        let notify_sql = vec![notify_sql(TenantMetadataEvent {
-            event: TenantMetadataEventKind::Delete,
-            tenant_id: Some(record.tenant_id.clone()),
-            record: None,
-        })];
-
+        let naming = TenantNaming::from_record(record);
         TenantLifecyclePlan {
-            resource_sql,
-            notify_sql,
+            resource_sql: naming.offboard_sql(record.isolation_level, base_tables),
+            notify_sql: vec![pg_notify_sql(delete_event(&record.tenant_id))],
         }
     }
 
@@ -117,22 +48,8 @@ impl TenantLifecycleManager {
         schema_name: Option<&str>,
     ) -> Vec<String> {
         self.plan_onboard(
-            &TenantMetadataRecord {
-                tenant_id: tenant_id.to_string(),
-                isolation_level,
-                status: Some("active".to_string()),
-                schema_name: schema_name.map(str::to_string),
-                datasource_name: None,
-                db_uri: None,
-                db_enable_logging: None,
-                db_min_conns: None,
-                db_max_conns: None,
-                db_connect_timeout_ms: None,
-                db_idle_timeout_ms: None,
-                db_acquire_timeout_ms: None,
-                db_test_before_acquire: None,
-            },
-            &Vec::new(),
+            &bare_record(tenant_id, isolation_level, schema_name, "active"),
+            &[],
         )
         .resource_sql
     }
@@ -144,50 +61,146 @@ impl TenantLifecycleManager {
         schema_name: Option<&str>,
     ) -> Vec<String> {
         self.plan_offboard(
-            &TenantMetadataRecord {
-                tenant_id: tenant_id.to_string(),
-                isolation_level,
-                status: Some("inactive".to_string()),
-                schema_name: schema_name.map(str::to_string),
-                datasource_name: None,
-                db_uri: None,
-                db_enable_logging: None,
-                db_min_conns: None,
-                db_max_conns: None,
-                db_connect_timeout_ms: None,
-                db_idle_timeout_ms: None,
-                db_acquire_timeout_ms: None,
-                db_test_before_acquire: None,
-            },
-            &Vec::new(),
+            &bare_record(tenant_id, isolation_level, schema_name, "inactive"),
+            &[],
         )
         .resource_sql
     }
 }
 
-fn notify_sql(event: TenantMetadataEvent) -> String {
-    format!(
-        "SELECT pg_notify('summer_sharding_tenant_metadata', '{}')",
-        serde_json::to_string(&event)
-            .unwrap_or_else(|_| "{\"event\":\"reload\"}".to_string())
-            .replace('\'', "''")
-    )
+struct TenantNaming {
+    tenant_suffix: String,
+    schema_name: String,
+    database_name: String,
 }
 
-fn database_name(record: &TenantMetadataRecord, fallback_datasource_name: &str) -> String {
-    record
-        .db_uri
-        .as_deref()
-        .and_then(|uri| url::Url::parse(uri).ok())
-        .and_then(|uri| {
-            uri.path_segments()
-                .and_then(|segments| {
-                    let mut segments = segments;
-                    segments.rfind(|segment| !segment.is_empty())
+impl TenantNaming {
+    fn from_record(record: &TenantMetadataRecord) -> Self {
+        let tenant_suffix = normalize_tenant_suffix(&record.tenant_id);
+        let schema_name = record
+            .schema_name
+            .clone()
+            .unwrap_or_else(|| format!("tenant_{tenant_suffix}"));
+        let datasource_fallback = record
+            .datasource_name
+            .clone()
+            .unwrap_or_else(|| format!("tenant_{tenant_suffix}"));
+        let database_name = resolve_database_name(record, &datasource_fallback);
+        Self {
+            tenant_suffix,
+            schema_name,
+            database_name,
+        }
+    }
+
+    fn onboard_sql(&self, isolation: TenantIsolationLevel, base_tables: &[String]) -> Vec<String> {
+        match isolation {
+            TenantIsolationLevel::SharedRow => Vec::new(),
+            TenantIsolationLevel::SeparateTable => base_tables
+                .iter()
+                .map(|table| {
+                    let suffix = &self.tenant_suffix;
+                    format!(
+                        "CREATE TABLE IF NOT EXISTS {table}_{suffix} (LIKE {table} INCLUDING ALL)"
+                    )
                 })
-                .map(|segment| segment.to_string())
-        })
-        .unwrap_or_else(|| fallback_datasource_name.replace('-', "_"))
+                .collect(),
+            TenantIsolationLevel::SeparateSchema => {
+                let schema = &self.schema_name;
+                std::iter::once(format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
+                    .chain(base_tables.iter().map(|table| {
+                        let tail = table.rsplit('.').next().unwrap_or(table.as_str());
+                        format!(
+                            "CREATE TABLE IF NOT EXISTS {schema}.{tail} (LIKE {table} INCLUDING ALL)"
+                        )
+                    }))
+                    .collect()
+            }
+            // PostgreSQL does not support `CREATE DATABASE IF NOT EXISTS`; caller handles idempotency.
+            TenantIsolationLevel::SeparateDatabase => {
+                vec![format!("CREATE DATABASE {}", self.database_name)]
+            }
+        }
+    }
+
+    fn offboard_sql(&self, isolation: TenantIsolationLevel, base_tables: &[String]) -> Vec<String> {
+        match isolation {
+            TenantIsolationLevel::SharedRow => Vec::new(),
+            TenantIsolationLevel::SeparateTable => base_tables
+                .iter()
+                .map(|table| format!("DROP TABLE IF EXISTS {table}_{}", self.tenant_suffix))
+                .collect(),
+            TenantIsolationLevel::SeparateSchema => {
+                vec![format!(
+                    "DROP SCHEMA IF EXISTS {} CASCADE",
+                    self.schema_name
+                )]
+            }
+            TenantIsolationLevel::SeparateDatabase => {
+                vec![format!("DROP DATABASE IF EXISTS {}", self.database_name)]
+            }
+        }
+    }
+}
+
+fn upsert_event(record: &TenantMetadataRecord) -> TenantMetadataEvent {
+    TenantMetadataEvent {
+        event: TenantMetadataEventKind::Upsert,
+        tenant_id: Some(record.tenant_id.clone()),
+        record: Some(record.clone()),
+    }
+}
+
+fn delete_event(tenant_id: &str) -> TenantMetadataEvent {
+    TenantMetadataEvent {
+        event: TenantMetadataEventKind::Delete,
+        tenant_id: Some(tenant_id.to_string()),
+        record: None,
+    }
+}
+
+fn bare_record(
+    tenant_id: &str,
+    isolation_level: TenantIsolationLevel,
+    schema_name: Option<&str>,
+    status: &str,
+) -> TenantMetadataRecord {
+    TenantMetadataRecord {
+        tenant_id: tenant_id.to_string(),
+        isolation_level,
+        status: Some(status.to_string()),
+        schema_name: schema_name.map(str::to_string),
+        datasource_name: None,
+        db_uri: None,
+        db_enable_logging: None,
+        db_min_conns: None,
+        db_max_conns: None,
+        db_connect_timeout_ms: None,
+        db_idle_timeout_ms: None,
+        db_acquire_timeout_ms: None,
+        db_test_before_acquire: None,
+    }
+}
+
+fn pg_notify_sql(event: TenantMetadataEvent) -> String {
+    let payload = serde_json::to_string(&event)
+        .unwrap_or_else(|_| RELOAD_FALLBACK_PAYLOAD.to_string())
+        .replace('\'', "''");
+    format!("SELECT pg_notify('{METADATA_CHANNEL}', '{payload}')")
+}
+
+fn resolve_database_name(record: &TenantMetadataRecord, fallback: &str) -> String {
+    let Some(uri) = record.db_uri.as_deref() else {
+        return fallback.replace('-', "_");
+    };
+    let Ok(parsed) = url::Url::parse(uri) else {
+        return fallback.replace('-', "_");
+    };
+    parsed
+        .path_segments()
+        .and_then(|mut segments| segments.rfind(|seg| !seg.is_empty()))
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback.replace('-', "_"))
 }
 
 #[cfg(test)]
@@ -197,6 +210,28 @@ mod tests {
         config::TenantIsolationLevel,
         tenant::{TenantLifecycleManager, TenantMetadataRecord},
     };
+
+    fn record(
+        tenant_id: &str,
+        isolation_level: TenantIsolationLevel,
+        schema_name: Option<&str>,
+    ) -> TenantMetadataRecord {
+        TenantMetadataRecord {
+            tenant_id: tenant_id.to_string(),
+            isolation_level,
+            status: Some("active".to_string()),
+            schema_name: schema_name.map(str::to_string),
+            datasource_name: None,
+            db_uri: None,
+            db_enable_logging: None,
+            db_min_conns: None,
+            db_max_conns: None,
+            db_connect_timeout_ms: None,
+            db_idle_timeout_ms: None,
+            db_acquire_timeout_ms: None,
+            db_test_before_acquire: None,
+        }
+    }
 
     #[test]
     fn lifecycle_plan_keeps_only_resource_and_notify_sql() {
@@ -236,21 +271,7 @@ mod tests {
     fn lifecycle_plans_table_level_resource_and_notify_sql() {
         let manager = TenantLifecycleManager;
         let plan = manager.plan_onboard(
-            &TenantMetadataRecord {
-                tenant_id: "T-PRO".to_string(),
-                isolation_level: TenantIsolationLevel::SeparateTable,
-                status: Some("active".to_string()),
-                schema_name: None,
-                datasource_name: None,
-                db_uri: None,
-                db_enable_logging: None,
-                db_min_conns: None,
-                db_max_conns: None,
-                db_connect_timeout_ms: None,
-                db_idle_timeout_ms: None,
-                db_acquire_timeout_ms: None,
-                db_test_before_acquire: None,
-            },
+            &record("T-PRO", TenantIsolationLevel::SeparateTable, None),
             &["ai.log".to_string(), "ai.request".to_string()],
         );
 
@@ -265,26 +286,12 @@ mod tests {
     #[test]
     fn lifecycle_uses_database_name_from_db_uri_when_present() {
         let manager = TenantLifecycleManager;
-        let plan = manager.plan_onboard(
-            &TenantMetadataRecord {
-                tenant_id: "T-DB".to_string(),
-                isolation_level: TenantIsolationLevel::SeparateDatabase,
-                status: Some("active".to_string()),
-                schema_name: None,
-                datasource_name: Some("tenant_tdb".to_string()),
-                db_uri: Some(
-                    "postgres://admin:123456@localhost/tenant_real_db?sslmode=disable".to_string(),
-                ),
-                db_enable_logging: Some(true),
-                db_min_conns: Some(2),
-                db_max_conns: Some(8),
-                db_connect_timeout_ms: Some(1_500),
-                db_idle_timeout_ms: Some(2_500),
-                db_acquire_timeout_ms: Some(3_500),
-                db_test_before_acquire: Some(false),
-            },
-            &[],
-        );
+        let mut record = record("T-DB", TenantIsolationLevel::SeparateDatabase, None);
+        record.datasource_name = Some("tenant_tdb".to_string());
+        record.db_uri =
+            Some("postgres://admin:123456@localhost/tenant_real_db?sslmode=disable".to_string());
+
+        let plan = manager.plan_onboard(&record, &[]);
 
         assert_eq!(plan.resource_sql, vec!["CREATE DATABASE tenant_real_db"]);
         assert!(plan.notify_sql[0].contains("pg_notify"));
