@@ -92,14 +92,13 @@ impl Parse for RateLimitArgs {
 
 fn validate_args(args: &RateLimitArgs) -> syn::Result<()> {
     match args.algorithm.as_str() {
-        "token_bucket" => {
-            if args.max_wait_ms.is_some() {
-                return Err(syn::Error::new(
-                    proc_macro2::Span::call_site(),
-                    "`max_wait_ms` is only supported for throttle_queue",
-                ));
-            }
+        "token_bucket" if args.max_wait_ms.is_some() => {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "`max_wait_ms` is only supported for throttle_queue",
+            ));
         }
+        "token_bucket" => {}
         "fixed_window" | "sliding_window" | "leaky_bucket" => {
             if args.burst.is_some() {
                 return Err(syn::Error::new(

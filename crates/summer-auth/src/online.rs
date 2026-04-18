@@ -52,7 +52,7 @@ impl SessionManager {
         }
 
         // 按 login_time 降序排序
-        items.sort_by(|a, b| b.login_time.cmp(&a.login_time));
+        items.sort_by_key(|item| std::cmp::Reverse(item.login_time));
 
         let total = items.len();
 
