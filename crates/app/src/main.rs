@@ -1,13 +1,13 @@
 use axum_client_ip::ClientIpSource;
 use summer::App;
 use summer::auto_config;
+use summer_ai::SummerAiPlugin;
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
 use summer_mcp::McpPlugin;
 use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
 use summer_redis::RedisPlugin;
-use summer_rig::SummerRigPlugin;
 use summer_sea_orm::SeaOrmPlugin;
 use summer_sharding::SummerShardingPlugin;
 use summer_web::LayerConfigurator;
@@ -54,7 +54,7 @@ async fn main() {
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
         .add_plugin(McpPlugin)
-        .add_plugin(SummerRigPlugin)
+        .add_plugin(SummerAiPlugin)
         .auth_configure(auth_path_config())
         .add_router_layer(|router| {
             router

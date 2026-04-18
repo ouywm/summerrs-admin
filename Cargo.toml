@@ -5,7 +5,7 @@ members = [
     "crates/summer-auth",
     "crates/summer-common",
     "crates/summer-domain",
-    "crates/summer-rig",
+    "crates/summer-ai",
     "crates/summer-sharding",
     "crates/summer-sql-rewrite",
     "crates/summer-mcp",
@@ -62,7 +62,7 @@ rand = "0.10.0"
 regex = "1.12.3"
 reqwest = "0.13.2"
 reqwest-eventsource = "0.6"
-rig-core = "0.33.0"
+rig-core = "0.35.0"
 ring = "0.17.14"
 rmcp = "1.2.0"
 rust-i18n = "4.0.0"
@@ -78,6 +78,7 @@ sha2 = "0.10"
 sqlparser = "0.54.0"
 summer = "0.5.0"
 summer-admin-macros = { path = "crates/summer-admin-macros" }
+summer-ai = { path = "crates/summer-ai" }
 summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
@@ -87,7 +88,6 @@ summer-mail = "0.5.0"
 summer-mcp = { path = "crates/summer-mcp" }
 summer-plugins = { path = "crates/summer-plugins" }
 summer-redis = "0.5.0"
-summer-rig = { path = "crates/summer-rig" }
 summer-sea-orm = { version = "0.5.0-rc.1", default-features = false }
 summer-sharding = { path = "crates/summer-sharding" }
 summer-sql-rewrite = { path = "crates/summer-sql-rewrite" }

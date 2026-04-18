@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name = "summer-rig"
+name = "summer-ai"
 version = "0.0.1"
 
 [dependencies]
@@ -10,6 +10,7 @@ futures = { workspace = true }
 rig-core = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 summer = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 
