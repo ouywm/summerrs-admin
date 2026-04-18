@@ -608,3 +608,118 @@ fn projection_alias(expr: &Expr) -> Option<String> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use sea_orm::{DbBackend, Statement};
+    use sqlparser::{dialect::PostgreSqlDialect, parser::Parser};
+
+    use super::apply_encrypt_rewrite;
+    use crate::{config::ShardingConfig, connector::analyze_statement};
+
+    const AES_KEY_ENV: &str = "SUMMER_SHARDING_ENCRYPT_REWRITE_TESTS_KEY";
+    const AES_KEY_MATERIAL: &str = "12345678901234567890123456789012";
+
+    fn parsed_ast(sql: &str) -> sqlparser::ast::Statement {
+        Parser::parse_sql(&PostgreSqlDialect {}, sql)
+            .expect("parse")
+            .remove(0)
+    }
+
+    fn encrypt_config_with_phone_rule() -> ShardingConfig {
+        ShardingConfig::from_test_str(
+            r#"
+            [datasources.ds_sys]
+            uri = "mock://sys"
+            schema = "sys"
+            role = "primary"
+
+            [encrypt]
+            enabled = true
+
+              [[encrypt.rules]]
+              table = "sys.user"
+              column = "phone"
+              cipher_column = "phone_cipher"
+              assisted_query_column = "phone_assisted"
+              algorithm = "aes"
+              key_env = "SUMMER_SHARDING_ENCRYPT_REWRITE_TESTS_KEY"
+            "#,
+        )
+        .expect("config")
+    }
+
+    fn install_aes_key() {
+        // SAFETY: tests run single-threaded per #[test] invocation (no other thread touches this key).
+        unsafe {
+            std::env::set_var(AES_KEY_ENV, AES_KEY_MATERIAL);
+        }
+    }
+
+    #[test]
+    fn apply_encrypt_rewrite_does_nothing_when_disabled() {
+        let config = ShardingConfig::default();
+        let stmt = Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT phone FROM sys.user WHERE phone = '13812341234'",
+        );
+        let analysis = analyze_statement(&stmt).expect("analyze");
+        let mut ast = parsed_ast(&stmt.sql);
+        let mut statement = stmt.clone();
+        let before = ast.to_string();
+
+        apply_encrypt_rewrite(&mut statement, &mut ast, &analysis, &config).expect("rewrite");
+
+        assert_eq!(ast.to_string(), before);
+    }
+
+    #[test]
+    fn apply_encrypt_rewrite_rewrites_select_filter_column_to_cipher() {
+        install_aes_key();
+        let config = encrypt_config_with_phone_rule();
+        let stmt = Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT phone FROM sys.user WHERE phone = '13812341234'",
+        );
+        let analysis = analyze_statement(&stmt).expect("analyze");
+        let mut ast = parsed_ast(&stmt.sql);
+        let mut statement = stmt.clone();
+
+        apply_encrypt_rewrite(&mut statement, &mut ast, &analysis, &config).expect("rewrite");
+
+        let rewritten = ast.to_string();
+        assert!(
+            rewritten.contains("phone_assisted"),
+            "equality query should rewrite to assisted_query_column, got: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("'13812341234'"),
+            "plaintext should be hashed into assisted column value, got: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn apply_encrypt_rewrite_rewrites_insert_column_name_to_cipher() {
+        install_aes_key();
+        let config = encrypt_config_with_phone_rule();
+        let stmt = Statement::from_string(
+            DbBackend::Postgres,
+            "INSERT INTO sys.user (id, phone) VALUES (1, '13812341234')",
+        );
+        let analysis = analyze_statement(&stmt).expect("analyze");
+        let mut ast = parsed_ast(&stmt.sql);
+        let mut statement = stmt.clone();
+
+        apply_encrypt_rewrite(&mut statement, &mut ast, &analysis, &config).expect("rewrite");
+
+        let rewritten = ast.to_string();
+        assert!(
+            rewritten.contains("phone_cipher"),
+            "expected cipher column in insert, got: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("'13812341234'"),
+            "plaintext should be replaced with cipher, got: {rewritten}"
+        );
+    }
+}

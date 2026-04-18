@@ -837,4 +837,77 @@ mod tests {
         assert_eq!(analysis.tables[0].full_name(), "ai.log");
         assert_eq!(analysis.tables[1].full_name(), "ai.audit_log");
     }
+
+    #[test]
+    fn analyzer_extracts_insert_values_per_column() {
+        let statement = Statement::from_string(
+            DbBackend::Postgres,
+            "INSERT INTO ai.log (tenant_id, body) VALUES ('T-1', 'body-a'), ('T-2', 'body-b')",
+        );
+
+        let analysis = analyze_statement(&statement).expect("analysis");
+
+        assert_eq!(analysis.operation, crate::router::SqlOperation::Insert);
+        assert_eq!(analysis.tables[0].full_name(), "ai.log");
+        let tenant_values = analysis.insert_values("tenant_id");
+        assert_eq!(tenant_values.len(), 2);
+    }
+
+    #[test]
+    fn analyzer_extracts_update_conditions() {
+        let statement = Statement::from_string(
+            DbBackend::Postgres,
+            "UPDATE ai.log SET body = 'x' WHERE tenant_id = 'T-9'",
+        );
+
+        let analysis = analyze_statement(&statement).expect("analysis");
+
+        assert_eq!(analysis.operation, crate::router::SqlOperation::Update);
+        assert!(analysis.exact_condition_value("tenant_id").is_some());
+    }
+
+    #[test]
+    fn analyzer_collects_multiple_tables_from_joins() {
+        let statement = Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT r.id FROM ai.request r JOIN ai.request_execution e ON r.id = e.request_id WHERE r.tenant_id = 'T-1'",
+        );
+
+        let analysis = analyze_statement(&statement).expect("analysis");
+
+        let names: Vec<_> = analysis
+            .tables
+            .iter()
+            .map(|table| table.full_name())
+            .collect();
+        assert!(names.contains(&"ai.request".to_string()));
+        assert!(names.contains(&"ai.request_execution".to_string()));
+    }
+
+    #[test]
+    fn analyzer_records_in_list_as_range_shardable_when_exact_fails() {
+        // IN list falls back to the broader sharding condition; analyzer should
+        // at minimum preserve the table and operation so the router can decide.
+        let statement = Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT id FROM ai.log WHERE tenant_id IN ('A', 'B', 'C')",
+        );
+
+        let analysis = analyze_statement(&statement).expect("analysis");
+
+        assert_eq!(analysis.operation, crate::router::SqlOperation::Select);
+        assert_eq!(analysis.tables[0].full_name(), "ai.log");
+    }
+
+    #[test]
+    fn analyzer_detects_aggregate_projection() {
+        let statement = Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT COUNT(*) AS total FROM ai.log WHERE tenant_id = 'T-1'",
+        );
+
+        let analysis = analyze_statement(&statement).expect("analysis");
+
+        assert!(analysis.has_aggregate_projection());
+    }
 }
