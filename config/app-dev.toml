@@ -41,6 +41,13 @@ session_ttl_seconds = 86400
 enable_logging = true
 uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin}"
 
+[summer-ai]
+auto_sync_schema = true
+channel_refresh_secs = 30
+enabled = false
+path_prefix = "/v1"
+request_timeout_secs = 120
+
 [summer-sharding]
 enabled = true
 

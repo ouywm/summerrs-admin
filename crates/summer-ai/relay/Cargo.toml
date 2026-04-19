@@ -1,0 +1,20 @@
+[package]
+edition = "2024"
+name = "summer-ai-relay"
+version = "0.0.1"
+
+[dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true, features = ["json", "stream"] }
+serde_json = { workspace = true }
+summer = { workspace = true }
+summer-admin-macros = { workspace = true }
+summer-ai-core = { workspace = true }
+summer-ai-model = { workspace = true }
+summer-auth = { workspace = true }
+summer-common = { workspace = true }
+summer-web = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

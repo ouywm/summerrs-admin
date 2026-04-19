@@ -6,6 +6,11 @@ members = [
     "crates/summer-common",
     "crates/summer-domain",
     "crates/summer-ai",
+    "crates/summer-ai/core",
+    "crates/summer-ai/model",
+    "crates/summer-ai/relay",
+    "crates/summer-ai/admin",
+    "crates/summer-ai/billing",
     "crates/summer-sharding",
     "crates/summer-sql-rewrite",
     "crates/summer-mcp",
@@ -66,11 +71,12 @@ rig-core = "0.35.0"
 ring = "0.17.14"
 rmcp = "1.2.0"
 rust-i18n = "4.0.0"
+rust_decimal = "1.41.0"
 rust_xlsxwriter = "0.91.0"
 rustc-hash = "2"
 schema = "0.1.0"
 schemars = "1.1"
-sea-orm = "2.0.0-rc.38"
+sea-orm = "=2.0.0-rc.38"
 serde = "1.0.228"
 serde_json = "1.0.149"
 serde_repr = "0.1"
@@ -79,6 +85,11 @@ sqlparser = "0.54.0"
 summer = "0.5.0"
 summer-admin-macros = { path = "crates/summer-admin-macros" }
 summer-ai = { path = "crates/summer-ai" }
+summer-ai-admin = { path = "crates/summer-ai/admin" }
+summer-ai-billing = { path = "crates/summer-ai/billing" }
+summer-ai-core = { path = "crates/summer-ai/core" }
+summer-ai-model = { path = "crates/summer-ai/model" }
+summer-ai-relay = { path = "crates/summer-ai/relay" }
 summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
@@ -112,6 +123,8 @@ validator = "0.20.0"
 woothee = "0.13"
 
 [patch.crates-io]
+sea-orm = { path = "/Volumes/990pro/code/rust/sea-orm" }
+sea-orm-macros = { path = "/Volumes/990pro/code/rust/sea-orm/sea-orm-macros" }
 summer = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6e" }
 summer-macros = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6e" }
 summer-web = { git = "https://github.com/ouywm/spring-rs.git", rev = "2c4cf6e" }
