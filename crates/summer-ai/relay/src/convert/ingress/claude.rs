@@ -1,6 +1,15 @@
-//! Claude Messages ↔ canonical 转换（非流式部分）。
+//! Claude Messages ↔ canonical 转换（请求、响应、流）。
 //!
-//! 流式状态机待实现（当前 `from_canonical_stream_event` 返空 Vec 占位）。
+//! 流事件重组：把 canonical 的 5 种语义事件
+//! (Start / TextDelta / ReasoningDelta / ToolCallDelta / End)
+//! 翻译成 Claude 客户端期望的 SSE 序列：
+//!
+//! ```text
+//! message_start
+//!   → (content_block_start → content_block_delta* → content_block_stop)+
+//!   → message_delta
+//!   → message_stop
+//! ```
 //!
 //! # 已知限制
 //!
@@ -15,11 +24,14 @@
 //!    （只在 Anthropic 原生上游有意义）。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use summer_ai_core::types::ingress_wire::claude::{
     ClaudeContent, ClaudeContentBlock, ClaudeImageSource, ClaudeMessage, ClaudeMessagesRequest,
-    ClaudeResponse, ClaudeStopReason, ClaudeStreamEvent, ClaudeSystem, ClaudeTool,
-    ClaudeToolChoice, ClaudeToolResultContent, ClaudeUsage,
+    ClaudeResponse, ClaudeStopReason, ClaudeStreamContentBlock, ClaudeStreamDelta,
+    ClaudeStreamEvent, ClaudeStreamMessageDelta, ClaudeStreamMessageStart, ClaudeSystem,
+    ClaudeTool, ClaudeToolChoice, ClaudeToolResultContent, ClaudeUsage,
 };
 use summer_ai_core::{
     AdapterError, AdapterKind, AdapterResult, ChatMessage, ChatRequest, ChatResponse,
@@ -27,7 +39,10 @@ use summer_ai_core::{
     ToolCallFunction, ToolChoice, ToolFunction,
 };
 
-use super::{IngressConverter, IngressCtx, IngressFormat, StreamConvertState};
+use super::{
+    ClaudeLastMessageType, ClaudeStreamState, IngressConverter, IngressCtx, IngressFormat,
+    StreamConvertState,
+};
 
 /// Claude Messages 入口协议转换器。
 pub struct ClaudeIngress;
@@ -48,13 +63,17 @@ impl IngressConverter for ClaudeIngress {
     }
 
     fn from_canonical_stream_event(
-        _event: ChatStreamEvent,
-        _state: &mut StreamConvertState,
-        _ctx: &IngressCtx,
+        event: ChatStreamEvent,
+        state: &mut StreamConvertState,
+        ctx: &IngressCtx,
     ) -> AdapterResult<Vec<Self::ClientStreamEvent>> {
-        // 待实装：6 事件重组状态机。当前返空 Vec，让流式请求能编译但不产出事件
-        // （handler 在流式状态机完成前不应开放 Claude 流式路由）。
-        Ok(Vec::new())
+        let StreamConvertState::Claude(claude_state) = state else {
+            return Err(AdapterError::Unsupported {
+                adapter: "claude_ingress",
+                feature: "stream_convert_state_mismatch",
+            });
+        };
+        Ok(from_canonical_stream_event_impl(event, claude_state, ctx))
     }
 }
 
@@ -533,6 +552,236 @@ fn usage_to_claude(usage: summer_ai_core::Usage) -> ClaudeUsage {
 use serde::de::Error as _;
 
 // ---------------------------------------------------------------------------
+// from_canonical_stream_event —— 6-event 重组
+// ---------------------------------------------------------------------------
+
+/// 把 canonical 的语义事件翻译成 Claude SSE 序列。一次调用可能产出多个事件。
+///
+/// 规则：
+/// - `Start` 首次到 → 发 `message_start`；后续 Start 忽略
+/// - `TextDelta` → 若当前 block 不是 Text，先停旧的（content_block_stop + index++）
+///   再发 `content_block_start{text}`，然后发 `content_block_delta{text_delta}`
+/// - `ReasoningDelta` → 同理但 block 类型是 thinking
+/// - `ToolCallDelta` → 若当前不是 Tools，停旧的 + 记 base_index；每个 index 首次见到
+///   `name` 发 `content_block_start{tool_use}`，每次收到 `arguments_delta` 发
+///   `content_block_delta{input_json_delta}`
+/// - `End` → 停所有打开的 block + `message_delta` + `message_stop`
+fn from_canonical_stream_event_impl(
+    event: ChatStreamEvent,
+    state: &mut ClaudeStreamState,
+    ctx: &IngressCtx,
+) -> Vec<ClaudeStreamEvent> {
+    if state.done {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    match event {
+        ChatStreamEvent::Start { model, .. } => {
+            ensure_message_start(&mut out, state, ctx, Some(model));
+        }
+        ChatStreamEvent::TextDelta { text } => {
+            ensure_message_start(&mut out, state, ctx, None);
+            if state.last_message_type != ClaudeLastMessageType::Text {
+                stop_and_advance(&mut out, state);
+                out.push(content_block_start_text(state.index as u32));
+                state.last_message_type = ClaudeLastMessageType::Text;
+            }
+            out.push(content_block_delta(
+                state.index as u32,
+                ClaudeStreamDelta::TextDelta { text },
+            ));
+        }
+        ChatStreamEvent::ReasoningDelta { text } => {
+            ensure_message_start(&mut out, state, ctx, None);
+            if state.last_message_type != ClaudeLastMessageType::Thinking {
+                stop_and_advance(&mut out, state);
+                out.push(content_block_start_thinking(state.index as u32));
+                state.last_message_type = ClaudeLastMessageType::Thinking;
+            }
+            out.push(content_block_delta(
+                state.index as u32,
+                ClaudeStreamDelta::ThinkingDelta { thinking: text },
+            ));
+        }
+        ChatStreamEvent::ToolCallDelta(delta) => {
+            ensure_message_start(&mut out, state, ctx, None);
+            if state.last_message_type != ClaudeLastMessageType::Tools {
+                stop_and_advance(&mut out, state);
+                state.tool_call_base_index = state.index;
+                state.tool_call_max_index_offset = 0;
+                state.last_message_type = ClaudeLastMessageType::Tools;
+            }
+            let offset = delta.index;
+            if offset > state.tool_call_max_index_offset {
+                state.tool_call_max_index_offset = offset;
+            }
+            let block_index = (state.tool_call_base_index + offset) as u32;
+
+            // 首次见到 name → content_block_start
+            if let Some(name) = delta.name {
+                let id = delta.id.unwrap_or_else(|| format!("toolu_{}", block_index));
+                out.push(content_block_start_tool_use(block_index, id, name));
+            }
+            // arguments 增量（可能与 name 同一次到达）
+            if let Some(args) = delta.arguments_delta {
+                if !args.is_empty() {
+                    out.push(content_block_delta(
+                        block_index,
+                        ClaudeStreamDelta::InputJsonDelta { partial_json: args },
+                    ));
+                }
+            }
+        }
+        ChatStreamEvent::End(end) => {
+            ensure_message_start(&mut out, state, ctx, None);
+            push_stop_open_blocks(&mut out, state);
+            state.last_message_type = ClaudeLastMessageType::None;
+
+            if let Some(new_usage) = end.usage {
+                state.usage = Some(new_usage);
+            }
+
+            out.push(ClaudeStreamEvent::MessageDelta {
+                delta: ClaudeStreamMessageDelta {
+                    stop_reason: Some(finish_reason_to_stop_reason(end.finish_reason)),
+                    stop_sequence: None,
+                },
+                usage: state.usage.as_ref().map(|u| ClaudeUsage {
+                    input_tokens: u.prompt_tokens.max(0) as u32,
+                    output_tokens: u.completion_tokens.max(0) as u32,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: u
+                        .prompt_tokens_details
+                        .as_ref()
+                        .and_then(|d| d.cached_tokens)
+                        .map(|v| v as u32),
+                    cache_creation: None,
+                    service_tier: None,
+                }),
+            });
+            out.push(ClaudeStreamEvent::MessageStop);
+            state.done = true;
+        }
+    }
+
+    state.send_response_count = state.send_response_count.saturating_add(out.len() as u32);
+    out
+}
+
+/// 首次产出事件前必须先发 `message_start`。
+fn ensure_message_start(
+    out: &mut Vec<ClaudeStreamEvent>,
+    state: &mut ClaudeStreamState,
+    ctx: &IngressCtx,
+    override_model: Option<String>,
+) {
+    if state.send_response_count > 0 {
+        return;
+    }
+    let model = override_model.unwrap_or_else(|| ctx.actual_model.clone());
+    out.push(ClaudeStreamEvent::MessageStart {
+        message: ClaudeStreamMessageStart {
+            id: generate_message_id(),
+            kind: "message".to_string(),
+            role: "assistant".to_string(),
+            content: Vec::new(),
+            model,
+            stop_reason: None,
+            stop_sequence: None,
+            usage: ClaudeUsage {
+                input_tokens: ctx.estimated_prompt_tokens,
+                output_tokens: 0,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                cache_creation: None,
+                service_tier: None,
+            },
+        },
+    });
+}
+
+/// 关闭当前打开的 block，并为下一个 block 推进 index。
+fn stop_and_advance(out: &mut Vec<ClaudeStreamEvent>, state: &mut ClaudeStreamState) {
+    push_stop_open_blocks(out, state);
+    match state.last_message_type {
+        ClaudeLastMessageType::Tools => {
+            state.index = state.tool_call_base_index + state.tool_call_max_index_offset + 1;
+        }
+        ClaudeLastMessageType::Text | ClaudeLastMessageType::Thinking => {
+            state.index += 1;
+        }
+        ClaudeLastMessageType::None => {}
+    }
+    state.last_message_type = ClaudeLastMessageType::None;
+}
+
+/// 给当前打开的 block 发 content_block_stop（tool 并发时发多个）。
+fn push_stop_open_blocks(out: &mut Vec<ClaudeStreamEvent>, state: &ClaudeStreamState) {
+    match state.last_message_type {
+        ClaudeLastMessageType::None => {}
+        ClaudeLastMessageType::Text | ClaudeLastMessageType::Thinking => {
+            out.push(ClaudeStreamEvent::ContentBlockStop {
+                index: state.index as u32,
+            });
+        }
+        ClaudeLastMessageType::Tools => {
+            let base = state.tool_call_base_index;
+            let max = state.tool_call_max_index_offset;
+            for i in 0..=max {
+                out.push(ClaudeStreamEvent::ContentBlockStop {
+                    index: (base + i) as u32,
+                });
+            }
+        }
+    }
+}
+
+fn content_block_start_text(index: u32) -> ClaudeStreamEvent {
+    ClaudeStreamEvent::ContentBlockStart {
+        index,
+        content_block: ClaudeStreamContentBlock::Text {
+            text: String::new(),
+        },
+    }
+}
+
+fn content_block_start_thinking(index: u32) -> ClaudeStreamEvent {
+    ClaudeStreamEvent::ContentBlockStart {
+        index,
+        content_block: ClaudeStreamContentBlock::Thinking {
+            thinking: String::new(),
+        },
+    }
+}
+
+fn content_block_start_tool_use(index: u32, id: String, name: String) -> ClaudeStreamEvent {
+    ClaudeStreamEvent::ContentBlockStart {
+        index,
+        content_block: ClaudeStreamContentBlock::ToolUse {
+            id,
+            name,
+            input: serde_json::Value::Object(serde_json::Map::new()),
+        },
+    }
+}
+
+fn content_block_delta(index: u32, delta: ClaudeStreamDelta) -> ClaudeStreamEvent {
+    ClaudeStreamEvent::ContentBlockDelta { index, delta }
+}
+
+/// 生成一个本地唯一的 `msg_` id（单调递增 + 时间戳前缀）。
+fn generate_message_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("msg_{ts:x}{seq:x}")
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -941,5 +1190,368 @@ mod tests {
         assert_eq!(c.input_tokens, 100);
         assert_eq!(c.output_tokens, 50);
         assert_eq!(c.cache_read_input_tokens, Some(80));
+    }
+
+    // ───── from_canonical_stream_event ─────
+
+    fn stream_ctx() -> IngressCtx {
+        let mut c = ctx();
+        c.estimated_prompt_tokens = 42;
+        c
+    }
+
+    fn init_state() -> StreamConvertState {
+        StreamConvertState::for_format(IngressFormat::Claude)
+    }
+
+    fn run(
+        state: &mut StreamConvertState,
+        ctx: &IngressCtx,
+        event: ChatStreamEvent,
+    ) -> Vec<ClaudeStreamEvent> {
+        ClaudeIngress::from_canonical_stream_event(event, state, ctx).unwrap()
+    }
+
+    #[test]
+    fn stream_first_text_emits_message_start_block_start_and_delta() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "hi".to_string(),
+            },
+        );
+        assert_eq!(out.len(), 3);
+        assert!(matches!(out[0], ClaudeStreamEvent::MessageStart { .. }));
+        match &out[0] {
+            ClaudeStreamEvent::MessageStart { message } => {
+                assert_eq!(message.usage.input_tokens, 42);
+                assert_eq!(message.role, "assistant");
+            }
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            out[1],
+            ClaudeStreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ClaudeStreamContentBlock::Text { .. }
+            }
+        ));
+        match &out[2] {
+            ClaudeStreamEvent::ContentBlockDelta { index, delta } => {
+                assert_eq!(*index, 0);
+                match delta {
+                    ClaudeStreamDelta::TextDelta { text } => assert_eq!(text, "hi"),
+                    _ => panic!(),
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn stream_start_event_picks_up_model() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::Start {
+                adapter: "openai".to_string(),
+                model: "gpt-4o-mini".to_string(),
+            },
+        );
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            ClaudeStreamEvent::MessageStart { message } => {
+                assert_eq!(message.model, "gpt-4o-mini");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn stream_subsequent_text_deltas_reuse_block() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        let _ = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "a".to_string(),
+            },
+        );
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "b".to_string(),
+            },
+        );
+        // 后续 delta 不应再发 message_start / content_block_start
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            ClaudeStreamEvent::ContentBlockDelta { index, delta } => {
+                assert_eq!(*index, 0);
+                match delta {
+                    ClaudeStreamDelta::TextDelta { text } => assert_eq!(text, "b"),
+                    _ => panic!(),
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn stream_reasoning_then_text_closes_thinking_and_opens_text() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ReasoningDelta {
+                text: "hm".to_string(),
+            },
+        );
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "hi".to_string(),
+            },
+        );
+        // 关闭 thinking(0) + 开 text(1) + delta
+        assert_eq!(out.len(), 3);
+        match &out[0] {
+            ClaudeStreamEvent::ContentBlockStop { index } => assert_eq!(*index, 0),
+            _ => panic!(),
+        }
+        match &out[1] {
+            ClaudeStreamEvent::ContentBlockStart {
+                index,
+                content_block: ClaudeStreamContentBlock::Text { .. },
+            } => assert_eq!(*index, 1),
+            _ => panic!(),
+        }
+        assert!(matches!(
+            out[2],
+            ClaudeStreamEvent::ContentBlockDelta { .. }
+        ));
+    }
+
+    #[test]
+    fn stream_tool_call_delta_emits_tool_use_and_input_json() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ToolCallDelta(summer_ai_core::ToolCallDelta {
+                index: 0,
+                id: Some("tc_1".to_string()),
+                name: Some("weather".to_string()),
+                arguments_delta: Some(r#"{"city""#.to_string()),
+            }),
+        );
+        // message_start + content_block_start{tool_use} + content_block_delta{input_json_delta}
+        assert_eq!(out.len(), 3);
+        match &out[1] {
+            ClaudeStreamEvent::ContentBlockStart {
+                index,
+                content_block: ClaudeStreamContentBlock::ToolUse { id, name, .. },
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(id, "tc_1");
+                assert_eq!(name, "weather");
+            }
+            _ => panic!(),
+        }
+        match &out[2] {
+            ClaudeStreamEvent::ContentBlockDelta { index, delta } => {
+                assert_eq!(*index, 0);
+                match delta {
+                    ClaudeStreamDelta::InputJsonDelta { partial_json } => {
+                        assert!(partial_json.starts_with("{\"city"));
+                    }
+                    _ => panic!(),
+                }
+            }
+            _ => panic!(),
+        }
+
+        // 后续 tool_call delta 只带 arguments
+        let out2 = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ToolCallDelta(summer_ai_core::ToolCallDelta {
+                index: 0,
+                id: None,
+                name: None,
+                arguments_delta: Some(":\"NYC\"}".to_string()),
+            }),
+        );
+        assert_eq!(out2.len(), 1);
+        assert!(matches!(
+            out2[0],
+            ClaudeStreamEvent::ContentBlockDelta {
+                delta: ClaudeStreamDelta::InputJsonDelta { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stream_tool_call_missing_id_autogens() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ToolCallDelta(summer_ai_core::ToolCallDelta {
+                index: 0,
+                id: None,
+                name: Some("weather".to_string()),
+                arguments_delta: None,
+            }),
+        );
+        match &out[1] {
+            ClaudeStreamEvent::ContentBlockStart {
+                content_block: ClaudeStreamContentBlock::ToolUse { id, .. },
+                ..
+            } => assert!(id.starts_with("toolu_")),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn stream_parallel_tool_calls_track_max_offset() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        // 打开 tool 0
+        run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ToolCallDelta(summer_ai_core::ToolCallDelta {
+                index: 0,
+                id: Some("tc_0".to_string()),
+                name: Some("a".to_string()),
+                arguments_delta: None,
+            }),
+        );
+        // 打开 tool 1（同一批次并发）
+        run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ToolCallDelta(summer_ai_core::ToolCallDelta {
+                index: 1,
+                id: Some("tc_1".to_string()),
+                name: Some("b".to_string()),
+                arguments_delta: None,
+            }),
+        );
+        // End → 应该给 tool 0 和 tool 1 都发 content_block_stop
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::End(summer_ai_core::StreamEnd {
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+            }),
+        );
+        let stops: Vec<_> = out
+            .iter()
+            .filter_map(|e| match e {
+                ClaudeStreamEvent::ContentBlockStop { index } => Some(*index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stops, vec![0, 1]);
+    }
+
+    #[test]
+    fn stream_end_emits_message_delta_and_stop() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "hi".to_string(),
+            },
+        );
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::End(summer_ai_core::StreamEnd {
+                finish_reason: Some(FinishReason::Stop),
+                usage: Some(Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 20,
+                    total_tokens: 30,
+                    ..Default::default()
+                }),
+            }),
+        );
+        // content_block_stop(0) + message_delta + message_stop
+        assert_eq!(out.len(), 3);
+        assert!(matches!(
+            out[0],
+            ClaudeStreamEvent::ContentBlockStop { index: 0 }
+        ));
+        match &out[1] {
+            ClaudeStreamEvent::MessageDelta { delta, usage } => {
+                assert_eq!(delta.stop_reason, Some(ClaudeStopReason::EndTurn));
+                let usage = usage.as_ref().unwrap();
+                assert_eq!(usage.output_tokens, 20);
+                assert_eq!(usage.input_tokens, 10);
+            }
+            _ => panic!(),
+        }
+        assert!(matches!(out[2], ClaudeStreamEvent::MessageStop));
+
+        // 进入 done 状态后继续喂事件返空
+        let extra = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "x".to_string(),
+            },
+        );
+        assert!(extra.is_empty());
+    }
+
+    #[test]
+    fn stream_end_without_prior_content_still_sends_message_start() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::End(summer_ai_core::StreamEnd {
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+            }),
+        );
+        // message_start + message_delta + message_stop
+        assert_eq!(out.len(), 3);
+        assert!(matches!(out[0], ClaudeStreamEvent::MessageStart { .. }));
+        assert!(matches!(out[1], ClaudeStreamEvent::MessageDelta { .. }));
+        assert!(matches!(out[2], ClaudeStreamEvent::MessageStop));
+    }
+
+    #[test]
+    fn stream_wrong_state_variant_errors() {
+        let ctx = stream_ctx();
+        let mut state = StreamConvertState::Openai;
+        let err = ClaudeIngress::from_canonical_stream_event(
+            ChatStreamEvent::TextDelta {
+                text: "hi".to_string(),
+            },
+            &mut state,
+            &ctx,
+        );
+        assert!(err.is_err());
     }
 }

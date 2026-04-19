@@ -20,9 +20,11 @@ use summer_ai_core::{
 };
 
 pub mod claude;
+pub mod gemini;
 pub mod openai;
 
 pub use claude::ClaudeIngress;
+pub use gemini::GeminiIngress;
 pub use openai::OpenAIIngress;
 
 // ---------------------------------------------------------------------------
