@@ -7,6 +7,7 @@
 //! - `gemini/` — `/v1beta/models/*/generateContent`
 
 pub mod claude;
+pub mod gemini;
 pub mod openai;
 
 use summer_web::Router;
@@ -15,5 +16,6 @@ use summer_web::Router;
 pub fn relay_router() -> Router {
     let router = Router::new();
     let router = openai::routes(router);
-    claude::routes(router)
+    let router = claude::routes(router);
+    gemini::routes(router)
 }
