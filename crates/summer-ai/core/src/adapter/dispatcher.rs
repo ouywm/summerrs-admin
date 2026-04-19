@@ -4,13 +4,12 @@
 //! Adapter 的 associated fn。加新 adapter 时，每个方法的 `match` 漏写会编译失败
 //! （Rust 的 exhaustive match）。
 //!
-//! 当前只实现 `OpenAI` / `OpenAICompat`；其他变体返 [`AdapterError::Unsupported`]。
-//! 后续逐步填入（先加 Anthropic / Gemini / Ollama / Cohere / OpenAICompat 变种
-//! 5 家，再机械铺开剩余 14 家）。
+//! 当前实现 `OpenAI` / `OpenAICompat` / `Anthropic`；其他变体返
+//! [`AdapterError::Unsupported`]。
 
 use bytes::Bytes;
 
-use super::adapters::{OpenAIAdapter, OpenAICompatAdapter};
+use super::adapters::{AnthropicAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter};
 use super::{
     Adapter, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType, WebRequestData,
 };
@@ -28,6 +27,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::default_endpoint(),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::default_endpoint(),
+            AdapterKind::Anthropic => AnthropicAdapter::default_endpoint(),
+            AdapterKind::Gemini => GeminiAdapter::default_endpoint(),
             _ => None,
         }
     }
@@ -36,6 +37,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::default_auth(),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::default_auth(),
+            AdapterKind::Anthropic => AnthropicAdapter::default_auth(),
+            AdapterKind::Gemini => GeminiAdapter::default_auth(),
             _ => match kind.default_api_key_env_name() {
                 Some(env) => AuthData::from_env(env),
                 None => AuthData::None,
@@ -47,6 +50,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::capabilities(),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::capabilities(),
+            AdapterKind::Anthropic => AnthropicAdapter::capabilities(),
+            AdapterKind::Gemini => GeminiAdapter::capabilities(),
             _ => Capabilities::default(),
         }
     }
@@ -55,6 +60,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::auth_strategy(),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::auth_strategy(),
+            AdapterKind::Anthropic => AnthropicAdapter::auth_strategy(),
+            AdapterKind::Gemini => GeminiAdapter::auth_strategy(),
             _ => AuthStrategy::Bearer,
         }
     }
@@ -63,6 +70,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::cost_profile(),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::cost_profile(),
+            AdapterKind::Anthropic => AnthropicAdapter::cost_profile(),
+            AdapterKind::Gemini => GeminiAdapter::cost_profile(),
             _ => CostProfile::default(),
         }
     }
@@ -81,6 +90,10 @@ impl AdapterDispatcher {
             AdapterKind::OpenAICompat => {
                 OpenAICompatAdapter::build_chat_request(target, service, request)
             }
+            AdapterKind::Anthropic => {
+                AnthropicAdapter::build_chat_request(target, service, request)
+            }
+            AdapterKind::Gemini => GeminiAdapter::build_chat_request(target, service, request),
             other => Err(unsupported(other, "chat")),
         }
     }
@@ -94,6 +107,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::parse_chat_response(target, body),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::parse_chat_response(target, body),
+            AdapterKind::Anthropic => AnthropicAdapter::parse_chat_response(target, body),
+            AdapterKind::Gemini => GeminiAdapter::parse_chat_response(target, body),
             other => Err(unsupported(other, "chat")),
         }
     }
@@ -107,6 +122,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::parse_chat_stream_event(target, raw),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::parse_chat_stream_event(target, raw),
+            AdapterKind::Anthropic => AnthropicAdapter::parse_chat_stream_event(target, raw),
+            AdapterKind::Gemini => GeminiAdapter::parse_chat_stream_event(target, raw),
             other => Err(unsupported(other, "chat_stream")),
         }
     }
@@ -122,6 +139,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::fetch_model_names(target, http).await,
             AdapterKind::OpenAICompat => OpenAICompatAdapter::fetch_model_names(target, http).await,
+            AdapterKind::Anthropic => AnthropicAdapter::fetch_model_names(target, http).await,
+            AdapterKind::Gemini => GeminiAdapter::fetch_model_names(target, http).await,
             other => Err(unsupported(other, "fetch_model_names")),
         }
     }
@@ -132,6 +151,8 @@ impl AdapterDispatcher {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::map_error(status, body),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::map_error(status, body),
+            AdapterKind::Anthropic => AnthropicAdapter::map_error(status, body),
+            AdapterKind::Gemini => GeminiAdapter::map_error(status, body),
             _ => AdapterError::UpstreamStatus {
                 status,
                 message: String::from_utf8_lossy(body).to_string(),

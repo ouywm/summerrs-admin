@@ -1,0 +1,827 @@
+//! Google Gemini GenerateContent adapter。
+//!
+//! canonical ↔ Gemini wire 双向转换，挂 `AdapterDispatcher` 用。
+//!
+//! # URL 形态
+//!
+//! `{base}/v1beta/models/{actual_model}:generateContent?key={api_key}`
+//! 流式则 `:streamGenerateContent?alt=sse&key={api_key}`（用 SSE 分隔）。
+//!
+//! # 鉴权
+//!
+//! 默认 API key 作 URL query param（`?key=`）。也支持 `x-goog-api-key` header。
+
+use bytes::Bytes;
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+
+use crate::adapter::{
+    Adapter, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType, WebRequestData,
+};
+use crate::error::{AdapterError, AdapterResult};
+use crate::resolver::{Endpoint, ServiceTarget};
+use crate::types::ingress_wire::gemini::{
+    GeminiChatResponse, GeminiContent, GeminiFileData, GeminiFunctionCall, GeminiFunctionResponse,
+    GeminiGenerateContentRequest, GeminiGenerationConfig, GeminiInlineData, GeminiPart, GeminiTool,
+    GeminiUsageMetadata,
+};
+use crate::types::{
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart, FinishReason,
+    ImageUrl, MessageContent, PromptTokensDetails, Role, StreamEnd, ToolCall, ToolCallDelta,
+    ToolCallFunction, ToolFunction, Usage,
+};
+
+/// Google Gemini GenerateContent 协议（`generativelanguage.googleapis.com`）。
+pub struct GeminiAdapter;
+
+impl GeminiAdapter {
+    pub const API_KEY_DEFAULT_ENV_NAME: &'static str = "GEMINI_API_KEY";
+    const BASE_URL: &'static str = "https://generativelanguage.googleapis.com/v1beta/";
+}
+
+impl Adapter for GeminiAdapter {
+    const KIND: AdapterKind = AdapterKind::Gemini;
+    const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
+
+    fn default_endpoint() -> Option<Endpoint> {
+        Some(Endpoint::from_static(Self::BASE_URL))
+    }
+
+    fn capabilities() -> Capabilities {
+        Capabilities {
+            streaming: true,
+            tools: true,
+            tool_choice: true,
+            multimodal_input: true,
+            reasoning: true,
+            response_format: true,
+            multi_choice: true,
+            prompt_caching: true,
+            parallel_tool_calls: true,
+        }
+    }
+
+    fn auth_strategy() -> AuthStrategy {
+        AuthStrategy::QueryParam("key")
+    }
+
+    fn cost_profile() -> CostProfile {
+        CostProfile::default()
+    }
+
+    fn build_chat_request(
+        target: &ServiceTarget,
+        _service: ServiceType,
+        req: &ChatRequest,
+    ) -> AdapterResult<WebRequestData> {
+        Self::validate_chat_request(req)?;
+
+        let method = if req.stream {
+            "streamGenerateContent"
+        } else {
+            "generateContent"
+        };
+
+        let api_key = target.auth.resolve()?.unwrap_or_default();
+        let url = build_gemini_url(
+            target.endpoint.trimmed(),
+            &target.actual_model,
+            method,
+            req.stream,
+            &api_key,
+        );
+
+        let wire = canonical_to_gemini_request(req)?;
+        let payload = serde_json::to_value(&wire).map_err(AdapterError::SerializeRequest)?;
+        let headers = build_headers(target)?;
+
+        Ok(WebRequestData {
+            url,
+            headers,
+            payload,
+        })
+    }
+
+    fn parse_chat_response(_target: &ServiceTarget, body: Bytes) -> AdapterResult<ChatResponse> {
+        let resp: GeminiChatResponse =
+            serde_json::from_slice(&body).map_err(AdapterError::DeserializeResponse)?;
+        Ok(gemini_response_to_canonical(resp))
+    }
+
+    fn parse_chat_stream_event(
+        _target: &ServiceTarget,
+        raw: &str,
+    ) -> AdapterResult<Option<ChatStreamEvent>> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        let chunk: GeminiChatResponse =
+            serde_json::from_str(trimmed).map_err(AdapterError::DeserializeResponse)?;
+        Ok(gemini_chunk_to_canonical(chunk))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// canonical → Gemini wire (request)
+// ---------------------------------------------------------------------------
+
+fn canonical_to_gemini_request(req: &ChatRequest) -> AdapterResult<GeminiGenerateContentRequest> {
+    let mut contents: Vec<GeminiContent> = Vec::new();
+    let mut system_texts: Vec<String> = Vec::new();
+
+    // 收集 tool_call_id → name 映射，functionResponse 需要 name
+    let mut tool_name_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for msg in &req.messages {
+        if let Some(tcs) = &msg.tool_calls {
+            for tc in tcs {
+                tool_name_map.insert(tc.id.clone(), tc.function.name.clone());
+            }
+        }
+    }
+
+    for msg in &req.messages {
+        match msg.role {
+            Role::System | Role::Developer => {
+                if let Some(text) = message_text(msg) {
+                    if !text.is_empty() {
+                        system_texts.push(text);
+                    }
+                }
+            }
+            Role::User => {
+                let parts = canonical_content_to_gemini_parts(msg);
+                contents.push(GeminiContent {
+                    role: Some("user".to_string()),
+                    parts,
+                });
+            }
+            Role::Assistant => {
+                let mut parts = canonical_content_to_gemini_parts(msg);
+                if let Some(tool_calls) = &msg.tool_calls {
+                    for tc in tool_calls {
+                        let args =
+                            serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
+                                .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+                        parts.push(GeminiPart::FunctionCall {
+                            function_call: GeminiFunctionCall {
+                                name: tc.function.name.clone(),
+                                args,
+                            },
+                        });
+                    }
+                }
+                contents.push(GeminiContent {
+                    role: Some("model".to_string()),
+                    parts,
+                });
+            }
+            Role::Tool => {
+                // tool_call_id → name 反查
+                let name = msg
+                    .tool_call_id
+                    .as_ref()
+                    .and_then(|id| tool_name_map.get(id).cloned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let text = message_text(msg).unwrap_or_default();
+                let response: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+                contents.push(GeminiContent {
+                    role: Some("user".to_string()),
+                    parts: vec![GeminiPart::FunctionResponse {
+                        function_response: GeminiFunctionResponse { name, response },
+                    }],
+                });
+            }
+            Role::System | Role::Developer => {
+                // 已在 system_texts 处理（不应到达这里）
+            }
+        }
+    }
+
+    let system_instruction = if system_texts.is_empty() {
+        None
+    } else {
+        let combined = system_texts.join("\n");
+        Some(
+            crate::types::ingress_wire::gemini::GeminiSystemInstruction {
+                parts: vec![GeminiPart::Text { text: combined }],
+            },
+        )
+    };
+
+    // tools
+    let tools = if let Some(canonical_tools) = &req.tools {
+        let decls = canonical_tools
+            .iter()
+            .map(|t| gemini_function_declaration(&t.function))
+            .collect::<Vec<_>>();
+        if decls.is_empty() {
+            Vec::new()
+        } else {
+            vec![GeminiTool {
+                function_declarations: decls,
+                google_search: None,
+                code_execution: None,
+            }]
+        }
+    } else {
+        Vec::new()
+    };
+
+    // generationConfig
+    let stop_sequences = match &req.stop {
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let generation_config = Some(GeminiGenerationConfig {
+        temperature: req.temperature,
+        top_p: req.top_p,
+        top_k: req.extra.get("top_k").and_then(|v| v.as_i64()),
+        candidate_count: req.n,
+        max_output_tokens: req.max_tokens.or(req.max_completion_tokens),
+        stop_sequences,
+        response_mime_type: None,
+        response_schema: None,
+        thinking_config: None,
+        extra: serde_json::Map::new(),
+    });
+
+    Ok(GeminiGenerateContentRequest {
+        contents,
+        system_instruction,
+        tools,
+        tool_config: None,
+        generation_config,
+        safety_settings: Vec::new(),
+        extra: serde_json::Map::new(),
+    })
+}
+
+fn gemini_function_declaration(
+    f: &ToolFunction,
+) -> crate::types::ingress_wire::gemini::GeminiFunctionDeclaration {
+    crate::types::ingress_wire::gemini::GeminiFunctionDeclaration {
+        name: f.name.clone(),
+        description: f.description.clone(),
+        parameters: f.parameters.clone(),
+    }
+}
+
+fn canonical_content_to_gemini_parts(msg: &ChatMessage) -> Vec<GeminiPart> {
+    let Some(content) = msg.content.as_ref() else {
+        return Vec::new();
+    };
+    match content {
+        MessageContent::Text(s) if s.is_empty() => Vec::new(),
+        MessageContent::Text(s) => vec![GeminiPart::Text { text: s.clone() }],
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text { text } => Some(GeminiPart::Text { text: text.clone() }),
+                ContentPart::ImageUrl { image_url } => Some(canonical_image_to_gemini(image_url)),
+                ContentPart::InputAudio { .. } => None, // Gemini 没有 inline audio（应走 fileData）
+            })
+            .collect(),
+    }
+}
+
+fn canonical_image_to_gemini(image_url: &ImageUrl) -> GeminiPart {
+    if let Some(stripped) = image_url.url.strip_prefix("data:") {
+        if let Some((meta, data)) = stripped.split_once(",") {
+            let mime_type = meta.split(';').next().unwrap_or("image/png").to_string();
+            return GeminiPart::InlineData {
+                inline_data: GeminiInlineData {
+                    mime_type,
+                    data: data.to_string(),
+                },
+            };
+        }
+    }
+    GeminiPart::FileData {
+        file_data: GeminiFileData {
+            mime_type: "application/octet-stream".to_string(),
+            file_uri: image_url.url.clone(),
+        },
+    }
+}
+
+fn message_text(msg: &ChatMessage) -> Option<String> {
+    let content = msg.content.as_ref()?;
+    match content {
+        MessageContent::Text(s) => Some(s.clone()),
+        MessageContent::Parts(parts) => {
+            let mut buf = String::new();
+            for part in parts {
+                if let ContentPart::Text { text } = part {
+                    if !buf.is_empty() {
+                        buf.push('\n');
+                    }
+                    buf.push_str(text);
+                }
+            }
+            if buf.is_empty() { None } else { Some(buf) }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gemini wire → canonical (response)
+// ---------------------------------------------------------------------------
+
+fn gemini_response_to_canonical(resp: GeminiChatResponse) -> ChatResponse {
+    let GeminiChatResponse {
+        candidates,
+        usage_metadata,
+        model_version,
+        ..
+    } = resp;
+
+    let choices = candidates
+        .into_iter()
+        .map(gemini_candidate_to_choice)
+        .collect();
+
+    ChatResponse {
+        id: format!("chatcmpl-gemini-{}", timestamp_id()),
+        object: "chat.completion".to_string(),
+        created: 0,
+        model: model_version.unwrap_or_else(|| "gemini".to_string()),
+        choices,
+        usage: usage_metadata
+            .map(gemini_usage_to_canonical)
+            .unwrap_or_default(),
+        system_fingerprint: None,
+        service_tier: None,
+    }
+}
+
+fn gemini_candidate_to_choice(
+    c: crate::types::ingress_wire::gemini::GeminiCandidate,
+) -> ChatChoice {
+    let mut text_buf = String::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut tc_counter: u32 = 0;
+
+    if let Some(content) = c.content {
+        for part in content.parts {
+            match part {
+                GeminiPart::Text { text } => {
+                    if !text_buf.is_empty() {
+                        text_buf.push('\n');
+                    }
+                    text_buf.push_str(&text);
+                }
+                GeminiPart::FunctionCall { function_call } => {
+                    tc_counter += 1;
+                    let GeminiFunctionCall { name, args } = function_call;
+                    let arguments =
+                        serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
+                    tool_calls.push(ToolCall {
+                        id: format!("call_{tc_counter}"),
+                        kind: "function".to_string(),
+                        function: ToolCallFunction { name, arguments },
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    ChatChoice {
+        index: c.index,
+        message: ChatMessage {
+            role: Role::Assistant,
+            content: if text_buf.is_empty() {
+                None
+            } else {
+                Some(MessageContent::Text(text_buf))
+            },
+            refusal: None,
+            name: None,
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
+            tool_call_id: None,
+            audio: None,
+        },
+        logprobs: None,
+        finish_reason: c
+            .finish_reason
+            .as_deref()
+            .and_then(gemini_finish_reason_to_canonical),
+    }
+}
+
+fn gemini_finish_reason_to_canonical(reason: &str) -> Option<FinishReason> {
+    match reason {
+        "STOP" => Some(FinishReason::Stop),
+        "MAX_TOKENS" => Some(FinishReason::Length),
+        "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
+            Some(FinishReason::ContentFilter)
+        }
+        "MALFORMED_FUNCTION_CALL" | "UNEXPECTED_TOOL_CALL" => Some(FinishReason::ToolCalls),
+        _ => Some(FinishReason::Stop),
+    }
+}
+
+fn gemini_usage_to_canonical(m: GeminiUsageMetadata) -> Usage {
+    Usage {
+        prompt_tokens: m.prompt_token_count,
+        completion_tokens: m.candidates_token_count,
+        total_tokens: m.total_token_count,
+        prompt_tokens_details: m.cached_content_token_count.map(|c| PromptTokensDetails {
+            cached_tokens: Some(c),
+            audio_tokens: None,
+        }),
+        completion_tokens_details: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gemini stream chunk → canonical event
+// ---------------------------------------------------------------------------
+
+fn gemini_chunk_to_canonical(chunk: GeminiChatResponse) -> Option<ChatStreamEvent> {
+    let candidate = chunk.candidates.into_iter().next();
+    let has_candidate = candidate.is_some();
+    let usage_meta = chunk.usage_metadata;
+
+    let candidate = match candidate {
+        Some(c) => c,
+        None => {
+            // 只有 usage 无 candidate → End（usage_metadata-only chunk）
+            if let Some(u) = usage_meta {
+                return Some(ChatStreamEvent::End(StreamEnd {
+                    finish_reason: None,
+                    usage: Some(gemini_usage_to_canonical(u)),
+                }));
+            }
+            return None;
+        }
+    };
+
+    // finishReason 存在 → End
+    if let Some(reason) = candidate.finish_reason.as_deref() {
+        return Some(ChatStreamEvent::End(StreamEnd {
+            finish_reason: gemini_finish_reason_to_canonical(reason),
+            usage: usage_meta.map(gemini_usage_to_canonical),
+        }));
+    }
+
+    // 提取 parts 里首个 text / functionCall
+    let parts = candidate.content.map(|c| c.parts).unwrap_or_default();
+    let mut text_buf = String::new();
+    let mut first_fc: Option<GeminiFunctionCall> = None;
+    for part in parts {
+        match part {
+            GeminiPart::Text { text } => {
+                if !text_buf.is_empty() {
+                    text_buf.push('\n');
+                }
+                text_buf.push_str(&text);
+            }
+            GeminiPart::FunctionCall { function_call } if first_fc.is_none() => {
+                first_fc = Some(function_call);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(fc) = first_fc {
+        let args = serde_json::to_string(&fc.args).unwrap_or_else(|_| "{}".to_string());
+        return Some(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+            index: 0,
+            id: Some(format!("call_{}", timestamp_id())),
+            name: Some(fc.name),
+            arguments_delta: Some(args),
+        }));
+    }
+
+    if !text_buf.is_empty() {
+        return Some(ChatStreamEvent::TextDelta { text: text_buf });
+    }
+
+    // 什么都没有（极少见）- has_candidate=true 但内容空
+    if has_candidate { None } else { None }
+}
+
+// ---------------------------------------------------------------------------
+// URL / Headers
+// ---------------------------------------------------------------------------
+
+fn build_gemini_url(base: &str, model: &str, method: &str, stream: bool, api_key: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let mut url = if base.ends_with("/v1beta") || base.contains("/v1beta/") {
+        format!("{base}/models/{model}:{method}")
+    } else {
+        format!("{base}/v1beta/models/{model}:{method}")
+    };
+    let sep = if url.contains('?') { '&' } else { '?' };
+    if stream {
+        url.push(sep);
+        url.push_str("alt=sse");
+        if !api_key.is_empty() {
+            url.push_str("&key=");
+            url.push_str(api_key);
+        }
+    } else if !api_key.is_empty() {
+        url.push(sep);
+        url.push_str("key=");
+        url.push_str(api_key);
+    }
+    url
+}
+
+fn build_headers(target: &ServiceTarget) -> AdapterResult<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    for (name, value) in &target.extra_headers {
+        let name = HeaderName::try_from(name.as_str())
+            .map_err(|e| AdapterError::InvalidHeader(e.to_string()))?;
+        let value = HeaderValue::from_str(value.as_str())
+            .map_err(|e| AdapterError::InvalidHeader(e.to_string()))?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
+fn timestamp_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos:x}")
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ChatMessage;
+
+    fn target() -> ServiceTarget {
+        ServiceTarget::bearer(
+            "https://generativelanguage.googleapis.com",
+            "AIza-fake-key",
+            "gemini-2.5-flash",
+        )
+    }
+
+    #[test]
+    fn url_non_stream_uses_generate_content_with_key() {
+        let t = target();
+        let req = ChatRequest::new("alias", vec![ChatMessage::user("hi")]);
+        let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        assert!(
+            data.url
+                .contains("/v1beta/models/gemini-2.5-flash:generateContent")
+        );
+        assert!(data.url.contains("key=AIza-fake-key"));
+    }
+
+    #[test]
+    fn url_stream_adds_alt_sse() {
+        let t = target();
+        let mut req = ChatRequest::new("alias", vec![ChatMessage::user("hi")]);
+        req.stream = true;
+        let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        assert!(data.url.contains(":streamGenerateContent"));
+        assert!(data.url.contains("alt=sse"));
+    }
+
+    #[test]
+    fn system_messages_become_system_instruction() {
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![
+                ChatMessage::system("you are helpful"),
+                ChatMessage::user("hi"),
+            ],
+        );
+        let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let sys = &data.payload["systemInstruction"];
+        assert_eq!(sys["parts"][0]["text"], "you are helpful");
+        let contents = data.payload["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0]["role"], "user");
+    }
+
+    #[test]
+    fn role_mapping_user_assistant() {
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![ChatMessage::user("hi"), ChatMessage::assistant("hello")],
+        );
+        let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let contents = data.payload["contents"].as_array().unwrap();
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[1]["role"], "model");
+    }
+
+    #[test]
+    fn assistant_tool_calls_emit_function_call_parts() {
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![ChatMessage {
+                role: Role::Assistant,
+                content: Some(MessageContent::Text("let me check".to_string())),
+                refusal: None,
+                name: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_1".to_string(),
+                    kind: "function".to_string(),
+                    function: ToolCallFunction {
+                        name: "weather".to_string(),
+                        arguments: r#"{"city":"NYC"}"#.to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+                audio: None,
+            }],
+        );
+        let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let parts = data.payload["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["text"], "let me check");
+        assert_eq!(parts[1]["functionCall"]["name"], "weather");
+        assert_eq!(parts[1]["functionCall"]["args"]["city"], "NYC");
+    }
+
+    #[test]
+    fn tool_response_becomes_function_response_part() {
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![
+                ChatMessage {
+                    role: Role::Assistant,
+                    content: None,
+                    refusal: None,
+                    name: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_1".to_string(),
+                        kind: "function".to_string(),
+                        function: ToolCallFunction {
+                            name: "weather".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                    audio: None,
+                },
+                ChatMessage::tool_response("call_1", r#"{"temp":"72F"}"#),
+            ],
+        );
+        let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let contents = data.payload["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 2);
+        let tool_part = &contents[1]["parts"][0];
+        assert_eq!(tool_part["functionResponse"]["name"], "weather");
+        assert_eq!(tool_part["functionResponse"]["response"]["temp"], "72F");
+    }
+
+    #[test]
+    fn image_data_uri_becomes_inline_data() {
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![ChatMessage {
+                role: Role::User,
+                content: Some(MessageContent::Parts(vec![
+                    ContentPart::Text {
+                        text: "describe".to_string(),
+                    },
+                    ContentPart::ImageUrl {
+                        image_url: ImageUrl {
+                            url: "data:image/png;base64,XYZ".to_string(),
+                            detail: None,
+                        },
+                    },
+                ])),
+                refusal: None,
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                audio: None,
+            }],
+        );
+        let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let parts = data.payload["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["inlineData"]["data"], "XYZ");
+    }
+
+    #[test]
+    fn parse_response_basic() {
+        let t = target();
+        let body = br#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[{"text":"hello"}]},
+                "finishReason":"STOP"
+            }],
+            "usageMetadata":{
+                "promptTokenCount":3,"candidatesTokenCount":5,"totalTokenCount":8,
+                "cachedContentTokenCount":2
+            },
+            "modelVersion":"gemini-2.5-flash"
+        }"#;
+        let resp = GeminiAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        assert_eq!(resp.first_text(), Some("hello"));
+        assert_eq!(resp.usage.prompt_tokens, 3);
+        assert_eq!(resp.usage.total_tokens, 8);
+        assert_eq!(
+            resp.usage
+                .prompt_tokens_details
+                .as_ref()
+                .unwrap()
+                .cached_tokens,
+            Some(2)
+        );
+        assert_eq!(resp.choices[0].finish_reason, Some(FinishReason::Stop));
+    }
+
+    #[test]
+    fn parse_response_function_call() {
+        let t = target();
+        let body = br#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[
+                    {"functionCall":{"name":"weather","args":{"city":"NYC"}}}
+                ]},
+                "finishReason":"STOP"
+            }],
+            "modelVersion":"gemini-2.5-flash"
+        }"#;
+        let resp = GeminiAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let tcs = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tcs[0].function.name, "weather");
+        assert!(tcs[0].function.arguments.contains("NYC"));
+    }
+
+    #[test]
+    fn stream_chunk_text_delta() {
+        let t = target();
+        let raw = r#"{
+            "candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"hi"}]}}]
+        }"#;
+        let e = GeminiAdapter::parse_chat_stream_event(&t, raw)
+            .unwrap()
+            .unwrap();
+        match e {
+            ChatStreamEvent::TextDelta { text } => assert_eq!(text, "hi"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn stream_chunk_with_finish_reason_emits_end() {
+        let t = target();
+        let raw = r#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[]},
+                "finishReason":"STOP"
+            }],
+            "usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}
+        }"#;
+        let e = GeminiAdapter::parse_chat_stream_event(&t, raw)
+            .unwrap()
+            .unwrap();
+        match e {
+            ChatStreamEvent::End(end) => {
+                assert_eq!(end.finish_reason, Some(FinishReason::Stop));
+                assert_eq!(end.usage.as_ref().unwrap().total_tokens, 3);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn finish_reason_safety_maps_to_content_filter() {
+        assert_eq!(
+            gemini_finish_reason_to_canonical("SAFETY"),
+            Some(FinishReason::ContentFilter)
+        );
+        assert_eq!(
+            gemini_finish_reason_to_canonical("MAX_TOKENS"),
+            Some(FinishReason::Length)
+        );
+    }
+}
