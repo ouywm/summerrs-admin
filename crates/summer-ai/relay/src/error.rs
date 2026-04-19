@@ -10,6 +10,7 @@
 //! 本错误会被 handler 映射成 axum [`Response`](summer_web::axum::response::Response)。
 
 use bytes::Bytes;
+use sea_orm::DbErr;
 use summer_ai_core::AdapterError;
 use summer_web::axum::Json;
 use summer_web::axum::http::StatusCode;
@@ -27,8 +28,26 @@ pub enum RelayError {
     #[error("upstream responded {status}")]
     UpstreamStatus { status: u16, body: Bytes },
 
+    #[error("database error: {0}")]
+    Database(DbErr),
+
+    #[error("redis error: {0}")]
+    Redis(String),
+
     #[error("missing config: {0}")]
     MissingConfig(&'static str),
+
+    #[error("no available channel for model `{model}`")]
+    NoAvailableChannel { model: String },
+
+    #[error("not authenticated: {0}")]
+    Unauthenticated(&'static str),
+
+    #[error("token expired")]
+    TokenExpired,
+
+    #[error("token quota exhausted")]
+    QuotaExhausted,
 
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
@@ -53,7 +72,13 @@ impl RelayError {
             Self::UpstreamStatus { status, .. } => {
                 StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
             }
+            Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Redis(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::MissingConfig(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::NoAvailableChannel { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
+            Self::TokenExpired => StatusCode::UNAUTHORIZED,
+            Self::QuotaExhausted => StatusCode::PAYMENT_REQUIRED,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
         }
     }
@@ -70,7 +95,13 @@ impl RelayError {
             Self::Adapter(AdapterError::Network(_)) => "upstream_unreachable",
             Self::Http(_) => "upstream_unreachable",
             Self::UpstreamStatus { .. } => "upstream_error",
+            Self::Database(_) => "database_error",
+            Self::Redis(_) => "redis_error",
             Self::MissingConfig(_) => "configuration_error",
+            Self::NoAvailableChannel { .. } => "no_available_channel",
+            Self::Unauthenticated(_) => "authentication_error",
+            Self::TokenExpired => "token_expired",
+            Self::QuotaExhausted => "insufficient_quota",
             Self::NotImplemented(_) => "not_implemented",
         }
     }

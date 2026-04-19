@@ -1,18 +1,16 @@
-//! `POST /v1/messages` —— Claude Messages API 兼容入口。
+//! `POST /v1/responses` —— OpenAI Responses API 入口。
 //!
 //! 走路径：
-//! - 客户端用 Claude SDK 格式发请求
-//! - [`ChannelStore::pick`] 选 (channel, account) → [`build_service_target`] 得到
-//!   实际上游 `(AdapterKind, ServiceTarget)`（上游不一定是 Claude，可能是任意 OpenAI
-//!   兼容 / Gemini / 其它）
-//! - [`ClaudeIngress::to_canonical`] 翻译成 canonical
-//! - 复用 [`crate::service::chat`] 发给上游
-//! - 非流式响应：[`ClaudeIngress::from_canonical`] 翻译回 Claude JSON
-//! - 流式响应：[`crate::service::stream_driver::transcode_stream`] 把上游 SSE
-//!   重组成 Claude 6-event SSE
+//! - 客户端用 Responses API 格式发请求
+//! - [`ChannelStore::pick`] 选 (channel, account) → [`build_service_target`]
+//! - [`OpenAIResponsesIngress::to_canonical`] 翻译成 canonical `ChatRequest`
+//! - 复用 [`crate::service::chat`] 发给上游（任意 chat 兼容上游）
+//! - 非流式：[`OpenAIResponsesIngress::from_canonical`] 翻译回 Responses JSON
+//! - 流式：[`crate::service::stream_driver::transcode_stream`] 把上游 SSE
+//!   重组成 Responses 10+ event SSE（`response.created` … `response.completed`）
 
 use summer_admin_macros::no_auth;
-use summer_ai_core::types::ingress_wire::claude::ClaudeMessagesRequest;
+use summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesRequest;
 use summer_web::Router;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
@@ -22,23 +20,23 @@ use summer_web::handler::TypeRouter;
 use summer_web::post;
 
 use crate::auth::AiToken;
-use crate::convert::ingress::{ClaudeIngress, IngressConverter, IngressCtx};
+use crate::convert::ingress::{IngressConverter, IngressCtx, OpenAIResponsesIngress};
 use crate::error::{RelayError, RelayResult};
 use crate::service::channel_store::{ChannelStore, build_service_target};
 use crate::service::stream_driver::sse_response;
 use crate::service::{chat, stream_driver};
 
-/// `POST /v1/messages`
+/// `POST /v1/responses`
 #[no_auth]
-#[post("/v1/messages")]
-pub async fn messages(
+#[post("/v1/responses")]
+pub async fn responses(
     AiToken(ctx): AiToken,
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
-    Json(claude_req): Json<ClaudeMessagesRequest>,
+    Json(req): Json<OpenAIResponsesRequest>,
 ) -> RelayResult<Response> {
-    let logical_model = claude_req.model.clone();
-    let is_stream = claude_req.stream;
+    let logical_model = req.model.clone();
+    let is_stream = req.stream;
 
     let (channel, account) =
         store
@@ -57,33 +55,33 @@ pub async fn messages(
         adapter = %kind.as_lower_str(),
         channel_id = channel.id,
         account_id = account.id,
-        messages = claude_req.messages.len(),
         stream = is_stream,
-        "claude /v1/messages"
+        "openai /v1/responses"
     );
 
-    // Ingress ctx 需要的是上游 kind（用于选择对应的 egress 结构），这里传
-    // build_service_target 返回的 kind；actual_model 来自 target（已应用 model_mapping）。
     let ctx = IngressCtx::new(kind, &logical_model, &target.actual_model);
 
     // client wire → canonical
-    let mut canonical_req = ClaudeIngress::to_canonical(claude_req, &ctx)?;
-    // stream 位必须显式标记——Adapter::build_chat_request 据此决定 URL/payload
+    let mut canonical_req = OpenAIResponsesIngress::to_canonical(req, &ctx)?;
+    // `to_canonical` 内部把 `stream` 硬编码为 false（converter 是纯协议翻译层，
+    // 不关心调用策略）。这里由 handler 统一覆盖成真实值——决定后面走
+    // invoke_stream_raw 还是 invoke_non_stream，以及让 adapter 的
+    // build_chat_request 据此选对 URL / payload。
     canonical_req.stream = is_stream;
 
     if is_stream {
         let upstream = chat::invoke_stream_raw(&http, kind, &target, &canonical_req).await?;
         let body_stream =
-            stream_driver::transcode_stream::<ClaudeIngress>(upstream, kind, target, ctx);
+            stream_driver::transcode_stream::<OpenAIResponsesIngress>(upstream, kind, target, ctx);
         let body = Body::from_stream(body_stream);
         Ok(sse_response(body))
     } else {
         let canonical_resp = chat::invoke_non_stream(&http, kind, &target, &canonical_req).await?;
-        let claude_resp = ClaudeIngress::from_canonical(canonical_resp, &ctx)?;
-        Ok(Json(claude_resp).into_response())
+        let responses_resp = OpenAIResponsesIngress::from_canonical(canonical_resp, &ctx)?;
+        Ok(Json(responses_resp).into_response())
     }
 }
 
 pub fn routes(router: Router) -> Router {
-    router.typed_route(messages)
+    router.typed_route(responses)
 }

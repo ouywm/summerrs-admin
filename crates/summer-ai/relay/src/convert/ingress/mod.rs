@@ -22,10 +22,12 @@ use summer_ai_core::{
 pub mod claude;
 pub mod gemini;
 pub mod openai;
+pub mod openai_responses;
 
 pub use claude::ClaudeIngress;
 pub use gemini::GeminiIngress;
 pub use openai::OpenAIIngress;
+pub use openai_responses::OpenAIResponsesIngress;
 
 // ---------------------------------------------------------------------------
 // IngressFormat
@@ -185,9 +187,69 @@ pub struct GeminiStreamState {
 
 // ----- Responses stream state -----
 
-/// OpenAI Responses API 流状态（当前占位）。
+/// OpenAI Responses API 流状态。
+///
+/// Responses API 的 SSE 比 Chat / Claude 都复杂：`response.created` →
+/// `response.in_progress` → (每个 output item: `output_item.added` →
+/// [content_part.added → output_text.delta* → output_text.done → content_part.done
+///  或 function_call_arguments.delta* → function_call_arguments.done]
+/// → output_item.done) → `response.completed`。
+///
+/// 字段设计：每种正在"开着"的 item 类型单独一份累积 state；结束时把累积的 items
+/// 整体放进 `response.completed` 的 `response.output`。
 #[derive(Debug, Default)]
-pub struct ResponsesStreamState {}
+pub struct ResponsesStreamState {
+    /// 响应 id（`resp_...`），初始化时生成。
+    pub response_id: String,
+    /// 响应创建时间（unix seconds），初始化时赋值。
+    pub created_at: i64,
+    /// 上游实际模型名（从 `Start.model` 或 `ctx.actual_model`）。
+    pub model: String,
+    /// 是否已发 `response.created` + `response.in_progress`。
+    pub initialized: bool,
+    /// 下一个 `sequence_number`，从 0 开始递增。
+    pub sequence_number: u64,
+    /// 下一个 output item 的 index（每关一个 item 就 +1）。
+    pub next_output_index: u32,
+    /// 当前打开的 Message item（最多一个；切到 tool_call 或 End 时必须关）。
+    pub open_message: Option<OpenMessageState>,
+    /// 当前打开的 tool_call items（按 canonical `ToolCallDelta.index` 聚合）。
+    ///
+    /// 一条 `End` 事件到来前这些 item 都保持打开；`End` 时按 output_index 顺序
+    /// 统一发 `function_call_arguments.done` + `output_item.done`。
+    pub open_tool_calls: std::collections::BTreeMap<i32, OpenToolCallState>,
+    /// 已经 `output_item.done` 的 item 累积（`response.completed` 的 output 列表）。
+    pub completed_items:
+        Vec<summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesOutputItem>,
+    /// End 时收到的 usage。
+    pub final_usage: Option<summer_ai_core::Usage>,
+    /// 最终 status（默认 `completed`；长度上限等映射到 `incomplete`）。
+    pub final_status: String,
+    /// 是否已发 `response.completed`。
+    pub done: bool,
+}
+
+/// 当前打开的 Responses message item 状态。
+#[derive(Debug)]
+pub struct OpenMessageState {
+    pub item_id: String,
+    pub output_index: u32,
+    /// 当前 text content part 的 index；本轮 Message 只含一个 text part，固定 0。
+    pub content_index: u32,
+    /// 累积的 text（`output_text.done` 带完整 text，便于客户端重建）。
+    pub text_buf: String,
+}
+
+/// 当前打开的 Responses function_call item 状态。
+#[derive(Debug)]
+pub struct OpenToolCallState {
+    pub item_id: String,
+    pub output_index: u32,
+    pub call_id: String,
+    pub name: String,
+    /// 累积的 arguments JSON（`function_call_arguments.done` 带完整字符串）。
+    pub arguments: String,
+}
 
 // ---------------------------------------------------------------------------
 // IngressConverter trait

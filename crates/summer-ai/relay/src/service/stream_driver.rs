@@ -35,9 +35,36 @@ use futures::stream::Stream;
 use serde::Serialize;
 
 use summer_ai_core::{AdapterDispatcher, AdapterKind, ChatStreamEvent, ServiceTarget};
+use summer_web::axum::body::Body;
+use summer_web::axum::http::{HeaderValue, StatusCode, header};
+use summer_web::axum::response::{IntoResponse, Response};
 
 use crate::convert::ingress::{IngressConverter, IngressCtx, IngressFormat, StreamConvertState};
 use crate::error::RelayError;
+
+// ---------------------------------------------------------------------------
+// SSE 响应构造器（共用给 4 个流式 handler）
+// ---------------------------------------------------------------------------
+
+/// 统一 SSE 响应：`200 OK` + `text/event-stream` + `no-cache` + `keep-alive`。
+///
+/// 给 `/v1/chat/completions` / `/v1/messages` / `/v1beta/.../generateContent` /
+/// `/v1/responses` 四个流式入口共用——header 三件套 + body。
+pub fn sse_response(body: Body) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+            (header::CONNECTION, HeaderValue::from_static("keep-alive")),
+        ],
+        body,
+    )
+        .into_response()
+}
 
 /// 客户端 SSE 序列化格式。不同入口协议的 SSE 包装不同。
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +73,8 @@ pub enum ClientSseFormat {
     Claude,
     /// `data: {json}\n\n`
     Gemini,
+    /// `event: {type}\ndata: {json}\n\n`（和 Claude 一样但语义独立，便于未来差异化）
+    OpenAIResponses,
 }
 
 impl ClientSseFormat {
@@ -53,6 +82,7 @@ impl ClientSseFormat {
         match f {
             IngressFormat::Claude => Some(Self::Claude),
             IngressFormat::Gemini => Some(Self::Gemini),
+            IngressFormat::OpenAIResponses => Some(Self::OpenAIResponses),
             _ => None,
         }
     }
@@ -208,7 +238,7 @@ fn serialize_client_event<T: Serialize>(
 ) -> Result<Bytes, serde_json::Error> {
     let json = serde_json::to_string(event)?;
     let body = match format {
-        ClientSseFormat::Claude => {
+        ClientSseFormat::Claude | ClientSseFormat::OpenAIResponses => {
             // 从 JSON 里取 type 字段做 event name
             let event_name = extract_type_field(&json).unwrap_or("message");
             format!("event: {event_name}\ndata: {json}\n\n")

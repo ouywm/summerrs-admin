@@ -10,8 +10,8 @@
 //!
 //! - [`claude`] — Claude Messages API (`ClaudeMessagesRequest` / `ClaudeResponse` / `ClaudeStreamEvent`)
 //! - [`gemini`] — Google Gemini GenerateContent (`GeminiGenerateContentRequest` / `GeminiChatResponse`)
-//!
-//! 后续会加 `openai_resp`（OpenAI Responses API）。
+//! - [`openai_responses`] — OpenAI Responses API (`OpenAIResponsesRequest` / `OpenAIResponsesResponse` / `OpenAIResponsesStreamEvent`)
 
 pub mod claude;
 pub mod gemini;
+pub mod openai_responses;

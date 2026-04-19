@@ -1,58 +1,61 @@
 //! `POST /v1/chat/completions` —— OpenAI 兼容聊天接口。
 //!
-//! # 当前（走路骨架）
+//! 走路径：[`AiAuthLayer`](crate::auth::AiAuthLayer) 鉴权注入 [`AiTokenContext`](crate::auth::AiTokenContext)
+//! → [`ChannelStore::pick`] 选 (channel, account) → [`build_service_target`] 生成
+//! `(AdapterKind, ServiceTarget)` → [`crate::service::chat`] 发上游 → 非流式 parse /
+//! 流式原样透传 bytes。
 //!
-//! 调 [`crate::service::chat`]：`AdapterDispatcher::build_chat_request` → reqwest →
-//! 非流式 `parse_chat_response` / 流式原样透传 bytes。
-//!
-//! **硬编码**：
-//! - `AdapterKind::OpenAI`
-//! - `base_url`：env `OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`）
-//! - `api_key`：env `OPENAI_API_KEY`（必须）
-//! - `actual_model = request.model`（不做模型映射）
+//! `#[no_auth]` 保留：它告诉 summer-auth 全局 AuthLayer 跳过（避免把 Bearer sk-xxx
+//! 当成 JWT 解析）；API Key 鉴权由本 crate 独立的 AiAuthLayer 完成。
 //!
 //! # 后续待加
 //!
-//! - 从 `ai.channel` / `ai.channel_account` 读 upstream 配置（ChannelRouter::pick）
-//! - AiAuthLayer 鉴权
 //! - BillingLayer 三阶段扣费
 //! - 流式响应走 canonical event 解析 + 重新序列化（egress converter）
 
 use summer_admin_macros::no_auth;
-use summer_ai_core::{AdapterKind, ChatRequest, ServiceTarget};
+use summer_ai_core::ChatRequest;
 use summer_web::Router;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
-use summer_web::axum::http::{HeaderValue, StatusCode, header};
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::handler::TypeRouter;
 use summer_web::post;
 
+use crate::auth::AiToken;
 use crate::error::{RelayError, RelayResult};
+use crate::service::channel_store::{ChannelStore, build_service_target};
 use crate::service::chat;
-
-const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+use crate::service::stream_driver::sse_response;
 
 /// `POST /v1/chat/completions`
 #[no_auth]
 #[post("/v1/chat/completions")]
 pub async fn chat_completions(
+    AiToken(ctx): AiToken,
     Component(http): Component<reqwest::Client>,
+    Component(store): Component<ChannelStore>,
     Json(request): Json<ChatRequest>,
 ) -> RelayResult<Response> {
-    let api_key =
-        std::env::var("OPENAI_API_KEY").map_err(|_| RelayError::MissingConfig("OPENAI_API_KEY"))?;
-    let base_url =
-        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
-
-    // walking skeleton：硬编码 kind + actual_model = request.model
-    let kind = AdapterKind::OpenAI;
-    let target = ServiceTarget::bearer(base_url, api_key, &request.model);
+    let logical_model = request.model.clone();
+    let (channel, account) =
+        store
+            .pick(&logical_model)
+            .await?
+            .ok_or_else(|| RelayError::NoAvailableChannel {
+                model: logical_model.clone(),
+            })?;
+    let (kind, target) = build_service_target(&channel, &account, &logical_model)?;
     let is_stream = request.stream;
 
     tracing::debug!(
-        model = %request.model,
+        token_id = ctx.token_id,
+        user_id = ctx.user_id,
+        model = %logical_model,
+        actual_model = %target.actual_model,
+        channel_id = channel.id,
+        account_id = account.id,
         messages = request.messages.len(),
         stream = is_stream,
         "summer-ai chat_completions"
@@ -61,19 +64,7 @@ pub async fn chat_completions(
     if is_stream {
         let upstream = chat::invoke_stream_raw(&http, kind, &target, &request).await?;
         let body = Body::from_stream(upstream.bytes_stream());
-        Ok((
-            StatusCode::OK,
-            [
-                (
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/event-stream"),
-                ),
-                (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
-                (header::CONNECTION, HeaderValue::from_static("keep-alive")),
-            ],
-            body,
-        )
-            .into_response())
+        Ok(sse_response(body))
     } else {
         let response = chat::invoke_non_stream(&http, kind, &target, &request).await?;
         Ok(Json(response).into_response())
