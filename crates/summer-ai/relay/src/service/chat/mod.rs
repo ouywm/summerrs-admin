@@ -2,11 +2,11 @@
 //!
 //! Handler 只做 HTTP 解包/封包；实际"发上游 + 解析响应"走这里。
 //!
-//! # P3 走路骨架
+//! # 走路骨架
 //!
 //! - 非流式：`invoke_non_stream` → `AdapterDispatcher::build → reqwest send → parse_chat_response`
 //! - 流式：`invoke_stream_raw` → 返上游 `reqwest::Response`，handler 自己 `bytes_stream()`
-//!   **原样透传** SSE bytes。P3.5 多入口协议时再做 canonical 重组。
+//!   **原样透传** SSE bytes。多入口协议时再做 canonical 重组。
 
 use bytes::Bytes;
 use summer_ai_core::{
@@ -49,7 +49,7 @@ pub async fn invoke_non_stream(
 /// 流式 chat：build → post，返上游 `reqwest::Response`。
 ///
 /// Handler 用 `response.bytes_stream()` 原样透传给客户端。
-/// **当前阶段**：不做 canonical event 重组（P3.5 多入口协议时加）。
+/// **当前阶段**：不做 canonical event 重组（多入口协议时加）。
 pub async fn invoke_stream_raw(
     http: &reqwest::Client,
     kind: AdapterKind,

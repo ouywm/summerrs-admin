@@ -7,13 +7,11 @@
 //!
 //! # 为什么这样设计
 //!
-//! 详见 [`ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)。核心理由：
-//!
 //! - **零运行时开销**：ZST + associated fn = 纯函数调用
 //! - **编译期穷尽**：加新 adapter 时 `match kind` 的分支如果漏写，编译器会拒绝
 //! - **无状态**：adapter 不持有 state，每次请求从 [`ServiceTarget`] 取
 //!
-//! # 新增 adapter 三步走（ARCHITECTURE §8）
+//! # 新增 adapter 三步走
 //!
 //! 1. [`AdapterKind`] 加一个变体 + 编码值
 //! 2. 在 `adapters/xxx.rs` 写 `pub struct XxxAdapter;` + `impl Adapter`
@@ -42,7 +40,7 @@ pub use kind::{AdapterKind, InvalidAdapterKind};
 // Capabilities —— 协议能力声明
 // ---------------------------------------------------------------------------
 
-/// 协议能力声明（ARCHITECTURE §3.5）。
+/// 协议能力声明。
 ///
 /// Adapter 用 [`Adapter::capabilities()`] 暴露协议默认能力；
 /// Channel 可通过 `ai.channel.capabilities` JSONB + [`ServiceTarget::capabilities_override`]
@@ -102,7 +100,7 @@ impl Capabilities {
 }
 
 // ---------------------------------------------------------------------------
-// CostProfile —— 协议级计费系数（ARCHITECTURE §3.6）
+// CostProfile —— 协议级计费系数
 // ---------------------------------------------------------------------------
 
 /// 协议级计费系数。**不存单价**——单价放 `ai.channel_model_price` 表。
@@ -156,7 +154,7 @@ impl CostProfile {
 // AuthStrategy —— 声明式鉴权
 // ---------------------------------------------------------------------------
 
-/// 上游协议使用的鉴权方式（ARCHITECTURE §3.7）。
+/// 上游协议使用的鉴权方式。
 ///
 /// 借鉴 llm-connector：把 auth 拆成**声明**（这个协议怎么鉴权）+ **实现**
 /// （用 `ServiceTarget.auth` 取出 key，按 strategy 塞进 HTTP 请求），避免
@@ -213,8 +211,6 @@ pub struct WebRequestData {
 // ---------------------------------------------------------------------------
 
 /// 一家上游协议的 **协议转换器**。
-///
-/// 详见 [`ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md) §3.1。
 ///
 /// # 设计约束
 ///

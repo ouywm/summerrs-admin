@@ -120,11 +120,11 @@ impl IngressCtx {
 pub enum StreamConvertState {
     /// OpenAI identity 无 state。
     Openai,
-    /// Claude 6-event 状态机（详见 CONVERSION_SPEC §1.7.2）。P3.5c 实装。
+    /// Claude 6-event 状态机。
     Claude(ClaudeStreamState),
-    /// Gemini 轮询式流（每 chunk 一个完整 response）。P3.5d 实装。
+    /// Gemini 轮询式流（每 chunk 一个完整 response）。
     Gemini(GeminiStreamState),
-    /// OpenAI Responses API 流状态。P8 实装。
+    /// OpenAI Responses API 流状态。
     Responses(ResponsesStreamState),
 }
 
@@ -140,9 +140,9 @@ impl StreamConvertState {
     }
 }
 
-// ----- Claude stream state（详细定义，P3.5c 用）-----
+// ----- Claude stream state -----
 
-/// Claude 流转换状态——对应 CONVERSION_SPEC §1.7.2 的 `ClaudeStreamConvertState`。
+/// Claude 流转换状态——对应客户端的 6-event SSE 重组。
 #[derive(Debug, Default)]
 pub struct ClaudeStreamState {
     /// 客户端已收到的事件总数；首块前为 0。
@@ -173,7 +173,7 @@ pub enum ClaudeLastMessageType {
     Tools,
 }
 
-// ----- Gemini stream state（P3.5d 用）-----
+// ----- Gemini stream state -----
 
 /// Gemini 每个 chunk 一个完整 GeminiChatResponse，state 只要追踪已发 candidate 位置。
 #[derive(Debug, Default)]
@@ -181,7 +181,7 @@ pub struct GeminiStreamState {
     pub emitted_candidates: i32,
 }
 
-// ----- Responses stream state（P8 用）-----
+// ----- Responses stream state -----
 
 /// OpenAI Responses API 流状态（当前占位）。
 #[derive(Debug, Default)]

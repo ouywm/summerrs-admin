@@ -29,6 +29,9 @@ pub enum RelayError {
 
     #[error("missing config: {0}")]
     MissingConfig(&'static str),
+
+    #[error("not implemented: {0}")]
+    NotImplemented(&'static str),
 }
 
 pub type RelayResult<T> = Result<T, RelayError>;
@@ -51,6 +54,7 @@ impl RelayError {
                 StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
             }
             Self::MissingConfig(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
         }
     }
 
@@ -67,6 +71,7 @@ impl RelayError {
             Self::Http(_) => "upstream_unreachable",
             Self::UpstreamStatus { .. } => "upstream_error",
             Self::MissingConfig(_) => "configuration_error",
+            Self::NotImplemented(_) => "not_implemented",
         }
     }
 }

@@ -245,7 +245,7 @@ pub struct ClaudeResponse {
     pub usage: ClaudeUsage,
 }
 
-/// Claude 停止原因（`CONVERSION_SPEC §1.6` 与 canonical 的映射）。
+/// Claude 停止原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaudeStopReason {

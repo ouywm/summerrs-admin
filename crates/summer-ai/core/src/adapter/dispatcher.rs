@@ -5,8 +5,8 @@
 //! （Rust 的 exhaustive match）。
 //!
 //! 当前只实现 `OpenAI` / `OpenAICompat`；其他变体返 [`AdapterError::Unsupported`]。
-//! 后续 Phase 按 `MIGRATION_V2.md` 节奏逐步填入（P8 先加 Anthropic / Gemini / Ollama /
-//! Cohere / OpenAICompat 变种 5 家，P10 机械铺开剩余 14 家）。
+//! 后续逐步填入（先加 Anthropic / Gemini / Ollama / Cohere / OpenAICompat 变种
+//! 5 家，再机械铺开剩余 14 家）。
 
 use bytes::Bytes;
 

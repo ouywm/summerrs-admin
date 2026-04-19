@@ -3,8 +3,8 @@
 //! 负责：
 //! - 注册 `reqwest::Client` 作 Component
 //! - 挂 `/v1/*` 路由（chat / models / 后续 embeddings/responses）
-//! - AiAuthLayer 鉴权（P5 加）
-//! - 流式任务 TaskTracker（shutdown 时 drain，P3 加）
+//! - AiAuthLayer 鉴权（后续加）
+//! - 流式任务 TaskTracker（shutdown 时 drain，后续加）
 
 use summer::app::AppBuilder;
 use summer::async_trait;

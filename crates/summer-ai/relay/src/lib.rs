@@ -4,7 +4,7 @@
 //!
 //! # 当前状态
 //!
-//! P3 walking skeleton——OpenAI 入口走通（硬编码 ServiceTarget），后续 Phase 按 MIGRATION_V2 推进。
+//! 走路骨架——OpenAI 入口走通（硬编码 ServiceTarget），后续按节奏扩展。
 
 pub mod convert;
 pub mod error;

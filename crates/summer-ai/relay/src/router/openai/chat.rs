@@ -1,6 +1,6 @@
 //! `POST /v1/chat/completions` —— OpenAI 兼容聊天接口。
 //!
-//! # 当前（P3 walking skeleton）
+//! # 当前（走路骨架）
 //!
 //! 调 [`crate::service::chat`]：`AdapterDispatcher::build_chat_request` → reqwest →
 //! 非流式 `parse_chat_response` / 流式原样透传 bytes。
@@ -11,12 +11,12 @@
 //! - `api_key`：env `OPENAI_API_KEY`（必须）
 //! - `actual_model = request.model`（不做模型映射）
 //!
-//! # 后续 Phase
+//! # 后续待加
 //!
-//! - P4：从 `ai.channel` / `ai.channel_account` 读 upstream 配置（ChannelRouter::pick）
-//! - P5：加 AiAuthLayer 鉴权
-//! - P6：加 BillingLayer 三阶段扣费
-//! - P3.5：流式响应走 `parse_chat_stream_event` → 重新序列化（egress converter）
+//! - 从 `ai.channel` / `ai.channel_account` 读 upstream 配置（ChannelRouter::pick）
+//! - AiAuthLayer 鉴权
+//! - BillingLayer 三阶段扣费
+//! - 流式响应走 canonical event 解析 + 重新序列化（egress converter）
 
 use summer_admin_macros::no_auth;
 use summer_ai_core::{AdapterKind, ChatRequest, ServiceTarget};

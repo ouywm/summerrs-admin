@@ -1,6 +1,6 @@
 //! [`AdapterKind`] —— 上游协议家族枚举。
 //!
-//! **21 连续编码**（ARCHITECTURE §3.2）：
+//! **21 连续编码**：
 //!
 //! - 1-4  OpenAI 家族（OpenAI / OpenAIResp / OpenAICompat / Azure）
 //! - 5-8  Native 协议（Anthropic / Gemini / Cohere / Ollama）

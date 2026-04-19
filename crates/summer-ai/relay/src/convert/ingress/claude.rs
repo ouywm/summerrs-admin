@@ -1,19 +1,18 @@
 //! Claude Messages ↔ canonical 转换（非流式部分）。
 //!
-//! 对齐 `CONVERSION_SPEC.md §1`。流式状态机留给 P3.5c（当前 `from_canonical_stream_event`
-//! 返空 Vec 占位）。
+//! 流式状态机待实现（当前 `from_canonical_stream_event` 返空 Vec 占位）。
 //!
-//! # 已知限制（P3.5b 阶段）
+//! # 已知限制
 //!
 //! 1. **`cache_control` 丢失**：canonical `ContentPart::Text` 暂无 cache_control 字段，
-//!    Claude 入的 cache_control 提示会被丢弃。P3.1（Anthropic adapter）落地时扩展 canonical
+//!    Claude 入的 cache_control 提示会被丢弃。接入 Anthropic adapter 时再扩展 canonical
 //!    并补透传逻辑。
 //! 2. **`thinking` 仅 Anthropic 上游透传**：其他上游（OpenRouter / OpenAI）的 thinking
-//!    方言转换留在 P3.1 处理（通过 `ctx.channel_kind` 分派）。
+//!    方言转换后续再做（通过 `ctx.channel_kind` 分派）。
 //! 3. **`Image` 只支持 base64 `data:` URI**：Claude URL 图像 source 映射时直接用 URL，
 //!    canonical `ImageUrl.url` 接受任一。
 //! 4. **`Document` / `RedactedThinking` / `Thinking` blocks** 在 `to_canonical` 时忽略
-//!    （只在 P3.1 Anthropic 原生上游有意义）。
+//!    （只在 Anthropic 原生上游有意义）。
 
 use std::collections::HashMap;
 
@@ -53,8 +52,8 @@ impl IngressConverter for ClaudeIngress {
         _state: &mut StreamConvertState,
         _ctx: &IngressCtx,
     ) -> AdapterResult<Vec<Self::ClientStreamEvent>> {
-        // P3.5c 实装：6 事件重组状态机。当前返空 Vec，让流式请求能编译
-        // 但不产出事件（handler 会把流直接失败——在 P3.5c 前不应开放 Claude 流式路由）。
+        // 待实装：6 事件重组状态机。当前返空 Vec，让流式请求能编译但不产出事件
+        // （handler 在流式状态机完成前不应开放 Claude 流式路由）。
         Ok(Vec::new())
     }
 }
@@ -144,7 +143,7 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
         );
     }
     if let Some(thinking) = thinking {
-        // 仅 Anthropic 原生上游透传；其他上游 P3.1 再按方言转换
+        // 仅 Anthropic 原生上游透传；其他上游后续再按方言转换
         if ctx.channel_kind == AdapterKind::Anthropic {
             extra.insert(
                 "thinking".to_string(),
@@ -153,7 +152,7 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
         } else {
             tracing::debug!(
                 channel = %ctx.channel_kind.as_lower_str(),
-                "dropping `thinking` field: not Anthropic upstream (will be P3.1)"
+                "dropping `thinking` field: not Anthropic upstream"
             );
         }
     }
@@ -213,7 +212,7 @@ fn build_tool_use_name_map(messages: &[ClaudeMessage]) -> HashMap<String, String
 
 /// 把 Claude `system` 字段扁平化成一个字符串（多 block 用 `\n` 连接）。
 ///
-/// `cache_control` 提示在 P3.5b 阶段丢失（canonical `ContentPart` 暂不带）。
+/// `cache_control` 提示当前丢失（canonical `ContentPart` 暂不带）。
 fn flatten_system(sys: ClaudeSystem) -> String {
     match sys {
         ClaudeSystem::Text(s) => s,
@@ -315,7 +314,7 @@ fn append_claude_message(
             ClaudeContentBlock::Thinking { .. }
             | ClaudeContentBlock::RedactedThinking { .. }
             | ClaudeContentBlock::Document { .. } => {
-                // P3.5b 忽略（P3.1 Anthropic adapter 时再支持）
+                // 暂时忽略（需要 Anthropic 原生 adapter 配合才有意义）
             }
         }
     }
@@ -382,7 +381,7 @@ fn claude_tool_result_to_string(content: Option<ClaudeToolResultContent>) -> Ada
         None => Ok(String::new()),
         Some(ClaudeToolResultContent::Text(s)) => Ok(s),
         Some(ClaudeToolResultContent::Blocks(blocks)) => {
-            // 多块（text + image） → JSON-stringify 整个 block 数组（CONVERSION_SPEC §1.3.2）
+            // 多块（text + image） → JSON-stringify 整个 block 数组
             serde_json::to_string(&blocks).map_err(AdapterError::SerializeRequest)
         }
     }
@@ -500,7 +499,7 @@ fn message_text(msg: &ChatMessage) -> Option<String> {
     }
 }
 
-/// `CONVERSION_SPEC §1.6` 的 finish_reason ↔ stop_reason 映射表。
+/// finish_reason ↔ stop_reason 映射表。
 fn finish_reason_to_stop_reason(reason: Option<FinishReason>) -> ClaudeStopReason {
     match reason {
         Some(FinishReason::Stop) => ClaudeStopReason::EndTurn,
@@ -530,8 +529,7 @@ fn usage_to_claude(usage: summer_ai_core::Usage) -> ClaudeUsage {
     }
 }
 
-// CONVERSION_SPEC §1.3.2 提到 tool_result.content 多块时要 JSON-stringify；
-// serde_json::Error::custom 是 trait method 需要 trait 在 scope
+// serde_json::Error::custom 是 trait method，需要 trait 在 scope
 use serde::de::Error as _;
 
 // ---------------------------------------------------------------------------
