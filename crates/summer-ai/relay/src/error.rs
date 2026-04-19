@@ -45,6 +45,7 @@ impl RelayError {
             Self::Adapter(AdapterError::UpstreamStatus { status, .. }) => {
                 StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
             }
+            Self::Adapter(AdapterError::Network(_)) => StatusCode::BAD_GATEWAY,
             Self::Http(_) => StatusCode::BAD_GATEWAY,
             Self::UpstreamStatus { status, .. } => {
                 StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
@@ -62,6 +63,7 @@ impl RelayError {
             Self::Adapter(AdapterError::InvalidHeader(_)) => "header_error",
             Self::Adapter(AdapterError::ResolveAuth(_)) => "auth_error",
             Self::Adapter(AdapterError::UpstreamStatus { .. }) => "upstream_error",
+            Self::Adapter(AdapterError::Network(_)) => "upstream_unreachable",
             Self::Http(_) => "upstream_unreachable",
             Self::UpstreamStatus { .. } => "upstream_error",
             Self::MissingConfig(_) => "configuration_error",

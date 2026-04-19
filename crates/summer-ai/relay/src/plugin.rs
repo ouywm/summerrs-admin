@@ -31,7 +31,7 @@ impl Plugin for SummerAiRelayPlugin {
         };
         app.add_component(http);
 
-        app.add_router_layer(|router| router.merge(relay_router()));
+        // app.add_router_layer(|router| router.merge(relay_router()));
 
         tracing::info!("summer-ai-relay plugin initialized (P0 skeleton + routes)");
     }

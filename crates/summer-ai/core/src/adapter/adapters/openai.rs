@@ -12,13 +12,16 @@
 use bytes::Bytes;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
+use std::future::Future;
 
 use crate::adapter::{
     Adapter, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType, WebRequestData,
 };
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
-use crate::types::{ChatRequest, ChatResponse, ChatStreamEvent, StreamEnd, ToolCallDelta, Usage};
+use crate::types::{
+    ChatRequest, ChatResponse, ChatStreamEvent, ModelList, StreamEnd, ToolCallDelta, Usage,
+};
 
 // ---------------------------------------------------------------------------
 // OpenAIAdapter — 官方
@@ -71,6 +74,13 @@ impl Adapter for OpenAIAdapter {
     ) -> AdapterResult<Option<ChatStreamEvent>> {
         shared::parse_chat_stream_event(Self::KIND.as_lower_str(), target, raw)
     }
+
+    fn fetch_model_names(
+        target: &ServiceTarget,
+        http: &reqwest::Client,
+    ) -> impl Future<Output = AdapterResult<Vec<String>>> + Send {
+        shared::fetch_model_names(target, http)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +131,13 @@ impl Adapter for OpenAICompatAdapter {
         raw: &str,
     ) -> AdapterResult<Option<ChatStreamEvent>> {
         shared::parse_chat_stream_event(Self::KIND.as_lower_str(), target, raw)
+    }
+
+    fn fetch_model_names(
+        target: &ServiceTarget,
+        http: &reqwest::Client,
+    ) -> impl Future<Output = AdapterResult<Vec<String>>> + Send {
+        shared::fetch_model_names(target, http)
     }
 }
 
@@ -292,6 +309,42 @@ mod shared {
 
         Ok(None)
     }
+
+    /// GET `{endpoint}/models` 拉取可用模型 id 列表。
+    ///
+    /// 用于 `/v1/models` 端点 + admin 连通性测试。Bearer auth 来自 `target.auth`。
+    pub(super) async fn fetch_model_names(
+        target: &ServiceTarget,
+        http: &reqwest::Client,
+    ) -> AdapterResult<Vec<String>> {
+        let url = build_models_url(target.endpoint.trimmed());
+        let headers = build_headers(target)?;
+
+        let response = http
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| AdapterError::Network(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.bytes().await.unwrap_or_default();
+            return Err(AdapterError::UpstreamStatus {
+                status,
+                message: String::from_utf8_lossy(&body).to_string(),
+            });
+        }
+
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| AdapterError::Network(e.to_string()))?;
+        let list: ModelList =
+            serde_json::from_slice(&body).map_err(AdapterError::DeserializeResponse)?;
+
+        Ok(list.data.into_iter().map(|m| m.id).collect())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +389,20 @@ fn build_headers(target: &ServiceTarget) -> AdapterResult<HeaderMap> {
         headers.insert(name, value);
     }
     Ok(headers)
+}
+
+/// URL 拼接规则（`/v1/models` 端点）：逻辑同 `build_url`，只是后缀换成 `/models`。
+fn build_models_url(base: &str) -> String {
+    if base.ends_with("/models") {
+        return base.to_string();
+    }
+    if base.ends_with("/v1") || base.contains("/v1/") {
+        let base = base.trim_end_matches('/');
+        format!("{base}/models")
+    } else {
+        let base = base.trim_end_matches('/');
+        format!("{base}/v1/models")
+    }
 }
 
 // ---------------------------------------------------------------------------

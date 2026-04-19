@@ -111,6 +111,21 @@ impl AdapterDispatcher {
         }
     }
 
+    // ─────────────────────── 运维 / 管理面 ───────────────────────
+
+    /// 向上游拉取可用的 model 列表（`/v1/models` 端点 + admin 连通性测试用）。
+    pub async fn fetch_model_names(
+        kind: AdapterKind,
+        target: &ServiceTarget,
+        http: &reqwest::Client,
+    ) -> AdapterResult<Vec<String>> {
+        match kind {
+            AdapterKind::OpenAI => OpenAIAdapter::fetch_model_names(target, http).await,
+            AdapterKind::OpenAICompat => OpenAICompatAdapter::fetch_model_names(target, http).await,
+            other => Err(unsupported(other, "fetch_model_names")),
+        }
+    }
+
     // ─────────────────────── 错误映射 ───────────────────────
 
     pub fn map_error(kind: AdapterKind, status: u16, body: &[u8]) -> AdapterError {

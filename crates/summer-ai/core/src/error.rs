@@ -18,6 +18,8 @@ pub enum AdapterError {
     ResolveAuth(#[from] AuthResolveError),
     #[error("upstream responded {status}: {message}")]
     UpstreamStatus { status: u16, message: String },
+    #[error("network error: {0}")]
+    Network(String),
     #[error("feature `{feature}` not supported by adapter `{adapter}`")]
     Unsupported {
         adapter: &'static str,
