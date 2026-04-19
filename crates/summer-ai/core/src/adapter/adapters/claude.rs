@@ -1,6 +1,6 @@
-//! Anthropic Messages API adapter。
+//! Claude Messages API adapter。
 //!
-//! canonical ↔ Anthropic wire 双向转换，挂 `AdapterDispatcher` 用。
+//! canonical ↔ Claude wire 双向转换，挂 `AdapterDispatcher` 用。
 //!
 //! # 鉴权
 //!
@@ -9,7 +9,7 @@
 //!
 //! # prompt cache 计费
 //!
-//! Anthropic 独有 `cache_creation_input_tokens`（写入 1.25x）和
+//! Claude 独有 `cache_creation_input_tokens`（写入 1.25x）和
 //! `cache_read_input_tokens`（读 0.1x）。响应解析时：
 //! - `cache_read_input_tokens` → `Usage.prompt_tokens_details.cached_tokens`
 //! - `cache_creation_*` 目前透传到 canonical `extra`（canonical
@@ -24,12 +24,11 @@ use crate::adapter::{
 };
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
-use crate::types::ingress_wire::anthropic::{
-    AnthropicContent, AnthropicContentBlock, AnthropicImageSource, AnthropicMessage,
-    AnthropicMessagesRequest, AnthropicResponse, AnthropicStopReason, AnthropicStreamContentBlock,
-    AnthropicStreamDelta, AnthropicStreamEvent, AnthropicStreamMessageStart, AnthropicSystem,
-    AnthropicSystemBlock, AnthropicTool, AnthropicToolChoice, AnthropicToolResultContent,
-    AnthropicUsage,
+use crate::types::ingress_wire::claude::{
+    ClaudeContent, ClaudeContentBlock, ClaudeImageSource, ClaudeMessage, ClaudeMessagesRequest,
+    ClaudeResponse, ClaudeStopReason, ClaudeStreamContentBlock, ClaudeStreamDelta,
+    ClaudeStreamEvent, ClaudeStreamMessageStart, ClaudeSystem, ClaudeSystemBlock, ClaudeTool,
+    ClaudeToolChoice, ClaudeToolResultContent, ClaudeUsage,
 };
 use crate::types::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart, FinishReason,
@@ -37,17 +36,17 @@ use crate::types::{
     ToolCallFunction, Usage,
 };
 
-/// Anthropic Messages API 协议（`api.anthropic.com/v1/messages`）。
-pub struct AnthropicAdapter;
+/// Claude Messages API 协议（`api.anthropic.com/v1/messages`）。
+pub struct ClaudeAdapter;
 
-impl AnthropicAdapter {
+impl ClaudeAdapter {
     pub const API_KEY_DEFAULT_ENV_NAME: &'static str = "ANTHROPIC_API_KEY";
     const BASE_URL: &'static str = "https://api.anthropic.com/v1/";
     const API_VERSION: &'static str = "2023-06-01";
 }
 
-impl Adapter for AnthropicAdapter {
-    const KIND: AdapterKind = AdapterKind::Anthropic;
+impl Adapter for ClaudeAdapter {
+    const KIND: AdapterKind = AdapterKind::Claude;
     const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
     fn default_endpoint() -> Option<Endpoint> {
@@ -96,7 +95,7 @@ impl Adapter for AnthropicAdapter {
     }
 
     fn parse_chat_response(target: &ServiceTarget, body: Bytes) -> AdapterResult<ChatResponse> {
-        let resp: AnthropicResponse =
+        let resp: ClaudeResponse =
             serde_json::from_slice(&body).map_err(AdapterError::DeserializeResponse)?;
         Ok(claude_response_to_canonical(resp, target))
     }
@@ -109,7 +108,7 @@ impl Adapter for AnthropicAdapter {
         if trimmed.is_empty() {
             return Ok(None);
         }
-        let event: AnthropicStreamEvent =
+        let event: ClaudeStreamEvent =
             serde_json::from_str(trimmed).map_err(AdapterError::DeserializeResponse)?;
         Ok(claude_stream_event_to_canonical(event))
     }
@@ -119,7 +118,7 @@ impl Adapter for AnthropicAdapter {
         _http: &reqwest::Client,
     ) -> impl Future<Output = AdapterResult<Vec<String>>> + Send {
         async {
-            // Anthropic `/v1/models` 最近才出现且权限要求较高；后续按需启用。
+            // Claude `/v1/models` 最近才出现且权限要求较高；后续按需启用。
             Err(AdapterError::Unsupported {
                 adapter: Self::KIND.as_str(),
                 feature: "fetch_model_names",
@@ -129,14 +128,14 @@ impl Adapter for AnthropicAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// canonical → Anthropic wire (request)
+// canonical → Claude wire (request)
 // ---------------------------------------------------------------------------
 
 fn canonical_to_claude_request(
     target: &ServiceTarget,
     req: &ChatRequest,
-) -> AdapterResult<AnthropicMessagesRequest> {
-    // max_tokens 是 Anthropic 必填字段
+) -> AdapterResult<ClaudeMessagesRequest> {
+    // max_tokens 是 Claude 必填字段
     let max_tokens = req
         .max_tokens
         .or(req.max_completion_tokens)
@@ -161,14 +160,14 @@ fn canonical_to_claude_request(
     let system = if system_text_parts.is_empty() {
         None
     } else if system_text_parts.len() == 1 {
-        Some(AnthropicSystem::Text(
+        Some(ClaudeSystem::Text(
             system_text_parts.into_iter().next().unwrap(),
         ))
     } else {
-        Some(AnthropicSystem::Blocks(
+        Some(ClaudeSystem::Blocks(
             system_text_parts
                 .into_iter()
-                .map(|text| AnthropicSystemBlock {
+                .map(|text| ClaudeSystemBlock {
                     kind: "text".to_string(),
                     text,
                     cache_control: None,
@@ -186,7 +185,7 @@ fn canonical_to_claude_request(
         .as_ref()
         .map(|ts| {
             ts.iter()
-                .map(|t| AnthropicTool {
+                .map(|t| ClaudeTool {
                     name: t.function.name.clone(),
                     description: t.function.description.clone(),
                     input_schema: t
@@ -216,7 +215,7 @@ fn canonical_to_claude_request(
         _ => Vec::new(),
     };
 
-    // thinking：从 canonical extra 里取（AnthropicIngress 可能已透传）
+    // thinking：从 canonical extra 里取（ClaudeIngress 可能已透传）
     let thinking = req
         .extra
         .get("thinking")
@@ -229,7 +228,7 @@ fn canonical_to_claude_request(
         .and_then(|v| v.as_u64())
         .and_then(|v| u32::try_from(v).ok());
 
-    Ok(AnthropicMessagesRequest {
+    Ok(ClaudeMessagesRequest {
         model: target.actual_model.clone(),
         messages,
         max_tokens,
@@ -242,25 +241,26 @@ fn canonical_to_claude_request(
         tools,
         tool_choice,
         thinking,
-        metadata: req.user.clone().map(|uid| {
-            crate::types::ingress_wire::anthropic::AnthropicMetadata { user_id: Some(uid) }
-        }),
+        metadata: req
+            .user
+            .clone()
+            .map(|uid| crate::types::ingress_wire::claude::ClaudeMetadata { user_id: Some(uid) }),
         extra: serde_json::Map::new(),
     })
 }
 
-fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<AnthropicMessage>> {
-    let mut out: Vec<AnthropicMessage> = Vec::with_capacity(msgs.len());
-    let mut pending_tool_results: Vec<AnthropicContentBlock> = Vec::new();
+fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage>> {
+    let mut out: Vec<ClaudeMessage> = Vec::with_capacity(msgs.len());
+    let mut pending_tool_results: Vec<ClaudeContentBlock> = Vec::new();
 
     for msg in msgs {
         match msg.role {
             Role::Tool => {
                 let tool_use_id = msg.tool_call_id.clone().unwrap_or_default();
                 let content_text = message_text(msg).unwrap_or_default();
-                pending_tool_results.push(AnthropicContentBlock::ToolResult {
+                pending_tool_results.push(ClaudeContentBlock::ToolResult {
                     tool_use_id,
-                    content: Some(AnthropicToolResultContent::Text(content_text)),
+                    content: Some(ClaudeToolResultContent::Text(content_text)),
                     is_error: None,
                     cache_control: None,
                 });
@@ -269,29 +269,29 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<AnthropicMess
                 let mut blocks = std::mem::take(&mut pending_tool_results);
                 let user_content = canonical_message_to_claude_content(msg);
                 match user_content {
-                    AnthropicContent::Text(text) if blocks.is_empty() => {
-                        out.push(AnthropicMessage {
+                    ClaudeContent::Text(text) if blocks.is_empty() => {
+                        out.push(ClaudeMessage {
                             role: "user".to_string(),
-                            content: AnthropicContent::Text(text),
+                            content: ClaudeContent::Text(text),
                         });
                     }
-                    AnthropicContent::Text(text) => {
+                    ClaudeContent::Text(text) => {
                         if !text.is_empty() {
-                            blocks.push(AnthropicContentBlock::Text {
+                            blocks.push(ClaudeContentBlock::Text {
                                 text,
                                 cache_control: None,
                             });
                         }
-                        out.push(AnthropicMessage {
+                        out.push(ClaudeMessage {
                             role: "user".to_string(),
-                            content: AnthropicContent::Blocks(blocks),
+                            content: ClaudeContent::Blocks(blocks),
                         });
                     }
-                    AnthropicContent::Blocks(user_blocks) => {
+                    ClaudeContent::Blocks(user_blocks) => {
                         blocks.extend(user_blocks);
-                        out.push(AnthropicMessage {
+                        out.push(ClaudeMessage {
                             role: "user".to_string(),
-                            content: AnthropicContent::Blocks(blocks),
+                            content: ClaudeContent::Blocks(blocks),
                         });
                     }
                 }
@@ -300,16 +300,16 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<AnthropicMess
                 // 有 pending tool_results 而下一个不是 user → 强行补一条 user 把它们发掉
                 if !pending_tool_results.is_empty() {
                     let blocks = std::mem::take(&mut pending_tool_results);
-                    out.push(AnthropicMessage {
+                    out.push(ClaudeMessage {
                         role: "user".to_string(),
-                        content: AnthropicContent::Blocks(blocks),
+                        content: ClaudeContent::Blocks(blocks),
                     });
                 }
                 // assistant：text + tool_calls → blocks
-                let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
+                let mut blocks: Vec<ClaudeContentBlock> = Vec::new();
                 if let Some(text) = message_text(msg) {
                     if !text.is_empty() {
-                        blocks.push(AnthropicContentBlock::Text {
+                        blocks.push(ClaudeContentBlock::Text {
                             text,
                             cache_control: None,
                         });
@@ -322,7 +322,7 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<AnthropicMess
                                 .unwrap_or_else(|_| {
                                     serde_json::Value::String(tc.function.arguments.clone())
                                 });
-                        blocks.push(AnthropicContentBlock::ToolUse {
+                        blocks.push(ClaudeContentBlock::ToolUse {
                             id: tc.id.clone(),
                             name: tc.function.name.clone(),
                             input,
@@ -331,17 +331,17 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<AnthropicMess
                     }
                 }
                 let content = if blocks.len() == 1 {
-                    if let AnthropicContentBlock::Text { text, .. } = &blocks[0] {
-                        AnthropicContent::Text(text.clone())
+                    if let ClaudeContentBlock::Text { text, .. } = &blocks[0] {
+                        ClaudeContent::Text(text.clone())
                     } else {
-                        AnthropicContent::Blocks(blocks)
+                        ClaudeContent::Blocks(blocks)
                     }
                 } else if blocks.is_empty() {
-                    AnthropicContent::Text(String::new())
+                    ClaudeContent::Text(String::new())
                 } else {
-                    AnthropicContent::Blocks(blocks)
+                    ClaudeContent::Blocks(blocks)
                 };
-                out.push(AnthropicMessage {
+                out.push(ClaudeMessage {
                     role: "assistant".to_string(),
                     content,
                 });
@@ -354,70 +354,70 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<AnthropicMess
 
     // 结尾还有未 flush 的 tool_results → 作为独立 user 消息
     if !pending_tool_results.is_empty() {
-        out.push(AnthropicMessage {
+        out.push(ClaudeMessage {
             role: "user".to_string(),
-            content: AnthropicContent::Blocks(pending_tool_results),
+            content: ClaudeContent::Blocks(pending_tool_results),
         });
     }
 
     Ok(out)
 }
 
-fn canonical_message_to_claude_content(msg: &ChatMessage) -> AnthropicContent {
+fn canonical_message_to_claude_content(msg: &ChatMessage) -> ClaudeContent {
     let Some(content) = msg.content.as_ref() else {
-        return AnthropicContent::Text(String::new());
+        return ClaudeContent::Text(String::new());
     };
     match content {
-        MessageContent::Text(s) => AnthropicContent::Text(s.clone()),
+        MessageContent::Text(s) => ClaudeContent::Text(s.clone()),
         MessageContent::Parts(parts) => {
-            let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
+            let mut blocks: Vec<ClaudeContentBlock> = Vec::new();
             for part in parts {
                 match part {
-                    ContentPart::Text { text } => blocks.push(AnthropicContentBlock::Text {
+                    ContentPart::Text { text } => blocks.push(ClaudeContentBlock::Text {
                         text: text.clone(),
                         cache_control: None,
                     }),
                     ContentPart::ImageUrl { image_url } => {
                         let source = parse_image_url(&image_url.url);
-                        blocks.push(AnthropicContentBlock::Image {
+                        blocks.push(ClaudeContentBlock::Image {
                             source,
                             cache_control: None,
                         });
                     }
                     ContentPart::InputAudio { .. } => {
-                        // Anthropic 当前不接受音频；丢弃
+                        // Claude 当前不接受音频；丢弃
                     }
                 }
             }
-            AnthropicContent::Blocks(blocks)
+            ClaudeContent::Blocks(blocks)
         }
     }
 }
 
-fn parse_image_url(url: &str) -> AnthropicImageSource {
+fn parse_image_url(url: &str) -> ClaudeImageSource {
     // data:image/png;base64,XYZ
     if let Some(stripped) = url.strip_prefix("data:") {
         if let Some((meta, data)) = stripped.split_once(",") {
             let media_type = meta.split(';').next().unwrap_or("image/png").to_string();
-            return AnthropicImageSource::Base64 {
+            return ClaudeImageSource::Base64 {
                 media_type,
                 data: data.to_string(),
             };
         }
     }
-    AnthropicImageSource::Url {
+    ClaudeImageSource::Url {
         url: url.to_string(),
     }
 }
 
-fn canonical_tool_choice_to_claude(tc: &crate::types::ToolChoice) -> Option<AnthropicToolChoice> {
+fn canonical_tool_choice_to_claude(tc: &crate::types::ToolChoice) -> Option<ClaudeToolChoice> {
     match tc {
         crate::types::ToolChoice::Mode(s) => match s.as_str() {
-            "auto" => Some(AnthropicToolChoice::Auto {
+            "auto" => Some(ClaudeToolChoice::Auto {
                 disable_parallel_tool_use: None,
             }),
-            "none" => Some(AnthropicToolChoice::None),
-            "required" => Some(AnthropicToolChoice::Any {
+            "none" => Some(ClaudeToolChoice::None),
+            "required" => Some(ClaudeToolChoice::Any {
                 disable_parallel_tool_use: None,
             }),
             _ => None,
@@ -427,7 +427,7 @@ fn canonical_tool_choice_to_claude(tc: &crate::types::ToolChoice) -> Option<Anth
                 .get("function")
                 .and_then(|f| f.get("name"))
                 .and_then(|n| n.as_str())?;
-            Some(AnthropicToolChoice::Tool {
+            Some(ClaudeToolChoice::Tool {
                 name: name.to_string(),
                 disable_parallel_tool_use: None,
             })
@@ -455,11 +455,11 @@ fn message_text(msg: &ChatMessage) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Anthropic wire → canonical (response)
+// Claude wire → canonical (response)
 // ---------------------------------------------------------------------------
 
-fn claude_response_to_canonical(resp: AnthropicResponse, _target: &ServiceTarget) -> ChatResponse {
-    let AnthropicResponse {
+fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -> ChatResponse {
+    let ClaudeResponse {
         id,
         content,
         model,
@@ -473,13 +473,13 @@ fn claude_response_to_canonical(resp: AnthropicResponse, _target: &ServiceTarget
 
     for block in content {
         match block {
-            AnthropicContentBlock::Text { text, .. } => {
+            ClaudeContentBlock::Text { text, .. } => {
                 if !text_buf.is_empty() {
                     text_buf.push('\n');
                 }
                 text_buf.push_str(&text);
             }
-            AnthropicContentBlock::ToolUse {
+            ClaudeContentBlock::ToolUse {
                 id, name, input, ..
             } => {
                 let arguments = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
@@ -490,11 +490,11 @@ fn claude_response_to_canonical(resp: AnthropicResponse, _target: &ServiceTarget
                 });
             }
             // 其他 block（thinking / redacted_thinking / ...）作为文本拼接或忽略
-            AnthropicContentBlock::Thinking { .. }
-            | AnthropicContentBlock::RedactedThinking { .. }
-            | AnthropicContentBlock::Image { .. }
-            | AnthropicContentBlock::ToolResult { .. }
-            | AnthropicContentBlock::Document { .. } => {}
+            ClaudeContentBlock::Thinking { .. }
+            | ClaudeContentBlock::RedactedThinking { .. }
+            | ClaudeContentBlock::Image { .. }
+            | ClaudeContentBlock::ToolResult { .. }
+            | ClaudeContentBlock::Document { .. } => {}
         }
     }
 
@@ -536,18 +536,18 @@ fn claude_response_to_canonical(resp: AnthropicResponse, _target: &ServiceTarget
     }
 }
 
-fn stop_reason_to_finish_reason(reason: AnthropicStopReason) -> FinishReason {
+fn stop_reason_to_finish_reason(reason: ClaudeStopReason) -> FinishReason {
     match reason {
-        AnthropicStopReason::EndTurn
-        | AnthropicStopReason::Refusal
-        | AnthropicStopReason::PauseTurn => FinishReason::Stop,
-        AnthropicStopReason::MaxTokens => FinishReason::Length,
-        AnthropicStopReason::StopSequence => FinishReason::Stop,
-        AnthropicStopReason::ToolUse => FinishReason::ToolCalls,
+        ClaudeStopReason::EndTurn | ClaudeStopReason::Refusal | ClaudeStopReason::PauseTurn => {
+            FinishReason::Stop
+        }
+        ClaudeStopReason::MaxTokens => FinishReason::Length,
+        ClaudeStopReason::StopSequence => FinishReason::Stop,
+        ClaudeStopReason::ToolUse => FinishReason::ToolCalls,
     }
 }
 
-fn claude_usage_to_canonical(usage: AnthropicUsage) -> Usage {
+fn claude_usage_to_canonical(usage: ClaudeUsage) -> Usage {
     let total = (usage.input_tokens as i64) + (usage.output_tokens as i64);
     Usage {
         prompt_tokens: usage.input_tokens as i64,
@@ -562,23 +562,23 @@ fn claude_usage_to_canonical(usage: AnthropicUsage) -> Usage {
 }
 
 // ---------------------------------------------------------------------------
-// Anthropic SSE event → canonical stream event
+// Claude SSE event → canonical stream event
 // ---------------------------------------------------------------------------
 
-fn claude_stream_event_to_canonical(event: AnthropicStreamEvent) -> Option<ChatStreamEvent> {
+fn claude_stream_event_to_canonical(event: ClaudeStreamEvent) -> Option<ChatStreamEvent> {
     match event {
-        AnthropicStreamEvent::MessageStart { message } => {
-            let AnthropicStreamMessageStart { model, .. } = message;
+        ClaudeStreamEvent::MessageStart { message } => {
+            let ClaudeStreamMessageStart { model, .. } = message;
             Some(ChatStreamEvent::Start {
                 adapter: "anthropic".to_string(),
                 model,
             })
         }
-        AnthropicStreamEvent::ContentBlockStart {
+        ClaudeStreamEvent::ContentBlockStart {
             index,
             content_block,
         } => match content_block {
-            AnthropicStreamContentBlock::ToolUse { id, name, .. } => {
+            ClaudeStreamContentBlock::ToolUse { id, name, .. } => {
                 Some(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
                     index: index as i32,
                     id: Some(id),
@@ -589,12 +589,12 @@ fn claude_stream_event_to_canonical(event: AnthropicStreamEvent) -> Option<ChatS
             // text / thinking 的 content_block_start 里 text 通常空 → 忽略，等 delta
             _ => None,
         },
-        AnthropicStreamEvent::ContentBlockDelta { index, delta } => match delta {
-            AnthropicStreamDelta::TextDelta { text } => Some(ChatStreamEvent::TextDelta { text }),
-            AnthropicStreamDelta::ThinkingDelta { thinking } => {
+        ClaudeStreamEvent::ContentBlockDelta { index, delta } => match delta {
+            ClaudeStreamDelta::TextDelta { text } => Some(ChatStreamEvent::TextDelta { text }),
+            ClaudeStreamDelta::ThinkingDelta { thinking } => {
                 Some(ChatStreamEvent::ReasoningDelta { text: thinking })
             }
-            AnthropicStreamDelta::InputJsonDelta { partial_json } => {
+            ClaudeStreamDelta::InputJsonDelta { partial_json } => {
                 Some(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
                     index: index as i32,
                     id: None,
@@ -602,10 +602,10 @@ fn claude_stream_event_to_canonical(event: AnthropicStreamEvent) -> Option<ChatS
                     arguments_delta: Some(partial_json),
                 }))
             }
-            AnthropicStreamDelta::SignatureDelta { .. } => None,
+            ClaudeStreamDelta::SignatureDelta { .. } => None,
         },
-        AnthropicStreamEvent::ContentBlockStop { .. } => None,
-        AnthropicStreamEvent::MessageDelta { delta, usage } => {
+        ClaudeStreamEvent::ContentBlockStop { .. } => None,
+        ClaudeStreamEvent::MessageDelta { delta, usage } => {
             let finish_reason = delta.stop_reason.map(stop_reason_to_finish_reason);
             let canonical_usage = usage.map(claude_usage_to_canonical);
             Some(ChatStreamEvent::End(StreamEnd {
@@ -613,9 +613,9 @@ fn claude_stream_event_to_canonical(event: AnthropicStreamEvent) -> Option<ChatS
                 usage: canonical_usage,
             }))
         }
-        AnthropicStreamEvent::MessageStop => None, // 已由 message_delta 产出 End
-        AnthropicStreamEvent::Ping => None,
-        AnthropicStreamEvent::Error { error } => {
+        ClaudeStreamEvent::MessageStop => None, // 已由 message_delta 产出 End
+        ClaudeStreamEvent::Ping => None,
+        ClaudeStreamEvent::Error { error } => {
             // 把 error 作为一个 End 事件透传，携带 stop_reason=None
             tracing::warn!(error.kind = %error.kind, error.message = %error.message,
                 "anthropic stream error event");
@@ -648,7 +648,7 @@ fn build_headers(target: &ServiceTarget) -> AdapterResult<HeaderMap> {
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(
         HeaderName::from_static("anthropic-version"),
-        HeaderValue::from_static(AnthropicAdapter::API_VERSION),
+        HeaderValue::from_static(ClaudeAdapter::API_VERSION),
     );
 
     if let Some(key) = target.auth.resolve()? {
@@ -688,7 +688,7 @@ mod tests {
     fn url_appends_v1_messages() {
         let t = target();
         let req = ChatRequest::new("alias", vec![ChatMessage::user("hi")]);
-        let data = AnthropicAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let data = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
         assert_eq!(data.url, "https://api.anthropic.com/v1/messages");
     }
 
@@ -703,7 +703,7 @@ mod tests {
             ],
         );
         req.max_tokens = Some(128);
-        let data = AnthropicAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let data = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
         assert_eq!(data.payload["system"], "you are helpful");
         let msgs = data.payload["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1);
@@ -714,7 +714,7 @@ mod tests {
     fn max_tokens_required_default() {
         let t = target();
         let req = ChatRequest::new("x", vec![ChatMessage::user("hi")]);
-        let data = AnthropicAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let data = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
         assert_eq!(data.payload["max_tokens"], 4096);
     }
 
@@ -746,7 +746,7 @@ mod tests {
             ],
         );
         req.max_tokens = Some(128);
-        let data = AnthropicAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let data = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
         let msgs = data.payload["messages"].as_array().unwrap();
         // user / assistant(tool_use) / user(tool_result+text)
         assert_eq!(msgs.len(), 3);
@@ -781,7 +781,7 @@ mod tests {
             }],
         );
         req.max_tokens = Some(128);
-        let data = AnthropicAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let data = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
         let blocks = data.payload["messages"][0]["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["type"], "text");
@@ -794,7 +794,7 @@ mod tests {
     fn headers_contain_api_key_and_version() {
         let t = target();
         let req = ChatRequest::new("x", vec![ChatMessage::user("hi")]);
-        let data = AnthropicAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let data = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
         assert_eq!(
             data.headers.get("x-api-key").unwrap().to_str().unwrap(),
             "sk-ant-test"
@@ -819,7 +819,7 @@ mod tests {
             "stop_reason":"end_turn",
             "usage":{"input_tokens":5,"output_tokens":2,"cache_read_input_tokens":3}
         }"#;
-        let resp = AnthropicAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
         assert_eq!(resp.id, "msg_1");
         assert_eq!(resp.first_text(), Some("hello"));
         assert_eq!(resp.usage.prompt_tokens, 5);
@@ -843,7 +843,7 @@ mod tests {
             "message":{"id":"msg_1","type":"message","role":"assistant","content":[],
                 "model":"claude-sonnet-4-5","usage":{"input_tokens":5,"output_tokens":0}}
         }"#;
-        let e = AnthropicAdapter::parse_chat_stream_event(&t, raw)
+        let e = ClaudeAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
             .unwrap();
         match e {
@@ -860,7 +860,7 @@ mod tests {
         let t = target();
         let raw =
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#;
-        let e = AnthropicAdapter::parse_chat_stream_event(&t, raw)
+        let e = ClaudeAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
             .unwrap();
         match e {
@@ -876,7 +876,7 @@ mod tests {
             "type":"content_block_start","index":1,
             "content_block":{"type":"tool_use","id":"tu_1","name":"weather","input":{}}
         }"#;
-        let e = AnthropicAdapter::parse_chat_stream_event(&t, start)
+        let e = ClaudeAdapter::parse_chat_stream_event(&t, start)
             .unwrap()
             .unwrap();
         match e {
@@ -892,7 +892,7 @@ mod tests {
             "type":"content_block_delta","index":1,
             "delta":{"type":"input_json_delta","partial_json":"{\"city\""}
         }"#;
-        let e = AnthropicAdapter::parse_chat_stream_event(&t, delta)
+        let e = ClaudeAdapter::parse_chat_stream_event(&t, delta)
             .unwrap()
             .unwrap();
         match e {
@@ -911,7 +911,7 @@ mod tests {
             "delta":{"stop_reason":"end_turn"},
             "usage":{"input_tokens":0,"output_tokens":10}
         }"#;
-        let e = AnthropicAdapter::parse_chat_stream_event(&t, raw)
+        let e = ClaudeAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
             .unwrap();
         match e {
@@ -927,12 +927,12 @@ mod tests {
     fn stream_ping_and_stop_ignored() {
         let t = target();
         assert!(
-            AnthropicAdapter::parse_chat_stream_event(&t, r#"{"type":"ping"}"#)
+            ClaudeAdapter::parse_chat_stream_event(&t, r#"{"type":"ping"}"#)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            AnthropicAdapter::parse_chat_stream_event(&t, r#"{"type":"message_stop"}"#)
+            ClaudeAdapter::parse_chat_stream_event(&t, r#"{"type":"message_stop"}"#)
                 .unwrap()
                 .is_none()
         );

@@ -1,7 +1,7 @@
 //! 流式事件（语义级，**不是** OpenAI `ChatCompletionChunk` 的透传）。
 //!
 //! Adapter 层把上游原生 SSE chunk 归一到这套事件，调用方不用关心 OpenAI delta /
-//! Anthropic `content_block_delta` / Gemini `candidate` 等差异。
+//! Claude `content_block_delta` / Gemini `candidate` 等差异。
 //!
 //! 接口骨架阶段本文件只定义类型；实际生成由 adapter 层的 stream parser 产出。
 

@@ -61,7 +61,7 @@ pub struct Capabilities {
     pub response_format: bool,
     /// 支持 `n > 1`
     pub multi_choice: bool,
-    /// 支持 prompt caching（Anthropic cache_control / OpenAI 自动 cache）
+    /// 支持 prompt caching（Claude cache_control / OpenAI 自动 cache）
     pub prompt_caching: bool,
     /// 支持 parallel_tool_calls
     pub parallel_tool_calls: bool,
@@ -107,14 +107,14 @@ impl Capabilities {
 ///
 /// 这里只是协议维度的"乘数"，例如：
 ///
-/// - Anthropic：`cache_write_multiplier=1.25`（5m ephemeral）、`cache_read_discount=0.1`
+/// - Claude：`cache_write_multiplier=1.25`（5m ephemeral）、`cache_read_discount=0.1`
 /// - OpenAI：`cache_write_multiplier=1.0`、`cache_read_discount=0.5`
 /// - 不支持 prompt cache 的厂商：两者都 `1.0` + `supports_prompt_cache=false`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CostProfile {
-    /// 写入 prompt cache 的加价倍率（Anthropic 5m = 1.25；OpenAI = 1.0；不支持 = 1.0）。
+    /// 写入 prompt cache 的加价倍率（Claude 5m = 1.25；OpenAI = 1.0；不支持 = 1.0）。
     pub cache_write_multiplier: Decimal,
-    /// 命中 prompt cache 时 prompt tokens 的折扣（Anthropic ≈ 0.1；OpenAI ≈ 0.5；不支持 = 1.0）。
+    /// 命中 prompt cache 时 prompt tokens 的折扣（Claude ≈ 0.1；OpenAI ≈ 0.5；不支持 = 1.0）。
     pub cache_read_discount: Decimal,
     /// 协议是否支持 prompt cache（客户端可据此决定是否带 `cache_control`）。
     pub supports_prompt_cache: bool,
@@ -131,7 +131,7 @@ impl Default for CostProfile {
 }
 
 impl CostProfile {
-    /// Anthropic 风格（5m ephemeral cache）。
+    /// Claude 风格（5m ephemeral cache）。
     pub fn anthropic_like() -> Self {
         Self {
             cache_write_multiplier: Decimal::new(125, 2), // 1.25
@@ -167,7 +167,7 @@ pub enum AuthStrategy {
     /// `Authorization: Bearer <key>`（OpenAI / DeepSeek / Groq / 大多数）
     Bearer,
 
-    /// `x-api-key: <key>`（Anthropic）
+    /// `x-api-key: <key>`（Claude）
     XApiKey,
 
     /// `api-key: <key>`（Azure OpenAI）
@@ -249,7 +249,7 @@ pub trait Adapter {
     /// 协议鉴权策略（给 relay 层构造 headers 用）。
     fn auth_strategy() -> AuthStrategy;
 
-    /// 协议级计费系数（Anthropic cache write 1.25x / OpenAI cache read 0.5x 等）。
+    /// 协议级计费系数（Claude cache write 1.25x / OpenAI cache read 0.5x 等）。
     ///
     /// 默认：`CostProfile::default()`（不支持 prompt cache，两个倍率都是 1.0）。
     fn cost_profile() -> CostProfile {

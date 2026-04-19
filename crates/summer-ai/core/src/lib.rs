@@ -17,7 +17,7 @@ pub mod types;
 pub use adapter::{
     Adapter, AdapterDispatcher, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType,
     WebRequestData,
-    adapters::{AnthropicAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter},
+    adapters::{ClaudeAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter},
 };
 pub use error::{AdapterError, AdapterResult, AuthResolveError};
 pub use resolver::{AuthData, Endpoint, ServiceTarget};

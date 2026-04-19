@@ -1,11 +1,11 @@
-//! `POST /v1/messages` —— Anthropic Messages API 兼容入口。
+//! `POST /v1/messages` —— Claude Messages API 兼容入口。
 //!
 //! # 当前（走路骨架）
 //!
-//! - 客户端用 Anthropic SDK 格式发请求
-//! - 通过 [`AnthropicIngress::to_canonical`] 翻译成 canonical
+//! - 客户端用 Claude SDK 格式发请求
+//! - 通过 [`ClaudeIngress::to_canonical`] 翻译成 canonical
 //! - 复用 [`crate::service::chat`] 发给 OpenAI 上游
-//! - 非流式响应再用 [`AnthropicIngress::from_canonical`] 翻译回 Anthropic 格式
+//! - 非流式响应再用 [`ClaudeIngress::from_canonical`] 翻译回 Claude 格式
 //!
 //! **硬编码**：
 //! - 上游 `AdapterKind::OpenAI`
@@ -15,11 +15,11 @@
 //!
 //! # 流式暂不支持
 //!
-//! `AnthropicIngress::from_canonical_stream_event` 尚未实装 6-event 重组状态机，
+//! `ClaudeIngress::from_canonical_stream_event` 尚未实装 6-event 重组状态机，
 //! 流式请求会直接返 501。等流式状态机落地后开放。
 
 use summer_admin_macros::no_auth;
-use summer_ai_core::types::ingress_wire::anthropic::AnthropicMessagesRequest;
+use summer_ai_core::types::ingress_wire::claude::ClaudeMessagesRequest;
 use summer_ai_core::{AdapterKind, ServiceTarget};
 use summer_web::Router;
 use summer_web::axum::Json;
@@ -28,7 +28,7 @@ use summer_web::extractor::Component;
 use summer_web::handler::TypeRouter;
 use summer_web::post;
 
-use crate::convert::ingress::{AnthropicIngress, IngressConverter, IngressCtx};
+use crate::convert::ingress::{ClaudeIngress, IngressConverter, IngressCtx};
 use crate::error::{RelayError, RelayResult};
 use crate::service::chat;
 
@@ -39,7 +39,7 @@ const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 #[post("/v1/messages")]
 pub async fn messages(
     Component(http): Component<reqwest::Client>,
-    Json(claude_req): Json<AnthropicMessagesRequest>,
+    Json(claude_req): Json<ClaudeMessagesRequest>,
 ) -> RelayResult<Response> {
     let api_key =
         std::env::var("OPENAI_API_KEY").map_err(|_| RelayError::MissingConfig("OPENAI_API_KEY"))?;
@@ -58,7 +58,7 @@ pub async fn messages(
     );
 
     if is_stream {
-        // Anthropic SSE 6-event 状态机尚未实装——非流式闭环先跑通
+        // Claude SSE 6-event 状态机尚未实装——非流式闭环先跑通
         return Err(RelayError::NotImplemented("claude streaming"));
     }
 
@@ -66,7 +66,7 @@ pub async fn messages(
     let ctx = IngressCtx::new(kind, &logical_model, &logical_model);
 
     // client wire → canonical
-    let canonical_req = AnthropicIngress::to_canonical(claude_req, &ctx)?;
+    let canonical_req = ClaudeIngress::to_canonical(claude_req, &ctx)?;
 
     let target = ServiceTarget::bearer(base_url, api_key, &logical_model);
 
@@ -74,7 +74,7 @@ pub async fn messages(
     let canonical_resp = chat::invoke_non_stream(&http, kind, &target, &canonical_req).await?;
 
     // canonical → client wire
-    let claude_resp = AnthropicIngress::from_canonical(canonical_resp, &ctx)?;
+    let claude_resp = ClaudeIngress::from_canonical(canonical_resp, &ctx)?;
 
     Ok(Json(claude_resp).into_response())
 }

@@ -1,7 +1,7 @@
 //! Token 用量与 finish_reason（跨协议共享）。
 //!
 //! 字段结构严格对齐 [OpenAI Usage 对象](https://platform.openai.com/docs/api-reference/chat/object#chat/object-usage)。
-//! 非 OpenAI 家（Anthropic / Gemini）的 adapter 需要把自家 usage 映射到这套字段。
+//! 非 OpenAI 家（Claude / Gemini）的 adapter 需要把自家 usage 映射到这套字段。
 
 use serde::{Deserialize, Serialize};
 

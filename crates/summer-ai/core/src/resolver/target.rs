@@ -12,7 +12,7 @@ pub struct ServiceTarget {
     pub auth: AuthData,
     /// `channel.model_mapping` 应用后的实际上游模型名。
     pub actual_model: String,
-    /// 额外请求头（OpenRouter `HTTP-Referer` / `X-Title` / Anthropic `anthropic-version` 等）。
+    /// 额外请求头（OpenRouter `HTTP-Referer` / `X-Title` / Claude `anthropic-version` 等）。
     pub extra_headers: BTreeMap<String, String>,
 }
 

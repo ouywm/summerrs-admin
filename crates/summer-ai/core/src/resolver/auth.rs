@@ -8,7 +8,7 @@
 //! - [`AuthData::None`] — 不鉴权（本地 ollama 等）
 //!
 //! 注意：这里只存 **key 的原始值**，**怎么把它塞 header / query** 是各 Adapter 自己决定
-//! （OpenAI 塞 `Authorization: Bearer`、Anthropic 塞 `x-api-key` 等）。
+//! （OpenAI 塞 `Authorization: Bearer`、Claude 塞 `x-api-key` 等）。
 
 use std::sync::Arc;
 

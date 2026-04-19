@@ -3,7 +3,7 @@
 //! **21 连续编码**：
 //!
 //! - 1-4  OpenAI 家族（OpenAI / OpenAIResp / OpenAICompat / Azure）
-//! - 5-8  Native 协议（Anthropic / Gemini / Cohere / Ollama）
+//! - 5-8  Native 协议（Claude / Gemini / Cohere / Ollama）
 //! - 9-21 OpenAI-compat 变种（OllamaCloud / Groq / DeepSeek / Xai / ...）
 //!
 //! Relay 通过 `ai.channel.channel_type: i16` 字段选 AdapterKind；
@@ -27,8 +27,8 @@ pub enum AdapterKind {
     Azure = 4,
 
     // ─── 5-8: Native 协议 ───
-    /// Anthropic `/v1/messages`。
-    Anthropic = 5,
+    /// Claude `/v1/messages`。
+    Claude = 5,
     /// Google Gemini `generateContent`。
     Gemini = 6,
     /// Cohere native。
@@ -59,9 +59,9 @@ pub enum AdapterKind {
     BigModel = 18,
     /// 阿里云 Dashscope / 百炼。
     Aliyun = 19,
-    /// Google Vertex AI（支持 Gemini + Anthropic）。
+    /// Google Vertex AI（支持 Gemini + Claude）。
     Vertex = 20,
-    /// GitHub Models（OpenAI/Anthropic/Google 聚合）。
+    /// GitHub Models（OpenAI/Claude/Google 聚合）。
     GithubCopilot = 21,
 }
 
@@ -72,7 +72,7 @@ impl AdapterKind {
         Self::OpenAIResp,
         Self::OpenAICompat,
         Self::Azure,
-        Self::Anthropic,
+        Self::Claude,
         Self::Gemini,
         Self::Cohere,
         Self::Ollama,
@@ -98,7 +98,7 @@ impl AdapterKind {
             Self::OpenAIResp => "OpenAIResp",
             Self::OpenAICompat => "OpenAICompat",
             Self::Azure => "Azure",
-            Self::Anthropic => "Anthropic",
+            Self::Claude => "Claude",
             Self::Gemini => "Gemini",
             Self::Cohere => "Cohere",
             Self::Ollama => "Ollama",
@@ -125,7 +125,7 @@ impl AdapterKind {
             Self::OpenAIResp => "openai_resp",
             Self::OpenAICompat => "openai_compat",
             Self::Azure => "azure",
-            Self::Anthropic => "anthropic",
+            Self::Claude => "claude",
             Self::Gemini => "gemini",
             Self::Cohere => "cohere",
             Self::Ollama => "ollama",
@@ -150,7 +150,7 @@ impl AdapterKind {
         match self {
             Self::OpenAI | Self::OpenAIResp => Some("OPENAI_API_KEY"),
             Self::Azure => Some("AZURE_OPENAI_API_KEY"),
-            Self::Anthropic => Some("ANTHROPIC_API_KEY"),
+            Self::Claude => Some("ANTHROPIC_API_KEY"),
             Self::Gemini => Some("GEMINI_API_KEY"),
             Self::Cohere => Some("COHERE_API_KEY"),
             Self::Groq => Some("GROQ_API_KEY"),
@@ -178,7 +178,7 @@ impl AdapterKind {
             "openai_resp" => Self::OpenAIResp,
             "openai_compat" => Self::OpenAICompat,
             "azure" => Self::Azure,
-            "anthropic" => Self::Anthropic,
+            "claude" => Self::Claude,
             "gemini" => Self::Gemini,
             "cohere" => Self::Cohere,
             "ollama" => Self::Ollama,
@@ -216,7 +216,7 @@ impl TryFrom<i16> for AdapterKind {
             2 => Self::OpenAIResp,
             3 => Self::OpenAICompat,
             4 => Self::Azure,
-            5 => Self::Anthropic,
+            5 => Self::Claude,
             6 => Self::Gemini,
             7 => Self::Cohere,
             8 => Self::Ollama,
