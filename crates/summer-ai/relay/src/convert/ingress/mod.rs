@@ -19,11 +19,11 @@ use summer_ai_core::{
     AdapterKind, AdapterResult, ChatRequest, ChatResponse, ChatStreamEvent, Usage,
 };
 
-pub mod claude;
+pub mod anthropic;
 pub mod gemini;
 pub mod openai;
 
-pub use claude::ClaudeIngress;
+pub use anthropic::AnthropicIngress;
 pub use gemini::GeminiIngress;
 pub use openai::OpenAIIngress;
 
@@ -37,7 +37,7 @@ pub enum IngressFormat {
     /// `POST /v1/chat/completions`
     OpenAI,
     /// `POST /v1/messages`
-    Claude,
+    Anthropic,
     /// `POST /v1beta/models/{model}:generateContent[:streamGenerateContent]`
     Gemini,
     /// `POST /v1/responses`
@@ -48,7 +48,7 @@ impl IngressFormat {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenAI => "openai",
-            Self::Claude => "claude",
+            Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
             Self::OpenAIResponses => "openai_responses",
         }
@@ -87,7 +87,7 @@ pub struct IngressCtx {
 
     /// 路由时 tokenizer 估算的 prompt token 数。
     ///
-    /// 用于 Claude `message_start` 事件的 `usage.input_tokens` 字段——Anthropic
+    /// 用于 Anthropic `message_start` 事件的 `usage.input_tokens` 字段——Anthropic
     /// 流式响应首块需要立刻给 input_tokens，但此时上游还没返 usage，只能估算。
     pub estimated_prompt_tokens: u32,
 }
@@ -122,8 +122,8 @@ impl IngressCtx {
 pub enum StreamConvertState {
     /// OpenAI identity 无 state。
     Openai,
-    /// Claude 6-event 状态机。
-    Claude(ClaudeStreamState),
+    /// Anthropic 6-event 状态机。
+    Anthropic(AnthropicStreamState),
     /// Gemini 轮询式流（每 chunk 一个完整 response）。
     Gemini(GeminiStreamState),
     /// OpenAI Responses API 流状态。
@@ -135,22 +135,22 @@ impl StreamConvertState {
     pub fn for_format(format: IngressFormat) -> Self {
         match format {
             IngressFormat::OpenAI => Self::Openai,
-            IngressFormat::Claude => Self::Claude(ClaudeStreamState::default()),
+            IngressFormat::Anthropic => Self::Anthropic(AnthropicStreamState::default()),
             IngressFormat::Gemini => Self::Gemini(GeminiStreamState::default()),
             IngressFormat::OpenAIResponses => Self::Responses(ResponsesStreamState::default()),
         }
     }
 }
 
-// ----- Claude stream state -----
+// ----- Anthropic stream state -----
 
-/// Claude 流转换状态——对应客户端的 6-event SSE 重组。
+/// Anthropic 流转换状态——对应客户端的 6-event SSE 重组。
 #[derive(Debug, Default)]
-pub struct ClaudeStreamState {
+pub struct AnthropicStreamState {
     /// 客户端已收到的事件总数；首块前为 0。
     pub send_response_count: u32,
     /// 当前 block 类型。
-    pub last_message_type: ClaudeLastMessageType,
+    pub last_message_type: AnthropicLastMessageType,
     /// 当前 block 的 content_block index（text/thinking 最多一个；tool 可并行多个）。
     pub index: i32,
     /// tool_use 并发时的起点 index。
@@ -165,9 +165,9 @@ pub struct ClaudeStreamState {
     pub done: bool,
 }
 
-/// Claude stream 当前正在生成的 content block 种类。
+/// Anthropic stream 当前正在生成的 content block 种类。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum ClaudeLastMessageType {
+pub enum AnthropicLastMessageType {
     #[default]
     None,
     Text,
@@ -195,13 +195,13 @@ pub struct ResponsesStreamState {}
 
 /// 客户端请求 ↔ canonical 转换器（双向）。
 ///
-/// 每个入口协议一个 ZST 实现（`OpenAIIngress` / `ClaudeIngress` / `GeminiIngress`）。
+/// 每个入口协议一个 ZST 实现（`OpenAIIngress` / `AnthropicIngress` / `GeminiIngress`）。
 pub trait IngressConverter {
-    /// 客户端请求 wire 类型（如 `ClaudeMessagesRequest`）。
+    /// 客户端请求 wire 类型（如 `AnthropicMessagesRequest`）。
     type ClientRequest: DeserializeOwned;
-    /// 客户端响应 wire 类型（如 `ClaudeResponse`）。
+    /// 客户端响应 wire 类型（如 `AnthropicResponse`）。
     type ClientResponse: Serialize;
-    /// 客户端流事件 wire 类型（如 `ClaudeStreamEvent`）。
+    /// 客户端流事件 wire 类型（如 `AnthropicStreamEvent`）。
     type ClientStreamEvent: Serialize;
 
     /// 对应 [`IngressFormat`] 变体。
@@ -215,8 +215,8 @@ pub trait IngressConverter {
 
     /// canonical 流事件 → client 流事件（可能一对多）。
     ///
-    /// 返 `Vec` 而不是 `Option`，因为 Claude 的 `TextDelta → TextDelta` 是 1→1，
-    /// 但 Claude 的 `Start → [message_start, content_block_start]` 是 1→2；
+    /// 返 `Vec` 而不是 `Option`，因为 Anthropic 的 `TextDelta → TextDelta` 是 1→1，
+    /// 但 Anthropic 的 `Start → [message_start, content_block_start]` 是 1→2；
     /// 所以统一返 `Vec` 给实现自由度。
     fn from_canonical_stream_event(
         event: ChatStreamEvent,

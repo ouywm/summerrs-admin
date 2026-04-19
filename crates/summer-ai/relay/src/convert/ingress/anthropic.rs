@@ -1,8 +1,8 @@
-//! Claude Messages ↔ canonical 转换（请求、响应、流）。
+//! Anthropic Messages ↔ canonical 转换（请求、响应、流）。
 //!
 //! 流事件重组：把 canonical 的 5 种语义事件
 //! (Start / TextDelta / ReasoningDelta / ToolCallDelta / End)
-//! 翻译成 Claude 客户端期望的 SSE 序列：
+//! 翻译成 Anthropic 客户端期望的 SSE 序列：
 //!
 //! ```text
 //! message_start
@@ -14,11 +14,11 @@
 //! # 已知限制
 //!
 //! 1. **`cache_control` 丢失**：canonical `ContentPart::Text` 暂无 cache_control 字段，
-//!    Claude 入的 cache_control 提示会被丢弃。接入 Anthropic adapter 时再扩展 canonical
+//!    Anthropic 入的 cache_control 提示会被丢弃。接入 Anthropic adapter 时再扩展 canonical
 //!    并补透传逻辑。
 //! 2. **`thinking` 仅 Anthropic 上游透传**：其他上游（OpenRouter / OpenAI）的 thinking
 //!    方言转换后续再做（通过 `ctx.channel_kind` 分派）。
-//! 3. **`Image` 只支持 base64 `data:` URI**：Claude URL 图像 source 映射时直接用 URL，
+//! 3. **`Image` 只支持 base64 `data:` URI**：Anthropic URL 图像 source 映射时直接用 URL，
 //!    canonical `ImageUrl.url` 接受任一。
 //! 4. **`Document` / `RedactedThinking` / `Thinking` blocks** 在 `to_canonical` 时忽略
 //!    （只在 Anthropic 原生上游有意义）。
@@ -27,11 +27,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use summer_ai_core::types::ingress_wire::claude::{
-    ClaudeContent, ClaudeContentBlock, ClaudeImageSource, ClaudeMessage, ClaudeMessagesRequest,
-    ClaudeResponse, ClaudeStopReason, ClaudeStreamContentBlock, ClaudeStreamDelta,
-    ClaudeStreamEvent, ClaudeStreamMessageDelta, ClaudeStreamMessageStart, ClaudeSystem,
-    ClaudeTool, ClaudeToolChoice, ClaudeToolResultContent, ClaudeUsage,
+use summer_ai_core::types::ingress_wire::anthropic::{
+    AnthropicContent, AnthropicContentBlock, AnthropicImageSource, AnthropicMessage,
+    AnthropicMessagesRequest, AnthropicResponse, AnthropicStopReason, AnthropicStreamContentBlock,
+    AnthropicStreamDelta, AnthropicStreamEvent, AnthropicStreamMessageDelta,
+    AnthropicStreamMessageStart, AnthropicSystem, AnthropicTool, AnthropicToolChoice,
+    AnthropicToolResultContent, AnthropicUsage,
 };
 use summer_ai_core::{
     AdapterError, AdapterKind, AdapterResult, ChatMessage, ChatRequest, ChatResponse,
@@ -40,19 +41,19 @@ use summer_ai_core::{
 };
 
 use super::{
-    ClaudeLastMessageType, ClaudeStreamState, IngressConverter, IngressCtx, IngressFormat,
+    AnthropicLastMessageType, AnthropicStreamState, IngressConverter, IngressCtx, IngressFormat,
     StreamConvertState,
 };
 
-/// Claude Messages 入口协议转换器。
-pub struct ClaudeIngress;
+/// Anthropic Messages 入口协议转换器。
+pub struct AnthropicIngress;
 
-impl IngressConverter for ClaudeIngress {
-    type ClientRequest = ClaudeMessagesRequest;
-    type ClientResponse = ClaudeResponse;
-    type ClientStreamEvent = ClaudeStreamEvent;
+impl IngressConverter for AnthropicIngress {
+    type ClientRequest = AnthropicMessagesRequest;
+    type ClientResponse = AnthropicResponse;
+    type ClientStreamEvent = AnthropicStreamEvent;
 
-    const FORMAT: IngressFormat = IngressFormat::Claude;
+    const FORMAT: IngressFormat = IngressFormat::Anthropic;
 
     fn to_canonical(req: Self::ClientRequest, ctx: &IngressCtx) -> AdapterResult<ChatRequest> {
         to_canonical_impl(req, ctx)
@@ -67,7 +68,7 @@ impl IngressConverter for ClaudeIngress {
         state: &mut StreamConvertState,
         ctx: &IngressCtx,
     ) -> AdapterResult<Vec<Self::ClientStreamEvent>> {
-        let StreamConvertState::Claude(claude_state) = state else {
+        let StreamConvertState::Anthropic(claude_state) = state else {
             return Err(AdapterError::Unsupported {
                 adapter: "claude_ingress",
                 feature: "stream_convert_state_mismatch",
@@ -81,8 +82,11 @@ impl IngressConverter for ClaudeIngress {
 // to_canonical
 // ---------------------------------------------------------------------------
 
-fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterResult<ChatRequest> {
-    let ClaudeMessagesRequest {
+fn to_canonical_impl(
+    req: AnthropicMessagesRequest,
+    ctx: &IngressCtx,
+) -> AdapterResult<ChatRequest> {
+    let AnthropicMessagesRequest {
         model,
         messages,
         max_tokens,
@@ -212,16 +216,16 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
 
 /// 第一遍扫描：`tool_use_id → function_name` 映射。
 ///
-/// Claude `tool_result` 不带 tool 名，canonical `role:"tool"` 需要 `name` 字段，
+/// Anthropic `tool_result` 不带 tool 名，canonical `role:"tool"` 需要 `name` 字段，
 /// 反查历史消息里的 `tool_use` blocks 取 name。
-fn build_tool_use_name_map(messages: &[ClaudeMessage]) -> HashMap<String, String> {
+fn build_tool_use_name_map(messages: &[AnthropicMessage]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for msg in messages {
-        let ClaudeContent::Blocks(blocks) = &msg.content else {
+        let AnthropicContent::Blocks(blocks) = &msg.content else {
             continue;
         };
         for block in blocks {
-            if let ClaudeContentBlock::ToolUse { id, name, .. } = block {
+            if let AnthropicContentBlock::ToolUse { id, name, .. } = block {
                 map.insert(id.clone(), name.clone());
             }
         }
@@ -229,13 +233,13 @@ fn build_tool_use_name_map(messages: &[ClaudeMessage]) -> HashMap<String, String
     map
 }
 
-/// 把 Claude `system` 字段扁平化成一个字符串（多 block 用 `\n` 连接）。
+/// 把 Anthropic `system` 字段扁平化成一个字符串（多 block 用 `\n` 连接）。
 ///
 /// `cache_control` 提示当前丢失（canonical `ContentPart` 暂不带）。
-fn flatten_system(sys: ClaudeSystem) -> String {
+fn flatten_system(sys: AnthropicSystem) -> String {
     match sys {
-        ClaudeSystem::Text(s) => s,
-        ClaudeSystem::Blocks(blocks) => blocks
+        AnthropicSystem::Text(s) => s,
+        AnthropicSystem::Blocks(blocks) => blocks
             .into_iter()
             .map(|b| b.text)
             .collect::<Vec<_>>()
@@ -243,16 +247,16 @@ fn flatten_system(sys: ClaudeSystem) -> String {
     }
 }
 
-/// 把一条 `ClaudeMessage` 追加到 canonical messages 序列。
+/// 把一条 `AnthropicMessage` 追加到 canonical messages 序列。
 ///
 /// - assistant 消息：text + tool_use → 一条 `assistant` 消息（带 tool_calls）
 /// - user 消息：tool_result 拆成独立 `role:"tool"` 前置 + 剩余 content 归到 user 消息
 fn append_claude_message(
-    msg: ClaudeMessage,
+    msg: AnthropicMessage,
     tool_use_name_map: &HashMap<String, String>,
     out: &mut Vec<ChatMessage>,
 ) -> AdapterResult<()> {
-    let ClaudeMessage { role, content } = msg;
+    let AnthropicMessage { role, content } = msg;
     let role_enum = match role.as_str() {
         "user" => Role::User,
         "assistant" => Role::Assistant,
@@ -266,7 +270,7 @@ fn append_claude_message(
 
     // 字符串 content → 直接一条消息
     let blocks = match content {
-        ClaudeContent::Text(text) => {
+        AnthropicContent::Text(text) => {
             out.push(ChatMessage {
                 role: role_enum,
                 content: Some(MessageContent::Text(text)),
@@ -278,7 +282,7 @@ fn append_claude_message(
             });
             return Ok(());
         }
-        ClaudeContent::Blocks(blocks) => blocks,
+        AnthropicContent::Blocks(blocks) => blocks,
     };
 
     // 分类收集
@@ -289,7 +293,7 @@ fn append_claude_message(
 
     for block in blocks {
         match block {
-            ClaudeContentBlock::Text { text, .. } => {
+            AnthropicContentBlock::Text { text, .. } => {
                 if parts.is_empty() {
                     if !text_buf.is_empty() {
                         text_buf.push('\n');
@@ -299,7 +303,7 @@ fn append_claude_message(
                     parts.push(ContentPart::Text { text });
                 }
             }
-            ClaudeContentBlock::Image { source, .. } => {
+            AnthropicContentBlock::Image { source, .. } => {
                 // text_buf 里已有文本 → 提升成 Parts 混合
                 if !text_buf.is_empty() {
                     parts.push(ContentPart::Text {
@@ -310,7 +314,7 @@ fn append_claude_message(
                     image_url: claude_image_source_to_url(source),
                 });
             }
-            ClaudeContentBlock::ToolUse {
+            AnthropicContentBlock::ToolUse {
                 id, name, input, ..
             } => {
                 let arguments =
@@ -321,7 +325,7 @@ fn append_claude_message(
                     function: ToolCallFunction { name, arguments },
                 });
             }
-            ClaudeContentBlock::ToolResult {
+            AnthropicContentBlock::ToolResult {
                 tool_use_id,
                 content,
                 is_error: _,
@@ -330,9 +334,9 @@ fn append_claude_message(
                 let body = claude_tool_result_to_string(content)?;
                 tool_results.push((tool_use_id, body));
             }
-            ClaudeContentBlock::Thinking { .. }
-            | ClaudeContentBlock::RedactedThinking { .. }
-            | ClaudeContentBlock::Document { .. } => {
+            AnthropicContentBlock::Thinking { .. }
+            | AnthropicContentBlock::RedactedThinking { .. }
+            | AnthropicContentBlock::Document { .. } => {
                 // 暂时忽略（需要 Anthropic 原生 adapter 配合才有意义）
             }
         }
@@ -384,29 +388,31 @@ fn append_claude_message(
     Ok(())
 }
 
-fn claude_image_source_to_url(source: ClaudeImageSource) -> ImageUrl {
+fn claude_image_source_to_url(source: AnthropicImageSource) -> ImageUrl {
     let url = match source {
-        ClaudeImageSource::Base64 { media_type, data } => {
+        AnthropicImageSource::Base64 { media_type, data } => {
             format!("data:{media_type};base64,{data}")
         }
-        ClaudeImageSource::Url { url } => url,
+        AnthropicImageSource::Url { url } => url,
     };
     ImageUrl { url, detail: None }
 }
 
 /// `tool_result.content` 的两种形态 → canonical `content` 字符串。
-fn claude_tool_result_to_string(content: Option<ClaudeToolResultContent>) -> AdapterResult<String> {
+fn claude_tool_result_to_string(
+    content: Option<AnthropicToolResultContent>,
+) -> AdapterResult<String> {
     match content {
         None => Ok(String::new()),
-        Some(ClaudeToolResultContent::Text(s)) => Ok(s),
-        Some(ClaudeToolResultContent::Blocks(blocks)) => {
+        Some(AnthropicToolResultContent::Text(s)) => Ok(s),
+        Some(AnthropicToolResultContent::Blocks(blocks)) => {
             // 多块（text + image） → JSON-stringify 整个 block 数组
             serde_json::to_string(&blocks).map_err(AdapterError::SerializeRequest)
         }
     }
 }
 
-fn claude_tool_to_canonical(tool: ClaudeTool) -> Tool {
+fn claude_tool_to_canonical(tool: AnthropicTool) -> Tool {
     Tool {
         kind: "function".to_string(),
         function: ToolFunction {
@@ -417,12 +423,12 @@ fn claude_tool_to_canonical(tool: ClaudeTool) -> Tool {
     }
 }
 
-fn claude_tool_choice_to_canonical(choice: ClaudeToolChoice) -> ToolChoice {
+fn claude_tool_choice_to_canonical(choice: AnthropicToolChoice) -> ToolChoice {
     match choice {
-        ClaudeToolChoice::Auto { .. } => ToolChoice::Mode("auto".to_string()),
-        ClaudeToolChoice::Any { .. } => ToolChoice::Mode("required".to_string()),
-        ClaudeToolChoice::None => ToolChoice::Mode("none".to_string()),
-        ClaudeToolChoice::Tool { name, .. } => ToolChoice::Named(serde_json::json!({
+        AnthropicToolChoice::Auto { .. } => ToolChoice::Mode("auto".to_string()),
+        AnthropicToolChoice::Any { .. } => ToolChoice::Mode("required".to_string()),
+        AnthropicToolChoice::None => ToolChoice::Mode("none".to_string()),
+        AnthropicToolChoice::Tool { name, .. } => ToolChoice::Named(serde_json::json!({
             "type": "function",
             "function": { "name": name }
         })),
@@ -440,7 +446,7 @@ fn role_feature_name(role: &str) -> &'static str {
 // from_canonical
 // ---------------------------------------------------------------------------
 
-fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<ClaudeResponse> {
+fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<AnthropicResponse> {
     let ChatResponse {
         id,
         model,
@@ -449,7 +455,7 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
         ..
     } = resp;
 
-    // 取第一个 choice（Claude 响应只有一条 message）
+    // 取第一个 choice（Anthropic 响应只有一条 message）
     let (assistant, finish_reason) = match choices.into_iter().next() {
         Some(choice) => (choice.message, choice.finish_reason),
         None => {
@@ -459,12 +465,12 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
         }
     };
 
-    // message.content + tool_calls → Vec<ClaudeContentBlock>
-    let mut content_blocks: Vec<ClaudeContentBlock> = Vec::new();
+    // message.content + tool_calls → Vec<AnthropicContentBlock>
+    let mut content_blocks: Vec<AnthropicContentBlock> = Vec::new();
 
     if let Some(text) = message_text(&assistant) {
         if !text.is_empty() {
-            content_blocks.push(ClaudeContentBlock::Text {
+            content_blocks.push(AnthropicContentBlock::Text {
                 text,
                 cache_control: None,
             });
@@ -477,7 +483,7 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
                 Ok(v) => v,
                 Err(_) => serde_json::Value::String(tc.function.arguments.clone()),
             };
-            content_blocks.push(ClaudeContentBlock::ToolUse {
+            content_blocks.push(AnthropicContentBlock::ToolUse {
                 id: tc.id,
                 name: tc.function.name,
                 input,
@@ -486,7 +492,7 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
         }
     }
 
-    Ok(ClaudeResponse {
+    Ok(AnthropicResponse {
         id,
         kind: "message".to_string(),
         role: "assistant".to_string(),
@@ -519,26 +525,26 @@ fn message_text(msg: &ChatMessage) -> Option<String> {
 }
 
 /// finish_reason ↔ stop_reason 映射表。
-fn finish_reason_to_stop_reason(reason: Option<FinishReason>) -> ClaudeStopReason {
+fn finish_reason_to_stop_reason(reason: Option<FinishReason>) -> AnthropicStopReason {
     match reason {
-        Some(FinishReason::Stop) => ClaudeStopReason::EndTurn,
-        Some(FinishReason::Length) => ClaudeStopReason::MaxTokens,
+        Some(FinishReason::Stop) => AnthropicStopReason::EndTurn,
+        Some(FinishReason::Length) => AnthropicStopReason::MaxTokens,
         Some(FinishReason::ToolCalls) | Some(FinishReason::FunctionCall) => {
-            ClaudeStopReason::ToolUse
+            AnthropicStopReason::ToolUse
         }
-        Some(FinishReason::ContentFilter) => ClaudeStopReason::StopSequence,
-        None => ClaudeStopReason::EndTurn, // Claude 要非空
+        Some(FinishReason::ContentFilter) => AnthropicStopReason::StopSequence,
+        None => AnthropicStopReason::EndTurn, // Anthropic 要非空
     }
 }
 
-fn usage_to_claude(usage: summer_ai_core::Usage) -> ClaudeUsage {
+fn usage_to_claude(usage: summer_ai_core::Usage) -> AnthropicUsage {
     let cache_read = usage
         .prompt_tokens_details
         .as_ref()
         .and_then(|d| d.cached_tokens)
         .map(|v| v as u32);
 
-    ClaudeUsage {
+    AnthropicUsage {
         input_tokens: usage.prompt_tokens.max(0) as u32,
         output_tokens: usage.completion_tokens.max(0) as u32,
         cache_creation_input_tokens: None, // canonical PromptTokensDetails 目前无此字段
@@ -555,7 +561,7 @@ use serde::de::Error as _;
 // from_canonical_stream_event —— 6-event 重组
 // ---------------------------------------------------------------------------
 
-/// 把 canonical 的语义事件翻译成 Claude SSE 序列。一次调用可能产出多个事件。
+/// 把 canonical 的语义事件翻译成 Anthropic SSE 序列。一次调用可能产出多个事件。
 ///
 /// 规则：
 /// - `Start` 首次到 → 发 `message_start`；后续 Start 忽略
@@ -568,9 +574,9 @@ use serde::de::Error as _;
 /// - `End` → 停所有打开的 block + `message_delta` + `message_stop`
 fn from_canonical_stream_event_impl(
     event: ChatStreamEvent,
-    state: &mut ClaudeStreamState,
+    state: &mut AnthropicStreamState,
     ctx: &IngressCtx,
-) -> Vec<ClaudeStreamEvent> {
+) -> Vec<AnthropicStreamEvent> {
     if state.done {
         return Vec::new();
     }
@@ -582,35 +588,35 @@ fn from_canonical_stream_event_impl(
         }
         ChatStreamEvent::TextDelta { text } => {
             ensure_message_start(&mut out, state, ctx, None);
-            if state.last_message_type != ClaudeLastMessageType::Text {
+            if state.last_message_type != AnthropicLastMessageType::Text {
                 stop_and_advance(&mut out, state);
                 out.push(content_block_start_text(state.index as u32));
-                state.last_message_type = ClaudeLastMessageType::Text;
+                state.last_message_type = AnthropicLastMessageType::Text;
             }
             out.push(content_block_delta(
                 state.index as u32,
-                ClaudeStreamDelta::TextDelta { text },
+                AnthropicStreamDelta::TextDelta { text },
             ));
         }
         ChatStreamEvent::ReasoningDelta { text } => {
             ensure_message_start(&mut out, state, ctx, None);
-            if state.last_message_type != ClaudeLastMessageType::Thinking {
+            if state.last_message_type != AnthropicLastMessageType::Thinking {
                 stop_and_advance(&mut out, state);
                 out.push(content_block_start_thinking(state.index as u32));
-                state.last_message_type = ClaudeLastMessageType::Thinking;
+                state.last_message_type = AnthropicLastMessageType::Thinking;
             }
             out.push(content_block_delta(
                 state.index as u32,
-                ClaudeStreamDelta::ThinkingDelta { thinking: text },
+                AnthropicStreamDelta::ThinkingDelta { thinking: text },
             ));
         }
         ChatStreamEvent::ToolCallDelta(delta) => {
             ensure_message_start(&mut out, state, ctx, None);
-            if state.last_message_type != ClaudeLastMessageType::Tools {
+            if state.last_message_type != AnthropicLastMessageType::Tools {
                 stop_and_advance(&mut out, state);
                 state.tool_call_base_index = state.index;
                 state.tool_call_max_index_offset = 0;
-                state.last_message_type = ClaudeLastMessageType::Tools;
+                state.last_message_type = AnthropicLastMessageType::Tools;
             }
             let offset = delta.index;
             if offset > state.tool_call_max_index_offset {
@@ -628,7 +634,7 @@ fn from_canonical_stream_event_impl(
                 if !args.is_empty() {
                     out.push(content_block_delta(
                         block_index,
-                        ClaudeStreamDelta::InputJsonDelta { partial_json: args },
+                        AnthropicStreamDelta::InputJsonDelta { partial_json: args },
                     ));
                 }
             }
@@ -636,18 +642,18 @@ fn from_canonical_stream_event_impl(
         ChatStreamEvent::End(end) => {
             ensure_message_start(&mut out, state, ctx, None);
             push_stop_open_blocks(&mut out, state);
-            state.last_message_type = ClaudeLastMessageType::None;
+            state.last_message_type = AnthropicLastMessageType::None;
 
             if let Some(new_usage) = end.usage {
                 state.usage = Some(new_usage);
             }
 
-            out.push(ClaudeStreamEvent::MessageDelta {
-                delta: ClaudeStreamMessageDelta {
+            out.push(AnthropicStreamEvent::MessageDelta {
+                delta: AnthropicStreamMessageDelta {
                     stop_reason: Some(finish_reason_to_stop_reason(end.finish_reason)),
                     stop_sequence: None,
                 },
-                usage: state.usage.as_ref().map(|u| ClaudeUsage {
+                usage: state.usage.as_ref().map(|u| AnthropicUsage {
                     input_tokens: u.prompt_tokens.max(0) as u32,
                     output_tokens: u.completion_tokens.max(0) as u32,
                     cache_creation_input_tokens: None,
@@ -660,7 +666,7 @@ fn from_canonical_stream_event_impl(
                     service_tier: None,
                 }),
             });
-            out.push(ClaudeStreamEvent::MessageStop);
+            out.push(AnthropicStreamEvent::MessageStop);
             state.done = true;
         }
     }
@@ -671,8 +677,8 @@ fn from_canonical_stream_event_impl(
 
 /// 首次产出事件前必须先发 `message_start`。
 fn ensure_message_start(
-    out: &mut Vec<ClaudeStreamEvent>,
-    state: &mut ClaudeStreamState,
+    out: &mut Vec<AnthropicStreamEvent>,
+    state: &mut AnthropicStreamState,
     ctx: &IngressCtx,
     override_model: Option<String>,
 ) {
@@ -680,8 +686,8 @@ fn ensure_message_start(
         return;
     }
     let model = override_model.unwrap_or_else(|| ctx.actual_model.clone());
-    out.push(ClaudeStreamEvent::MessageStart {
-        message: ClaudeStreamMessageStart {
+    out.push(AnthropicStreamEvent::MessageStart {
+        message: AnthropicStreamMessageStart {
             id: generate_message_id(),
             kind: "message".to_string(),
             role: "assistant".to_string(),
@@ -689,7 +695,7 @@ fn ensure_message_start(
             model,
             stop_reason: None,
             stop_sequence: None,
-            usage: ClaudeUsage {
+            usage: AnthropicUsage {
                 input_tokens: ctx.estimated_prompt_tokens,
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
@@ -702,34 +708,34 @@ fn ensure_message_start(
 }
 
 /// 关闭当前打开的 block，并为下一个 block 推进 index。
-fn stop_and_advance(out: &mut Vec<ClaudeStreamEvent>, state: &mut ClaudeStreamState) {
+fn stop_and_advance(out: &mut Vec<AnthropicStreamEvent>, state: &mut AnthropicStreamState) {
     push_stop_open_blocks(out, state);
     match state.last_message_type {
-        ClaudeLastMessageType::Tools => {
+        AnthropicLastMessageType::Tools => {
             state.index = state.tool_call_base_index + state.tool_call_max_index_offset + 1;
         }
-        ClaudeLastMessageType::Text | ClaudeLastMessageType::Thinking => {
+        AnthropicLastMessageType::Text | AnthropicLastMessageType::Thinking => {
             state.index += 1;
         }
-        ClaudeLastMessageType::None => {}
+        AnthropicLastMessageType::None => {}
     }
-    state.last_message_type = ClaudeLastMessageType::None;
+    state.last_message_type = AnthropicLastMessageType::None;
 }
 
 /// 给当前打开的 block 发 content_block_stop（tool 并发时发多个）。
-fn push_stop_open_blocks(out: &mut Vec<ClaudeStreamEvent>, state: &ClaudeStreamState) {
+fn push_stop_open_blocks(out: &mut Vec<AnthropicStreamEvent>, state: &AnthropicStreamState) {
     match state.last_message_type {
-        ClaudeLastMessageType::None => {}
-        ClaudeLastMessageType::Text | ClaudeLastMessageType::Thinking => {
-            out.push(ClaudeStreamEvent::ContentBlockStop {
+        AnthropicLastMessageType::None => {}
+        AnthropicLastMessageType::Text | AnthropicLastMessageType::Thinking => {
+            out.push(AnthropicStreamEvent::ContentBlockStop {
                 index: state.index as u32,
             });
         }
-        ClaudeLastMessageType::Tools => {
+        AnthropicLastMessageType::Tools => {
             let base = state.tool_call_base_index;
             let max = state.tool_call_max_index_offset;
             for i in 0..=max {
-                out.push(ClaudeStreamEvent::ContentBlockStop {
+                out.push(AnthropicStreamEvent::ContentBlockStop {
                     index: (base + i) as u32,
                 });
             }
@@ -737,28 +743,28 @@ fn push_stop_open_blocks(out: &mut Vec<ClaudeStreamEvent>, state: &ClaudeStreamS
     }
 }
 
-fn content_block_start_text(index: u32) -> ClaudeStreamEvent {
-    ClaudeStreamEvent::ContentBlockStart {
+fn content_block_start_text(index: u32) -> AnthropicStreamEvent {
+    AnthropicStreamEvent::ContentBlockStart {
         index,
-        content_block: ClaudeStreamContentBlock::Text {
+        content_block: AnthropicStreamContentBlock::Text {
             text: String::new(),
         },
     }
 }
 
-fn content_block_start_thinking(index: u32) -> ClaudeStreamEvent {
-    ClaudeStreamEvent::ContentBlockStart {
+fn content_block_start_thinking(index: u32) -> AnthropicStreamEvent {
+    AnthropicStreamEvent::ContentBlockStart {
         index,
-        content_block: ClaudeStreamContentBlock::Thinking {
+        content_block: AnthropicStreamContentBlock::Thinking {
             thinking: String::new(),
         },
     }
 }
 
-fn content_block_start_tool_use(index: u32, id: String, name: String) -> ClaudeStreamEvent {
-    ClaudeStreamEvent::ContentBlockStart {
+fn content_block_start_tool_use(index: u32, id: String, name: String) -> AnthropicStreamEvent {
+    AnthropicStreamEvent::ContentBlockStart {
         index,
-        content_block: ClaudeStreamContentBlock::ToolUse {
+        content_block: AnthropicStreamContentBlock::ToolUse {
             id,
             name,
             input: serde_json::Value::Object(serde_json::Map::new()),
@@ -766,8 +772,8 @@ fn content_block_start_tool_use(index: u32, id: String, name: String) -> ClaudeS
     }
 }
 
-fn content_block_delta(index: u32, delta: ClaudeStreamDelta) -> ClaudeStreamEvent {
-    ClaudeStreamEvent::ContentBlockDelta { index, delta }
+fn content_block_delta(index: u32, delta: AnthropicStreamDelta) -> AnthropicStreamEvent {
+    AnthropicStreamEvent::ContentBlockDelta { index, delta }
 }
 
 /// 生成一个本地唯一的 `msg_` id（单调递增 + 时间戳前缀）。
@@ -802,13 +808,13 @@ mod tests {
 
     #[test]
     fn minimal_request_to_canonical() {
-        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let req: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap();
-        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let canonical = AnthropicIngress::to_canonical(req, &ctx()).unwrap();
         assert_eq!(canonical.model, "claude-sonnet-4-5");
         assert_eq!(canonical.max_tokens, Some(64));
         assert_eq!(canonical.messages.len(), 1);
@@ -821,14 +827,14 @@ mod tests {
 
     #[test]
     fn system_string_becomes_system_message() {
-        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let req: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "system": "you are helpful",
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap();
-        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let canonical = AnthropicIngress::to_canonical(req, &ctx()).unwrap();
         assert_eq!(canonical.messages.len(), 2);
         assert_eq!(canonical.messages[0].role, Role::System);
         assert!(matches!(
@@ -839,7 +845,7 @@ mod tests {
 
     #[test]
     fn system_blocks_joined_by_newline() {
-        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let req: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "system": [
@@ -849,7 +855,7 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap();
-        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let canonical = AnthropicIngress::to_canonical(req, &ctx()).unwrap();
         let sys_content = canonical.messages[0].content.as_ref().unwrap();
         match sys_content {
             MessageContent::Text(t) => assert_eq!(t, "line1\nline2"),
@@ -859,30 +865,30 @@ mod tests {
 
     #[test]
     fn stop_sequences_one_becomes_string_many_becomes_array() {
-        let one: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let one: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "stop_sequences": ["END"],
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap();
-        let c1 = ClaudeIngress::to_canonical(one, &ctx()).unwrap();
+        let c1 = AnthropicIngress::to_canonical(one, &ctx()).unwrap();
         assert_eq!(c1.stop, Some(serde_json::json!("END")));
 
-        let many: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let many: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "stop_sequences": ["A", "B"],
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap();
-        let c2 = ClaudeIngress::to_canonical(many, &ctx()).unwrap();
+        let c2 = AnthropicIngress::to_canonical(many, &ctx()).unwrap();
         assert_eq!(c2.stop, Some(serde_json::json!(["A", "B"])));
     }
 
     #[test]
     fn tool_use_promoted_to_tool_calls() {
-        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let req: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "messages": [
@@ -894,7 +900,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let canonical = AnthropicIngress::to_canonical(req, &ctx()).unwrap();
         assert_eq!(canonical.messages.len(), 2);
 
         let assistant = &canonical.messages[1];
@@ -913,7 +919,7 @@ mod tests {
 
     #[test]
     fn tool_result_splits_into_tool_message_and_user_remainder() {
-        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let req: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "messages": [
@@ -928,7 +934,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let canonical = AnthropicIngress::to_canonical(req, &ctx()).unwrap();
         // user / assistant / tool / user
         assert_eq!(canonical.messages.len(), 4);
 
@@ -951,7 +957,7 @@ mod tests {
 
     #[test]
     fn image_content_becomes_data_uri() {
-        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let req: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "messages": [{"role": "user", "content": [
@@ -960,7 +966,7 @@ mod tests {
             ]}]
         }))
         .unwrap();
-        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let canonical = AnthropicIngress::to_canonical(req, &ctx()).unwrap();
         match canonical.messages[0].content.as_ref().unwrap() {
             MessageContent::Parts(parts) => {
                 assert_eq!(parts.len(), 2);
@@ -978,14 +984,14 @@ mod tests {
     #[test]
     fn tool_choice_maps_all_variants() {
         let make = |tc: serde_json::Value| -> ChatRequest {
-            let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+            let req: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
                 "model": "claude-sonnet-4-5",
                 "max_tokens": 64,
                 "tool_choice": tc,
                 "messages": [{"role": "user", "content": "hi"}]
             }))
             .unwrap();
-            ClaudeIngress::to_canonical(req, &ctx()).unwrap()
+            AnthropicIngress::to_canonical(req, &ctx()).unwrap()
         };
 
         match make(serde_json::json!({"type": "auto"}))
@@ -1031,28 +1037,28 @@ mod tests {
         });
 
         // Anthropic upstream → 透传到 extra
-        let req: ClaudeMessagesRequest = serde_json::from_value(req_json.clone()).unwrap();
-        let c1 = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let req: AnthropicMessagesRequest = serde_json::from_value(req_json.clone()).unwrap();
+        let c1 = AnthropicIngress::to_canonical(req, &ctx()).unwrap();
         assert!(c1.extra.contains_key("thinking"));
 
         // 非 Anthropic upstream → 丢弃
-        let req: ClaudeMessagesRequest = serde_json::from_value(req_json).unwrap();
+        let req: AnthropicMessagesRequest = serde_json::from_value(req_json).unwrap();
         let mut non_anthropic_ctx = ctx();
         non_anthropic_ctx.channel_kind = AdapterKind::OpenAI;
-        let c2 = ClaudeIngress::to_canonical(req, &non_anthropic_ctx).unwrap();
+        let c2 = AnthropicIngress::to_canonical(req, &non_anthropic_ctx).unwrap();
         assert!(!c2.extra.contains_key("thinking"));
     }
 
     #[test]
     fn metadata_user_id_maps_to_user_field() {
-        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+        let req: AnthropicMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "metadata": {"user_id": "u-123"},
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap();
-        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let canonical = AnthropicIngress::to_canonical(req, &ctx()).unwrap();
         assert_eq!(canonical.user.as_deref(), Some("u-123"));
     }
 
@@ -1080,15 +1086,15 @@ mod tests {
             system_fingerprint: None,
             service_tier: None,
         };
-        let claude = ClaudeIngress::from_canonical(resp, &ctx()).unwrap();
+        let claude = AnthropicIngress::from_canonical(resp, &ctx()).unwrap();
         assert_eq!(claude.id, "chatcmpl-1");
         assert_eq!(claude.role, "assistant");
         assert_eq!(claude.content.len(), 1);
         match &claude.content[0] {
-            ClaudeContentBlock::Text { text, .. } => assert_eq!(text, "hello"),
+            AnthropicContentBlock::Text { text, .. } => assert_eq!(text, "hello"),
             _ => panic!("expected Text"),
         }
-        assert_eq!(claude.stop_reason, Some(ClaudeStopReason::EndTurn));
+        assert_eq!(claude.stop_reason, Some(AnthropicStopReason::EndTurn));
         assert_eq!(claude.usage.input_tokens, 5);
         assert_eq!(claude.usage.output_tokens, 2);
     }
@@ -1125,14 +1131,14 @@ mod tests {
             system_fingerprint: None,
             service_tier: None,
         };
-        let claude = ClaudeIngress::from_canonical(resp, &ctx()).unwrap();
+        let claude = AnthropicIngress::from_canonical(resp, &ctx()).unwrap();
         assert_eq!(claude.content.len(), 2);
         match &claude.content[0] {
-            ClaudeContentBlock::Text { text, .. } => assert_eq!(text, "let me check"),
+            AnthropicContentBlock::Text { text, .. } => assert_eq!(text, "let me check"),
             _ => panic!("expected Text"),
         }
         match &claude.content[1] {
-            ClaudeContentBlock::ToolUse {
+            AnthropicContentBlock::ToolUse {
                 id, name, input, ..
             } => {
                 assert_eq!(id, "tc_1");
@@ -1141,7 +1147,7 @@ mod tests {
             }
             _ => panic!("expected ToolUse"),
         }
-        assert_eq!(claude.stop_reason, Some(ClaudeStopReason::ToolUse));
+        assert_eq!(claude.stop_reason, Some(AnthropicStopReason::ToolUse));
     }
 
     #[test]
@@ -1149,27 +1155,27 @@ mod tests {
         use FinishReason::*;
         assert_eq!(
             finish_reason_to_stop_reason(Some(Stop)),
-            ClaudeStopReason::EndTurn
+            AnthropicStopReason::EndTurn
         );
         assert_eq!(
             finish_reason_to_stop_reason(Some(Length)),
-            ClaudeStopReason::MaxTokens
+            AnthropicStopReason::MaxTokens
         );
         assert_eq!(
             finish_reason_to_stop_reason(Some(ToolCalls)),
-            ClaudeStopReason::ToolUse
+            AnthropicStopReason::ToolUse
         );
         assert_eq!(
             finish_reason_to_stop_reason(Some(FunctionCall)),
-            ClaudeStopReason::ToolUse
+            AnthropicStopReason::ToolUse
         );
         assert_eq!(
             finish_reason_to_stop_reason(Some(ContentFilter)),
-            ClaudeStopReason::StopSequence
+            AnthropicStopReason::StopSequence
         );
         assert_eq!(
             finish_reason_to_stop_reason(None),
-            ClaudeStopReason::EndTurn
+            AnthropicStopReason::EndTurn
         );
     }
 
@@ -1201,15 +1207,15 @@ mod tests {
     }
 
     fn init_state() -> StreamConvertState {
-        StreamConvertState::for_format(IngressFormat::Claude)
+        StreamConvertState::for_format(IngressFormat::Anthropic)
     }
 
     fn run(
         state: &mut StreamConvertState,
         ctx: &IngressCtx,
         event: ChatStreamEvent,
-    ) -> Vec<ClaudeStreamEvent> {
-        ClaudeIngress::from_canonical_stream_event(event, state, ctx).unwrap()
+    ) -> Vec<AnthropicStreamEvent> {
+        AnthropicIngress::from_canonical_stream_event(event, state, ctx).unwrap()
     }
 
     #[test]
@@ -1224,9 +1230,9 @@ mod tests {
             },
         );
         assert_eq!(out.len(), 3);
-        assert!(matches!(out[0], ClaudeStreamEvent::MessageStart { .. }));
+        assert!(matches!(out[0], AnthropicStreamEvent::MessageStart { .. }));
         match &out[0] {
-            ClaudeStreamEvent::MessageStart { message } => {
+            AnthropicStreamEvent::MessageStart { message } => {
                 assert_eq!(message.usage.input_tokens, 42);
                 assert_eq!(message.role, "assistant");
             }
@@ -1234,16 +1240,16 @@ mod tests {
         }
         assert!(matches!(
             out[1],
-            ClaudeStreamEvent::ContentBlockStart {
+            AnthropicStreamEvent::ContentBlockStart {
                 index: 0,
-                content_block: ClaudeStreamContentBlock::Text { .. }
+                content_block: AnthropicStreamContentBlock::Text { .. }
             }
         ));
         match &out[2] {
-            ClaudeStreamEvent::ContentBlockDelta { index, delta } => {
+            AnthropicStreamEvent::ContentBlockDelta { index, delta } => {
                 assert_eq!(*index, 0);
                 match delta {
-                    ClaudeStreamDelta::TextDelta { text } => assert_eq!(text, "hi"),
+                    AnthropicStreamDelta::TextDelta { text } => assert_eq!(text, "hi"),
                     _ => panic!(),
                 }
             }
@@ -1265,7 +1271,7 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         match &out[0] {
-            ClaudeStreamEvent::MessageStart { message } => {
+            AnthropicStreamEvent::MessageStart { message } => {
                 assert_eq!(message.model, "gpt-4o-mini");
             }
             _ => panic!(),
@@ -1293,10 +1299,10 @@ mod tests {
         // 后续 delta 不应再发 message_start / content_block_start
         assert_eq!(out.len(), 1);
         match &out[0] {
-            ClaudeStreamEvent::ContentBlockDelta { index, delta } => {
+            AnthropicStreamEvent::ContentBlockDelta { index, delta } => {
                 assert_eq!(*index, 0);
                 match delta {
-                    ClaudeStreamDelta::TextDelta { text } => assert_eq!(text, "b"),
+                    AnthropicStreamDelta::TextDelta { text } => assert_eq!(text, "b"),
                     _ => panic!(),
                 }
             }
@@ -1325,19 +1331,19 @@ mod tests {
         // 关闭 thinking(0) + 开 text(1) + delta
         assert_eq!(out.len(), 3);
         match &out[0] {
-            ClaudeStreamEvent::ContentBlockStop { index } => assert_eq!(*index, 0),
+            AnthropicStreamEvent::ContentBlockStop { index } => assert_eq!(*index, 0),
             _ => panic!(),
         }
         match &out[1] {
-            ClaudeStreamEvent::ContentBlockStart {
+            AnthropicStreamEvent::ContentBlockStart {
                 index,
-                content_block: ClaudeStreamContentBlock::Text { .. },
+                content_block: AnthropicStreamContentBlock::Text { .. },
             } => assert_eq!(*index, 1),
             _ => panic!(),
         }
         assert!(matches!(
             out[2],
-            ClaudeStreamEvent::ContentBlockDelta { .. }
+            AnthropicStreamEvent::ContentBlockDelta { .. }
         ));
     }
 
@@ -1358,9 +1364,9 @@ mod tests {
         // message_start + content_block_start{tool_use} + content_block_delta{input_json_delta}
         assert_eq!(out.len(), 3);
         match &out[1] {
-            ClaudeStreamEvent::ContentBlockStart {
+            AnthropicStreamEvent::ContentBlockStart {
                 index,
-                content_block: ClaudeStreamContentBlock::ToolUse { id, name, .. },
+                content_block: AnthropicStreamContentBlock::ToolUse { id, name, .. },
             } => {
                 assert_eq!(*index, 0);
                 assert_eq!(id, "tc_1");
@@ -1369,10 +1375,10 @@ mod tests {
             _ => panic!(),
         }
         match &out[2] {
-            ClaudeStreamEvent::ContentBlockDelta { index, delta } => {
+            AnthropicStreamEvent::ContentBlockDelta { index, delta } => {
                 assert_eq!(*index, 0);
                 match delta {
-                    ClaudeStreamDelta::InputJsonDelta { partial_json } => {
+                    AnthropicStreamDelta::InputJsonDelta { partial_json } => {
                         assert!(partial_json.starts_with("{\"city"));
                     }
                     _ => panic!(),
@@ -1395,8 +1401,8 @@ mod tests {
         assert_eq!(out2.len(), 1);
         assert!(matches!(
             out2[0],
-            ClaudeStreamEvent::ContentBlockDelta {
-                delta: ClaudeStreamDelta::InputJsonDelta { .. },
+            AnthropicStreamEvent::ContentBlockDelta {
+                delta: AnthropicStreamDelta::InputJsonDelta { .. },
                 ..
             }
         ));
@@ -1417,8 +1423,8 @@ mod tests {
             }),
         );
         match &out[1] {
-            ClaudeStreamEvent::ContentBlockStart {
-                content_block: ClaudeStreamContentBlock::ToolUse { id, .. },
+            AnthropicStreamEvent::ContentBlockStart {
+                content_block: AnthropicStreamContentBlock::ToolUse { id, .. },
                 ..
             } => assert!(id.starts_with("toolu_")),
             _ => panic!(),
@@ -1463,7 +1469,7 @@ mod tests {
         let stops: Vec<_> = out
             .iter()
             .filter_map(|e| match e {
-                ClaudeStreamEvent::ContentBlockStop { index } => Some(*index),
+                AnthropicStreamEvent::ContentBlockStop { index } => Some(*index),
                 _ => None,
             })
             .collect();
@@ -1498,18 +1504,18 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert!(matches!(
             out[0],
-            ClaudeStreamEvent::ContentBlockStop { index: 0 }
+            AnthropicStreamEvent::ContentBlockStop { index: 0 }
         ));
         match &out[1] {
-            ClaudeStreamEvent::MessageDelta { delta, usage } => {
-                assert_eq!(delta.stop_reason, Some(ClaudeStopReason::EndTurn));
+            AnthropicStreamEvent::MessageDelta { delta, usage } => {
+                assert_eq!(delta.stop_reason, Some(AnthropicStopReason::EndTurn));
                 let usage = usage.as_ref().unwrap();
                 assert_eq!(usage.output_tokens, 20);
                 assert_eq!(usage.input_tokens, 10);
             }
             _ => panic!(),
         }
-        assert!(matches!(out[2], ClaudeStreamEvent::MessageStop));
+        assert!(matches!(out[2], AnthropicStreamEvent::MessageStop));
 
         // 进入 done 状态后继续喂事件返空
         let extra = run(
@@ -1536,16 +1542,16 @@ mod tests {
         );
         // message_start + message_delta + message_stop
         assert_eq!(out.len(), 3);
-        assert!(matches!(out[0], ClaudeStreamEvent::MessageStart { .. }));
-        assert!(matches!(out[1], ClaudeStreamEvent::MessageDelta { .. }));
-        assert!(matches!(out[2], ClaudeStreamEvent::MessageStop));
+        assert!(matches!(out[0], AnthropicStreamEvent::MessageStart { .. }));
+        assert!(matches!(out[1], AnthropicStreamEvent::MessageDelta { .. }));
+        assert!(matches!(out[2], AnthropicStreamEvent::MessageStop));
     }
 
     #[test]
     fn stream_wrong_state_variant_errors() {
         let ctx = stream_ctx();
         let mut state = StreamConvertState::Openai;
-        let err = ClaudeIngress::from_canonical_stream_event(
+        let err = AnthropicIngress::from_canonical_stream_event(
             ChatStreamEvent::TextDelta {
                 text: "hi".to_string(),
             },

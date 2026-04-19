@@ -3,7 +3,7 @@
 //! canonical 就是 OpenAI-flat 格式（`core/src/types/openai/chat.rs` 的 `ChatRequest`
 //! 与官方完全对齐），所以 OpenAI 入口的转换是 **identity**——三个方法都原样透传。
 //!
-//! 作为 [`IngressConverter`] trait 的**模板实现**，Claude / Gemini converter
+//! 作为 [`IngressConverter`] trait 的**模板实现**，Anthropic / Gemini converter
 //! 按同样形状实现即可。
 
 use super::{IngressConverter, IngressCtx, IngressFormat, StreamConvertState};
