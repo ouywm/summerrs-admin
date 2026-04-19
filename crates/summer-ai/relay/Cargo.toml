@@ -4,6 +4,7 @@ name = "summer-ai-relay"
 version = "0.0.1"
 
 [dependencies]
+async-stream = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }

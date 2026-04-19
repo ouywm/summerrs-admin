@@ -5,3 +5,4 @@
 //! 后续 Phase 会加：`embeddings` / `audio` / `images` / `responses` / `rerank`。
 
 pub mod chat;
+pub mod stream_driver;

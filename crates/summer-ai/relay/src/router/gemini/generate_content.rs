@@ -1,15 +1,16 @@
 //! `POST /v1beta/models/{model}:{generateContent|streamGenerateContent}` —— Gemini 入口。
 //!
 //! 上游当前硬编码为 OpenAI，`OPENAI_API_KEY` / `OPENAI_BASE_URL` 从 env 读。
-//! 流式暂返 501（Gemini 流式需要把 canonical event 串行序列化成 SSE，
-//! 需要 stream driver 集成，后续做）。
+//! 流式通过 stream driver 把上游 SSE 重组成 Gemini SSE chunks (`data: {json}\n\n`)。
 
 use summer_admin_macros::no_auth;
 use summer_ai_core::types::ingress_wire::gemini::GeminiGenerateContentRequest;
 use summer_ai_core::{AdapterKind, ServiceTarget};
 use summer_web::Router;
 use summer_web::axum::Json;
+use summer_web::axum::body::Body;
 use summer_web::axum::extract::Path;
+use summer_web::axum::http::{HeaderValue, StatusCode, header};
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::handler::TypeRouter;
@@ -17,7 +18,7 @@ use summer_web::post;
 
 use crate::convert::ingress::{GeminiIngress, IngressConverter, IngressCtx};
 use crate::error::{RelayError, RelayResult};
-use crate::service::chat;
+use crate::service::{chat, stream_driver};
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
@@ -54,20 +55,37 @@ pub async fn generate_content(
         "gemini generate_content"
     );
 
-    if is_stream {
-        // 流式需要 SSE stream driver 集成（后续做）
-        return Err(RelayError::NotImplemented("gemini streaming"));
-    }
-
     let ctx = IngressCtx::new(kind, &model_string, &model_string);
-    let canonical_req = GeminiIngress::to_canonical(gemini_req, &ctx)?;
+    let mut canonical_req = GeminiIngress::to_canonical(gemini_req, &ctx)?;
+    canonical_req.stream = is_stream;
+
     let upstream_target = ServiceTarget::bearer(base_url, api_key, &model_string);
 
-    let canonical_resp =
-        chat::invoke_non_stream(&http, kind, &upstream_target, &canonical_req).await?;
-    let gemini_resp = GeminiIngress::from_canonical(canonical_resp, &ctx)?;
-
-    Ok(Json(gemini_resp).into_response())
+    if is_stream {
+        let upstream =
+            chat::invoke_stream_raw(&http, kind, &upstream_target, &canonical_req).await?;
+        let body_stream =
+            stream_driver::transcode_stream::<GeminiIngress>(upstream, kind, upstream_target, ctx);
+        let body = Body::from_stream(body_stream);
+        Ok((
+            StatusCode::OK,
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/event-stream"),
+                ),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+                (header::CONNECTION, HeaderValue::from_static("keep-alive")),
+            ],
+            body,
+        )
+            .into_response())
+    } else {
+        let canonical_resp =
+            chat::invoke_non_stream(&http, kind, &upstream_target, &canonical_req).await?;
+        let gemini_resp = GeminiIngress::from_canonical(canonical_resp, &ctx)?;
+        Ok(Json(gemini_resp).into_response())
+    }
 }
 
 pub fn routes(router: Router) -> Router {
