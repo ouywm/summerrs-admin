@@ -14,23 +14,19 @@
 //!
 //! - P4：从 `ai.channel.models` JSONB 聚合去重，不再去上游拉
 
-use summer_admin_macros::no_auth;
 use summer_ai_core::{AdapterDispatcher, AdapterKind, ModelInfo, ModelList, ServiceTarget};
-use summer_web::Router;
 use summer_web::axum::Json;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::get;
-use summer_web::handler::TypeRouter;
 
-use crate::error::{RelayError, RelayResult};
+use crate::error::{OpenAIResult, RelayError};
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// `GET /v1/models`
-#[no_auth]
 #[get("/v1/models")]
-pub async fn list_models(Component(http): Component<reqwest::Client>) -> RelayResult<Response> {
+pub async fn list_models(Component(http): Component<reqwest::Client>) -> OpenAIResult<Response> {
     let api_key =
         std::env::var("OPENAI_API_KEY").map_err(|_| RelayError::MissingConfig("OPENAI_API_KEY"))?;
     let base_url =
@@ -54,8 +50,4 @@ pub async fn list_models(Component(http): Component<reqwest::Client>) -> RelayRe
     );
 
     Ok(Json(list).into_response())
-}
-
-pub fn routes(router: Router) -> Router {
-    router.typed_route(list_models)
 }

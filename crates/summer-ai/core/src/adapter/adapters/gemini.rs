@@ -193,9 +193,6 @@ fn canonical_to_gemini_request(req: &ChatRequest) -> AdapterResult<GeminiGenerat
                     }],
                 });
             }
-            Role::System | Role::Developer => {
-                // 已在 system_texts 处理（不应到达这里）
-            }
         }
     }
 

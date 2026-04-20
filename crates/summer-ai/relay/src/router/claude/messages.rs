@@ -1,89 +1,58 @@
 //! `POST /v1/messages` —— Claude Messages API 兼容入口。
 //!
-//! 走路径：
-//! - 客户端用 Claude SDK 格式发请求
-//! - [`ChannelStore::pick`] 选 (channel, account) → [`build_service_target`] 得到
-//!   实际上游 `(AdapterKind, ServiceTarget)`（上游不一定是 Claude，可能是任意 OpenAI
-//!   兼容 / Gemini / 其它）
-//! - [`ClaudeIngress::to_canonical`] 翻译成 canonical
-//! - 复用 [`crate::service::chat`] 发给上游
-//! - 非流式响应：[`ClaudeIngress::from_canonical`] 翻译回 Claude JSON
-//! - 流式响应：[`crate::service::stream_driver::transcode_stream`] 把上游 SSE
-//!   重组成 Claude 6-event SSE
+//! Handler 只做参数解包 + 调 [`PipelineCall::execute`] + 包装响应。
+//! 鉴权 / 选路 / 翻译（Claude ↔ canonical）/ 发上游 / tracking 都在 engine 内完成。
+//!
+//! 错误用 [`ClaudeError`](crate::error::ClaudeError) newtype 包一层——`?` 自动转，
+//! `IntoResponse` 时输出 Anthropic 官方格式 `{"type":"error","error":{...}}`。
 
-use summer_admin_macros::no_auth;
 use summer_ai_core::types::ingress_wire::claude::ClaudeMessagesRequest;
-use summer_web::Router;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
 use summer_web::post;
 
 use crate::auth::AiToken;
-use crate::convert::ingress::{ClaudeIngress, IngressConverter, IngressCtx};
-use crate::error::{RelayError, RelayResult};
-use crate::service::channel_store::{ChannelStore, build_service_target};
+use crate::convert::ingress::{ClaudeIngress, IngressFormat};
+use crate::error::ClaudeResult;
+use crate::extract::RelayRequestMeta;
+use crate::pipeline::{EngineOutcome, PipelineCall};
+use crate::service::channel_store::ChannelStore;
 use crate::service::stream_driver::sse_response;
-use crate::service::{chat, stream_driver};
+use crate::service::tracking::TrackingService;
 
 /// `POST /v1/messages`
-#[no_auth]
 #[post("/v1/messages")]
 pub async fn messages(
-    AiToken(ctx): AiToken,
+    AiToken(token): AiToken,
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
+    Component(tracking): Component<TrackingService>,
+    meta: RelayRequestMeta,
     Json(claude_req): Json<ClaudeMessagesRequest>,
-) -> RelayResult<Response> {
+) -> ClaudeResult<Response> {
     let logical_model = claude_req.model.clone();
     let is_stream = claude_req.stream;
+    let client_req_snapshot = serde_json::to_value(&claude_req).ok();
 
-    let (channel, account) =
-        store
-            .pick(&logical_model)
-            .await?
-            .ok_or_else(|| RelayError::NoAvailableChannel {
-                model: logical_model.clone(),
-            })?;
-    let (kind, target) = build_service_target(&channel, &account, &logical_model)?;
+    let call = PipelineCall::<ClaudeIngress> {
+        endpoint: meta.endpoint,
+        format: IngressFormat::Claude,
+        token,
+        is_stream,
+        logical_model,
+        client_ip: meta.client_ip,
+        user_agent: meta.user_agent,
+        client_req: claude_req,
+        client_req_snapshot,
+        http,
+        store,
+        tracking,
+    };
 
-    tracing::debug!(
-        token_id = ctx.token_id,
-        user_id = ctx.user_id,
-        model = %logical_model,
-        actual_model = %target.actual_model,
-        adapter = %kind.as_lower_str(),
-        channel_id = channel.id,
-        account_id = account.id,
-        messages = claude_req.messages.len(),
-        stream = is_stream,
-        "claude /v1/messages"
-    );
-
-    // Ingress ctx 需要的是上游 kind（用于选择对应的 egress 结构），这里传
-    // build_service_target 返回的 kind；actual_model 来自 target（已应用 model_mapping）。
-    let ctx = IngressCtx::new(kind, &logical_model, &target.actual_model);
-
-    // client wire → canonical
-    let mut canonical_req = ClaudeIngress::to_canonical(claude_req, &ctx)?;
-    // stream 位必须显式标记——Adapter::build_chat_request 据此决定 URL/payload
-    canonical_req.stream = is_stream;
-
-    if is_stream {
-        let upstream = chat::invoke_stream_raw(&http, kind, &target, &canonical_req).await?;
-        let body_stream =
-            stream_driver::transcode_stream::<ClaudeIngress>(upstream, kind, target, ctx);
-        let body = Body::from_stream(body_stream);
-        Ok(sse_response(body))
-    } else {
-        let canonical_resp = chat::invoke_non_stream(&http, kind, &target, &canonical_req).await?;
-        let claude_resp = ClaudeIngress::from_canonical(canonical_resp, &ctx)?;
-        Ok(Json(claude_resp).into_response())
+    match call.execute().await? {
+        EngineOutcome::NonStream(resp) => Ok(Json(resp).into_response()),
+        EngineOutcome::Stream(body_stream) => Ok(sse_response(Body::from_stream(body_stream))),
     }
-}
-
-pub fn routes(router: Router) -> Router {
-    router.typed_route(messages)
 }

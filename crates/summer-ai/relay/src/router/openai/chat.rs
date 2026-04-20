@@ -1,76 +1,62 @@
 //! `POST /v1/chat/completions` —— OpenAI 兼容聊天接口。
 //!
-//! 走路径：[`AiAuthLayer`](crate::auth::AiAuthLayer) 鉴权注入 [`AiTokenContext`](crate::auth::AiTokenContext)
-//! → [`ChannelStore::pick`] 选 (channel, account) → [`build_service_target`] 生成
-//! `(AdapterKind, ServiceTarget)` → [`crate::service::chat`] 发上游 → 非流式 parse /
-//! 流式原样透传 bytes。
+//! Handler 只做参数解包 + 调 [`PipelineCall::execute`] + 包装响应。
+//! 鉴权 / 选路 / 翻译 / 发上游 / tracking 落库都在 engine 内完成。
 //!
-//! `#[no_auth]` 保留：它告诉 summer-auth 全局 AuthLayer 跳过（避免把 Bearer sk-xxx
-//! 当成 JWT 解析）；API Key 鉴权由本 crate 独立的 AiAuthLayer 完成。
+//! OpenAI 是 identity ingress（canonical 就是 OpenAI-flat 格式），走 engine 是为了
+//! 统一四个入口——包括流式通过 [`stream_driver::transcode_stream`] 拿 usage 用于
+//! tracking / billing，而不是原来的 `bytes_stream()` 裸透传。
 //!
-//! # 后续待加
-//!
-//! - BillingLayer 三阶段扣费
-//! - 流式响应走 canonical event 解析 + 重新序列化（egress converter）
+//! 鉴权由 `ApiKeyStrategy` 挂在 `"summer-ai-relay"` group layer 上完成；admin JWT
+//! AuthLayer 挂在 `"summer-system"` group 上，不会拦到本 handler。
 
-use summer_admin_macros::no_auth;
 use summer_ai_core::ChatRequest;
-use summer_web::Router;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
 use summer_web::post;
 
 use crate::auth::AiToken;
-use crate::error::{RelayError, RelayResult};
-use crate::service::channel_store::{ChannelStore, build_service_target};
-use crate::service::chat;
+use crate::convert::ingress::{IngressFormat, OpenAIIngress};
+use crate::error::OpenAIResult;
+use crate::extract::RelayRequestMeta;
+use crate::pipeline::{EngineOutcome, PipelineCall};
+use crate::service::channel_store::ChannelStore;
 use crate::service::stream_driver::sse_response;
+use crate::service::tracking::TrackingService;
 
 /// `POST /v1/chat/completions`
-#[no_auth]
 #[post("/v1/chat/completions")]
 pub async fn chat_completions(
-    AiToken(ctx): AiToken,
+    AiToken(token): AiToken,
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
+    Component(tracking): Component<TrackingService>,
+    meta: RelayRequestMeta,
     Json(request): Json<ChatRequest>,
-) -> RelayResult<Response> {
+) -> OpenAIResult<Response> {
     let logical_model = request.model.clone();
-    let (channel, account) =
-        store
-            .pick(&logical_model)
-            .await?
-            .ok_or_else(|| RelayError::NoAvailableChannel {
-                model: logical_model.clone(),
-            })?;
-    let (kind, target) = build_service_target(&channel, &account, &logical_model)?;
     let is_stream = request.stream;
+    let client_req_snapshot = serde_json::to_value(&request).ok();
 
-    tracing::debug!(
-        token_id = ctx.token_id,
-        user_id = ctx.user_id,
-        model = %logical_model,
-        actual_model = %target.actual_model,
-        channel_id = channel.id,
-        account_id = account.id,
-        messages = request.messages.len(),
-        stream = is_stream,
-        "summer-ai chat_completions"
-    );
+    let call = PipelineCall::<OpenAIIngress> {
+        endpoint: meta.endpoint,
+        format: IngressFormat::OpenAI,
+        token,
+        is_stream,
+        logical_model,
+        client_ip: meta.client_ip,
+        user_agent: meta.user_agent,
+        client_req: request,
+        client_req_snapshot,
+        http,
+        store,
+        tracking,
+    };
 
-    if is_stream {
-        let upstream = chat::invoke_stream_raw(&http, kind, &target, &request).await?;
-        let body = Body::from_stream(upstream.bytes_stream());
-        Ok(sse_response(body))
-    } else {
-        let response = chat::invoke_non_stream(&http, kind, &target, &request).await?;
-        Ok(Json(response).into_response())
+    match call.execute().await? {
+        EngineOutcome::NonStream(resp) => Ok(Json(resp).into_response()),
+        EngineOutcome::Stream(body_stream) => Ok(sse_response(Body::from_stream(body_stream))),
     }
-}
-
-pub fn routes(router: Router) -> Router {
-    router.typed_route(chat_completions)
 }

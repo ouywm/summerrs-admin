@@ -494,7 +494,8 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
             | ClaudeContentBlock::RedactedThinking { .. }
             | ClaudeContentBlock::Image { .. }
             | ClaudeContentBlock::ToolResult { .. }
-            | ClaudeContentBlock::Document { .. } => {}
+            | ClaudeContentBlock::Document { .. }
+            | ClaudeContentBlock::Unknown => {}
         }
     }
 

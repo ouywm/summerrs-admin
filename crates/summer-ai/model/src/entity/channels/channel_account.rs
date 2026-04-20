@@ -6,6 +6,7 @@ use sea_orm::entity::prelude::*;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
+use std::collections::HashSet;
 
 /// 状态：1=启用 2=禁用 3=额度耗尽 4=过期 5=冷却中
 #[derive(
@@ -120,6 +121,11 @@ pub struct Model {
     pub update_by: String,
     /// 更新时间
     pub update_time: DateTimeWithTimeZone,
+    /// 被禁用的 API Key 明细列表（`[{key, disabled_at, error_code, reason}]`）。
+    /// 仅在 `credential_type = "api_key"` 且 `credentials.api_keys` 是数组时生效。
+    /// 选 key 时会用它去 diff `api_keys()` 得到 `enabled_api_keys()`。
+    #[sea_orm(column_type = "JsonBinary", default_value = "[]")]
+    pub disabled_api_keys: serde_json::Value,
 
     /// 关联渠道（多对一，逻辑关联 ai.channel.id，不建立数据库外键）
     #[sea_orm(belongs_to, from = "channel_id", to = "id", skip_fk)]
@@ -169,12 +175,230 @@ impl Entity {
 }
 
 impl Model {
+    /// **单 key 快捷方法**，等价于 `enabled_api_keys().into_iter().next()`。
+    ///
+    /// 保留签名给既有调用方（部分早期代码拿第一个 key 就用）；新代码**不要**直接用，
+    /// 走 `KeyPicker` + `enabled_api_keys()`，才能吃到 multi-key 轮询 + disabled-key 过滤。
     pub fn api_key(&self) -> Option<String> {
-        self.credentials
+        self.enabled_api_keys().into_iter().next()
+    }
+
+    /// 凭证里的全部 API Key（合并旧 `api_key` + 新 `api_keys`，去重去空）。
+    ///
+    /// - `credentials.api_key: "sk-x"`（遗留 single-key 格式）
+    /// - `credentials.api_keys: ["sk-1", "sk-2"]`（新的 multi-key 格式）
+    /// - 两者可共存，按出现顺序拼接
+    /// - 去重保持首次出现顺序
+    ///
+    /// OAuth account 返 `[]`（`is_oauth()` 为 true 时）。
+    pub fn api_keys(&self) -> Vec<String> {
+        if self.is_oauth() {
+            return Vec::new();
+        }
+
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out: Vec<String> = Vec::new();
+
+        // 旧 api_key
+        if let Some(s) = self
+            .credentials
             .get("api_key")
-            .and_then(|value| value.as_str())
+            .and_then(|v| v.as_str())
             .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .filter(|s| !s.is_empty())
+        {
+            let owned = s.to_owned();
+            if seen.insert(owned.clone()) {
+                out.push(owned);
+            }
+        }
+
+        // 新 api_keys 数组
+        if let Some(arr) = self.credentials.get("api_keys").and_then(|v| v.as_array()) {
+            for v in arr {
+                if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    let owned = s.to_owned();
+                    if seen.insert(owned.clone()) {
+                        out.push(owned);
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    /// 被禁用的 API Key 集合（从 `disabled_api_keys` JSONB 数组的 `key` 字段取）。
+    pub fn disabled_key_set(&self) -> HashSet<String> {
+        let Some(arr) = self.disabled_api_keys.as_array() else {
+            return HashSet::new();
+        };
+        arr.iter()
+            .filter_map(|item| item.get("key").and_then(|v| v.as_str()))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    /// 可用 API Key —— `api_keys()` 去掉 `disabled_key_set()`。
+    pub fn enabled_api_keys(&self) -> Vec<String> {
+        let disabled = self.disabled_key_set();
+        if disabled.is_empty() {
+            return self.api_keys();
+        }
+        self.api_keys()
+            .into_iter()
+            .filter(|k| !disabled.contains(k))
+            .collect()
+    }
+
+    /// 是否 OAuth 账号（`credential_type = "oauth"` 或 `credentials.oauth` 对象存在）。
+    pub fn is_oauth(&self) -> bool {
+        if self.credential_type.eq_ignore_ascii_case("oauth") {
+            return true;
+        }
+        self.credentials
+            .get("oauth")
+            .and_then(|v| v.as_object())
+            .is_some_and(|o| !o.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_account(credentials: serde_json::Value, disabled: serde_json::Value) -> Model {
+        Model {
+            id: 1,
+            channel_id: 1,
+            name: "t".into(),
+            credential_type: "api_key".into(),
+            credentials,
+            secret_ref: String::new(),
+            status: ChannelAccountStatus::Enabled,
+            schedulable: true,
+            priority: 0,
+            weight: 1,
+            rate_multiplier: BigDecimal::from(1),
+            concurrency_limit: 0,
+            quota_limit: BigDecimal::from(0),
+            quota_used: BigDecimal::from(0),
+            balance: BigDecimal::from(0),
+            balance_updated_at: None,
+            response_time: 0,
+            failure_streak: 0,
+            last_used_at: None,
+            last_error_at: None,
+            last_error_code: String::new(),
+            last_error_message: String::new(),
+            rate_limited_until: None,
+            overload_until: None,
+            expires_at: None,
+            test_model: String::new(),
+            test_time: None,
+            extra: serde_json::json!({}),
+            deleted_at: None,
+            remark: String::new(),
+            create_by: String::new(),
+            create_time: chrono::Utc::now().fixed_offset(),
+            update_by: String::new(),
+            update_time: chrono::Utc::now().fixed_offset(),
+            disabled_api_keys: disabled,
+        }
+    }
+
+    #[test]
+    fn api_keys_reads_legacy_single_key_field() {
+        let m = mk_account(
+            serde_json::json!({"api_key": "sk-legacy"}),
+            serde_json::json!([]),
+        );
+        assert_eq!(m.api_keys(), vec!["sk-legacy"]);
+    }
+
+    #[test]
+    fn api_keys_reads_new_array_field() {
+        let m = mk_account(
+            serde_json::json!({"api_keys": ["sk-1", "sk-2", "sk-3"]}),
+            serde_json::json!([]),
+        );
+        assert_eq!(m.api_keys(), vec!["sk-1", "sk-2", "sk-3"]);
+    }
+
+    #[test]
+    fn api_keys_merges_legacy_and_array_with_dedup() {
+        let m = mk_account(
+            serde_json::json!({"api_key": "sk-a", "api_keys": ["sk-a", "sk-b", "sk-c"]}),
+            serde_json::json!([]),
+        );
+        assert_eq!(m.api_keys(), vec!["sk-a", "sk-b", "sk-c"]);
+    }
+
+    #[test]
+    fn api_keys_trims_whitespace_and_ignores_empty() {
+        let m = mk_account(
+            serde_json::json!({"api_keys": ["  sk-1  ", "", "   ", "sk-2"]}),
+            serde_json::json!([]),
+        );
+        assert_eq!(m.api_keys(), vec!["sk-1", "sk-2"]);
+    }
+
+    #[test]
+    fn api_keys_empty_when_oauth() {
+        let mut m = mk_account(
+            serde_json::json!({"api_keys": ["sk-1"]}),
+            serde_json::json!([]),
+        );
+        m.credential_type = "oauth".into();
+        assert!(m.api_keys().is_empty());
+        assert!(m.is_oauth());
+    }
+
+    #[test]
+    fn enabled_api_keys_filters_disabled() {
+        let m = mk_account(
+            serde_json::json!({"api_keys": ["sk-1", "sk-2", "sk-3"]}),
+            serde_json::json!([
+                {"key": "sk-2", "disabled_at": "2026-01-01T00:00:00Z", "error_code": 401, "reason": "test"}
+            ]),
+        );
+        assert_eq!(m.enabled_api_keys(), vec!["sk-1", "sk-3"]);
+    }
+
+    #[test]
+    fn disabled_key_set_reads_key_field() {
+        let m = mk_account(
+            serde_json::json!({"api_keys": ["sk-1"]}),
+            serde_json::json!([
+                {"key": "sk-x", "disabled_at": "2026-01-01T00:00:00Z", "error_code": 401, "reason": "r"},
+                {"key": "sk-y", "disabled_at": "2026-01-02T00:00:00Z", "error_code": 429, "reason": ""}
+            ]),
+        );
+        let set = m.disabled_key_set();
+        assert!(set.contains("sk-x"));
+        assert!(set.contains("sk-y"));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn api_key_returns_first_enabled() {
+        let m = mk_account(
+            serde_json::json!({"api_keys": ["sk-banned", "sk-ok"]}),
+            serde_json::json!([
+                {"key": "sk-banned", "disabled_at": "2026-01-01T00:00:00Z", "error_code": 401, "reason": ""}
+            ]),
+        );
+        assert_eq!(m.api_key().as_deref(), Some("sk-ok"));
+    }
+
+    #[test]
+    fn is_oauth_detects_credentials_oauth_object() {
+        let m = mk_account(
+            serde_json::json!({"oauth": {"access_token": "at", "refresh_token": "rt", "expires_at": "2026-04-20T12:00:00Z"}}),
+            serde_json::json!([]),
+        );
+        assert!(m.is_oauth());
     }
 }

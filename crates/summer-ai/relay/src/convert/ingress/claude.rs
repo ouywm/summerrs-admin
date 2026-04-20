@@ -332,8 +332,9 @@ fn append_claude_message(
             }
             ClaudeContentBlock::Thinking { .. }
             | ClaudeContentBlock::RedactedThinking { .. }
-            | ClaudeContentBlock::Document { .. } => {
-                // 暂时忽略（需要 Claude 原生 adapter 配合才有意义）
+            | ClaudeContentBlock::Document { .. }
+            | ClaudeContentBlock::Unknown => {
+                // 暂时忽略（需要 Claude 原生 adapter 配合才有意义；Unknown 是未知 block 的兜底）
             }
         }
     }

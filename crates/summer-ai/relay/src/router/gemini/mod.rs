@@ -4,9 +4,3 @@
 //! `POST /v1beta/models/{model}:streamGenerateContent`
 
 pub mod generate_content;
-
-use summer_web::Router;
-
-pub fn routes(router: Router) -> Router {
-    generate_content::routes(router)
-}

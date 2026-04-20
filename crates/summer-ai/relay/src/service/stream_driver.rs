@@ -33,8 +33,9 @@ use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::Stream;
 use serde::Serialize;
+use tokio::sync::oneshot;
 
-use summer_ai_core::{AdapterDispatcher, AdapterKind, ChatStreamEvent, ServiceTarget};
+use summer_ai_core::{AdapterDispatcher, AdapterKind, ChatStreamEvent, ServiceTarget, Usage};
 use summer_web::axum::body::Body;
 use summer_web::axum::http::{HeaderValue, StatusCode, header};
 use summer_web::axum::response::{IntoResponse, Response};
@@ -66,6 +67,46 @@ pub fn sse_response(body: Body) -> Response {
         .into_response()
 }
 
+/// 把 [`transcode_stream`] 产出的 SSE 字节流收敛成 `Vec<Value>`——专给
+/// Gemini `streamGenerateContent` 默认（不带 `?alt=sse`）的 JSON-array 响应模式用。
+///
+/// 把整个上游流消费完再返回，内存占用 = 所有 chunk JSON 合计体积。对
+/// generateContent 通常十几到几十 KB，可接受。
+pub async fn collect_sse_to_json_array<S>(stream: S) -> Result<Vec<serde_json::Value>, RelayError>
+where
+    S: Stream<Item = Result<Bytes, std::io::Error>> + Send,
+{
+    // async_stream! 生成的类型不 Unpin，这里 box-pin 一次即可 —— 只发生一次，
+    // 跟整个 stream 收敛的 I/O 开销比可忽略。
+    let mut stream = Box::pin(stream);
+    let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(b) => buf.extend_from_slice(&b),
+            Err(e) => {
+                tracing::warn!(%e, "upstream stream read error while collecting JSON array");
+                break;
+            }
+        }
+    }
+    let text = std::str::from_utf8(&buf)
+        .map_err(|e| RelayError::StreamProcessing(format!("non-utf8 bytes in SSE: {e}")))?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let j = rest.trim();
+        if j.is_empty() || j == "[DONE]" {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(j)
+            .map_err(|e| RelayError::StreamProcessing(format!("invalid SSE JSON chunk: {e}")))?;
+        out.push(value);
+    }
+    Ok(out)
+}
+
 /// 客户端 SSE 序列化格式。不同入口协议的 SSE 包装不同。
 #[derive(Debug, Clone, Copy)]
 pub enum ClientSseFormat {
@@ -91,6 +132,27 @@ impl ClientSseFormat {
 /// Driver 的错误（不通过 `?` 直接返给客户端——handler 决定怎么处理）。
 pub type DriverError = RelayError;
 
+// ---------------------------------------------------------------------------
+// StreamOutcome —— 流结束后给 handler（通过 oneshot）的最终态
+// ---------------------------------------------------------------------------
+
+/// 流跑完的最终状态，给 tracking / billing 的后台任务用。
+///
+/// 只在 stream 真正结束（正常 `[DONE]` 或 `End` 事件 或 传输错误）时填完发给
+/// `outcome_tx`。客户端中途断连时 `oneshot::Sender` 会随 stream future 一起 drop，
+/// handler 的 receiver 端会拿到 `RecvError`，按"aborted"处理即可。
+#[derive(Debug, Clone, Default)]
+pub struct StreamOutcome {
+    /// 上游 HTTP 响应的 status code（200 / 非 200）。
+    pub upstream_status: u16,
+    /// 上游返的 `x-request-id` / `openai-request-id` 等 header（选一个有的）。
+    pub upstream_request_id: Option<String>,
+    /// 累积到 `ChatStreamEvent::End` 时抓下来的 usage（上游未发 usage 为 None）。
+    pub usage: Option<Usage>,
+    /// 传输层错误摘要（`reqwest::bytes_stream` 出错时填）。
+    pub error: Option<String>,
+}
+
 /// 把上游 HTTP 响应字节流重组成客户端 SSE 字节流。
 ///
 /// `I` 是 Ingress converter（决定客户端 wire 格式）。`kind` 是上游 adapter
@@ -98,11 +160,16 @@ pub type DriverError = RelayError;
 ///
 /// 返回 Item 为 `Result<Bytes, std::io::Error>` 的流，适合
 /// [`axum::body::Body::from_stream`]。
+///
+/// `outcome_tx` —— 流跑完时单次 send 一个 [`StreamOutcome`]：handler 通常把
+/// 对应 `Receiver` 交给一个后台 `tokio::spawn` 等 usage，再落 tracking / 走
+/// billing settle。
 pub fn transcode_stream<I>(
     upstream: reqwest::Response,
     kind: AdapterKind,
     target: ServiceTarget,
     ctx: IngressCtx,
+    outcome_tx: oneshot::Sender<StreamOutcome>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static
 where
     I: IngressConverter + Send + 'static,
@@ -112,17 +179,34 @@ where
     let client_format =
         ClientSseFormat::from_ingress_format(I::FORMAT).unwrap_or(ClientSseFormat::Claude);
 
+    // 流开始前先抓 status / upstream-request-id（后面 upstream 的 ownership 会被
+    // `bytes_stream()` 吃掉，就拿不到了）
+    let upstream_status = upstream.status().as_u16();
+    let upstream_request_id = extract_upstream_request_id(upstream.headers());
+
     async_stream::stream! {
         let mut bytes = upstream.bytes_stream();
         let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
         let mut state = StreamConvertState::for_format(I::FORMAT);
         let mut upstream_done = false;
+        let mut final_usage: Option<Usage> = None;
+        // `tokio::sync::oneshot::Sender` 需要 move-send；这里放进 Option 让循环里
+        // 任意一条终止路径都能 take() 后 send，避免 "move in loop"。
+        let mut outcome_slot: Option<oneshot::Sender<StreamOutcome>> = Some(outcome_tx);
 
         while let Some(chunk) = bytes.next().await {
             let chunk = match chunk {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(?e, "upstream stream error");
+                    if let Some(tx) = outcome_slot.take() {
+                        let _ = tx.send(StreamOutcome {
+                            upstream_status,
+                            upstream_request_id: upstream_request_id.clone(),
+                            usage: final_usage.clone(),
+                            error: Some(format!("upstream: {e}")),
+                        });
+                    }
                     yield Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         format!("upstream: {e}"),
@@ -168,6 +252,13 @@ where
                     };
                 let Some(canonical_event) = canonical else { continue };
 
+                // 抓 usage —— End 事件里带，直接覆盖（后到的更权威）
+                if let ChatStreamEvent::End(ref end_evt) = canonical_event
+                    && let Some(u) = &end_evt.usage
+                {
+                    final_usage = Some(u.clone());
+                }
+
                 // ingress 转成客户端 wire events
                 let client_events = match I::from_canonical_stream_event(
                     canonical_event,
@@ -198,8 +289,35 @@ where
             }
         }
 
+        // 正常结束：送 outcome
+        if let Some(tx) = outcome_slot.take() {
+            let _ = tx.send(StreamOutcome {
+                upstream_status,
+                upstream_request_id,
+                usage: final_usage,
+                error: None,
+            });
+        }
+
         tracing::debug!("transcode_stream finished");
     }
+}
+
+/// 从上游 response header 取"上游请求 id"。不同家命名不一样，按常见顺序尝试。
+fn extract_upstream_request_id(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    for name in [
+        "x-request-id",
+        "openai-request-id",
+        "anthropic-request-id",
+        "x-amzn-requestid",
+    ] {
+        if let Some(v) = headers.get(name)
+            && let Ok(s) = v.to_str()
+        {
+            return Some(s.to_string());
+        }
+    }
+    None
 }
 
 /// 找到一个完整 SSE event 的结束位置（`\n\n` 之后的索引）。

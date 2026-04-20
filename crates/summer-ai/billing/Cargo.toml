@@ -8,4 +8,6 @@ async-trait = { workspace = true }
 summer = { workspace = true }
 summer-ai-core = { workspace = true }
 summer-ai-model = { workspace = true }
+summer-plugins = { workspace = true }
+summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
 tracing = { workspace = true }

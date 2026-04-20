@@ -31,7 +31,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use config::{default_batch_size, default_capacity, default_flush_interval_ms};
 use sea_orm::{ActiveModelBehavior, ActiveModelTrait, EntityTrait, IntoActiveModel};
 use summer::app::AppBuilder;
 use summer::async_trait;
@@ -67,7 +66,8 @@ pub struct LogBatchCollector<A: Send + 'static> {
 }
 
 impl<A: Send + 'static> LogBatchCollector<A> {
-    fn new(sender: flume::Sender<A>) -> Self {
+    /// 从 flume sender 构造。通常由 [`spawn_typed_collector`] 调用，业务层不需要直接用。
+    pub fn new(sender: flume::Sender<A>) -> Self {
         Self {
             sender,
             control: Arc::new(CollectorControl::default()),
@@ -246,95 +246,23 @@ async fn flush_batch<A>(
 
 /// 日志批量收集器插件
 ///
-/// 必须在 `SeaOrmPlugin` 之后注册，因为需要获取 `DbConn` 组件。
+/// 为 `summer-system` 域的两个内置日志实体（`sys_operation_log` / `sys_login_log`）
+/// 注册批量收集器。业务层直接通过 `#[inject(component)]` 取
+/// `LogBatchCollector<sys_operation_log::ActiveModel>` / `...sys_login_log::ActiveModel`。
+///
+/// 其他 crate 需要批量收集自己的实体时，直接在自己的 `Plugin::build` 里调
+/// [`spawn_typed_collector`]，不需要再注册本插件的变种。
+///
+/// 必须在 `SeaOrmPlugin` 之后注册。
 pub struct LogBatchCollectorPlugin;
 
 #[async_trait]
 impl Plugin for LogBatchCollectorPlugin {
     async fn build(&self, app: &mut AppBuilder) {
-        let tracker = TaskTracker::new();
-        let config = app
-            .get_config::<LogBatchConfig>()
-            .unwrap_or_else(|_| LogBatchConfig {
-                batch_size: default_batch_size(),
-                flush_interval_ms: default_flush_interval_ms(),
-                capacity: default_capacity(),
-            });
+        let config = app.get_config::<LogBatchConfig>().unwrap_or_default();
 
-        let db: DbConn = app
-            .get_component::<DbConn>()
-            .expect("DbConn 未找到，请确保 SeaOrmPlugin 在 LogBatchCollectorPlugin 之前注册");
-
-        let flush_interval = Duration::from_millis(config.flush_interval_ms);
-
-        // 操作日志收集器
-        let (op_tx, op_rx) = flume::bounded::<sys_operation_log::ActiveModel>(config.capacity);
-        let op_collector = OperationLogCollector::new(op_tx);
-        {
-            let db = db.clone();
-            let batch_size = config.batch_size;
-            let control = op_collector.control.clone();
-            tracker.spawn(flush_loop(
-                db,
-                op_rx,
-                batch_size,
-                flush_interval,
-                "操作日志",
-                control,
-            ));
-        }
-
-        // 登录日志收集器
-        let (login_tx, login_rx) = flume::bounded::<sys_login_log::ActiveModel>(config.capacity);
-        let login_collector = LoginLogCollector::new(login_tx);
-        {
-            let db = db.clone();
-            let batch_size = config.batch_size;
-            let control = login_collector.control.clone();
-            tracker.spawn(flush_loop(
-                db,
-                login_rx,
-                batch_size,
-                flush_interval,
-                "登录日志",
-                control,
-            ));
-        }
-
-        app.add_component(op_collector.clone());
-        app.add_component(login_collector.clone());
-
-        tracing::info!(
-            "日志批量收集器已启动: batch_size={}, flush_interval={}ms, capacity={}",
-            config.batch_size,
-            config.flush_interval_ms,
-            config.capacity
-        );
-
-        app.add_shutdown_hook(move |_app| {
-            let tracker = tracker.clone();
-            let op_collector = op_collector.clone();
-            let login_collector = login_collector.clone();
-            Box::new(async move {
-                op_collector.close();
-                login_collector.close();
-                tracker.close();
-                match tokio::time::timeout(LOG_BATCH_SHUTDOWN_TIMEOUT, tracker.wait()).await {
-                    Ok(()) => Ok::<_, summer::error::AppError>(
-                        "log batch collector tasks drained".to_string(),
-                    ),
-                    Err(_) => {
-                        tracing::warn!(
-                            "log batch collector task drain timed out after {:?}",
-                            LOG_BATCH_SHUTDOWN_TIMEOUT
-                        );
-                        Ok::<_, summer::error::AppError>(
-                            "log batch collector task drain timed out".to_string(),
-                        )
-                    }
-                }
-            }) as Box<dyn Future<Output = AppResult<String>> + Send>
-        });
+        spawn_typed_collector::<sys_operation_log::ActiveModel>(app, "操作日志", config.clone());
+        spawn_typed_collector::<sys_login_log::ActiveModel>(app, "登录日志", config);
     }
 
     fn name(&self) -> &str {
@@ -344,6 +272,116 @@ impl Plugin for LogBatchCollectorPlugin {
     fn dependencies(&self) -> Vec<&str> {
         vec!["summer_sea_orm::SeaOrmPlugin"]
     }
+}
+
+// ---------------------------------------------------------------------------
+// spawn_typed_collector —— 给下游业务 crate 用的 generic helper
+// ---------------------------------------------------------------------------
+
+/// 为任意 Entity 启动一个批量收集器，注册为 Component，并挂 shutdown hook。
+///
+/// 下游 crate 在自己的 `Plugin::build` 里调一次，就能得到一个可注入的
+/// `LogBatchCollector<A>`，无需复制一套 flume + flush_loop + TaskTracker。
+///
+/// # 约束
+///
+/// - `A` 必须是 SeaORM 的 `ActiveModel`（走 `insert_many`）
+/// - **`insert_many` 不触发 `ActiveModelBehavior::before_save`**，业务必须在 `push`
+///   之前手动设置 `create_time` / `update_time` 等时间戳字段
+/// - 必须在 `SeaOrmPlugin` 之后调用（需要 `DbConn` 已注册）
+///
+/// # 用法
+///
+/// ```rust,ignore
+/// use summer_plugins::log_batch_collector::{spawn_typed_collector, LogBatchConfig};
+/// use summer_ai_model::entity::billing::transaction;
+///
+/// spawn_typed_collector::<transaction::ActiveModel>(
+///     app,
+///     "ai.transaction",
+///     LogBatchConfig::default(),
+/// );
+/// ```
+///
+/// Service 里直接注入：
+///
+/// ```rust,ignore
+/// use summer_plugins::log_batch_collector::LogBatchCollector;
+/// use summer_ai_model::entity::billing::transaction;
+///
+/// #[derive(Clone, Service)]
+/// pub struct BillingService {
+///     #[inject(component)]
+///     tx_collector: LogBatchCollector<transaction::ActiveModel>,
+/// }
+/// ```
+///
+/// # Panics
+///
+/// 如果 `DbConn` 未注册（`SeaOrmPlugin` 未先跑）会 panic。
+pub fn spawn_typed_collector<A>(
+    app: &mut AppBuilder,
+    entity_name: &'static str,
+    config: LogBatchConfig,
+) where
+    A: ActiveModelTrait + ActiveModelBehavior + Send + Clone + 'static,
+    <A::Entity as EntityTrait>::Model: IntoActiveModel<A>,
+{
+    let db: DbConn = app.get_component::<DbConn>().unwrap_or_else(|| {
+        panic!(
+            "spawn_typed_collector<{}> requires DbConn (SeaOrmPlugin must be registered first)",
+            entity_name
+        )
+    });
+
+    let flush_interval = Duration::from_millis(config.flush_interval_ms);
+    let (tx, rx) = flume::bounded::<A>(config.capacity);
+    let collector = LogBatchCollector::<A>::new(tx);
+    let control = collector.control.clone();
+
+    let tracker = TaskTracker::new();
+    tracker.spawn(flush_loop(
+        db,
+        rx,
+        config.batch_size,
+        flush_interval,
+        entity_name,
+        control,
+    ));
+
+    app.add_component(collector.clone());
+
+    let collector_for_hook = collector.clone();
+    let tracker_for_hook = tracker.clone();
+    app.add_shutdown_hook(move |_app| {
+        let collector = collector_for_hook.clone();
+        let tracker = tracker_for_hook.clone();
+        Box::new(async move {
+            collector.close();
+            tracker.close();
+            match tokio::time::timeout(LOG_BATCH_SHUTDOWN_TIMEOUT, tracker.wait()).await {
+                Ok(()) => Ok::<_, summer::error::AppError>(format!(
+                    "{entity_name} batch collector drained"
+                )),
+                Err(_) => {
+                    tracing::warn!(
+                        "{entity_name} batch collector drain timed out after {:?}",
+                        LOG_BATCH_SHUTDOWN_TIMEOUT
+                    );
+                    Ok::<_, summer::error::AppError>(format!(
+                        "{entity_name} batch collector drain timed out"
+                    ))
+                }
+            }
+        }) as Box<dyn Future<Output = AppResult<String>> + Send>
+    });
+
+    tracing::info!(
+        "{entity_name} 批量收集器已启动: batch_size={}, flush_interval={}ms, capacity={}",
+        config.batch_size,
+        config.flush_interval_ms,
+        config.capacity
+    );
 }
 
 #[cfg(test)]

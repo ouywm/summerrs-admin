@@ -13,6 +13,7 @@ futures = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }
+rust_decimal = { workspace = true }
 sea-orm = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -23,6 +24,7 @@ summer-ai-core = { workspace = true }
 summer-ai-model = { workspace = true }
 summer-auth = { workspace = true }
 summer-common = { workspace = true }
+summer-plugins = { workspace = true }
 summer-redis = { workspace = true }
 summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
 summer-web = { workspace = true }

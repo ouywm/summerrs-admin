@@ -32,6 +32,7 @@ use summer_redis::redis::AsyncCommands;
 use summer_sea_orm::DbConn;
 
 use crate::error::RelayError;
+use crate::service::key_picker::{KeyPicker, RandomKeyPicker};
 
 /// Redis key TTL（秒）。故意设短，TTL 兜底失效路径。
 const CACHE_TTL_SECS: u64 = 300;
@@ -68,11 +69,17 @@ pub struct ChannelStore {
 }
 
 impl ChannelStore {
-    /// 按逻辑模型名挑 (channel, account) 组合。
+    /// 按逻辑模型名挑 `(channel, account, selected_key)` 组合。
+    ///
+    /// - 第 1-5 步同旧版：按 model/channel/account 筛选 + 权重随机
+    /// - **第 6 步（新）**：从被选 account 的 `enabled_api_keys()` 里用 [`RandomKeyPicker`] 挑一个 key
+    /// - **account 全禁跳过**：如果某 account 所有 key 都在 `disabled_api_keys` 列表里，跳到下一个候选
+    ///
+    /// 全部 channel / account 都选不到 key → 返 `Ok(None)`（handler 侧返 `NoAvailableChannel`）。
     pub async fn pick(
         &self,
         logical_model: &str,
-    ) -> Result<Option<(channel::Model, channel_account::Model)>, RelayError> {
+    ) -> Result<Option<(channel::Model, channel_account::Model, String)>, RelayError> {
         // 第 1 步：模型 → channel_ids
         let channel_ids = self.load_model_channels(logical_model).await?;
         if channel_ids.is_empty() {
@@ -97,24 +104,37 @@ impl ChannelStore {
             return Ok(None);
         }
 
-        // 第 5 步：account_ids → accounts
+        // 第 5 步：account_ids → accounts + cooldown 过滤
         let accounts = self.load_accounts(&account_ids).await?;
         let now = chrono::Utc::now().fixed_offset();
-        let candidates: Vec<&channel_account::Model> = accounts
+        let mut candidates: Vec<&channel_account::Model> = accounts
             .iter()
             .filter(|a| a.rate_limited_until.map(|t| t < now).unwrap_or(true))
             .collect();
-        if candidates.is_empty() {
-            return Ok(None);
+
+        // 第 6 步：循环选 account + key —— account 全禁则剔除，选下一个
+        let picker = RandomKeyPicker;
+        while !candidates.is_empty() {
+            let Some(picked) = weighted_pick(&candidates, |a| (a.priority, a.weight)) else {
+                return Ok(None);
+            };
+            // 拿到一个引用后，尝试选一个可用 key
+            let enabled_keys = picked.enabled_api_keys();
+            if let Some(selected) = picker.pick(&enabled_keys) {
+                let selected_key = selected.to_string();
+                let picked_account = (*picked).clone();
+                return Ok(Some((picked_channel, picked_account, selected_key)));
+            }
+            // 该 account 所有 key 都被禁（或根本没 key）→ 从候选里剔除，下一轮
+            tracing::debug!(
+                account_id = picked.id,
+                channel_id = picked.channel_id,
+                "account has no enabled api key, skipping"
+            );
+            let banned_id = picked.id;
+            candidates.retain(|a| a.id != banned_id);
         }
-
-        // 第 6 步：权重选 account
-        let Some(picked_account) = weighted_pick(&candidates, |a| (a.priority, a.weight)).cloned()
-        else {
-            return Ok(None);
-        };
-
-        Ok(Some((picked_channel, picked_account)))
+        Ok(None)
     }
 
     // ---------------- Redis key helpers ----------------
@@ -407,24 +427,31 @@ impl ChannelStore {
 // ServiceTarget builder
 // ---------------------------------------------------------------------------
 
-/// 从 (channel, account, logical_model) 构造 `ServiceTarget` + `AdapterKind`。
+/// 从 `(channel, account, selected_key, logical_model)` 构造 `ServiceTarget` + `AdapterKind`。
 ///
+/// - **selected_key** 由上层 `ChannelStore::pick` + `KeyPicker` 决定，本函数只认 pre-selected key
+/// - **OAuth account**（`account.is_oauth()`）本期未落地，返 `NotImplemented`
 /// - `actual_model` 应用 `channel.model_mapping` JSONB（缺省保留 logical_model）
-/// - `auth` 从 `account.credentials.api_key` 取
 /// - `endpoint` 取 `channel.base_url`
 /// - `extra_headers` 从 `channel.config.extra_headers` 读（如果有）
 pub fn build_service_target(
     channel: &channel::Model,
     account: &channel_account::Model,
+    selected_key: &str,
     logical_model: &str,
 ) -> Result<(AdapterKind, ServiceTarget), RelayError> {
-    let api_key = account.api_key().ok_or(RelayError::MissingConfig(
-        "channel_account.credentials.api_key missing",
-    ))?;
+    if account.is_oauth() {
+        return Err(RelayError::NotImplemented("oauth credentials"));
+    }
+    if selected_key.is_empty() {
+        return Err(RelayError::MissingConfig(
+            "channel_account selected_key is empty (multi-key pool exhausted?)",
+        ));
+    }
 
     let actual_model = channel.resolve_upstream_model(logical_model);
     let endpoint = Endpoint::from_owned(channel.base_url.clone());
-    let auth = AuthData::from_single(api_key);
+    let auth = AuthData::from_single(selected_key.to_string());
 
     let mut target = ServiceTarget {
         endpoint,
@@ -591,6 +618,7 @@ mod tests {
             create_time: chrono::Utc::now().fixed_offset(),
             update_by: String::new(),
             update_time: chrono::Utc::now().fixed_offset(),
+            disabled_api_keys: serde_json::json!([]),
         }
     }
 
@@ -609,14 +637,29 @@ mod tests {
         channel.model_mapping = serde_json::json!({"gpt-4": "gpt-4-turbo"});
         let account = mk_account(10, 1, "sk-a", 1, 100);
 
-        let (kind, target) = build_service_target(&channel, &account, "gpt-4").unwrap();
+        let (kind, target) = build_service_target(&channel, &account, "sk-a", "gpt-4").unwrap();
         assert_eq!(kind, AdapterKind::OpenAI);
         assert_eq!(target.actual_model, "gpt-4-turbo");
         assert_eq!(target.endpoint.trimmed(), "https://api.openai.com/v1");
     }
 
     #[test]
-    fn build_service_target_errors_when_no_api_key() {
+    fn build_service_target_errors_on_empty_key() {
+        let channel = mk_channel(
+            1,
+            vec!["x"],
+            1,
+            100,
+            channel::ChannelType::OpenAi,
+            "https://a",
+        );
+        let account = mk_account(10, 1, "sk-a", 1, 100);
+        let err = build_service_target(&channel, &account, "", "x").unwrap_err();
+        assert!(matches!(err, RelayError::MissingConfig(_)));
+    }
+
+    #[test]
+    fn build_service_target_oauth_account_returns_not_implemented() {
         let channel = mk_channel(
             1,
             vec!["x"],
@@ -626,12 +669,16 @@ mod tests {
             "https://a",
         );
         let mut account = mk_account(10, 1, "sk-a", 1, 100);
-        account.credentials = serde_json::json!({});
-        let err = build_service_target(&channel, &account, "x").unwrap_err();
-        match err {
-            RelayError::MissingConfig(m) => assert!(m.contains("api_key")),
-            other => panic!("expected MissingConfig, got {other:?}"),
-        }
+        account.credential_type = "oauth".into();
+        account.credentials = serde_json::json!({
+            "oauth": {
+                "access_token": "at",
+                "refresh_token": "rt",
+                "expires_at": "2026-04-20T12:00:00Z"
+            }
+        });
+        let err = build_service_target(&channel, &account, "ignored", "x").unwrap_err();
+        assert!(matches!(err, RelayError::NotImplemented(m) if m.contains("oauth")));
     }
 
     #[test]

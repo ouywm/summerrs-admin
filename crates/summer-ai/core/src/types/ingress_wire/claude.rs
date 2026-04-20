@@ -101,6 +101,10 @@ pub enum ClaudeContent {
 }
 
 /// Claude content block 的全部类型。
+///
+/// `Unknown` 变体兜住官方后续新增的 block type（`server_tool_use` /
+/// `web_search_tool_result` / `container_upload` / `code_execution_result` 等）。
+/// `#[serde(other)]` 让反序列化不因未知 type 报错；converter 端遇到 Unknown 直接忽略。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClaudeContentBlock {
@@ -144,6 +148,13 @@ pub enum ClaudeContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// 未识别的 block type（反序列化兜底）。
+    ///
+    /// `#[serde(other)]` 只能是 unit variant，原始 JSON 在此丢失——
+    /// 这是 serde 的限制。若未来需要完整透传，应改成自定义 `Deserialize` 把
+    /// raw JSON 存进一个 `Value` 字段。
+    #[serde(other)]
+    Unknown,
 }
 
 /// 图像 source：base64 或 URL。
@@ -613,5 +624,32 @@ mod tests {
             u.cache_creation.as_ref().unwrap().ephemeral_5m_input_tokens,
             Some(150)
         );
+    }
+
+    #[test]
+    fn unknown_content_block_type_falls_through_to_unknown_variant() {
+        // 官方新增的 block type（server_tool_use / web_search_tool_result /
+        // container_upload / code_execution_result 等）在本地 enum 未列出时，
+        // 反序列化应落到 `Unknown`，而不是报错。
+        let b: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "server_tool_use",
+            "id": "srvtu_1",
+            "name": "web_search",
+            "input": {"query": "weather"}
+        }))
+        .unwrap();
+        assert!(matches!(b, ClaudeContentBlock::Unknown));
+
+        // 嵌在消息数组里也能正常跟其他 block 共存
+        let blocks: Vec<ClaudeContentBlock> = serde_json::from_value(serde_json::json!([
+            {"type": "text", "text": "hi"},
+            {"type": "container_upload", "file_id": "f_1"},
+            {"type": "text", "text": "bye"}
+        ]))
+        .unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert!(matches!(blocks[0], ClaudeContentBlock::Text { .. }));
+        assert!(matches!(blocks[1], ClaudeContentBlock::Unknown));
+        assert!(matches!(blocks[2], ClaudeContentBlock::Text { .. }));
     }
 }

@@ -10,7 +10,6 @@
 
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use sha2::{Digest, Sha256};
-use summer::plugin::Service;
 use summer_ai_model::entity::platform::token;
 use summer_redis::Redis;
 use summer_redis::redis::AsyncCommands;
@@ -22,11 +21,9 @@ use crate::error::RelayError;
 const TOKEN_CACHE_TTL_SECS: u64 = 300;
 
 /// Token 查询 + 缓存。`#[derive(Service)]` 自动从 Component registry 注入 DB/Redis。
-#[derive(Clone, Service)]
+#[derive(Clone)]
 pub struct AiTokenStore {
-    #[inject(component)]
     db: DbConn,
-    #[inject(component)]
     redis: Redis,
 }
 
