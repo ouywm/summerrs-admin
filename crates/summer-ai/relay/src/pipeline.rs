@@ -91,6 +91,8 @@ pub struct PipelineCall<I: IngressConverter> {
     pub client_ip: String,
     /// 客户端 UA。tracking 用。
     pub user_agent: String,
+    /// 入站 headers 脱敏快照。落 `ai.request.request_headers` 用。
+    pub client_headers: Value,
     /// 客户端 wire 请求（将被消费，传给 `I::to_canonical`）。
     pub client_req: I::ClientRequest,
     /// 客户端 wire 请求的 JSON 快照——落 `ai.request.request_body` / `ai.log.content` 用。
@@ -137,6 +139,7 @@ where
             logical_model,
             client_ip,
             user_agent,
+            client_headers,
             client_req,
             client_req_snapshot,
             http,
@@ -152,6 +155,7 @@ where
             is_stream,
             client_ip,
             user_agent,
+            client_headers,
         );
 
         // ─── 1. 选路 ───────────────────────────────────────────────
@@ -222,8 +226,19 @@ where
 
         // ─── 3. 分流：stream / non-stream ───────────────────────────
         if is_stream {
-            let upstream = match chat::invoke_stream_raw(&http, kind, &target, &canonical_req).await
-            {
+            let mut sent_headers_sink: Option<Value> = None;
+            let invoke_result = chat::invoke_stream_raw(
+                &http,
+                kind,
+                &target,
+                &canonical_req,
+                &mut sent_headers_sink,
+            )
+            .await;
+            if let Some(h) = sent_headers_sink.take() {
+                ctx.set_sent_headers(h);
+            }
+            let invoked = match invoke_result {
                 Ok(u) => u,
                 Err(e) => {
                     emit_failure(
@@ -236,12 +251,17 @@ where
                     return Err(e);
                 }
             };
+            if let Some(id) = invoked.upstream_request_id.clone() {
+                ctx.upstream_request_id = Some(id);
+            }
+            let upstream = invoked.inner;
 
             let (tx, rx) = oneshot::channel::<StreamOutcome>();
             let tracking_spawn = tracking.clone();
             let ctx_spawn = ctx.clone();
             let client_snap_spawn = client_req_snapshot;
             let upstream_snap_spawn = upstream_req_snapshot;
+            let upstream_id_hdr = invoked.upstream_request_id;
 
             tokio::spawn(async move {
                 // 等 transcode_stream 发来的最终态；客户端断连会 drop tx → rx 拿 RecvError。
@@ -256,7 +276,8 @@ where
                         upstream_status: so.upstream_status,
                         usage: so.usage.unwrap_or_default(),
                         response_snapshot: None,
-                        upstream_request_id: so.upstream_request_id,
+                        // 流式：优先用 stream_driver 从流里嗅到的 id；否则回退到响应头上抽的 id
+                        upstream_request_id: so.upstream_request_id.or(upstream_id_hdr),
                     },
                     Err(_) => TrackingOutcome::Failure {
                         client_status: 499,
@@ -272,20 +293,36 @@ where
                 stream_driver::transcode_stream::<I>(upstream, kind, target, ingress_ctx, tx);
             Ok(EngineOutcome::Stream(Box::pin(body_stream)))
         } else {
-            let canonical_resp =
-                match chat::invoke_non_stream(&http, kind, &target, &canonical_req).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        emit_failure(
-                            &tracking,
-                            &ctx,
-                            &e,
-                            client_req_snapshot,
-                            upstream_req_snapshot,
-                        );
-                        return Err(e);
-                    }
-                };
+            let mut sent_headers_sink: Option<Value> = None;
+            let invoke_result = chat::invoke_non_stream(
+                &http,
+                kind,
+                &target,
+                &canonical_req,
+                &mut sent_headers_sink,
+            )
+            .await;
+            if let Some(h) = sent_headers_sink.take() {
+                ctx.set_sent_headers(h);
+            }
+            let invoked = match invoke_result {
+                Ok(r) => r,
+                Err(e) => {
+                    emit_failure(
+                        &tracking,
+                        &ctx,
+                        &e,
+                        client_req_snapshot,
+                        upstream_req_snapshot,
+                    );
+                    return Err(e);
+                }
+            };
+            let upstream_request_id = invoked.upstream_request_id;
+            if let Some(id) = upstream_request_id.clone() {
+                ctx.upstream_request_id = Some(id);
+            }
+            let canonical_resp = invoked.inner;
 
             let usage = canonical_resp.usage.clone();
             let resp_snapshot = serde_json::to_value(&canonical_resp).ok();
@@ -309,7 +346,7 @@ where
                 upstream_status: 200,
                 usage,
                 response_snapshot: resp_snapshot,
-                upstream_request_id: None,
+                upstream_request_id,
             };
             tracking.emit(ctx, outcome, client_req_snapshot, upstream_req_snapshot);
 

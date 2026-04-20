@@ -21,6 +21,7 @@
 use std::time::Instant;
 
 use rust_decimal::Decimal;
+use serde_json::Value;
 use summer_ai_core::{AdapterKind, CostProfile};
 use summer_ai_model::entity::channels::{channel, channel_account};
 
@@ -108,6 +109,8 @@ pub struct RelayContext {
     pub is_stream: bool,
     pub client_ip: String,
     pub user_agent: String,
+    /// 入站 headers 快照（脱敏后），给 `ai.request.request_headers` 用。
+    pub client_headers: Value,
     pub started_at: Instant,
 
     // ─── 选路后填入 ───
@@ -121,6 +124,8 @@ pub struct RelayContext {
     pub first_byte_at: Option<Instant>,
     pub upstream_status: Option<u16>,
     pub upstream_request_id: Option<String>,
+    /// 出站 headers 快照（脱敏后），给 `ai.request_execution.request_headers` 用。
+    pub sent_headers: Option<Value>,
 }
 
 impl RelayContext {
@@ -132,6 +137,7 @@ impl RelayContext {
         is_stream: bool,
         client_ip: impl Into<String>,
         user_agent: impl Into<String>,
+        client_headers: Value,
     ) -> Self {
         Self {
             request_id: new_request_id(),
@@ -142,6 +148,7 @@ impl RelayContext {
             is_stream,
             client_ip: client_ip.into(),
             user_agent: user_agent.into(),
+            client_headers,
             started_at: Instant::now(),
             channel: None,
             account: None,
@@ -151,6 +158,7 @@ impl RelayContext {
             first_byte_at: None,
             upstream_status: None,
             upstream_request_id: None,
+            sent_headers: None,
         }
     }
 
@@ -181,6 +189,11 @@ impl RelayContext {
         if let Some(id) = upstream_request_id {
             self.upstream_request_id = Some(id);
         }
+    }
+
+    /// 发上游前调 —— 记录脱敏后的出站 headers 快照。
+    pub fn set_sent_headers(&mut self, sent: Value) {
+        self.sent_headers = Some(sent);
     }
 
     /// 总耗时（毫秒）——多次调用安全（每次算到调用时刻）。
@@ -271,6 +284,7 @@ mod tests {
             false,
             "127.0.0.1",
             "curl/8.0",
+            Value::Object(Default::default()),
         );
         assert_eq!(ctx.endpoint, "/v1/chat/completions");
         assert_eq!(ctx.format, IngressFormat::OpenAI);
@@ -280,6 +294,7 @@ mod tests {
         assert!(ctx.channel.is_none() && ctx.account.is_none());
         assert_eq!(ctx.channel_id(), 0);
         assert_eq!(ctx.first_token_ms(), 0);
+        assert!(ctx.sent_headers.is_none());
     }
 
     #[test]
@@ -292,6 +307,7 @@ mod tests {
             true,
             "",
             "",
+            Value::Object(Default::default()),
         );
         ctx.mark_first_byte();
         let first = ctx.first_byte_at;

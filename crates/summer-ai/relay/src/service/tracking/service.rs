@@ -143,7 +143,7 @@ async fn persist(
         is_stream: Set(ctx.is_stream),
         client_ip: Set(ctx.client_ip.clone()),
         user_agent: Set(ctx.user_agent.clone()),
-        request_headers: Set(Value::Object(Default::default())),
+        request_headers: Set(ctx.client_headers.clone()),
         request_body: Set(request_body
             .clone()
             .unwrap_or(Value::Object(Default::default()))),
@@ -176,8 +176,15 @@ async fn persist(
             .unwrap_or_default()),
         requested_model: Set(ctx.logical_model.clone()),
         upstream_model: Set(ctx.actual_model.clone().unwrap_or_default()),
-        upstream_request_id: Set(outcome.upstream_request_id().unwrap_or("").to_string()),
-        request_headers: Set(Value::Object(Default::default())),
+        upstream_request_id: Set(ctx
+            .upstream_request_id
+            .clone()
+            .or_else(|| outcome.upstream_request_id().map(str::to_string))
+            .unwrap_or_default()),
+        request_headers: Set(ctx
+            .sent_headers
+            .clone()
+            .unwrap_or(Value::Object(Default::default()))),
         request_body: Set(upstream_request_body.unwrap_or(Value::Object(Default::default()))),
         response_body: Set(outcome.response_snapshot()),
         response_status_code: Set(outcome.upstream_status() as i32),
@@ -257,7 +264,11 @@ async fn persist(
         is_stream: Set(ctx.is_stream),
         request_id: Set(ctx.request_id.clone()),
         dedupe_key: Set(ctx.request_id.clone()), // v1 直接复用 request_id
-        upstream_request_id: Set(outcome.upstream_request_id().unwrap_or("").to_string()),
+        upstream_request_id: Set(ctx
+            .upstream_request_id
+            .clone()
+            .or_else(|| outcome.upstream_request_id().map(str::to_string))
+            .unwrap_or_default()),
         status_code: Set(outcome.client_status() as i32),
         client_ip: Set(ctx.client_ip.clone()),
         user_agent: Set(ctx.user_agent.clone()),
@@ -306,6 +317,7 @@ mod tests {
             false,
             "127.0.0.1",
             "curl/8",
+            Value::Object(Default::default()),
         )
     }
 

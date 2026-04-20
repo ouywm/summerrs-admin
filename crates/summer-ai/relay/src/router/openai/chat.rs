@@ -48,6 +48,7 @@ pub async fn chat_completions(
         logical_model,
         client_ip: meta.client_ip,
         user_agent: meta.user_agent,
+        client_headers: meta.client_headers,
         client_req: request,
         client_req_snapshot,
         http,
