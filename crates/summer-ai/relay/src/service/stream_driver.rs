@@ -110,6 +110,8 @@ where
 /// 客户端 SSE 序列化格式。不同入口协议的 SSE 包装不同。
 #[derive(Debug, Clone, Copy)]
 pub enum ClientSseFormat {
+    /// `data: {json}\n\n`；流尾追加 `data: [DONE]\n\n`。
+    OpenAI,
     /// `event: {type}\ndata: {json}\n\n`
     Claude,
     /// `data: {json}\n\n`
@@ -121,10 +123,10 @@ pub enum ClientSseFormat {
 impl ClientSseFormat {
     pub fn from_ingress_format(f: IngressFormat) -> Option<Self> {
         match f {
+            IngressFormat::OpenAI => Some(Self::OpenAI),
             IngressFormat::Claude => Some(Self::Claude),
             IngressFormat::Gemini => Some(Self::Gemini),
             IngressFormat::OpenAIResponses => Some(Self::OpenAIResponses),
-            _ => None,
         }
     }
 }
@@ -289,6 +291,13 @@ where
             }
         }
 
+        // OpenAI 协议约定流尾要显式发一个 `data: [DONE]\n\n` 告诉 SDK 停止读。
+        // 其它协议（Claude message_stop / Gemini candidate.finish_reason /
+        // Responses response.completed）的终止信号已由各自 Egress 在上面 yield 出去。
+        if matches!(client_format, ClientSseFormat::OpenAI) {
+            yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+        }
+
         // 正常结束：送 outcome
         if let Some(tx) = outcome_slot.take() {
             let _ = tx.send(StreamOutcome {
@@ -356,13 +365,13 @@ fn serialize_client_event<T: Serialize>(
 ) -> Result<Bytes, serde_json::Error> {
     let json = serde_json::to_string(event)?;
     let body = match format {
+        ClientSseFormat::OpenAI | ClientSseFormat::Gemini => {
+            format!("data: {json}\n\n")
+        }
         ClientSseFormat::Claude | ClientSseFormat::OpenAIResponses => {
             // 从 JSON 里取 type 字段做 event name
             let event_name = extract_type_field(&json).unwrap_or("message");
             format!("event: {event_name}\ndata: {json}\n\n")
-        }
-        ClientSseFormat::Gemini => {
-            format!("data: {json}\n\n")
         }
     };
     Ok(Bytes::from(body))

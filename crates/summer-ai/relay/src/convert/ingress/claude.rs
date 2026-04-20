@@ -1545,7 +1545,7 @@ mod tests {
     #[test]
     fn stream_wrong_state_variant_errors() {
         let ctx = stream_ctx();
-        let mut state = StreamConvertState::Openai;
+        let mut state = StreamConvertState::for_format(IngressFormat::OpenAI);
         let err = ClaudeIngress::from_canonical_stream_event(
             ChatStreamEvent::TextDelta {
                 text: "hi".to_string(),

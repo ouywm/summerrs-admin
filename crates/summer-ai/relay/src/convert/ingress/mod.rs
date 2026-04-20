@@ -122,8 +122,8 @@ impl IngressCtx {
 /// `from_canonical_stream_event(event, &mut state, ctx)` 更新。
 #[derive(Debug)]
 pub enum StreamConvertState {
-    /// OpenAI identity 无 state。
-    Openai,
+    /// OpenAI `chat.completion.chunk` 重组 state（id / created / model 在首块填充，后续复用）。
+    Openai(OpenAIStreamState),
     /// Claude 6-event 状态机。
     Claude(ClaudeStreamState),
     /// Gemini 轮询式流（每 chunk 一个完整 response）。
@@ -136,12 +136,29 @@ impl StreamConvertState {
     /// 按 [`IngressFormat`] 构造初始 state。
     pub fn for_format(format: IngressFormat) -> Self {
         match format {
-            IngressFormat::OpenAI => Self::Openai,
+            IngressFormat::OpenAI => Self::Openai(OpenAIStreamState::default()),
             IngressFormat::Claude => Self::Claude(ClaudeStreamState::default()),
             IngressFormat::Gemini => Self::Gemini(GeminiStreamState::default()),
             IngressFormat::OpenAIResponses => Self::Responses(ResponsesStreamState::default()),
         }
     }
+}
+
+// ----- OpenAI stream state -----
+
+/// OpenAI `chat.completion.chunk` 重组 state。
+///
+/// 所有 chunk 共享同一个 `id` / `created` / `model`；首块（role 块）生成一次后复用。
+#[derive(Debug, Default)]
+pub struct OpenAIStreamState {
+    /// chunk id（`chatcmpl-...`）。Start 事件时生成一次。
+    pub chunk_id: String,
+    /// 创建时间（unix 秒）。Start 事件时生成一次。
+    pub created: i64,
+    /// 上游实际模型名（Start 事件从 `ChatStreamEvent::Start.model` 取）。
+    pub model: String,
+    /// 是否已发过"role = assistant"的首块。
+    pub role_emitted: bool,
 }
 
 // ----- Claude stream state -----
