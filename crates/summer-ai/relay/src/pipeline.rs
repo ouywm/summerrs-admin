@@ -250,6 +250,7 @@ where
                         client_status: 502,
                         upstream_status: Some(so.upstream_status),
                         message: so.error.unwrap_or_else(|| "upstream stream error".into()),
+                        response_snapshot: None,
                     },
                     Ok(so) => TrackingOutcome::Success {
                         upstream_status: so.upstream_status,
@@ -261,6 +262,7 @@ where
                         client_status: 499,
                         upstream_status: None,
                         message: "stream aborted before completion".into(),
+                        response_snapshot: None,
                     },
                 };
                 tracking_spawn.emit(ctx_spawn, outcome, client_snap_spawn, upstream_snap_spawn);
@@ -316,7 +318,7 @@ where
     }
 }
 
-/// 失败场景的统一 emit —— 从 `RelayError` 读 HTTP status 和信息摘要。
+/// 失败场景的统一 emit —— 从 `RelayError` 读 HTTP status、上游 body、信息摘要。
 fn emit_failure(
     tracking: &TrackingService,
     ctx: &RelayContext,
@@ -333,10 +335,44 @@ fn emit_failure(
         _ => None,
     };
     let message = err.to_string();
+    let response_snapshot = extract_upstream_body(err);
     let outcome = TrackingOutcome::Failure {
         client_status,
         upstream_status,
         message,
+        response_snapshot,
     };
     tracking.emit(ctx.clone(), outcome, client_snap, upstream_snap);
+}
+
+/// 从上游错误里把 body 回收成 `Value` 供 tracking 落库。
+///
+/// - `RelayError::UpstreamStatus.body` 是原始 bytes；优先 JSON 解析，失败包 `{"raw": ...}`。
+/// - `AdapterError::UpstreamStatus.message` 本身就是 body 的 UTF-8 字符串，同理处理。
+/// - 其他 error（本地 DB / 鉴权 / 配置错）没有上游 body，返 None。
+fn extract_upstream_body(err: &RelayError) -> Option<Value> {
+    use summer_ai_core::AdapterError;
+
+    let bytes: &[u8] = match err {
+        RelayError::UpstreamStatus { body, .. } => body,
+        RelayError::Adapter(AdapterError::UpstreamStatus { message, .. }) => message.as_bytes(),
+        _ => return None,
+    };
+    if bytes.is_empty() {
+        return None;
+    }
+    // 限长，避免 16KB 以上的上游错误刷爆 JSONB（Postgres 内部压缩但仍耗空间）
+    const MAX_BODY_BYTES: usize = 16 * 1024;
+    let trimmed = if bytes.len() > MAX_BODY_BYTES {
+        &bytes[..MAX_BODY_BYTES]
+    } else {
+        bytes
+    };
+    match serde_json::from_slice::<Value>(trimmed) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            let s = String::from_utf8_lossy(trimmed).to_string();
+            Some(serde_json::json!({ "raw": s }))
+        }
+    }
 }

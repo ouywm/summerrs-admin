@@ -35,6 +35,9 @@ pub enum TrackingOutcome {
         upstream_status: Option<u16>,
         /// 错误摘要（给审计用，不给客户端）。
         message: String,
+        /// 上游返回的 body 快照（JSON 化）。已发请求但未拿到上游 body（例如 DNS
+        /// 失败 / 连接超时）时为 None；非 JSON body 包成 `{"raw": "..."}`。
+        response_snapshot: Option<serde_json::Value>,
     },
 }
 
@@ -80,13 +83,15 @@ impl TrackingOutcome {
         }
     }
 
-    /// 响应快照（失败场景总是 None）。
+    /// 响应快照（成功：拿成功响应；失败：拿上游返回的 body —— 能看到真实错误 JSON）。
     pub fn response_snapshot(&self) -> Option<serde_json::Value> {
         match self {
             TrackingOutcome::Success {
                 response_snapshot, ..
             } => response_snapshot.clone(),
-            TrackingOutcome::Failure { .. } => None,
+            TrackingOutcome::Failure {
+                response_snapshot, ..
+            } => response_snapshot.clone(),
         }
     }
 
@@ -118,5 +123,6 @@ pub fn failure(client_status: u16, message: impl Into<String>) -> TrackingOutcom
         client_status,
         upstream_status: None,
         message: message.into(),
+        response_snapshot: None,
     }
 }
