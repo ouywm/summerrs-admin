@@ -306,32 +306,6 @@ impl ChannelStore {
         Ok(results)
     }
 
-    // ---------------- Aggregation helpers ----------------
-
-    /// 聚合所有 enabled + 未归档 channel 的 `models` JSONB，返回去重后按字典序排序的模型名。
-    ///
-    /// 给 `GET /v1/models` 用——不是热路径，直接查 DB，不经 Redis。
-    pub async fn list_enabled_model_names(&self) -> Result<Vec<String>, RelayError> {
-        let channels: Vec<channel::Model> = channel::Entity::find()
-            .filter(channel::Column::Status.eq(channel::ChannelStatus::Enabled))
-            .filter(channel::Column::DeletedAt.is_null())
-            .all(&self.db)
-            .await
-            .map_err(RelayError::Database)?;
-
-        let mut names: std::collections::BTreeSet<String> = Default::default();
-        for c in &channels {
-            if let Some(arr) = c.models.as_array() {
-                for v in arr {
-                    if let Some(s) = v.as_str() {
-                        names.insert(s.to_string());
-                    }
-                }
-            }
-        }
-        Ok(names.into_iter().collect())
-    }
-
     // ---------------- Invalidation API（后续给 stream listener 用）----------------
 
     /// 失效指定 channel 的 meta + 该 channel 的 account 列表索引。

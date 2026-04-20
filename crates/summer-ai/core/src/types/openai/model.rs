@@ -22,17 +22,17 @@ impl ModelList {
     }
 }
 
-/// 单个模型元信息。
+/// 单个模型元信息（与 OpenAI 官方 `/v1/models` 响应对齐）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
-    /// 模型 id（用户请求时传入的 `model` 字段）。
+    /// 模型 id（客户端请求时传入的 `model` 字段）
     pub id: String,
     #[serde(default = "default_model_object")]
     pub object: String,
-    /// 模型上线时间戳（秒）。没有时可填 0。
+    /// 模型上线时间戳（Unix 秒）
     #[serde(default)]
     pub created: i64,
-    /// 拥有者（OpenAI 返回 `"openai"` / `"system"` 等）。
+    /// 拥有方（OpenAI 官方使用 `"openai"` / `"system"` 等）
     #[serde(default = "default_owned_by")]
     pub owned_by: String,
 }
@@ -46,5 +46,5 @@ fn default_model_object() -> String {
 }
 
 fn default_owned_by() -> String {
-    "summer-ai".to_string()
+    "unknown".to_string()
 }
