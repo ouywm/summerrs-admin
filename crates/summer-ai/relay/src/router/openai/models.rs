@@ -1,43 +1,23 @@
 //! `GET /v1/models` —— OpenAI 兼容模型列表接口。
 //!
-//! # 当前（P3 walking skeleton）
+//! 从 `ai.channel.models` JSONB 聚合去重得到模型清单，不再向上游 `/v1/models` 代理。
+//! 运维侧在 `ai.channel` 增删模型即时生效（下次请求就重查）。
 //!
-//! 走 [`AdapterDispatcher::fetch_model_names`]（与 `/v1/chat/completions` 一致），
-//! 向上游拉取真实模型清单并以 OpenAI `ModelList` 格式返回。
-//!
-//! **硬编码**：
-//! - `AdapterKind::OpenAI`
-//! - `base_url`：env `OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`）
-//! - `api_key`：env `OPENAI_API_KEY`（必须）
-//!
-//! # 后续 Phase
-//!
-//! - P4：从 `ai.channel.models` JSONB 聚合去重，不再去上游拉
+//! 后续（P7 Admin CRUD）可能按 token 的 `allowed_models` 做过滤，当前阶段不做。
 
-use summer_ai_core::{AdapterDispatcher, AdapterKind, ModelInfo, ModelList, ServiceTarget};
+use summer_ai_core::{ModelInfo, ModelList};
 use summer_web::axum::Json;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::get;
 
-use crate::error::{OpenAIResult, RelayError};
-
-const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+use crate::error::OpenAIResult;
+use crate::service::channel_store::ChannelStore;
 
 /// `GET /v1/models`
 #[get("/v1/models")]
-pub async fn list_models(Component(http): Component<reqwest::Client>) -> OpenAIResult<Response> {
-    let api_key =
-        std::env::var("OPENAI_API_KEY").map_err(|_| RelayError::MissingConfig("OPENAI_API_KEY"))?;
-    let base_url =
-        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
-
-    let kind = AdapterKind::OpenAI;
-    // actual_model 在 fetch_model_names 里不会用到，给空即可
-    let target = ServiceTarget::bearer(base_url, api_key, "");
-
-    let ids = AdapterDispatcher::fetch_model_names(kind, &target, &http).await?;
-
+pub async fn list_models(Component(store): Component<ChannelStore>) -> OpenAIResult<Response> {
+    let ids = store.list_enabled_model_names().await?;
     let list = ModelList::new(
         ids.into_iter()
             .map(|id| ModelInfo {
@@ -48,6 +28,5 @@ pub async fn list_models(Component(http): Component<reqwest::Client>) -> OpenAIR
             })
             .collect(),
     );
-
     Ok(Json(list).into_response())
 }
