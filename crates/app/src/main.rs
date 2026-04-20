@@ -32,9 +32,9 @@ fn auth_path_config() -> PathAuthBuilder {
     // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/refresh")`
     // - `.exclude("/public/file/**")`
     //
-    // `for_group("summer-system")` —— JWT AuthLayer 只套到 summer-system crate 下的 handler 上，
+    // `for_group(summer_system::system_group())` —— JWT AuthLayer 只套到 summer-system crate 下的 handler 上，
     // relay / mcp 等其他 group 的路由不会被它拦。
-    PathAuthBuilder::for_group("summer-system").include("/**")
+    PathAuthBuilder::for_group(summer_system::system_group()).include("/**")
 }
 
 #[auto_config(JobConfigurator, WebConfigurator)]
