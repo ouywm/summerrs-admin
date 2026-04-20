@@ -40,7 +40,8 @@ CREATE TABLE ai.channel_account (
     create_by           VARCHAR(64)     NOT NULL DEFAULT '',
     create_time         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     update_by           VARCHAR(64)     NOT NULL DEFAULT '',
-    update_time         TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+    update_time         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    disabled_api_keys   JSONB           NOT NULL DEFAULT '[]'::jsonb
 );
 
 CREATE UNIQUE INDEX uk_ai_channel_account_channel_name_active
@@ -88,3 +89,5 @@ COMMENT ON COLUMN ai.channel_account.create_by IS '创建人';
 COMMENT ON COLUMN ai.channel_account.create_time IS '创建时间';
 COMMENT ON COLUMN ai.channel_account.update_by IS '更新人';
 COMMENT ON COLUMN ai.channel_account.update_time IS '更新时间';
+COMMENT ON COLUMN ai.channel_account.disabled_api_keys IS
+  '被禁用的 API Key 明细列表 JSONB，元素形如 {"key":"sk-x","disabled_at":"2026-04-20T12:00:00Z","error_code":401,"reason":"..."}；仅当 credential_type=api_key 且 credentials.api_keys 是数组时生效';
