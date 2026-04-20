@@ -7,13 +7,20 @@
 //! 走路骨架——OpenAI 入口走通（硬编码 ServiceTarget），后续按节奏扩展。
 
 pub mod auth;
+pub mod context;
 pub mod convert;
 pub mod error;
+pub mod extract;
+pub mod pipeline;
 pub mod plugin;
 pub mod router;
 pub mod service;
 
-pub use auth::{AiAuthLayer, AiToken, AiTokenContext, AiTokenStore};
-pub use error::{RelayError, RelayResult};
+pub use auth::{AiToken, AiTokenContext, AiTokenStore, ApiKeyStrategy};
+pub use context::{AccountSnapshot, ChannelSnapshot, RelayContext};
+pub use error::{
+    ClaudeError, ClaudeResult, ErrorFlavor, GeminiError, GeminiResult, OpenAIError, OpenAIResult,
+    RelayError, RelayResult,
+};
+pub use extract::RelayRequestMeta;
 pub use plugin::SummerAiRelayPlugin;
-pub use router::relay_router;

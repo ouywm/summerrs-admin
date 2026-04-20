@@ -44,6 +44,11 @@ impl RouteRule {
 /// 路径认证配置
 #[derive(Debug, Clone)]
 pub struct PathAuthConfig {
+    /// 所属 group（与 `TypedHandlerRegistrar::group()` 一致，建议用 `env!("CARGO_PKG_NAME")`）。
+    ///
+    /// - `Some(name)` → summer-auth plugin 走 `add_group_layer(name, ...)`，只套在该 group 的路由上
+    /// - `None` → 兼容旧行为：plugin 走 `add_router_layer(...)`，全局挂载
+    pub group: Option<&'static str>,
     pub include: Vec<RouteRule>,
     pub exclude: Vec<RouteRule>,
     param_route_cache: ParamRouteCache,
@@ -51,7 +56,16 @@ pub struct PathAuthConfig {
 
 impl PathAuthConfig {
     pub(crate) fn new(include: Vec<RouteRule>, exclude: Vec<RouteRule>) -> Self {
+        Self::with_group(None, include, exclude)
+    }
+
+    pub(crate) fn with_group(
+        group: Option<&'static str>,
+        include: Vec<RouteRule>,
+        exclude: Vec<RouteRule>,
+    ) -> Self {
         Self {
+            group,
             param_route_cache: ParamRouteCache {
                 routers: Arc::new(Self::build_param_routers(&include, &exclude)),
             },
@@ -159,8 +173,13 @@ impl PathAuthConfig {
 }
 
 /// `PathAuthBuilder` — 流式 API 构建路径认证规则
+///
+/// `group` 字段用于多鉴权域场景：不同 crate 的鉴权各自一份 builder，通过
+/// [`Self::for_group`] 标记所属 group，后续由 plugin 侧按 group 挂 layer。
+/// 旧调用 [`Self::new`] 保持向后兼容，`group == None` 走旧的全局挂载路径。
 #[derive(Debug, Clone, Default)]
 pub struct PathAuthBuilder {
+    pub group: Option<&'static str>,
     pub include: Vec<RouteRule>,
     pub exclude: Vec<RouteRule>,
 }
@@ -168,6 +187,16 @@ pub struct PathAuthBuilder {
 impl PathAuthBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 创建归属指定 group 的 builder。`name` 建议与 handler 的
+    /// `TypedHandlerRegistrar::group()` 保持一致（默认即 `env!("CARGO_PKG_NAME")`）。
+    pub fn for_group(name: &'static str) -> Self {
+        Self {
+            group: Some(name),
+            include: Vec::new(),
+            exclude: Vec::new(),
+        }
     }
 
     pub fn include(mut self, pattern: impl Into<String>) -> Self {
@@ -209,11 +238,15 @@ impl PathAuthBuilder {
 
     /// 构建最终配置
     pub fn build(self) -> PathAuthConfig {
-        PathAuthConfig::new(self.include, self.exclude)
+        PathAuthConfig::with_group(self.group, self.include, self.exclude)
     }
 
     /// 合并两份路径认证配置
     pub fn merge(mut self, other: PathAuthBuilder) -> Self {
+        // group：自身优先，否则取 other 的（自身显式，就尊重自身；None 才继承）。
+        if self.group.is_none() {
+            self.group = other.group;
+        }
         self.include.extend(other.include);
         self.exclude.extend(other.exclude);
         self

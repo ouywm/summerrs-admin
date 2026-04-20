@@ -66,12 +66,15 @@ impl Parse for MultiArgs {
 }
 
 /// `#[public]` / `#[no_auth]` 参数：
-/// - 空：自动从路由属性推导
+/// - 空：自动从路由属性推导；group 默认 `env!("CARGO_PKG_NAME")`
 /// - `"/path"`：method=Any
 /// - `GET, "/path"`：指定 method+path
+/// - 任一形式 + 可选 `, group = "xxx"`：显式指定 group
+/// - 仅 `group = "xxx"`：group 显式，其他自动推导
 pub struct PublicArgs {
     pub method: Option<String>,
     pub path: Option<String>,
+    pub group: Option<String>,
 }
 
 impl Parse for PublicArgs {
@@ -80,26 +83,67 @@ impl Parse for PublicArgs {
             return Ok(Self {
                 method: None,
                 path: None,
+                group: None,
             });
         }
 
-        // Try parse as single string: "/path"
+        let mut method: Option<String> = None;
+        let mut path: Option<String> = None;
+        let mut group: Option<String> = None;
+
+        // 仅 `group = "xxx"` 开头
+        if input.peek(Ident) && input.peek2(Token![=]) {
+            let k: Ident = input.parse()?;
+            if k == "group" {
+                let _: Token![=] = input.parse()?;
+                let v: LitStr = input.parse()?;
+                group = Some(v.value());
+                return Ok(Self {
+                    method,
+                    path,
+                    group,
+                });
+            }
+            return Err(syn::Error::new(
+                k.span(),
+                "expected `group = \"...\"` or METHOD",
+            ));
+        }
+
+        // `"/path"` 或 `METHOD, "/path"`
         if input.peek(LitStr) {
             let lit: LitStr = input.parse()?;
-            return Ok(Self {
-                method: None,
-                path: Some(lit.value()),
-            });
+            path = Some(lit.value());
+        } else {
+            let method_ident: Ident = input.parse()?;
+            let _comma: Token![,] = input.parse()?;
+            let path_lit: LitStr = input.parse()?;
+            method = Some(method_ident.to_string());
+            path = Some(path_lit.value());
         }
 
-        // Parse as: METHOD, "/path"
-        let method_ident: Ident = input.parse()?;
-        let _comma: Token![,] = input.parse()?;
-        let path_lit: LitStr = input.parse()?;
+        // 可选尾巴 `, group = "xxx"`
+        while input.peek(Token![,]) {
+            let _: Token![,] = input.parse()?;
+            if input.is_empty() {
+                break;
+            }
+            let k: Ident = input.parse()?;
+            if k != "group" {
+                return Err(syn::Error::new(
+                    k.span(),
+                    "unknown key, only `group = \"...\"` is supported",
+                ));
+            }
+            let _: Token![=] = input.parse()?;
+            let v: LitStr = input.parse()?;
+            group = Some(v.value());
+        }
 
         Ok(Self {
-            method: Some(method_ident.to_string()),
-            path: Some(path_lit.value()),
+            method,
+            path,
+            group,
         })
     }
 }
@@ -141,15 +185,19 @@ pub fn expand_public_route(args: TokenStream, input: TokenStream) -> TokenStream
     let arg = parse_macro_input!(args as PublicArgs);
     let item_fn = parse_macro_input!(input as ItemFn);
 
-    let routes =
-        match resolve_public_routes(&item_fn.attrs, arg.method.as_deref(), arg.path.as_deref()) {
-            Ok(v) => v,
-            Err(e) => return e.to_compile_error().into(),
-        };
+    let routes = match resolve_public_routes(
+        &item_fn.attrs,
+        arg.method.as_deref(),
+        arg.path.as_deref(),
+        arg.group.as_deref(),
+    ) {
+        Ok(v) => v,
+        Err(e) => return e.to_compile_error().into(),
+    };
 
-    let regs = routes.into_iter().map(|(method_expr, path)| {
+    let regs = routes.into_iter().map(|(group_expr, method_expr, path)| {
         let path_lit = LitStr::new(&path, proc_macro2::Span::call_site());
-        quote! { summer_auth::register_public_route!(#method_expr, #path_lit); }
+        quote! { summer_auth::register_public_route!(#group_expr, #method_expr, #path_lit); }
     });
 
     quote! {
@@ -163,6 +211,7 @@ pub fn expand_public_route(args: TokenStream, input: TokenStream) -> TokenStream
 struct RouteMultiArgs {
     path: String,
     methods: Vec<String>,
+    group: Option<String>,
 }
 
 impl Parse for RouteMultiArgs {
@@ -171,6 +220,7 @@ impl Parse for RouteMultiArgs {
         let path = path_lit.value();
 
         let mut methods = Vec::new();
+        let mut group: Option<String> = None;
         while !input.is_empty() {
             input.parse::<Token![,]>()?;
             if input.is_empty() {
@@ -178,24 +228,42 @@ impl Parse for RouteMultiArgs {
             }
 
             let key: Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            if key != "method" {
-                return Err(syn::Error::new_spanned(
-                    key,
-                    "Unsupported argument. Only `method = ...` is supported.",
-                ));
-            }
 
-            if input.peek(LitStr) {
+            // summer-web 的 route 宏支持 `debug` 这种无 `=` 的裸 key — 跳过即可。
+            if !input.peek(Token![=]) {
+                continue;
+            }
+            input.parse::<Token![=]>()?;
+
+            if key == "method" {
+                if input.peek(LitStr) {
+                    let v: LitStr = input.parse()?;
+                    methods.push(v.value());
+                } else {
+                    let v: Ident = input.parse()?;
+                    methods.push(v.to_string());
+                }
+            } else if key == "group" {
+                // summer-web 的 `#[post(..., group = "xxx")]` —— 我们需要这个值。
                 let v: LitStr = input.parse()?;
-                methods.push(v.value());
+                group = Some(v.value());
             } else {
-                let v: Ident = input.parse()?;
-                methods.push(v.to_string());
+                // 其他 key（summer-web 的 `transform`、或将来新增的元数据）
+                // no_auth 用不到，吞掉 value 继续——而不是报错，避免"每加一个新参数
+                // 就要改这里"。
+                if input.peek(LitStr) {
+                    let _: LitStr = input.parse()?;
+                } else if input.peek(Ident) {
+                    let _: Ident = input.parse()?;
+                }
             }
         }
 
-        Ok(Self { path, methods })
+        Ok(Self {
+            path,
+            methods,
+            group,
+        })
     }
 }
 
@@ -203,7 +271,18 @@ fn resolve_public_routes(
     attrs: &[Attribute],
     manual_method: Option<&str>,
     manual_path: Option<&str>,
-) -> syn::Result<Vec<(TokenStream2, String)>> {
+    manual_group: Option<&str>,
+) -> syn::Result<Vec<(TokenStream2, TokenStream2, String)>> {
+    // 默认 group 等同 `TypedHandlerRegistrar::group()` 的默认实现，取调用点 crate 名。
+    // 用 `env!` 宏展开期求值，结果是 `&'static str` 字面量。
+    let default_group_expr = quote!(env!("CARGO_PKG_NAME"));
+    let manual_group_expr = manual_group
+        .map(|g| {
+            let lit = LitStr::new(g, proc_macro2::Span::call_site());
+            quote!(#lit)
+        })
+        .unwrap_or_else(|| default_group_expr.clone());
+
     // Manual path always wins.
     if let Some(path) = manual_path {
         let method_expr = if let Some(m) = manual_method {
@@ -211,11 +290,11 @@ fn resolve_public_routes(
         } else {
             quote!(summer_auth::public_routes::MethodTag::Any)
         };
-        return Ok(vec![(method_expr, path.to_string())]);
+        return Ok(vec![(manual_group_expr, method_expr, path.to_string())]);
     }
 
     // Auto infer from route attrs.
-    let mut found: Vec<(TokenStream2, String)> = Vec::new();
+    let mut found: Vec<(TokenStream2, TokenStream2, String)> = Vec::new();
     for attr in attrs {
         let ident = attr
             .path()
@@ -251,13 +330,24 @@ fn resolve_public_routes(
         let method_expr = route_attr_to_method_expr!(ident.as_str());
 
         if let Some(method_expr) = method_expr {
-            let path_lit: LitStr = attr.parse_args().map_err(|_| {
+            // summer-web 的 `#[post("/x", group = "..", transform = "..")]` 允许在 path
+            // 后面跟一串 key-value 参数。直接 `parse_args::<LitStr>()` 只接受裸字符串——
+            // 这里用 `RouteMultiArgs` 兼容所有参数形式，我们只关心 path 和 group。
+            let route_args: RouteMultiArgs = attr.parse_args().map_err(|_| {
                 syn::Error::new_spanned(
                     attr,
-                    "Failed to parse route path. Expected e.g. #[post_api(\"/path\")] or #[post(\"/path\")]. You can also use #[public(POST, \"/path\")].",
+                    "Failed to parse route path. Expected e.g. #[post(\"/path\")] or #[post(\"/path\", group = \"my-group\")].",
                 )
             })?;
-            found.push((method_expr, path_lit.value()));
+            let group_expr = if manual_group.is_some() {
+                manual_group_expr.clone()
+            } else if let Some(g) = route_args.group.as_deref() {
+                let lit = LitStr::new(g, proc_macro2::Span::call_site());
+                quote!(#lit)
+            } else {
+                default_group_expr.clone()
+            };
+            found.push((group_expr, method_expr, route_args.path));
             continue;
         }
 
@@ -275,8 +365,20 @@ fn resolve_public_routes(
                     "route/api_route requires at least one `method = ...` entry.",
                 ));
             }
+            let group_expr = if manual_group.is_some() {
+                manual_group_expr.clone()
+            } else if let Some(g) = route_args.group.as_deref() {
+                let lit = LitStr::new(g, proc_macro2::Span::call_site());
+                quote!(#lit)
+            } else {
+                default_group_expr.clone()
+            };
             for m in route_args.methods {
-                found.push((method_tag_expr(&m)?, route_args.path.clone()));
+                found.push((
+                    group_expr.clone(),
+                    method_tag_expr(&m)?,
+                    route_args.path.clone(),
+                ));
             }
         }
     }
