@@ -117,7 +117,7 @@ impl Adapter for GeminiAdapter {
         }
         let chunk: GeminiChatResponse =
             serde_json::from_str(trimmed).map_err(AdapterError::DeserializeResponse)?;
-        Ok(gemini_chunk_to_canonical(chunk).into_iter().collect())
+        Ok(gemini_chunk_to_canonical(chunk))
     }
 }
 
@@ -445,37 +445,31 @@ fn gemini_usage_to_canonical(m: GeminiUsageMetadata) -> Usage {
 // Gemini stream chunk → canonical event
 // ---------------------------------------------------------------------------
 
-fn gemini_chunk_to_canonical(chunk: GeminiChatResponse) -> Option<ChatStreamEvent> {
+fn gemini_chunk_to_canonical(chunk: GeminiChatResponse) -> Vec<ChatStreamEvent> {
+    // Gemini 允许单个 chunk 包含：多个 text part、多个并行 functionCall part、
+    // 以及 finishReason / usageMetadata——对齐 rust-genai gemini/streamer.rs 用
+    // pending_events 队列的做法：一次 chunk 产出一个事件列表，按 text → tool_calls →
+    // End 的顺序 emit，不因为 finish_reason 在场就吞掉同块里的内容。
     let candidate = chunk.candidates.into_iter().next();
-    let has_candidate = candidate.is_some();
     let usage_meta = chunk.usage_metadata;
 
-    let candidate = match candidate {
-        Some(c) => c,
-        None => {
-            // 只有 usage 无 candidate → End（usage_metadata-only chunk）
-            if let Some(u) = usage_meta {
-                return Some(ChatStreamEvent::End(StreamEnd {
-                    finish_reason: None,
-                    usage: Some(gemini_usage_to_canonical(u)),
-                }));
-            }
-            return None;
+    let Some(candidate) = candidate else {
+        // 只有 usage 无 candidate → End（usage_metadata-only chunk）
+        if let Some(u) = usage_meta {
+            return vec![ChatStreamEvent::End(StreamEnd {
+                finish_reason: None,
+                usage: Some(gemini_usage_to_canonical(u)),
+            })];
         }
+        return Vec::new();
     };
 
-    // finishReason 存在 → End
-    if let Some(reason) = candidate.finish_reason.as_deref() {
-        return Some(ChatStreamEvent::End(StreamEnd {
-            finish_reason: gemini_finish_reason_to_canonical(reason),
-            usage: usage_meta.map(gemini_usage_to_canonical),
-        }));
-    }
+    let finish_reason_raw = candidate.finish_reason.clone();
 
-    // 提取 parts 里首个 text / functionCall
+    // 先把 parts 里的 text 累积、functionCall 全部收集（并行 tool_call）
     let parts = candidate.content.map(|c| c.parts).unwrap_or_default();
     let mut text_buf = String::new();
-    let mut first_fc: Option<GeminiFunctionCall> = None;
+    let mut function_calls: Vec<GeminiFunctionCall> = Vec::new();
     for part in parts {
         match part {
             GeminiPart::Text { text } => {
@@ -484,29 +478,39 @@ fn gemini_chunk_to_canonical(chunk: GeminiChatResponse) -> Option<ChatStreamEven
                 }
                 text_buf.push_str(&text);
             }
-            GeminiPart::FunctionCall { function_call } if first_fc.is_none() => {
-                first_fc = Some(function_call);
+            GeminiPart::FunctionCall { function_call } => {
+                function_calls.push(function_call);
             }
             _ => {}
         }
     }
 
-    if let Some(fc) = first_fc {
+    let mut events: Vec<ChatStreamEvent> = Vec::new();
+
+    if !text_buf.is_empty() {
+        events.push(ChatStreamEvent::TextDelta { text: text_buf });
+    }
+
+    for (idx, fc) in function_calls.into_iter().enumerate() {
         let args = serde_json::to_string(&fc.args).unwrap_or_else(|_| "{}".to_string());
-        return Some(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
-            index: 0,
+        events.push(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+            index: idx as i32,
             id: Some(format!("call_{}", timestamp_id())),
             name: Some(fc.name),
             arguments_delta: Some(args),
         }));
     }
 
-    if !text_buf.is_empty() {
-        return Some(ChatStreamEvent::TextDelta { text: text_buf });
+    // finishReason 非空：即使同块有内容也要 emit End 收尾（Gemini 常把最后 text
+    // 和 finishReason 一起发）
+    if let Some(reason) = finish_reason_raw {
+        events.push(ChatStreamEvent::End(StreamEnd {
+            finish_reason: gemini_finish_reason_to_canonical(&reason),
+            usage: usage_meta.map(gemini_usage_to_canonical),
+        }));
     }
 
-    // 什么都没有（极少见）- has_candidate=true 但内容空
-    if has_candidate { None } else { None }
+    events
 }
 
 // ---------------------------------------------------------------------------
@@ -824,5 +828,57 @@ mod tests {
             gemini_finish_reason_to_canonical("MAX_TOKENS"),
             Some(FinishReason::Length)
         );
+    }
+
+    #[test]
+    fn stream_chunk_text_and_finish_reason_emit_both_events() {
+        // 回归：Gemini 经常把最后一段 text 和 finishReason 打包在同一 chunk
+        // （等同 Mistral / 规则 6）。之前 finishReason 存在就直接 return End，
+        // text 被丢；修复后必须同时 emit TextDelta + End。
+        let t = target();
+        let raw = r#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[{"text":"end."}]},
+                "finishReason":"STOP"
+            }]
+        }"#;
+        let events = GeminiAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 2, "expected TextDelta + End, got {events:?}");
+        match &events[0] {
+            ChatStreamEvent::TextDelta { text } => assert_eq!(text, "end."),
+            other => panic!("expected TextDelta first, got {other:?}"),
+        }
+        match &events[1] {
+            ChatStreamEvent::End(end) => assert_eq!(end.finish_reason, Some(FinishReason::Stop)),
+            other => panic!("expected End last, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_chunk_parallel_function_calls_emit_all() {
+        // 回归：Gemini parallel function calling 单块可含多个 functionCall part；
+        // 之前的实现只取首个，其余并行调用被丢弃。
+        let t = target();
+        let raw = r#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[
+                    {"functionCall":{"name":"fa","args":{"x":1}}},
+                    {"functionCall":{"name":"fb","args":{"y":2}}}
+                ]}
+            }]
+        }"#;
+        let events = GeminiAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 2);
+        for (expected_idx, expected_name, ev) in [(0i32, "fa", &events[0]), (1, "fb", &events[1])] {
+            match ev {
+                ChatStreamEvent::ToolCallDelta(d) => {
+                    assert_eq!(d.index, expected_idx);
+                    assert_eq!(d.name.as_deref(), Some(expected_name));
+                }
+                other => panic!("expected ToolCallDelta, got {other:?}"),
+            }
+        }
     }
 }
