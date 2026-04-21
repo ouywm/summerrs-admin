@@ -196,7 +196,7 @@ where
 
         // ─── 2. to_canonical（用第一个候选的 ingress_ctx；canonical 是中性表达）
         let first = &candidates[0];
-        let first_target_info = match build_service_target(
+        let first_target = match build_service_target(
             &first.channel,
             &first.account,
             &first.selected_key,
@@ -214,9 +214,9 @@ where
             }
         };
         let first_ingress_ctx = IngressCtx::new(
-            first_target_info.0,
+            first_target.kind(),
             &logical_model,
-            &first_target_info.1.actual_model,
+            first_target.actual_model(),
         );
         let mut canonical_req = match I::to_canonical(client_req, &first_ingress_ctx) {
             Ok(r) => r,
@@ -261,7 +261,8 @@ where
         if is_stream {
             // 流式路径保持**单 attempt**：用第一个候选，不 retry。
             let candidate = first.clone();
-            let (kind, target) = first_target_info;
+            let target = first_target;
+            let kind = target.kind();
             execute_stream::<I>(
                 ctx,
                 candidate,
@@ -323,7 +324,7 @@ where
         let attempt_start = Instant::now();
         let attempt_started_at = chrono::Utc::now().fixed_offset();
 
-        let (kind, target) = match build_service_target(
+        let target = match build_service_target(
             &candidate.channel,
             &candidate.account,
             &candidate.selected_key,
@@ -346,6 +347,7 @@ where
                 break;
             }
         };
+        let kind = target.kind();
 
         let cost_profile = AdapterDispatcher::cost_profile(kind);
         ctx.attach_channel(
@@ -354,10 +356,10 @@ where
             &candidate.selected_key,
             kind,
             cost_profile,
-            target.actual_model.clone(),
+            target.actual_model().to_string(),
         );
 
-        let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, &target.actual_model);
+        let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, target.actual_model());
 
         tracing::debug!(
             request_id = %ctx.request_id,
@@ -396,7 +398,7 @@ where
                     channel_id: candidate.channel.id,
                     account_id: candidate.account.id,
                     request_format: kind.as_str().to_string(),
-                    upstream_model: target.actual_model.clone(),
+                    upstream_model: target.actual_model().to_string(),
                     upstream_request_id: upstream_request_id.clone(),
                     sent_headers,
                     request_body: upstream_req_snapshot.clone(),
@@ -451,7 +453,7 @@ where
                     channel_id: candidate.channel.id,
                     account_id: candidate.account.id,
                     request_format: kind.as_str().to_string(),
-                    upstream_model: target.actual_model.clone(),
+                    upstream_model: target.actual_model().to_string(),
                     upstream_request_id: None,
                     sent_headers,
                     request_body: upstream_req_snapshot.clone(),
@@ -547,10 +549,10 @@ where
         &candidate.selected_key,
         kind,
         cost_profile,
-        target.actual_model.clone(),
+        target.actual_model().to_string(),
     );
 
-    let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, &target.actual_model);
+    let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, target.actual_model());
 
     let mut sent_headers_sink: Option<Value> = None;
     let invoke_result =

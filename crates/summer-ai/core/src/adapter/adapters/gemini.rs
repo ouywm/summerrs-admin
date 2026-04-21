@@ -84,7 +84,7 @@ impl Adapter for GeminiAdapter {
         let api_key = target.auth.resolve()?.unwrap_or_default();
         let url = build_gemini_url(
             target.endpoint.trimmed(),
-            &target.actual_model,
+            target.actual_model(),
             method,
             req.stream,
             &api_key,
@@ -646,6 +646,7 @@ mod tests {
 
     fn target() -> ServiceTarget {
         ServiceTarget::bearer(
+            AdapterKind::Gemini,
             "https://generativelanguage.googleapis.com",
             "AIza-fake-key",
             "gemini-2.5-flash",

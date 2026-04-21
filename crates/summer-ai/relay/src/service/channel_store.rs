@@ -443,11 +443,12 @@ impl ChannelStore {
 // ServiceTarget builder
 // ---------------------------------------------------------------------------
 
-/// 从 `(channel, account, selected_key, logical_model)` 构造 `ServiceTarget` + `AdapterKind`。
+/// 从 `(channel, account, selected_key, logical_model)` 构造 `ServiceTarget`。
 ///
 /// - **selected_key** 由上层 `ChannelStore::pick` + `KeyPicker` 决定，本函数只认 pre-selected key
 /// - **OAuth account**（`account.is_oauth()`）本期未落地，返 `NotImplemented`
-/// - `actual_model` 应用 `channel.model_mapping` JSONB（缺省保留 logical_model）
+/// - `target.model.name` 应用 `channel.model_mapping` JSONB（缺省保留 logical_model）
+/// - `target.model.kind` 由 `channel.channel_type` 映射
 /// - `endpoint` 取 `channel.base_url`
 /// - `extra_headers` 从 `channel.config.extra_headers` 读（如果有）
 pub fn build_service_target(
@@ -455,7 +456,7 @@ pub fn build_service_target(
     account: &channel_account::Model,
     selected_key: &str,
     logical_model: &str,
-) -> Result<(AdapterKind, ServiceTarget), RelayError> {
+) -> Result<ServiceTarget, RelayError> {
     if account.is_oauth() {
         return Err(RelayError::NotImplemented("oauth credentials"));
     }
@@ -465,16 +466,16 @@ pub fn build_service_target(
         ));
     }
 
+    let kind = channel_type_to_adapter_kind(channel.channel_type);
     let actual_model = channel.resolve_upstream_model(logical_model);
     let endpoint = Endpoint::from_owned(channel.base_url.clone());
     let auth = AuthData::from_single(selected_key.to_string());
 
-    let mut target = ServiceTarget {
+    let mut target = ServiceTarget::new(
         endpoint,
         auth,
-        actual_model,
-        extra_headers: Default::default(),
-    };
+        summer_ai_core::ModelIden::new(kind, actual_model),
+    );
 
     if let Some(obj) = channel
         .config
@@ -488,7 +489,7 @@ pub fn build_service_target(
         }
     }
 
-    Ok((channel_type_to_adapter_kind(channel.channel_type), target))
+    Ok(target)
 }
 
 // ---------------------------------------------------------------------------
@@ -654,9 +655,9 @@ mod tests {
         channel.model_mapping = serde_json::json!({"gpt-4": "gpt-4-turbo"});
         let account = mk_account(10, 1, "sk-a", 1, 100);
 
-        let (kind, target) = build_service_target(&channel, &account, "sk-a", "gpt-4").unwrap();
-        assert_eq!(kind, AdapterKind::OpenAI);
-        assert_eq!(target.actual_model, "gpt-4-turbo");
+        let target = build_service_target(&channel, &account, "sk-a", "gpt-4").unwrap();
+        assert_eq!(target.kind(), AdapterKind::OpenAI);
+        assert_eq!(target.actual_model(), "gpt-4-turbo");
         assert_eq!(target.endpoint.trimmed(), "https://api.openai.com/v1");
     }
 

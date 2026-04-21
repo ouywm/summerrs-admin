@@ -41,7 +41,7 @@ pub async fn invoke_non_stream(
     tracing::debug!(
         adapter = %kind.as_lower_str(),
         url = %wire.url,
-        model_actual = %target.actual_model,
+        model_actual = %target.actual_model(),
         "dispatch chat (non-stream)"
     );
 
@@ -82,7 +82,7 @@ pub async fn invoke_stream_raw(
     tracing::debug!(
         adapter = %kind.as_lower_str(),
         url = %wire.url,
-        model_actual = %target.actual_model,
+        model_actual = %target.actual_model(),
         "dispatch chat (stream)"
     );
 

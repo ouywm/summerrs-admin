@@ -15,4 +15,4 @@ pub mod target;
 
 pub use auth::AuthData;
 pub use endpoint::Endpoint;
-pub use target::ServiceTarget;
+pub use target::{ModelIden, ServiceTarget};

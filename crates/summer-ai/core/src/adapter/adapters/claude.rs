@@ -229,7 +229,7 @@ fn canonical_to_claude_request(
         .and_then(|v| u32::try_from(v).ok());
 
     Ok(ClaudeMessagesRequest {
-        model: target.actual_model.clone(),
+        model: target.actual_model().to_string(),
         messages,
         max_tokens,
         system,
@@ -736,6 +736,7 @@ mod tests {
 
     fn target() -> ServiceTarget {
         ServiceTarget::bearer(
+            AdapterKind::Claude,
             "https://api.anthropic.com",
             "sk-ant-test",
             "claude-sonnet-4-5",

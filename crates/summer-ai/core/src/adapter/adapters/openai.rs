@@ -162,7 +162,7 @@ mod shared {
         if let Some(obj) = payload.as_object_mut() {
             obj.insert(
                 "model".to_string(),
-                Value::String(target.actual_model.clone()),
+                Value::String(target.actual_model().to_string()),
             );
         }
 
@@ -308,7 +308,7 @@ mod shared {
         let model = v
             .get("model")
             .and_then(Value::as_str)
-            .unwrap_or(&target.actual_model)
+            .unwrap_or(target.actual_model())
             .to_string();
 
         // 4. usage（可能与 choices 同块，也可能是独立末尾 chunk）
@@ -542,7 +542,7 @@ mod tests {
     use crate::types::ChatMessage;
 
     fn bearer_target(base: &str) -> ServiceTarget {
-        ServiceTarget::bearer(base, "sk-test", "gpt-4o-mini")
+        ServiceTarget::bearer(AdapterKind::OpenAI, base, "sk-test", "gpt-4o-mini")
     }
 
     // ────── build_chat_request ──────
@@ -592,9 +592,14 @@ mod tests {
 
     #[test]
     fn extra_headers_applied() {
-        let target = ServiceTarget::bearer("https://openrouter.ai/api/v1", "sk", "gpt-4o")
-            .with_header("HTTP-Referer", "https://my.app")
-            .with_header("X-Title", "MyApp");
+        let target = ServiceTarget::bearer(
+            AdapterKind::OpenAICompat,
+            "https://openrouter.ai/api/v1",
+            "sk",
+            "gpt-4o",
+        )
+        .with_header("HTTP-Referer", "https://my.app")
+        .with_header("X-Title", "MyApp");
         let req = ChatRequest::new("x", vec![ChatMessage::user("hi")]);
         let data =
             OpenAICompatAdapter::build_chat_request(&target, ServiceType::Chat, &req).unwrap();

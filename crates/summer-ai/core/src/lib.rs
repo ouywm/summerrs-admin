@@ -20,7 +20,7 @@ pub use adapter::{
     adapters::{ClaudeAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter},
 };
 pub use error::{AdapterError, AdapterResult, AuthResolveError};
-pub use resolver::{AuthData, Endpoint, ServiceTarget};
+pub use resolver::{AuthData, Endpoint, ModelIden, ServiceTarget};
 pub use types::{
     AudioOutputOptions, AudioResponse, ChatChoice, ChatMessage, ChatRequest, ChatResponse,
     ChatStreamEvent, CompletionTokensDetails, ContentPart, FinishReason, ImageUrl, InputAudio,
