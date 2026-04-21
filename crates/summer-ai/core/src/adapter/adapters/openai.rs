@@ -188,7 +188,7 @@ mod shared {
     /// | `[DONE]` | `Ok(None)` 忽略 |
     /// | `delta.role` 非空 **且** `delta.content` 空/缺失 | `Start { adapter, model }` |
     /// | `delta.content` 非空（role 是否存在不影响） | `TextDelta { text }` |
-    /// | `delta.reasoning_content` 非空（DeepSeek / o1） | `ReasoningDelta { text }` |
+    /// | `delta.reasoning_content` 或 `delta.reasoning` 非空 | `ReasoningDelta { text }` |
     /// | `delta.tool_calls[*]` | `ToolCallDelta(...)`（当前取首个） |
     /// | `choice.finish_reason` 非空 | `End { finish_reason, usage }` |
     /// | `choices` 空 + `usage` 非空（OpenAI 末尾 usage-only chunk） | `End { usage }` |
@@ -275,13 +275,23 @@ mod shared {
             }));
         }
 
-        // 7.3 ReasoningDelta（DeepSeek / o1 的 reasoning_content）
-        if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
-            if !text.is_empty() {
-                return Ok(Some(ChatStreamEvent::ReasoningDelta {
-                    text: text.to_string(),
-                }));
-            }
+        // 7.3 ReasoningDelta（不同上游字段名不统一）
+        //
+        // - DeepSeek / o1 等用 `reasoning_content`
+        // - OpenRouter / Ollama 等用 `reasoning`
+        //
+        // 对齐 rust-genai (openai/streamer.rs:249-253)：`reasoning_content` 优先，
+        // 缺失时回退 `reasoning`，保证两类上游的思考过程都能透传。
+        let reasoning_text = delta
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .or_else(|| delta.get("reasoning").and_then(Value::as_str));
+        if let Some(text) = reasoning_text
+            && !text.is_empty()
+        {
+            return Ok(Some(ChatStreamEvent::ReasoningDelta {
+                text: text.to_string(),
+            }));
         }
 
         // 7.4 ToolCallDelta（当前只处理首个；后续 chunk 会继续带）
@@ -582,6 +592,34 @@ mod tests {
             .unwrap();
         match e {
             ChatStreamEvent::ReasoningDelta { text } => assert_eq!(text, "let me think"),
+            other => panic!("expected ReasoningDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_reasoning_delta_falls_back_to_reasoning_field() {
+        // OpenRouter / Ollama 用 `reasoning` 而非 `reasoning_content`——要能透传。
+        let t = bearer_target("https://openrouter.ai");
+        let raw = r#"{"choices":[{"index":0,"delta":{"reasoning":"considering options"},"finish_reason":null}]}"#;
+        let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
+            .unwrap()
+            .unwrap();
+        match e {
+            ChatStreamEvent::ReasoningDelta { text } => assert_eq!(text, "considering options"),
+            other => panic!("expected ReasoningDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_reasoning_delta_prefers_reasoning_content_over_reasoning() {
+        // 两个字段都带时，`reasoning_content` 优先（对齐 rust-genai）。
+        let t = bearer_target("https://api.deepseek.com");
+        let raw = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"primary","reasoning":"secondary"},"finish_reason":null}]}"#;
+        let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
+            .unwrap()
+            .unwrap();
+        match e {
+            ChatStreamEvent::ReasoningDelta { text } => assert_eq!(text, "primary"),
             other => panic!("expected ReasoningDelta, got {other:?}"),
         }
     }
