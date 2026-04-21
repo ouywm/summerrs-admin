@@ -3,6 +3,7 @@
 //! Handler 只做参数解包 + 调 [`PipelineCall::execute`] + 包装响应。
 //! 鉴权 / 选路 / 翻译（Responses ↔ canonical）/ 发上游 / tracking 都在 engine 内。
 
+use summer_ai_billing::{BillingService, PriceResolver};
 use summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesRequest;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
@@ -22,12 +23,15 @@ use crate::service::tracking::TrackingService;
 
 /// `POST /v1/responses`
 #[post("/v1/responses")]
+#[allow(clippy::too_many_arguments)]
 pub async fn responses(
     AiToken(token): AiToken,
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
     Component(tracking): Component<TrackingService>,
     Component(cooldown): Component<CooldownService>,
+    Component(billing): Component<BillingService>,
+    Component(price_resolver): Component<PriceResolver>,
     meta: RelayRequestMeta,
     Json(req): Json<OpenAIResponsesRequest>,
 ) -> OpenAIResult<Response> {
@@ -50,6 +54,8 @@ pub async fn responses(
         store,
         tracking,
         cooldown,
+        billing,
+        price_resolver,
     };
 
     match call.execute().await? {

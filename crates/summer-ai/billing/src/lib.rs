@@ -6,10 +6,14 @@
 //!
 //! P0 骨架阶段——空 Plugin，后续 Phase 填内容。
 
+pub mod estimator;
 pub mod plugin;
 pub mod price;
 pub mod service;
 
+pub use estimator::{
+    AUDIO_PART_TOKENS, DEFAULT_MAX_COMPLETION, IMAGE_PART_TOKENS, estimate_quota, estimate_usage,
+};
 pub use plugin::SummerAiBillingPlugin;
 pub use price::{
     CostBreakdown, PriceError, PriceResolver, PriceTable, QUOTA_PER_USD, compute_cost,

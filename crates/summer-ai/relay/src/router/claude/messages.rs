@@ -6,6 +6,7 @@
 //! 错误用 [`ClaudeError`](crate::error::ClaudeError) newtype 包一层——`?` 自动转，
 //! `IntoResponse` 时输出 Anthropic 官方格式 `{"type":"error","error":{...}}`。
 
+use summer_ai_billing::{BillingService, PriceResolver};
 use summer_ai_core::types::ingress_wire::claude::ClaudeMessagesRequest;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
@@ -25,12 +26,15 @@ use crate::service::tracking::TrackingService;
 
 /// `POST /v1/messages`
 #[post("/v1/messages")]
+#[allow(clippy::too_many_arguments)]
 pub async fn messages(
     AiToken(token): AiToken,
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
     Component(tracking): Component<TrackingService>,
     Component(cooldown): Component<CooldownService>,
+    Component(billing): Component<BillingService>,
+    Component(price_resolver): Component<PriceResolver>,
     meta: RelayRequestMeta,
     Json(claude_req): Json<ClaudeMessagesRequest>,
 ) -> ClaudeResult<Response> {
@@ -53,6 +57,8 @@ pub async fn messages(
         store,
         tracking,
         cooldown,
+        billing,
+        price_resolver,
     };
 
     match call.execute().await? {

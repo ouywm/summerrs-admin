@@ -10,6 +10,7 @@
 //! 鉴权由 `ApiKeyStrategy` 挂在 `"summer-ai-relay"` group layer 上完成；admin JWT
 //! AuthLayer 挂在 `"summer-system"` group 上，不会拦到本 handler。
 
+use summer_ai_billing::{BillingService, PriceResolver};
 use summer_ai_core::ChatRequest;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
@@ -29,12 +30,15 @@ use crate::service::tracking::TrackingService;
 
 /// `POST /v1/chat/completions`
 #[post("/v1/chat/completions")]
+#[allow(clippy::too_many_arguments)]
 pub async fn chat_completions(
     AiToken(token): AiToken,
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
     Component(tracking): Component<TrackingService>,
     Component(cooldown): Component<CooldownService>,
+    Component(billing): Component<BillingService>,
+    Component(price_resolver): Component<PriceResolver>,
     meta: RelayRequestMeta,
     Json(request): Json<ChatRequest>,
 ) -> OpenAIResult<Response> {
@@ -57,6 +61,8 @@ pub async fn chat_completions(
         store,
         tracking,
         cooldown,
+        billing,
+        price_resolver,
     };
 
     match call.execute().await? {
