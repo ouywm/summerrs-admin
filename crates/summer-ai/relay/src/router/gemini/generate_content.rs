@@ -30,6 +30,7 @@ use crate::error::{GeminiResult, RelayError};
 use crate::extract::RelayRequestMeta;
 use crate::pipeline::{EngineOutcome, PipelineCall};
 use crate::service::channel_store::ChannelStore;
+use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::{collect_sse_to_json_array, sse_response};
 use crate::service::tracking::TrackingService;
 
@@ -49,6 +50,7 @@ impl GeminiQueryParams {
 
 /// `POST /v1beta/models/{target}` 其中 `target = {model}:{method}`。
 #[post("/v1beta/models/{target}")]
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_content(
     AiToken(token): AiToken,
     Path(target): Path<String>,
@@ -56,6 +58,7 @@ pub async fn generate_content(
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
     Component(tracking): Component<TrackingService>,
+    Component(cooldown): Component<CooldownService>,
     meta: RelayRequestMeta,
     Json(gemini_req): Json<GeminiGenerateContentRequest>,
 ) -> GeminiResult<Response> {
@@ -87,6 +90,7 @@ pub async fn generate_content(
         http,
         store,
         tracking,
+        cooldown,
     };
 
     match call.execute().await? {

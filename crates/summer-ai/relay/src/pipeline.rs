@@ -54,6 +54,7 @@ use crate::convert::ingress::{IngressConverter, IngressCtx, IngressFormat};
 use crate::error::{RelayError, RelayResult, RetryKind};
 use crate::service::channel_store::{Candidate, ChannelStore, build_service_target};
 use crate::service::chat;
+use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::{self, StreamOutcome};
 use crate::service::tracking::{AttemptRecord, TrackingOutcome, TrackingService};
 
@@ -85,6 +86,8 @@ pub struct PipelineCall<I: IngressConverter> {
     pub store: ChannelStore,
     /// 追踪服务（落 `ai.request` / `ai.request_execution` / `ai.log`）。
     pub tracking: TrackingService,
+    /// 冷却服务（P9 S4：失败后写 `rate_limited_until` / `overload_until` / `disabled_api_keys`）。
+    pub cooldown: CooldownService,
 }
 
 /// 客户端响应的抽象 —— 交给 handler 包装成各自协议的 `Response`。
@@ -119,6 +122,7 @@ where
             http,
             store,
             tracking,
+            cooldown,
         } = self;
 
         let ctx = RelayContext::begin(
@@ -213,6 +217,7 @@ where
                 client_req_snapshot,
                 http,
                 tracking,
+                cooldown,
             )
             .await
         } else {
@@ -225,6 +230,7 @@ where
                 client_req_snapshot,
                 http,
                 tracking,
+                cooldown,
             )
             .await
         }
@@ -235,6 +241,7 @@ where
 // 非流式 + retry 循环
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_non_stream_with_retry<I>(
     mut ctx: RelayContext,
     candidates: Vec<Candidate>,
@@ -244,6 +251,7 @@ async fn execute_non_stream_with_retry<I>(
     client_req_snapshot: Option<Value>,
     http: reqwest::Client,
     tracking: TrackingService,
+    cooldown: CooldownService,
 ) -> RelayResult<EngineOutcome<I>>
 where
     I: IngressConverter + Send + 'static,
@@ -389,6 +397,14 @@ where
                     finished_at: attempt_finished_at,
                 });
 
+                apply_cooldown(
+                    &cooldown,
+                    candidate.account.id,
+                    &candidate.selected_key,
+                    upstream_status,
+                    &e,
+                );
+
                 match e.retry_kind() {
                     RetryKind::Fatal => {
                         tracing::debug!(
@@ -442,6 +458,7 @@ async fn execute_stream<I>(
     client_req_snapshot: Option<Value>,
     http: reqwest::Client,
     tracking: TrackingService,
+    cooldown: CooldownService,
 ) -> RelayResult<EngineOutcome<I>>
 where
     I: IngressConverter + Send + 'static,
@@ -468,6 +485,14 @@ where
     let invoked = match invoke_result {
         Ok(u) => u,
         Err(e) => {
+            let upstream_status = extract_upstream_status(&e);
+            apply_cooldown(
+                &cooldown,
+                candidate.account.id,
+                &candidate.selected_key,
+                upstream_status,
+                &e,
+            );
             tracking.emit(
                 ctx.clone(),
                 failure_outcome_from(&e),
@@ -536,6 +561,32 @@ fn extract_upstream_status(err: &RelayError) -> Option<u16> {
         RelayError::UpstreamStatus { status, .. } => Some(*status),
         RelayError::Adapter(AdapterError::UpstreamStatus { status, .. }) => Some(*status),
         _ => None,
+    }
+}
+
+/// 按上游状态码写冷却：429 → rate_limited_until；503/529 → overload_until；401/403 → 坏 key 拉黑。
+///
+/// fire-and-forget，不阻塞 retry。
+fn apply_cooldown(
+    cooldown: &CooldownService,
+    account_id: i64,
+    selected_key: &str,
+    upstream_status: Option<u16>,
+    err: &RelayError,
+) {
+    let Some(status) = upstream_status else {
+        return;
+    };
+    match status {
+        429 => cooldown.mark_rate_limited(account_id, 30, err.to_string()),
+        503 | 529 => cooldown.mark_overloaded(account_id, 60, status, err.to_string()),
+        401 | 403 if !selected_key.is_empty() => cooldown.disable_key(
+            account_id,
+            selected_key.to_string(),
+            status,
+            err.to_string(),
+        ),
+        _ => {}
     }
 }
 

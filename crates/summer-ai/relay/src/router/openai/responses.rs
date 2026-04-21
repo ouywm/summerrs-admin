@@ -16,6 +16,7 @@ use crate::error::OpenAIResult;
 use crate::extract::RelayRequestMeta;
 use crate::pipeline::{EngineOutcome, PipelineCall};
 use crate::service::channel_store::ChannelStore;
+use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::sse_response;
 use crate::service::tracking::TrackingService;
 
@@ -26,6 +27,7 @@ pub async fn responses(
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
     Component(tracking): Component<TrackingService>,
+    Component(cooldown): Component<CooldownService>,
     meta: RelayRequestMeta,
     Json(req): Json<OpenAIResponsesRequest>,
 ) -> OpenAIResult<Response> {
@@ -47,6 +49,7 @@ pub async fn responses(
         http,
         store,
         tracking,
+        cooldown,
     };
 
     match call.execute().await? {

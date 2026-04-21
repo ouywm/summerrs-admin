@@ -8,6 +8,7 @@
 
 pub mod channel_store;
 pub mod chat;
+pub mod cooldown;
 pub mod key_picker;
 pub mod model_service;
 pub mod stream_driver;

@@ -19,6 +19,7 @@ use crate::error::ClaudeResult;
 use crate::extract::RelayRequestMeta;
 use crate::pipeline::{EngineOutcome, PipelineCall};
 use crate::service::channel_store::ChannelStore;
+use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::sse_response;
 use crate::service::tracking::TrackingService;
 
@@ -29,6 +30,7 @@ pub async fn messages(
     Component(http): Component<reqwest::Client>,
     Component(store): Component<ChannelStore>,
     Component(tracking): Component<TrackingService>,
+    Component(cooldown): Component<CooldownService>,
     meta: RelayRequestMeta,
     Json(claude_req): Json<ClaudeMessagesRequest>,
 ) -> ClaudeResult<Response> {
@@ -50,6 +52,7 @@ pub async fn messages(
         http,
         store,
         tracking,
+        cooldown,
     };
 
     match call.execute().await? {
