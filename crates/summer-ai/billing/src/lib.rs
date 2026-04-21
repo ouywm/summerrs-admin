@@ -8,8 +8,10 @@
 
 pub mod plugin;
 pub mod price;
+pub mod service;
 
 pub use plugin::SummerAiBillingPlugin;
 pub use price::{
     CostBreakdown, PriceError, PriceResolver, PriceTable, QUOTA_PER_USD, compute_cost,
 };
+pub use service::{BillingError, BillingService, Reservation, Settlement};

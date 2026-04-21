@@ -6,6 +6,7 @@ version = "0.0.1"
 [dependencies]
 async-trait = { workspace = true }
 bigdecimal = { workspace = true }
+chrono = { workspace = true }
 sea-orm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
