@@ -22,9 +22,9 @@ pub use adapter::{
 pub use error::{AdapterError, AdapterResult, AuthResolveError};
 pub use resolver::{AuthData, Endpoint, ModelIden, ServiceTarget};
 pub use types::{
-    AudioOutputOptions, AudioResponse, ChatChoice, ChatMessage, ChatRequest, ChatResponse,
-    ChatStreamEvent, CompletionTokensDetails, ContentPart, FinishReason, ImageUrl, InputAudio,
-    JsonSchemaFormat, MessageContent, ModelInfo, ModelList, PromptTokensDetails, ResponseFormat,
-    Role, StreamEnd, StreamError, StreamOptions, Tool, ToolCall, ToolCallDelta, ToolCallFunction,
-    ToolChoice, ToolFunction, Usage,
+    AudioOutputOptions, AudioResponse, CacheControl, ChatChoice, ChatMessage, ChatRequest,
+    ChatResponse, ChatStreamEvent, CompletionTokensDetails, ContentPart, FinishReason, ImageUrl,
+    InputAudio, JsonSchemaFormat, MessageContent, MessageOptions, ModelInfo, ModelList,
+    PromptTokensDetails, ResponseFormat, Role, StreamEnd, StreamError, StreamOptions, Tool,
+    ToolCall, ToolCallDelta, ToolCallFunction, ToolChoice, ToolFunction, Usage,
 };

@@ -276,6 +276,7 @@ fn append_claude_message(
                 tool_call_id: None,
                 reasoning_content: None,
                 audio: None,
+                options: None,
             });
             return Ok(());
         }
@@ -320,6 +321,7 @@ fn append_claude_message(
                     id,
                     kind: "function".to_string(),
                     function: ToolCallFunction { name, arguments },
+                    thought_signatures: None,
                 });
             }
             ClaudeContentBlock::ToolResult {
@@ -352,6 +354,7 @@ fn append_claude_message(
             tool_call_id: Some(tool_use_id),
             reasoning_content: None,
             audio: None,
+            options: None,
         });
     }
 
@@ -384,6 +387,7 @@ fn append_claude_message(
         },
         tool_call_id: None,
         audio: None,
+        options: None,
     });
     Ok(())
 }
@@ -418,6 +422,7 @@ fn claude_tool_to_canonical(tool: ClaudeTool) -> Tool {
             description: tool.description,
             parameters: Some(tool.input_schema),
         },
+        strict: None,
     }
 }
 
@@ -1155,9 +1160,11 @@ mod tests {
                             name: "weather".to_string(),
                             arguments: r#"{"city":"NYC"}"#.to_string(),
                         },
+                        thought_signatures: None,
                     }]),
                     tool_call_id: None,
                     audio: None,
+                    options: None,
                 },
                 logprobs: None,
                 finish_reason: Some(FinishReason::ToolCalls),

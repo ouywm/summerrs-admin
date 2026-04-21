@@ -192,6 +192,7 @@ fn message_item_to_chat_message(m: OpenAIResponsesMessageItem) -> AdapterResult<
         tool_call_id: None,
         reasoning_content: None,
         audio: None,
+        options: None,
     })
 }
 
@@ -271,9 +272,11 @@ fn function_call_item_to_chat_message(fc: OpenAIResponsesFunctionCallItem) -> Ch
                 name: fc.name,
                 arguments: fc.arguments,
             },
+            thought_signatures: None,
         }]),
         tool_call_id: None,
         audio: None,
+        options: None,
     }
 }
 
@@ -1144,6 +1147,7 @@ mod tests {
                 name: "get_weather".into(),
                 arguments: "{}".into(),
             },
+            thought_signatures: None,
         }]);
         let out = OpenAIResponsesIngress::from_canonical(resp, &ctx()).unwrap();
         assert_eq!(out.output.len(), 1);

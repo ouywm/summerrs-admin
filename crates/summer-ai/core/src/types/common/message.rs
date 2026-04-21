@@ -19,6 +19,62 @@ pub enum Role {
     Developer,
 }
 
+/// Prompt cache 意图（跨 provider 抽象）。
+///
+/// 上游映射：
+/// - Anthropic：挂到 content block 的 `cache_control` 字段；`Ephemeral` /
+///   `Ephemeral5m` → `{type:"ephemeral", ttl:"5m"}`，`Ephemeral1h` →
+///   `{type:"ephemeral", ttl:"1h"}`；`Memory` / `Ephemeral24h` 目前 fallback 到 5m
+///   （Anthropic wire 暂只支持 5m/1h 两档）。
+/// - OpenAI：request-level 的 `prompt_cache_key` 只影响全局缓存命中；per-message
+///   cache_control 在 OpenAI wire 无对应字段，adapter 忽略。
+/// - Gemini：`explicit cache` / `implicit cache` 走不同 API，per-message 标记目前
+///   不映射（等 Gemini 扩字段再补）。
+///
+/// TTL 排序约束（Anthropic）：同请求混用不同 TTL 时，**长 TTL 必须在短 TTL 之前**。
+/// `Ephemeral1h` 条目必须排在任何 `Ephemeral` / `Memory` / `Ephemeral5m` 之前，
+/// 否则上游会 reject。canonical 层不校验，调用者自行保证。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheControl {
+    /// 默认 ephemeral（5m TTL）。
+    Ephemeral,
+    /// Memory cache（上游支持则用；Anthropic fallback 到 ephemeral）。
+    Memory,
+    /// 显式 5 分钟 TTL。
+    Ephemeral5m,
+    /// 扩展 1 小时 TTL（Anthropic 2x 价格）。
+    Ephemeral1h,
+    /// 扩展 24 小时 TTL（部分 provider 扩展，Anthropic 目前 fallback 到 1h）。
+    Ephemeral24h,
+}
+
+/// 单条消息的 provider-agnostic 选项。
+///
+/// 现在只承载 [`CacheControl`]；未来如需加 per-message 级别的其他控制
+/// （如 Anthropic 的 citation / retrieval flags）也塞这里，避免 `ChatMessage`
+/// 被无关可选字段撑胖。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MessageOptions {
+    /// Per-message prompt cache 意图。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+impl MessageOptions {
+    pub fn with_cache_control(mut self, cc: CacheControl) -> Self {
+        self.cache_control = Some(cc);
+        self
+    }
+}
+
+impl From<CacheControl> for MessageOptions {
+    fn from(cc: CacheControl) -> Self {
+        Self {
+            cache_control: Some(cc),
+        }
+    }
+}
+
 /// 一条 chat message。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -48,6 +104,12 @@ pub struct ChatMessage {
     /// assistant 的音频响应（gpt-4o-audio-preview 等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioResponse>,
+    /// Provider-agnostic 的 per-message 选项（目前是 prompt cache 意图）。
+    ///
+    /// 不进 OpenAI wire（OpenAI 无对应字段）；Claude ingress/adapter 负责
+    /// 映射到 `cache_control` 字段。`#[serde(skip)]` 防止出现在任何 wire payload。
+    #[serde(skip)]
+    pub options: Option<MessageOptions>,
 }
 
 impl ChatMessage {
@@ -70,6 +132,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             audio: None,
+            options: None,
         }
     }
 
@@ -83,7 +146,17 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             audio: None,
+            options: None,
         }
+    }
+
+    /// Chainable：挂一个 provider-agnostic 的 cache 意图到本消息。
+    ///
+    /// Claude adapter 会把它映射到 wire 的 `cache_control` 字段（挂在该 message
+    /// 最后一个 content block 上，Anthropic 推荐做法）。其他 provider 暂忽略。
+    pub fn with_cache_control(mut self, cc: CacheControl) -> Self {
+        self.options = Some(MessageOptions::from(cc));
+        self
     }
 
     /// 取出第一段文本（多模态场景只返回第一个 Text part）。
@@ -196,6 +269,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             audio: None,
+            options: None,
         };
         let value = serde_json::to_value(&msg).unwrap();
         assert!(value["content"].is_array());

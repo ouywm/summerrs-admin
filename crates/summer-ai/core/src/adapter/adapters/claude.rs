@@ -25,15 +25,16 @@ use crate::adapter::{
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
 use crate::types::ingress_wire::claude::{
-    ClaudeContent, ClaudeContentBlock, ClaudeImageSource, ClaudeMessage, ClaudeMessagesRequest,
-    ClaudeResponse, ClaudeStopReason, ClaudeStreamContentBlock, ClaudeStreamDelta,
-    ClaudeStreamEvent, ClaudeStreamMessageStart, ClaudeSystem, ClaudeSystemBlock, ClaudeTool,
-    ClaudeToolChoice, ClaudeToolResultContent, ClaudeUsage,
+    CacheControl as ClaudeCacheControl, ClaudeContent, ClaudeContentBlock, ClaudeImageSource,
+    ClaudeMessage, ClaudeMessagesRequest, ClaudeResponse, ClaudeStopReason,
+    ClaudeStreamContentBlock, ClaudeStreamDelta, ClaudeStreamEvent, ClaudeStreamMessageStart,
+    ClaudeSystem, ClaudeSystemBlock, ClaudeTool, ClaudeToolChoice, ClaudeToolResultContent,
+    ClaudeUsage,
 };
 use crate::types::{
-    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart, FinishReason,
-    MessageContent, PromptTokensDetails, Role, StreamEnd, StreamError, ToolCall, ToolCallDelta,
-    ToolCallFunction, Usage,
+    CacheControl, ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart,
+    FinishReason, MessageContent, PromptTokensDetails, Role, StreamEnd, StreamError, ToolCall,
+    ToolCallDelta, ToolCallFunction, Usage,
 };
 
 /// Claude Messages API 协议（`api.anthropic.com/v1/messages`）。
@@ -254,6 +255,7 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
     let mut pending_tool_results: Vec<ClaudeContentBlock> = Vec::new();
 
     for msg in msgs {
+        let msg_cc = msg.options.as_ref().and_then(|o| o.cache_control.as_ref());
         match msg.role {
             Role::Tool => {
                 let tool_use_id = msg.tool_call_id.clone().unwrap_or_default();
@@ -262,7 +264,7 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                     tool_use_id,
                     content: Some(ClaudeToolResultContent::Text(content_text)),
                     is_error: None,
-                    cache_control: None,
+                    cache_control: msg_cc.map(canonical_cache_control_to_wire),
                 });
             }
             Role::User => {
@@ -270,10 +272,12 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                 let user_content = canonical_message_to_claude_content(msg);
                 match user_content {
                     ClaudeContent::Text(text) if blocks.is_empty() => {
-                        out.push(ClaudeMessage {
+                        let mut claude_msg = ClaudeMessage {
                             role: "user".to_string(),
                             content: ClaudeContent::Text(text),
-                        });
+                        };
+                        apply_msg_cache_control(&mut claude_msg.content, msg_cc);
+                        out.push(claude_msg);
                     }
                     ClaudeContent::Text(text) => {
                         if !text.is_empty() {
@@ -282,17 +286,21 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                                 cache_control: None,
                             });
                         }
-                        out.push(ClaudeMessage {
+                        let mut claude_msg = ClaudeMessage {
                             role: "user".to_string(),
                             content: ClaudeContent::Blocks(blocks),
-                        });
+                        };
+                        apply_msg_cache_control(&mut claude_msg.content, msg_cc);
+                        out.push(claude_msg);
                     }
                     ClaudeContent::Blocks(user_blocks) => {
                         blocks.extend(user_blocks);
-                        out.push(ClaudeMessage {
+                        let mut claude_msg = ClaudeMessage {
                             role: "user".to_string(),
                             content: ClaudeContent::Blocks(blocks),
-                        });
+                        };
+                        apply_msg_cache_control(&mut claude_msg.content, msg_cc);
+                        out.push(claude_msg);
                     }
                 }
             }
@@ -341,10 +349,12 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                 } else {
                     ClaudeContent::Blocks(blocks)
                 };
-                out.push(ClaudeMessage {
+                let mut claude_msg = ClaudeMessage {
                     role: "assistant".to_string(),
                     content,
-                });
+                };
+                apply_msg_cache_control(&mut claude_msg.content, msg_cc);
+                out.push(claude_msg);
             }
             Role::System | Role::Developer => {
                 // System 理论上已在前一步过滤；保险起见再 skip
@@ -361,6 +371,63 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
     }
 
     Ok(out)
+}
+
+/// canonical `CacheControl` → Claude wire `cache_control` 字段。
+///
+/// Anthropic wire 目前只支持 `ttl: "5m"` 和 `"1h"`。canonical 的 24h 暂 fallback 到
+/// 1h；`Memory` 和 `Ephemeral` 都按 5m 处理。真值（未来上游扩展）在这里改一处即可。
+fn canonical_cache_control_to_wire(cc: &CacheControl) -> ClaudeCacheControl {
+    let ttl = match cc {
+        CacheControl::Ephemeral1h | CacheControl::Ephemeral24h => Some("1h".to_string()),
+        CacheControl::Ephemeral | CacheControl::Memory | CacheControl::Ephemeral5m => {
+            Some("5m".to_string())
+        }
+    };
+    ClaudeCacheControl {
+        kind: "ephemeral".to_string(),
+        ttl,
+    }
+}
+
+/// 把 canonical `ChatMessage.options.cache_control` 应用到该消息的最后一个 block。
+///
+/// Anthropic 推荐把 `cache_control` 挂在想 cache 的"最后一个 content block"上 ——
+/// 缓存命中是"从请求开头到带 cache_control 的 block"这段前缀。
+///
+/// 若 content 是 `Text`（无 block 容器），自动升级成 `Blocks([Text{cache_control}])`。
+fn apply_msg_cache_control(content: &mut ClaudeContent, cc: Option<&CacheControl>) {
+    let Some(cc) = cc else {
+        return;
+    };
+    let wire_cc = canonical_cache_control_to_wire(cc);
+    match content {
+        ClaudeContent::Text(text) => {
+            let text = std::mem::take(text);
+            *content = ClaudeContent::Blocks(vec![ClaudeContentBlock::Text {
+                text,
+                cache_control: Some(wire_cc),
+            }]);
+        }
+        ClaudeContent::Blocks(blocks) => {
+            if let Some(last) = blocks.last_mut() {
+                set_block_cache_control(last, Some(wire_cc));
+            }
+        }
+    }
+}
+
+/// 就地设置 content block 的 `cache_control` 字段。`Thinking` / `RedactedThinking`
+/// wire 层无此字段，遇到时静默跳过。
+fn set_block_cache_control(block: &mut ClaudeContentBlock, cc: Option<ClaudeCacheControl>) {
+    match block {
+        ClaudeContentBlock::Text { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::Image { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::ToolUse { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::ToolResult { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::Document { cache_control, .. } => *cache_control = cc,
+        _ => {} // Thinking / RedactedThinking / Unknown 无 cache_control 字段
+    }
 }
 
 fn canonical_message_to_claude_content(msg: &ChatMessage) -> ClaudeContent {
@@ -471,6 +538,12 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
     let mut text_buf = String::new();
     let mut reasoning_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
+    // Claude extended thinking 的 signature 是 multi-turn 续接凭证 —— 下一轮
+    // 客户端得在 assistant 消息里把它附回上游。非流式下这些 signature 挂在
+    // `Thinking { thinking, signature }` 的 signature 字段上，必须收拢到
+    // 第一个 tool_call 的 thought_signatures（对齐 rust-genai 做法；客户端
+    // 构造下轮请求时可以从任一 tool_call 取）。
+    let mut thought_signatures: Vec<String> = Vec::new();
 
     for block in content {
         match block {
@@ -495,16 +568,24 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
                     id,
                     kind: "function".to_string(),
                     function: ToolCallFunction { name, arguments },
+                    thought_signatures: None,
                 });
             }
             // extended thinking 的文本进 reasoning_content，让客户端能看到思考链；
+            // signature 收到 thought_signatures 队列备用（下方挂到首个 tool_call）；
             // redacted_thinking 只有加密 data 没有明文，忽略（multi-turn 续接在流式
             // 路径里靠 ThoughtSignature 而非 content block）。
-            ClaudeContentBlock::Thinking { thinking, .. } => {
+            ClaudeContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
                 if !reasoning_buf.is_empty() {
                     reasoning_buf.push('\n');
                 }
                 reasoning_buf.push_str(&thinking);
+                if let Some(sig) = signature {
+                    thought_signatures.push(sig);
+                }
             }
             ClaudeContentBlock::RedactedThinking { .. }
             | ClaudeContentBlock::Image { .. }
@@ -512,6 +593,15 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
             | ClaudeContentBlock::Document { .. }
             | ClaudeContentBlock::Unknown => {}
         }
+    }
+
+    // 把收集到的 signatures 挂到首个 tool_call。这是 Gemini 3 / Claude thinking
+    // 的 multi-turn tool-use 续接约定：signature 必须紧跟 assistant 消息的
+    // tool_calls 发给上游，否则上游认为思考状态丢失。
+    if !thought_signatures.is_empty()
+        && let Some(first) = tool_calls.first_mut()
+    {
+        first.thought_signatures = Some(thought_signatures);
     }
 
     let message = ChatMessage {
@@ -535,6 +625,7 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
         },
         tool_call_id: None,
         audio: None,
+        options: None,
     };
 
     let finish_reason = stop_reason.map(stop_reason_to_finish_reason);
@@ -778,6 +869,65 @@ mod tests {
     }
 
     #[test]
+    fn cache_control_promotes_text_to_block_with_ttl_5m() {
+        // user("hi").with_cache_control(Ephemeral5m) →
+        // Claude wire message.content 必须变成 Blocks([Text{cache_control: "5m"}])。
+        // 用 Text 形态会丢失 cache_control 字段（wire 的 `"content": "string"` 没地方挂）。
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![ChatMessage::user("hi").with_cache_control(CacheControl::Ephemeral5m)],
+        );
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let msgs = wire.payload["messages"].as_array().unwrap();
+        let content = &msgs[0]["content"];
+        assert!(
+            content.is_array(),
+            "cache_control 触发后 content 必须是 array，got {content}"
+        );
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(content[0]["cache_control"]["ttl"], "5m");
+    }
+
+    #[test]
+    fn cache_control_1h_maps_to_ttl_1h() {
+        // Ephemeral1h → wire ttl "1h"（Anthropic 长 TTL，2x 价格）。
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![ChatMessage::user("big ctx").with_cache_control(CacheControl::Ephemeral1h)],
+        );
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let content = &wire.payload["messages"][0]["content"];
+        assert_eq!(content[0]["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn cache_control_24h_falls_back_to_1h() {
+        // Anthropic wire 目前只支持 5m/1h；canonical 的 24h/Memory fallback 到相近档。
+        // 不能直接塞 "24h" 让上游 400，保守降到 1h。
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![ChatMessage::user("x").with_cache_control(CacheControl::Ephemeral24h)],
+        );
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let content = &wire.payload["messages"][0]["content"];
+        assert_eq!(content[0]["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn no_cache_control_keeps_text_shape_compact() {
+        // 没有 cache_control 提示时，user("hi") 的 wire 应保持 `"content": "hi"`，
+        // 不能无端升级到数组形态（兼容老客户端严格校验）。
+        let t = target();
+        let req = ChatRequest::new("x", vec![ChatMessage::user("hi")]);
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        assert_eq!(wire.payload["messages"][0]["content"], "hi");
+    }
+
+    #[test]
     fn tool_message_merges_into_next_user() {
         let t = target();
         let mut req = ChatRequest::new(
@@ -797,9 +947,11 @@ mod tests {
                             name: "weather".to_string(),
                             arguments: r#"{"city":"NYC"}"#.to_string(),
                         },
+                        thought_signatures: None,
                     }]),
                     tool_call_id: None,
                     audio: None,
+                    options: None,
                 },
                 ChatMessage::tool_response("tu_1", "72F"),
                 ChatMessage::user("thanks"),
@@ -836,9 +988,11 @@ mod tests {
                         name: "weather".to_string(),
                         arguments: r#"{"city":"NYC"}"#.to_string(),
                     },
+                    thought_signatures: None,
                 }]),
                 tool_call_id: None,
                 audio: None,
+                options: None,
             }],
         );
         req.max_tokens = Some(128);

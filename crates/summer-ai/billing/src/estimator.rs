@@ -127,6 +127,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             audio: None,
+            options: None,
         }
     }
 
@@ -187,6 +188,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             audio: None,
+            options: None,
         };
         let req = req_with(vec![msg], Some(100));
         // 4 chars / 4 = 1 token + 200 image = 201

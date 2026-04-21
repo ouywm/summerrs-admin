@@ -253,6 +253,7 @@ fn append_gemini_content(
                     id: format!("call_{call_counter_local}"),
                     kind: "function".to_string(),
                     function: ToolCallFunction { name, arguments },
+                    thought_signatures: None,
                 });
             }
             GeminiPart::FunctionResponse { function_response } => {
@@ -285,6 +286,7 @@ fn append_gemini_content(
             tool_call_id: Some(call_id),
             reasoning_content: None,
             audio: None,
+            options: None,
         });
     }
 
@@ -315,6 +317,7 @@ fn append_gemini_content(
         },
         tool_call_id: None,
         audio: None,
+        options: None,
     });
 
     Ok(())
@@ -339,6 +342,7 @@ fn flatten_tools(tools: Vec<GeminiTool>) -> Option<Vec<Tool>> {
                     description: decl.description,
                     parameters: decl.parameters,
                 },
+                strict: None,
             });
         }
         // google_search / code_execution 工具暂时丢弃（canonical 不建模）
@@ -917,9 +921,11 @@ mod tests {
                             name: "weather".to_string(),
                             arguments: r#"{"city":"NYC"}"#.to_string(),
                         },
+                        thought_signatures: None,
                     }]),
                     tool_call_id: None,
                     audio: None,
+                    options: None,
                 },
                 logprobs: None,
                 finish_reason: Some(FinishReason::ToolCalls),

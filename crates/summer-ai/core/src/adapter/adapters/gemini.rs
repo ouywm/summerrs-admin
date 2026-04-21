@@ -364,6 +364,12 @@ fn gemini_candidate_to_choice(
     let mut reasoning_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut tc_counter: u32 = 0;
+    // Gemini 3+ multi-turn tool-use 续接约定：上游在 parts 上挂 `thoughtSignature`,
+    // 下一轮客户端必须把这些 signature 连同 tool_calls 一起回传，否则思考状态丢失。
+    // 收集所有 part 上出现的 signature（正文 Text、thought=true 的 reasoning Text、
+    // 独立 ThoughtSignature part），non-stream response 里 canonical ChatMessage
+    // 没有 per-message signature 字段，统一挂到首个 tool_call.thought_signatures。
+    let mut thought_signatures: Vec<String> = Vec::new();
 
     if let Some(content) = c.content {
         for part in content.parts {
@@ -373,24 +379,32 @@ fn gemini_candidate_to_choice(
                 GeminiPart::Text {
                     text,
                     thought: true,
-                    ..
+                    thought_signature,
                 } => {
                     if !reasoning_buf.is_empty() {
                         reasoning_buf.push('\n');
                     }
                     reasoning_buf.push_str(&text);
+                    if let Some(sig) = thought_signature {
+                        thought_signatures.push(sig);
+                    }
                 }
-                GeminiPart::Text { text, .. } => {
+                GeminiPart::Text {
+                    text,
+                    thought_signature,
+                    ..
+                } => {
                     if !text_buf.is_empty() {
                         text_buf.push('\n');
                     }
                     text_buf.push_str(&text);
-                    // Text.thought_signature 在 response 侧目前无处落——canonical
-                    // ChatMessage 没 signature 字段（流式才有 ChatStreamEvent::ThoughtSignature）。
-                    // 非流式 multi-turn 续接在这个协议下不常见，先忽略。
+                    if let Some(sig) = thought_signature {
+                        thought_signatures.push(sig);
+                    }
                 }
-                // 独立的 signature-only part（Gemini 3+）：同上，非流式 response 无对应字段，忽略。
-                GeminiPart::ThoughtSignature { .. } => {}
+                GeminiPart::ThoughtSignature { thought_signature } => {
+                    thought_signatures.push(thought_signature);
+                }
                 GeminiPart::FunctionCall { function_call } => {
                     tc_counter += 1;
                     let GeminiFunctionCall { name, args } = function_call;
@@ -400,11 +414,21 @@ fn gemini_candidate_to_choice(
                         id: format!("call_{tc_counter}"),
                         kind: "function".to_string(),
                         function: ToolCallFunction { name, arguments },
+                        thought_signatures: None,
                     });
                 }
                 _ => {}
             }
         }
+    }
+
+    // Gemini 3+ signature 挂到首个 tool_call（Claude adapter 同样做法）。
+    // 只有在存在 tool_calls 时才挂 —— 没有 tool_calls 的 assistant 消息续接场景
+    // 很罕见，canonical 层暂不新增独立字段。
+    if !thought_signatures.is_empty()
+        && let Some(first) = tool_calls.first_mut()
+    {
+        first.thought_signatures = Some(thought_signatures);
     }
 
     ChatChoice {
@@ -430,6 +454,7 @@ fn gemini_candidate_to_choice(
             },
             tool_call_id: None,
             audio: None,
+            options: None,
         },
         logprobs: None,
         finish_reason: c
@@ -724,9 +749,11 @@ mod tests {
                         name: "weather".to_string(),
                         arguments: r#"{"city":"NYC"}"#.to_string(),
                     },
+                    thought_signatures: None,
                 }]),
                 tool_call_id: None,
                 audio: None,
+                options: None,
             }],
         );
         let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
@@ -756,9 +783,11 @@ mod tests {
                             name: "weather".to_string(),
                             arguments: "{}".to_string(),
                         },
+                        thought_signatures: None,
                     }]),
                     tool_call_id: None,
                     audio: None,
+                    options: None,
                 },
                 ChatMessage::tool_response("call_1", r#"{"temp":"72F"}"#),
             ],
@@ -795,6 +824,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 audio: None,
+                options: None,
             }],
         );
         let data = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
@@ -1095,5 +1125,69 @@ mod tests {
         }"#;
         let resp = GeminiAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
         assert!(resp.usage.completion_tokens_details.is_none());
+    }
+
+    #[test]
+    fn non_stream_thought_signatures_collected_into_first_tool_call() {
+        // Gemini 3 multi-turn tool-use：response 的 parts 里带 thoughtSignature，
+        // 客户端构造下一轮请求时必须把 signature 回传；canonical ChatMessage
+        // 没 per-message signature 字段，adapter 统一挂到首个 tool_call。
+        // 这里覆盖三种 signature 来源：正文 Text、reasoning Text(thought=true)、
+        // 独立的 thoughtSignature-only part。
+        let t = target();
+        let body = br#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[
+                    {"text":"I'll check the weather","thoughtSignature":"sig-text"},
+                    {"text":"reasoning step","thought":true,"thoughtSignature":"sig-reason"},
+                    {"thoughtSignature":"sig-only"},
+                    {"functionCall":{"name":"get_weather","args":{"city":"NYC"}}}
+                ]},
+                "finishReason":"STOP"
+            }],
+            "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3,"totalTokenCount":8}
+        }"#;
+        let resp = GeminiAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        let calls = msg.tool_calls.as_ref().expect("tool_calls should be set");
+        assert_eq!(calls.len(), 1);
+        let sigs = calls[0]
+            .thought_signatures
+            .as_ref()
+            .expect("thought_signatures should be attached to first tool_call");
+        assert_eq!(
+            sigs,
+            &vec![
+                "sig-text".to_string(),
+                "sig-reason".to_string(),
+                "sig-only".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_stream_thought_signatures_without_tool_calls_are_dropped() {
+        // 没有 tool_calls 的 assistant 响应也可能带 signature（比如纯文字回答
+        // 后继续思考），但 canonical 层目前无处落盘、客户端也不需要在文字回答上
+        // 带 signature 续接。直接丢掉，保持 ToolCall 成为唯一承载点。
+        let t = target();
+        let body = br#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[
+                    {"text":"hi there","thoughtSignature":"sig-stale"}
+                ]},
+                "finishReason":"STOP"
+            }],
+            "usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}
+        }"#;
+        let resp = GeminiAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        assert!(msg.tool_calls.is_none());
+        match msg.content.as_ref().unwrap() {
+            MessageContent::Text(t) => assert_eq!(t, "hi there"),
+            _ => panic!("expected Text"),
+        }
     }
 }

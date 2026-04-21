@@ -15,9 +15,10 @@ pub mod openai;
 
 // 共享类型
 pub use common::{
-    AudioResponse, ChatMessage, ChatStreamEvent, CompletionTokensDetails, ContentPart,
-    FinishReason, ImageUrl, InputAudio, MessageContent, PromptTokensDetails, Role, StreamEnd,
-    StreamError, Tool, ToolCall, ToolCallDelta, ToolCallFunction, ToolChoice, ToolFunction, Usage,
+    AudioResponse, CacheControl, ChatMessage, ChatStreamEvent, CompletionTokensDetails,
+    ContentPart, FinishReason, ImageUrl, InputAudio, MessageContent, MessageOptions,
+    PromptTokensDetails, Role, StreamEnd, StreamError, Tool, ToolCall, ToolCallDelta,
+    ToolCallFunction, ToolChoice, ToolFunction, Usage,
 };
 
 // OpenAI 协议 wire 类型

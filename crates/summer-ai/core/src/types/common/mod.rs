@@ -16,7 +16,8 @@ pub mod tool;
 pub mod usage;
 
 pub use message::{
-    AudioResponse, ChatMessage, ContentPart, ImageUrl, InputAudio, MessageContent, Role,
+    AudioResponse, CacheControl, ChatMessage, ContentPart, ImageUrl, InputAudio, MessageContent,
+    MessageOptions, Role,
 };
 pub use stream_event::{ChatStreamEvent, StreamEnd, StreamError, ToolCallDelta};
 pub use tool::{Tool, ToolCall, ToolCallFunction, ToolChoice, ToolFunction};
