@@ -1,9 +1,10 @@
-//! 价格表 + 成本计算（P6 T1）。
+//! 价格表 + 成本计算。
 //!
 //! 职责：
 //!
 //! - 把 `ai.channel_model_price.price_config` 这块 JSONB 反序列化成强类型 [`PriceTable`]；
-//! - 给定 [`Usage`] + [`PriceTable`] 算出真实成本（USD）+ quota 整数。
+//! - 给定 [`Usage`] + [`PriceTable`] 算出真实成本（USD）+ quota 整数；
+//! - 查 `ai.group_ratio` 的计费倍率，把用户组打折/加价应用到 [`PriceTable`] 上。
 //!
 //! # quota 单位约定
 //!
@@ -25,20 +26,23 @@
 //!
 //! - 所有价格字段都是 **`BigDecimal` 字符串形式**（避开 `f64` 精度损失）。
 //! - 除 `input_per_million` / `output_per_million` 外都可选；缺失时按"同 output 单价"或 0 处理。
-//! - 单位恒为 **USD per 1M tokens**。多币种支持留到后续 Phase。
+//! - 单位恒为 **USD per 1M tokens**。多币种支持待扩展。
 //!
 //! # 设计取舍
 //!
 //! - **cache_read 单价直接差价**：relay adapter 已经把各家厂商的 cache hit 映射到
 //!   `Usage.prompt_tokens_details.cached_tokens`，cache_read_per_million 在 DB 里就是差价
 //!   成交价——不再套用 `CostProfile.cache_read_discount` 二次打折。
-//! - **T1 不涉及 group_ratio**：那是后续 Phase 做的用户组倍率，这里只算渠道原价。
+//! - **group_ratio 乘在 `PriceTable` 上而不是 `cost_usd` 末端**：reserve 和 settle 两阶段
+//!   都要用**同一份**倍率价；一次性把 ratio 乘进 `PriceTable` 能保证预扣/结算口径一致，
+//!   避免 reserve 拿原价、settle 拿 ratio 价导致 delta 不准。
 
 use bigdecimal::RoundingMode;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, prelude::BigDecimal};
 use serde::{Deserialize, Serialize};
 use summer::plugin::Service;
 use summer_ai_core::Usage;
+use summer_ai_model::entity::billing::group_ratio;
 use summer_ai_model::entity::channels::channel_model_price;
 use summer_sea_orm::DbConn;
 
@@ -70,6 +74,21 @@ impl PriceTable {
     pub fn from_json(value: &serde_json::Value) -> Result<Self, PriceError> {
         serde_json::from_value(value.clone()).map_err(PriceError::InvalidSchema)
     }
+
+    /// 用分组倍率一次性重写全部价格字段（含可选字段）。
+    ///
+    /// `ratio = 1.0` 时表示标准价，相当于恒等变换；`< 1` 打折，`> 1` 加价。
+    /// 返回一张**新表**，原表保持不变（调用方可能还要用原价做审计）。
+    #[must_use]
+    pub fn apply_ratio(&self, ratio: &BigDecimal) -> Self {
+        Self {
+            input_per_million: &self.input_per_million * ratio,
+            output_per_million: &self.output_per_million * ratio,
+            cache_read_per_million: self.cache_read_per_million.as_ref().map(|v| v * ratio),
+            cache_write_per_million: self.cache_write_per_million.as_ref().map(|v| v * ratio),
+            reasoning_per_million: self.reasoning_per_million.as_ref().map(|v| v * ratio),
+        }
+    }
 }
 
 /// 价格解析 / 计算相关错误。
@@ -79,12 +98,12 @@ pub enum PriceError {
     #[error("price_config schema invalid: {0}")]
     InvalidSchema(#[source] serde_json::Error),
 
-    /// 不支持的计费币种（T1 仅支持 USD）。
-    #[error("unsupported currency: {0} (T1 supports USD only)")]
+    /// 不支持的计费币种（目前仅支持 USD）。
+    #[error("unsupported currency: {0} (USD only)")]
     UnsupportedCurrency(String),
 
-    /// 不支持的计费模式（T1 仅支持 ByToken）。
-    #[error("unsupported billing mode: {0:?} (T1 supports ByToken only)")]
+    /// 不支持的计费模式（目前仅支持 ByToken）。
+    #[error("unsupported billing mode: {0:?} (ByToken only)")]
     UnsupportedBillingMode(channel_model_price::ChannelModelPriceBillingMode),
 
     /// 找不到对应 `(channel_id, model_name)` 的生效价格记录。
@@ -237,6 +256,30 @@ impl PriceResolver {
 
         let table = PriceTable::from_json(&row.price_config)?;
         Ok((table, row.reference_id))
+    }
+
+    /// 按 `group_code` 查 `ai.group_ratio` 的计费倍率。
+    ///
+    /// 解析规则（宽松）：
+    ///
+    /// - `group_code` 为空字符串 → 直接返 `1.0`（标准价），不打 DB；
+    /// - 查不到 / `enabled = false` → 返 `1.0`（运维误删记录时退化为不打折，不阻塞请求）；
+    /// - 查到且启用 → 返 DB 里的 `ratio` 原值。
+    ///
+    /// `fallback_group_code` 的链式降级（分组关系 / 模型白名单不匹配时切另一组）不在此处理——
+    /// 那是分组准入策略，不是计费倍率。
+    pub async fn resolve_group_ratio(&self, group_code: &str) -> Result<BigDecimal, PriceError> {
+        if group_code.is_empty() {
+            return Ok(BigDecimal::from(1));
+        }
+
+        let row = group_ratio::Entity::find()
+            .filter(group_ratio::Column::GroupCode.eq(group_code))
+            .filter(group_ratio::Column::Enabled.eq(true))
+            .one(&self.db)
+            .await?;
+
+        Ok(row.map(|r| r.ratio).unwrap_or_else(|| BigDecimal::from(1)))
     }
 }
 
@@ -432,5 +475,71 @@ mod tests {
         // billable_input=0；cache=500 × 0.075 / 1M = 0.0000375 → 向上取整成 19 quota
         // (0.0000375 × 500_000 = 18.75, ceil=19)
         assert_eq!(breakdown.quota, 19);
+    }
+
+    // ---------- apply_ratio ----------
+
+    #[test]
+    fn apply_ratio_identity_when_one() {
+        let p = price_gpt4o_mini();
+        let p2 = p.apply_ratio(&BigDecimal::from(1));
+        // 乘 1 后每个字段数值等价（BigDecimal 的相等性按数值，不按 scale）
+        assert_eq!(p2.input_per_million, p.input_per_million);
+        assert_eq!(p2.output_per_million, p.output_per_million);
+        assert_eq!(p2.cache_read_per_million, p.cache_read_per_million);
+        assert_eq!(p2.cache_write_per_million, p.cache_write_per_million);
+        assert_eq!(p2.reasoning_per_million, p.reasoning_per_million);
+    }
+
+    #[test]
+    fn apply_ratio_half_discounts_all_fields() {
+        let p = price_gpt4o_mini();
+        let half = BigDecimal::from_str("0.5").unwrap();
+        let p2 = p.apply_ratio(&half);
+        assert_eq!(p2.input_per_million, BigDecimal::from_str("0.075").unwrap());
+        assert_eq!(
+            p2.output_per_million,
+            BigDecimal::from_str("0.300").unwrap()
+        );
+        assert_eq!(
+            p2.cache_read_per_million,
+            Some(BigDecimal::from_str("0.0375").unwrap())
+        );
+    }
+
+    #[test]
+    fn apply_ratio_preserves_none_fields() {
+        let mut p = price_gpt4o_mini();
+        p.cache_read_per_million = None;
+        p.reasoning_per_million = None;
+        let p2 = p.apply_ratio(&BigDecimal::from(2));
+        assert!(p2.cache_read_per_million.is_none());
+        assert!(p2.reasoning_per_million.is_none());
+        // 必选字段照常乘倍
+        assert_eq!(p2.input_per_million, BigDecimal::from_str("0.30").unwrap());
+    }
+
+    #[test]
+    fn apply_ratio_then_compute_cost_scales_cost() {
+        // vip 五折：cost_usd 应为原价的一半
+        let p = price_gpt4o_mini();
+        let usage = usage_simple(1_000_000, 2_000_000);
+        let full = compute_cost(&usage, &p, "r");
+        let half = compute_cost(
+            &usage,
+            &p.apply_ratio(&BigDecimal::from_str("0.5").unwrap()),
+            "r",
+        );
+        assert_eq!(half.cost_usd, &full.cost_usd / BigDecimal::from(2));
+        assert_eq!(half.quota, full.quota / 2);
+    }
+
+    #[test]
+    fn apply_ratio_not_mutating_original() {
+        let p = price_gpt4o_mini();
+        let orig_input = p.input_per_million.clone();
+        let _p2 = p.apply_ratio(&BigDecimal::from(3));
+        // 原表数值未变
+        assert_eq!(p.input_per_million, orig_input);
     }
 }

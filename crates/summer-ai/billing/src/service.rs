@@ -1,4 +1,4 @@
-//! 计费引擎（P6 T2）—— 三阶段原子扣费：reserve / settle / refund。
+//! 计费引擎 —— 三阶段原子扣费：reserve / settle / refund。
 //!
 //! # 生命周期
 //!
