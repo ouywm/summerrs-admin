@@ -352,6 +352,8 @@ where
                     finished_at: attempt_finished_at,
                 });
 
+                cooldown.record_success(candidate.account.id);
+
                 let client_resp = match I::from_canonical(canonical_resp, &ingress_ctx) {
                     Ok(r) => r,
                     Err(e) => {
@@ -404,6 +406,7 @@ where
                     upstream_status,
                     &e,
                 );
+                cooldown.record_failure(candidate.account.id, candidate.channel.id);
 
                 match e.retry_kind() {
                     RetryKind::Fatal => {
@@ -493,6 +496,7 @@ where
                 upstream_status,
                 &e,
             );
+            cooldown.record_failure(candidate.account.id, candidate.channel.id);
             tracking.emit(
                 ctx.clone(),
                 failure_outcome_from(&e),
@@ -502,6 +506,7 @@ where
             return Err(e);
         }
     };
+    cooldown.record_success(candidate.account.id);
     if let Some(id) = invoked.upstream_request_id.clone() {
         ctx.upstream_request_id = Some(id);
     }

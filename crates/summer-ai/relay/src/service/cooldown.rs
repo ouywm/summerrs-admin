@@ -12,6 +12,13 @@
 //! 过滤；[`crate::service::key_picker`] 基于 `enabled_api_keys()` 自动跳过 `disabled_api_keys`。
 //! 本服务**只负责写入**，激活那两处过滤死逻辑。
 //!
+//! # S5 连续失败自动禁用
+//!
+//! - [`Self::record_failure`] 每次 attempt 失败时调用：原子 `failure_streak += 1`；
+//!   达到 [`FAILURE_STREAK_DISABLE_THRESHOLD`] 后禁用该 account（`status = Disabled`），
+//!   并检查该 channel 下是否还有活 account——都死了则禁 channel（`status = AutoDisabled`）。
+//! - [`Self::record_success`] 成功时调用：清零 `failure_streak`。
+//!
 //! # 非阻塞模型
 //!
 //! - 入口方法 `&self`，非 async，立刻返回。
@@ -24,18 +31,27 @@
 //! 同一 account 有极小概率"后写覆盖前写"导致漏一条 entry，但下次触发时还会补上，
 //! 最终一致即可——不为此加 `SELECT FOR UPDATE`。
 //!
+//! `failure_streak` 的 `+= 1` 和清零都走 `UPDATE ... SET x = x + 1` 原子表达式，
+//! 并发自增不丢失。
+//!
 //! [`ChannelStore::candidates`]: crate::service::channel_store::ChannelStore::candidates
 
 use chrono::Utc;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, prelude::*,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, ExprTrait, PaginatorTrait,
+    QueryFilter, prelude::*,
 };
 use serde_json::{Value, json};
 use summer::plugin::Service;
-use summer_ai_model::entity::channels::channel_account;
+use summer_ai_model::entity::channels::{channel, channel_account};
 use summer_plugins::background_task::BackgroundTaskQueue;
 use summer_sea_orm::DbConn;
 use tracing::Instrument;
+
+/// account 连续失败多少次后自动禁用。达到阈值时：
+/// - `channel_account.status = Disabled`
+/// - 如果所属 channel 下再无活 account → `channel.status = AutoDisabled`
+pub const FAILURE_STREAK_DISABLE_THRESHOLD: i32 = 10;
 
 #[derive(Clone, Service)]
 pub struct CooldownService {
@@ -146,6 +162,40 @@ impl CooldownService {
             .instrument(span),
         );
     }
+
+    /// S5：记一次 account 失败 —— `failure_streak += 1`；达到阈值时自动禁用 account + 可能连带禁 channel。
+    pub fn record_failure(&self, account_id: i64, channel_id: i64) {
+        let db = self.db.clone();
+        let span = tracing::info_span!("cooldown.record_failure", account_id, channel_id);
+        self.bg.spawn(
+            async move {
+                if let Err(e) = record_failure_impl(&db, account_id, channel_id).await {
+                    tracing::warn!(%e, account_id, "cooldown record_failure failed");
+                }
+            }
+            .instrument(span),
+        );
+    }
+
+    /// S5：记一次 account 成功 —— 清零 `failure_streak`。
+    pub fn record_success(&self, account_id: i64) {
+        let db = self.db.clone();
+        let span = tracing::info_span!("cooldown.record_success", account_id);
+        self.bg.spawn(
+            async move {
+                let res = channel_account::Entity::update_many()
+                    .col_expr(channel_account::Column::FailureStreak, Expr::value(0_i32))
+                    .filter(channel_account::Column::Id.eq(account_id))
+                    .filter(channel_account::Column::FailureStreak.gt(0))
+                    .exec(&db)
+                    .await;
+                if let Err(e) = res {
+                    tracing::warn!(%e, account_id, "cooldown record_success failed");
+                }
+            }
+            .instrument(span),
+        );
+    }
 }
 
 async fn disable_key_impl(
@@ -201,6 +251,101 @@ fn merge_disabled_key(existing: &Value, key: &str, new_entry: Value) -> Value {
     Value::Array(arr)
 }
 
+/// 连续失败阈值判定（纯函数，便于单测）。
+fn should_auto_disable(streak: i32, threshold: i32) -> bool {
+    streak >= threshold
+}
+
+async fn record_failure_impl(db: &DbConn, account_id: i64, channel_id: i64) -> Result<(), DbErr> {
+    // ─── 1) 原子 +1 ──────────────────────────────────────────────
+    channel_account::Entity::update_many()
+        .col_expr(
+            channel_account::Column::FailureStreak,
+            Expr::col(channel_account::Column::FailureStreak).add(1),
+        )
+        .filter(channel_account::Column::Id.eq(account_id))
+        .exec(db)
+        .await?;
+
+    // ─── 2) 读新值判断是否到阈值 ─────────────────────────────────
+    let Some(row) = channel_account::Entity::find_by_id(account_id)
+        .one(db)
+        .await?
+    else {
+        return Ok(());
+    };
+    if !should_auto_disable(row.failure_streak, FAILURE_STREAK_DISABLE_THRESHOLD) {
+        return Ok(());
+    }
+
+    // ─── 3) 禁用 account（幂等 —— WHERE status = Enabled 保证只本次真禁）─────
+    let disable_res = channel_account::Entity::update_many()
+        .col_expr(
+            channel_account::Column::Status,
+            Expr::value(channel_account::ChannelAccountStatus::Disabled as i16),
+        )
+        .col_expr(
+            channel_account::Column::LastErrorAt,
+            Expr::value(Some(Utc::now().fixed_offset())),
+        )
+        .col_expr(
+            channel_account::Column::LastErrorMessage,
+            Expr::value(format!(
+                "auto-disabled: failure_streak >= {FAILURE_STREAK_DISABLE_THRESHOLD}"
+            )),
+        )
+        .filter(channel_account::Column::Id.eq(account_id))
+        .filter(channel_account::Column::Status.eq(channel_account::ChannelAccountStatus::Enabled))
+        .exec(db)
+        .await?;
+
+    if disable_res.rows_affected == 0 {
+        // 已被别的并发请求禁掉了——跳过 channel 检查。
+        return Ok(());
+    }
+
+    tracing::warn!(
+        account_id,
+        channel_id,
+        threshold = FAILURE_STREAK_DISABLE_THRESHOLD,
+        "channel_account auto-disabled"
+    );
+
+    // ─── 4) 若 channel 下再无活 account → 禁 channel ─────────────
+    let alive = channel_account::Entity::find()
+        .filter(channel_account::Column::ChannelId.eq(channel_id))
+        .filter(channel_account::Column::DeletedAt.is_null())
+        .filter(channel_account::Column::Schedulable.eq(true))
+        .filter(channel_account::Column::Status.eq(channel_account::ChannelAccountStatus::Enabled))
+        .count(db)
+        .await?;
+
+    if alive == 0 {
+        let ch_res = channel::Entity::update_many()
+            .col_expr(
+                channel::Column::Status,
+                Expr::value(channel::ChannelStatus::AutoDisabled as i16),
+            )
+            .col_expr(
+                channel::Column::LastErrorAt,
+                Expr::value(Some(Utc::now().fixed_offset())),
+            )
+            .col_expr(
+                channel::Column::LastErrorMessage,
+                Expr::value("auto-disabled: no schedulable accounts remain".to_string()),
+            )
+            .filter(channel::Column::Id.eq(channel_id))
+            .filter(channel::Column::Status.eq(channel::ChannelStatus::Enabled))
+            .exec(db)
+            .await?;
+        if ch_res.rows_affected > 0 {
+            tracing::warn!(channel_id, "channel auto-disabled (no alive accounts)");
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +397,19 @@ mod tests {
         let entry = json!({"key": "sk-x", "error_code": 401});
         let merged = merge_disabled_key(&existing, "sk-x", entry);
         assert_eq!(merged.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn auto_disable_threshold_strict_ge() {
+        assert!(!should_auto_disable(0, 10));
+        assert!(!should_auto_disable(9, 10));
+        assert!(should_auto_disable(10, 10));
+        assert!(should_auto_disable(11, 10));
+    }
+
+    #[test]
+    fn auto_disable_threshold_handles_zero_threshold() {
+        // 退化场景：threshold=0 意味着"只要有失败就禁"——由调用方控制阈值配置，函数本身不特殊处理。
+        assert!(should_auto_disable(0, 0));
     }
 }
