@@ -601,30 +601,23 @@ fn advance_tool_call(
     delta: ToolCallDelta,
 ) {
     let canon_idx = delta.index;
-    let first_time = !state.open_tool_calls.contains_key(&canon_idx);
 
-    if first_time {
+    // 1) 首次见到这个 canonical index：建 state，但先不 emit output_item.added
+    //    —— 上游常把首个 ToolCallDelta 拆多块发（先 id、后 name），name 未就位前
+    //    发 added 会给客户端写进带空 name 的 item，随后被客户端原样回传上游
+    //    触发 `Invalid 'input[*].name': empty string`。对齐 rust-genai 的
+    //    `capture_tool_call` 策略：任意 delta 非空就 merge，name 就位才开口。
+    if !state.open_tool_calls.contains_key(&canon_idx) {
         let item_id = generate_fc_id();
         let output_index = state.next_output_index;
         state.next_output_index += 1;
         let call_id = delta
             .id
             .clone()
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| format!("call_{}", item_id));
         let name = delta.name.clone().unwrap_or_default();
 
-        let item = OpenAIResponsesOutputItem::FunctionCall(OpenAIResponsesOutputFunctionCall {
-            id: item_id.clone(),
-            call_id: call_id.clone(),
-            name: name.clone(),
-            arguments: String::new(),
-            status: Some("in_progress".into()),
-        });
-        out.push(OpenAIResponsesStreamEvent::OutputItemAdded {
-            output_index,
-            item,
-            sequence_number: advance_seq(state),
-        });
         state.open_tool_calls.insert(
             canon_idx,
             OpenToolCallState {
@@ -633,27 +626,116 @@ fn advance_tool_call(
                 call_id,
                 name,
                 arguments: String::new(),
+                item_added_emitted: false,
+                pending_arguments: String::new(),
             },
         );
     }
 
-    if let Some(args_delta) = delta.arguments_delta {
-        if !args_delta.is_empty() {
-            let (item_id, output_index) = {
-                let tc = state
-                    .open_tool_calls
-                    .get_mut(&canon_idx)
-                    .expect("tool call just inserted or previously seen");
-                tc.arguments.push_str(&args_delta);
-                (tc.item_id.clone(), tc.output_index)
-            };
+    // 2) 每次 delta：合并非空的 call_id / name 到 state（rust-genai 做法）
+    {
+        let tc = state
+            .open_tool_calls
+            .get_mut(&canon_idx)
+            .expect("just inserted above");
+        if let Some(new_id) = delta.id.as_deref().filter(|s| !s.is_empty()) {
+            tc.call_id = new_id.to_string();
+        }
+        if let Some(new_name) = delta.name.as_deref().filter(|s| !s.is_empty()) {
+            tc.name = new_name.to_string();
+        }
+    }
+
+    // 3) 把 arguments_delta 先放 pending，真正 emit 要等 added 发出之后
+    if let Some(args_delta) = delta.arguments_delta.filter(|s| !s.is_empty()) {
+        state
+            .open_tool_calls
+            .get_mut(&canon_idx)
+            .expect("inserted")
+            .pending_arguments
+            .push_str(&args_delta);
+    }
+
+    // 4) 若 name 就位且还没发 added：补发 added + 一次性 flush pending arguments
+    flush_pending_tool_call(out, state, canon_idx);
+}
+
+/// 尝试为指定 tool_call 补发 `output_item.added`（若 name 就位且未发过）+ flush
+/// 缓存的 arguments。name 仍空时维持缓存不动。
+fn flush_pending_tool_call(
+    out: &mut Vec<OpenAIResponsesStreamEvent>,
+    state: &mut ResponsesStreamState,
+    canon_idx: i32,
+) {
+    let Some(tc) = state.open_tool_calls.get(&canon_idx) else {
+        return;
+    };
+    if tc.item_added_emitted {
+        // 已发过 added，直接把增量发出去即可
+        let pending = std::mem::take(
+            &mut state
+                .open_tool_calls
+                .get_mut(&canon_idx)
+                .expect("present")
+                .pending_arguments,
+        );
+        if !pending.is_empty() {
+            let tc = state.open_tool_calls.get_mut(&canon_idx).expect("present");
+            tc.arguments.push_str(&pending);
             out.push(OpenAIResponsesStreamEvent::FunctionCallArgumentsDelta {
-                item_id,
-                output_index,
-                delta: args_delta,
+                item_id: tc.item_id.clone(),
+                output_index: tc.output_index,
+                delta: pending,
                 sequence_number: advance_seq(state),
             });
         }
+        return;
+    }
+    if tc.name.is_empty() {
+        return; // 还在等上游补 name
+    }
+
+    // name 就位：发 added，然后 flush pending
+    let (item_id, output_index, call_id, name) = (
+        tc.item_id.clone(),
+        tc.output_index,
+        tc.call_id.clone(),
+        tc.name.clone(),
+    );
+    let item = OpenAIResponsesOutputItem::FunctionCall(OpenAIResponsesOutputFunctionCall {
+        id: item_id.clone(),
+        call_id,
+        name,
+        arguments: String::new(),
+        status: Some("in_progress".into()),
+    });
+    out.push(OpenAIResponsesStreamEvent::OutputItemAdded {
+        output_index,
+        item,
+        sequence_number: advance_seq(state),
+    });
+    state
+        .open_tool_calls
+        .get_mut(&canon_idx)
+        .expect("present")
+        .item_added_emitted = true;
+
+    let pending = std::mem::take(
+        &mut state
+            .open_tool_calls
+            .get_mut(&canon_idx)
+            .expect("present")
+            .pending_arguments,
+    );
+    if !pending.is_empty() {
+        let tc = state.open_tool_calls.get_mut(&canon_idx).expect("present");
+        tc.arguments.push_str(&pending);
+        out.push(OpenAIResponsesStreamEvent::FunctionCallArgumentsDelta {
+            item_id,
+            output_index,
+            delta: pending,
+            sequence_number: advance_seq(state),
+        });
     }
 }
 
@@ -661,13 +743,54 @@ fn close_all_tool_calls(
     out: &mut Vec<OpenAIResponsesStreamEvent>,
     state: &mut ResponsesStreamState,
 ) {
+    // 1) 兜底：若到关闭时还有 tool_call 没发 output_item.added（说明上游从头到尾
+    //    没给 name），warn + 用 "unknown_function" 顶上，保证 stream 能正常结束。
+    //    收集所有需要补 name 的 canonical_idx，避免一边迭代一边借用冲突。
+    let idxs_need_fallback: Vec<i32> = state
+        .open_tool_calls
+        .iter()
+        .filter_map(|(idx, tc)| (!tc.item_added_emitted && tc.name.is_empty()).then_some(*idx))
+        .collect();
+    for idx in idxs_need_fallback {
+        if let Some(tc) = state.open_tool_calls.get_mut(&idx) {
+            tracing::warn!(
+                call_id = %tc.call_id,
+                "upstream tool_call never provided function name; falling back to \"unknown_function\""
+            );
+            tc.name = "unknown_function".into();
+        }
+        flush_pending_tool_call(out, state, idx);
+    }
+
     let tool_calls = std::mem::take(&mut state.open_tool_calls);
-    // BTreeMap 的 into_values 已按 key（canonical index）有序；但我们按
-    // `output_index` 关闭更直观：排一次。
     let mut entries: Vec<OpenToolCallState> = tool_calls.into_values().collect();
     entries.sort_by_key(|t| t.output_index);
 
     for tc in entries {
+        // 2) 万一 flush 之后依然没发 added（理论不发生），再保险兜一次
+        if !tc.item_added_emitted {
+            let item = OpenAIResponsesOutputItem::FunctionCall(OpenAIResponsesOutputFunctionCall {
+                id: tc.item_id.clone(),
+                call_id: tc.call_id.clone(),
+                name: tc.name.clone(),
+                arguments: String::new(),
+                status: Some("in_progress".into()),
+            });
+            out.push(OpenAIResponsesStreamEvent::OutputItemAdded {
+                output_index: tc.output_index,
+                item,
+                sequence_number: advance_seq(state),
+            });
+            if !tc.pending_arguments.is_empty() {
+                out.push(OpenAIResponsesStreamEvent::FunctionCallArgumentsDelta {
+                    item_id: tc.item_id.clone(),
+                    output_index: tc.output_index,
+                    delta: tc.pending_arguments.clone(),
+                    sequence_number: advance_seq(state),
+                });
+            }
+        }
+
         out.push(OpenAIResponsesStreamEvent::FunctionCallArgumentsDone {
             item_id: tc.item_id.clone(),
             output_index: tc.output_index,
@@ -1329,6 +1452,157 @@ mod tests {
             })
             .unwrap();
         assert_eq!(completed.output.len(), 2);
+    }
+
+    #[test]
+    fn stream_tool_call_defers_output_item_added_until_name_arrives() {
+        // 上游首块只给 id（name 空）、后续块才把 name 塞进来（hybgzs / 某些聚合网关
+        // 的拆分模式）。Responses API 的 `output_item.added` 事件里 item.name 必须
+        // 已定稿，所以 added 事件要延后到 name 就位，且同时 flush 缓存的 arguments。
+        let mut state = new_state();
+        let mut all = Vec::new();
+        all.extend(emit(&mut state, start_event()));
+
+        // 首 delta：只带 id，name None，arguments "a"
+        all.extend(emit(
+            &mut state,
+            ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+                index: 0,
+                id: Some("call_x".into()),
+                name: None,
+                arguments_delta: Some("{\"a\"".into()),
+            }),
+        ));
+
+        // 首 delta 之后不应该已经有 OutputItemAdded
+        assert!(
+            !all.iter()
+                .any(|ev| matches!(ev, OpenAIResponsesStreamEvent::OutputItemAdded { .. })),
+            "output_item.added must not fire while name is still empty"
+        );
+
+        // 第二 delta：带上 name，arguments 继续增量
+        all.extend(emit(
+            &mut state,
+            ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+                index: 0,
+                id: None,
+                name: Some("shell".into()),
+                arguments_delta: Some(":1}".into()),
+            }),
+        ));
+        all.extend(emit(&mut state, end_event(FinishReason::ToolCalls, None)));
+
+        // Added 在 name 就位那一刻 emit，且带上确定的 name
+        let added = all
+            .iter()
+            .find_map(|ev| match ev {
+                OpenAIResponsesStreamEvent::OutputItemAdded { item, .. } => match item {
+                    OpenAIResponsesOutputItem::FunctionCall(f) => Some(f),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("expected OutputItemAdded after name arrived");
+        assert_eq!(added.call_id, "call_x");
+        assert_eq!(added.name, "shell");
+
+        // name 就位前缓存的 arguments（"{\"a\""）和触发 flush 那一刻新追加的
+        // ":1}" 会合并成一条 `function_call_arguments.delta` —— 因为 added 未发
+        // 时所有增量都堆在 pending 里，flush 时一次性吐出。
+        let deltas: Vec<&str> = all
+            .iter()
+            .filter_map(|ev| match ev {
+                OpenAIResponsesStreamEvent::FunctionCallArgumentsDelta { delta, .. } => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, vec!["{\"a\":1}"]);
+
+        // Done 的累积 arguments 完整
+        let done = all
+            .iter()
+            .find_map(|ev| match ev {
+                OpenAIResponsesStreamEvent::FunctionCallArgumentsDone { arguments, .. } => {
+                    Some(arguments.as_str())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(done, "{\"a\":1}");
+    }
+
+    #[test]
+    fn stream_tool_call_merges_non_empty_name_from_later_delta() {
+        // 同 index 后续 delta 带 name 时，即使首 delta 已经发了 added（本用例未发，
+        // 因为首 delta 也带空 name），state.name 最终要以最后非空 delta 为准。
+        let mut state = new_state();
+        let _ = emit(&mut state, start_event());
+        let _ = emit(
+            &mut state,
+            ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+                index: 0,
+                id: Some("call_y".into()),
+                name: Some("".into()),
+                arguments_delta: None,
+            }),
+        );
+        let _ = emit(
+            &mut state,
+            ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+                index: 0,
+                id: None,
+                name: Some("real_fn".into()),
+                arguments_delta: Some("{}".into()),
+            }),
+        );
+        let tail = emit(&mut state, end_event(FinishReason::ToolCalls, None));
+
+        let fc = tail
+            .iter()
+            .find_map(|ev| match ev {
+                OpenAIResponsesStreamEvent::OutputItemDone { item, .. } => match item {
+                    OpenAIResponsesOutputItem::FunctionCall(f) => Some(f),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(fc.name, "real_fn");
+    }
+
+    #[test]
+    fn stream_tool_call_falls_back_to_unknown_function_when_name_never_arrives() {
+        // 上游从头到尾没给 name（异常情况）——close 时兜底 "unknown_function"，保证
+        // `output_item.added` 和 `output_item.done` 仍然发，客户端不会卡住。
+        let mut state = new_state();
+        let _ = emit(&mut state, start_event());
+        let _ = emit(
+            &mut state,
+            ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+                index: 0,
+                id: Some("call_z".into()),
+                name: None,
+                arguments_delta: Some("{}".into()),
+            }),
+        );
+        let tail = emit(&mut state, end_event(FinishReason::ToolCalls, None));
+
+        let fc = tail
+            .iter()
+            .find_map(|ev| match ev {
+                OpenAIResponsesStreamEvent::OutputItemDone { item, .. } => match item {
+                    OpenAIResponsesOutputItem::FunctionCall(f) => Some(f),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("expected OutputItemDone fallback");
+        assert_eq!(fc.name, "unknown_function");
+        assert_eq!(fc.call_id, "call_z");
+        assert_eq!(fc.arguments, "{}");
     }
 
     // -------- stream: mixed text → tool_call path --------

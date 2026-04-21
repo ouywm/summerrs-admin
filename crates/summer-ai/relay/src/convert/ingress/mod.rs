@@ -266,6 +266,17 @@ pub struct OpenToolCallState {
     pub name: String,
     /// 累积的 arguments JSON（`function_call_arguments.done` 带完整字符串）。
     pub arguments: String,
+    /// 是否已经向下游 emit 过 `output_item.added`。
+    ///
+    /// Responses API 的 `output_item.added` 事件里 `item.name` 必须定稿——若上游把
+    /// 首个 ToolCallDelta 分多块发（首块只带 id，后续才带 name），我们要**延迟**
+    /// 到 name 非空再 emit，避免给客户端发带空 name 的 item。
+    pub item_added_emitted: bool,
+    /// 还没来得及 emit 的 arguments 增量（因为 `output_item.added` 还没发）。
+    ///
+    /// 一旦 name 就位、`output_item.added` 补发完成，这里的内容一次性作为
+    /// `function_call_arguments.delta` 发给客户端。
+    pub pending_arguments: String,
 }
 
 // ---------------------------------------------------------------------------
