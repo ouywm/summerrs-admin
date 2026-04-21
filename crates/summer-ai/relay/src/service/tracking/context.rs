@@ -2,16 +2,56 @@
 //!
 //! 提到 "tracking" 的地方都围绕一次 relay 请求的完整生命周期 —— 从 handler 入口
 //! 到响应返回客户端（流式场景为 stream 完结）。handler 只需**最后调一次**
-//! [`TrackingService::emit`]，所有数据库落库在 `tokio::spawn` 内异步完成，不阻
-//! 塞响应。
+//! [`TrackingService::emit`]（单 attempt）或 [`TrackingService::emit_with_attempts`]
+//! （P9 retry，多 attempt），所有数据库落库在 `tokio::spawn` 内异步完成，不阻塞响应。
 //!
 //! **刻意极简**：v1 不做 "正在处理中" 状态查看（只写终态记录），避免 begin/finish
 //! 双阶段带来的幂等 / 时序 / FK 映射问题。
 //!
 //! - **成功** → [`TrackingOutcome::Success`]：带 usage + 响应片段摘要
 //! - **失败** → [`TrackingOutcome::Failure`]：带 status + 错误摘要
+//! - **多 attempt 快照** → [`AttemptRecord`]：每次上游尝试一条，用于写 `ai.request_execution`
 
+use sea_orm::prelude::DateTimeWithTimeZone;
+use serde_json::Value;
 use summer_ai_core::Usage;
+
+/// 一次上游尝试的快照——对应 `ai.request_execution` 表的一行。
+///
+/// retry loop 每走一次（成功或失败）push 一条 `AttemptRecord`；pipeline 最后调
+/// [`crate::service::tracking::TrackingService::emit_with_attempts`] 一次性落库：
+///
+/// - 1 条 `ai.request`（终态）
+/// - N 条 `ai.request_execution`（按 attempt_no 顺序，1..=N）
+/// - 1 条 `ai.log`（终态；`execution_id` 指向**最后一次** attempt 对应的 execution id）
+///
+/// 用 plain struct 而不是 `Set<ActiveModel>` 是因为构造侧（pipeline）不想 leak sea_orm
+/// 的 `Set`——TrackingService 内部才把它变成 ActiveModel。
+#[derive(Debug, Clone)]
+pub struct AttemptRecord {
+    pub attempt_no: i32,
+    pub channel_id: i64,
+    pub account_id: i64,
+    /// 上游协议标识（`adapter_kind.as_str()`）。
+    pub request_format: String,
+    /// 本次尝试发给上游的模型（可能和 `ctx.logical_model` 不同——channel.model_mapping）。
+    pub upstream_model: String,
+    /// 从上游响应 header 抽到的 request-id（可空）。
+    pub upstream_request_id: Option<String>,
+    /// 出站 headers 脱敏快照。
+    pub sent_headers: Value,
+    /// 发给上游的真实 request body（已翻译好的 canonical 或各家 wire）。
+    pub request_body: Option<Value>,
+    /// 上游响应 body 快照（失败也填——包括 4xx/5xx 的错误 JSON）。
+    pub response_body: Option<Value>,
+    pub response_status_code: i32,
+    pub success: bool,
+    pub error_message: String,
+    pub duration_ms: i32,
+    pub first_token_ms: i32,
+    pub started_at: DateTimeWithTimeZone,
+    pub finished_at: DateTimeWithTimeZone,
+}
 
 /// 一次请求的最终结果。
 #[derive(Debug, Clone)]

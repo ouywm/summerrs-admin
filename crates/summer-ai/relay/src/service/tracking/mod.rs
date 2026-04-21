@@ -19,5 +19,5 @@
 pub mod context;
 pub mod service;
 
-pub use context::{TrackingOutcome, failure, success};
+pub use context::{AttemptRecord, TrackingOutcome, failure, success};
 pub use service::TrackingService;

@@ -1,22 +1,20 @@
 //! `TrackingService` —— 请求完结时一次性落库 3 表：
 //!
 //! - `ai.request`           —— 客户端视角的一次完整请求（状态、总耗时、首字节延迟）
-//! - `ai.request_execution` —— 每次上游 attempt（v1 固定 attempt_no=1；P9 retry 后可能多次）
+//! - `ai.request_execution` —— 每次上游 attempt（P9 retry 多次时会有 N 条，attempt_no 1..=N）
 //! - `ai.log`               —— 账务 / 审计摘要（token 数 + quota + cost_total）
 //!
 //! # 关键设计
 //!
-//! - **共享 worker 池**：handler 在返回前调 [`Self::emit`]，内部交给
-//!   [`BackgroundTaskQueue`]（4 worker / 4096 容量）落库。裸 `tokio::spawn`
-//!   在高并发下会无限扩张 DB 连接占用，把业务请求挤出连接池；走 BackgroundTaskQueue
-//!   可以硬封顶并发上限（见 `crates/summer-plugins/src/background_task`）。
-//! - **一次事务**：三个 insert 在 `db.begin()` 的事务里一起提交。
-//! - **失败只 warn 不传错**：DB 挂了也不影响本次请求响应；问题交给 metrics / 日志监控。
-//! - **关联用 i64 FK**：在事务里先 insert `ai.request` 拿到 id，再用这个 id 填
-//!   `ai.request_execution.ai_request_id`。字符串 `request_id` 冗余在三张表里，方便
-//!   string-index 跨表查询。
-//! - **cost / quota 暂留 0**：本阶段（P5）只落日志不算钱——这两个字段由 P6 的
-//!   `BillingService::settle` 返回后再 **UPDATE** 进去（见 `update_cost_by_request_id`）。
+//! - **两种 emit 入口**：
+//!   - [`Self::emit`] —— 单 attempt 场景（流式 / 不走 retry 的调用方），接口不变
+//!   - [`Self::emit_with_attempts`] —— P9 retry 的调用方传全量 `Vec<AttemptRecord>`
+//! - **共享 worker 池**：走 [`BackgroundTaskQueue`]（4 worker / 4096 容量），避免裸
+//!   `tokio::spawn` 在高并发下把 DB 连接池挤爆。
+//! - **一次事务**：请求主表 + N 条 execution + log 在一个 `db.begin()` 事务里提交。
+//! - **失败只 warn 不传错**：DB 挂了也不影响本次请求响应。
+//! - **cost / quota 暂留 0**：本阶段（P5）只落日志不算钱——由 P6 的
+//!   `BillingService::settle` 完成后通过 `update_cost_by_request_id` 回填。
 
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
@@ -29,7 +27,7 @@ use summer_plugins::background_task::BackgroundTaskQueue;
 use summer_sea_orm::DbConn;
 use tracing::Instrument;
 
-use super::context::TrackingOutcome;
+use super::context::{AttemptRecord, TrackingOutcome};
 use crate::context::RelayContext;
 
 /// 请求追踪落库服务。`#[derive(Service)]` 自动通过 inventory 注册到 component
@@ -43,12 +41,10 @@ pub struct TrackingService {
 }
 
 impl TrackingService {
-    /// 请求结束时一次性落库（非阻塞）。
+    /// 请求结束时一次性落库（非阻塞）——单 attempt 场景。
     ///
-    /// - `ctx` 全部字段已填好（选路 + 发送 + 响应）
-    /// - `outcome` 带上成功 / 失败语义
-    /// - `request_body` 是客户端原始 body 的 JSON 快照（脱敏后）。传 `None` 只落空对象。
-    /// - `upstream_request_body` 是发给上游的 body（给 execution 表）。传 `None` 只落空对象。
+    /// 内部把 `ctx` + `outcome` 合成一条 `AttemptRecord`（attempt_no=1），再走
+    /// [`Self::emit_with_attempts`] 统一路径。
     pub fn emit(
         &self,
         ctx: RelayContext,
@@ -56,17 +52,35 @@ impl TrackingService {
         request_body: Option<Value>,
         upstream_request_body: Option<Value>,
     ) {
+        let attempt = synthesize_single_attempt(&ctx, &outcome, upstream_request_body);
+        self.emit_with_attempts(ctx, outcome, vec![attempt], request_body);
+    }
+
+    /// 请求结束时一次性落库（非阻塞）——多 attempt（P9 retry）场景。
+    ///
+    /// - `ctx` 带**最终**选中的 channel / account / upstream_request_id（`attach_channel`
+    ///   之后反映最后一次 attempt 的状态）
+    /// - `final_outcome` 是最终返给客户端的结果
+    /// - `attempts` 按 `attempt_no` 顺序排列；可以为空（表示没到"发上游"这一步，
+    ///   比如路由失败 —— execution 表不写任何行）
+    /// - `request_body` 是入站客户端 body 的 JSON 快照（脱敏后），落 `ai.request.request_body`
+    pub fn emit_with_attempts(
+        &self,
+        ctx: RelayContext,
+        final_outcome: TrackingOutcome,
+        attempts: Vec<AttemptRecord>,
+        request_body: Option<Value>,
+    ) {
         let db = self.db.clone();
         let span = tracing::info_span!(
             "tracking.emit",
             request_id = %ctx.request_id,
             endpoint = %ctx.endpoint,
+            attempts = attempts.len(),
         );
         self.bg.spawn(
             async move {
-                if let Err(e) =
-                    persist(&db, &ctx, &outcome, request_body, upstream_request_body).await
-                {
+                if let Err(e) = persist(&db, &ctx, &final_outcome, attempts, request_body).await {
                     tracing::warn!(%e, request_id = %ctx.request_id, "tracking persist failed");
                 }
             }
@@ -75,9 +89,6 @@ impl TrackingService {
     }
 
     /// 给 billing 结算完成后回填 log.quota / cost_total / price_reference。
-    ///
-    /// P6 的 `BillingService::settle` 在扣费完成后调用。分开是因为 settle 走独立的
-    /// PG 事务（需要锁 user_quota），和 tracking 一起回滚的话耦合太重。
     pub fn update_cost_by_request_id(
         &self,
         request_id: String,
@@ -102,17 +113,57 @@ impl TrackingService {
 }
 
 // ---------------------------------------------------------------------------
-// 内部实现：事务包三个 insert
+// 合成兼容单 attempt 的 AttemptRecord（旧 emit 调用路径）
+// ---------------------------------------------------------------------------
+
+fn synthesize_single_attempt(
+    ctx: &RelayContext,
+    outcome: &TrackingOutcome,
+    upstream_request_body: Option<Value>,
+) -> AttemptRecord {
+    let now = chrono::Utc::now().fixed_offset();
+    let duration_ms = ctx.elapsed_ms();
+    let first_token_ms = ctx.first_token_ms();
+    AttemptRecord {
+        attempt_no: 1,
+        channel_id: ctx.channel_id(),
+        account_id: ctx.account_id(),
+        request_format: ctx
+            .adapter_kind
+            .map(|k| k.as_str().to_string())
+            .unwrap_or_default(),
+        upstream_model: ctx.actual_model.clone().unwrap_or_default(),
+        upstream_request_id: ctx
+            .upstream_request_id
+            .clone()
+            .or_else(|| outcome.upstream_request_id().map(str::to_string)),
+        sent_headers: ctx
+            .sent_headers
+            .clone()
+            .unwrap_or(Value::Object(Default::default())),
+        request_body: upstream_request_body,
+        response_body: outcome.response_snapshot(),
+        response_status_code: outcome.upstream_status() as i32,
+        success: outcome.is_success(),
+        error_message: outcome.error_message().to_string(),
+        duration_ms,
+        first_token_ms,
+        started_at: now,
+        finished_at: now,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 内部实现：事务包 (1 request) + (N executions) + (1 log)
 // ---------------------------------------------------------------------------
 
 async fn persist(
     db: &DbConn,
     ctx: &RelayContext,
     outcome: &TrackingOutcome,
+    attempts: Vec<AttemptRecord>,
     request_body: Option<Value>,
-    upstream_request_body: Option<Value>,
 ) -> Result<(), sea_orm::DbErr> {
-    let now = chrono::Utc::now().fixed_offset();
     let duration_ms = ctx.elapsed_ms();
     let first_token_ms = ctx.first_token_ms();
     let usage = outcome.usage();
@@ -162,46 +213,43 @@ async fn persist(
     .insert(&txn)
     .await?;
 
-    // ─── 2) ai.request_execution ──────────────────────────────────
-    let exec = request_execution::ActiveModel {
-        ai_request_id: Set(req_model.id),
-        request_id: Set(ctx.request_id.clone()),
-        attempt_no: Set(1),
-        channel_id: Set(ctx.channel_id()),
-        account_id: Set(ctx.account_id()),
-        endpoint: Set(ctx.endpoint.to_string()),
-        request_format: Set(ctx
-            .adapter_kind
-            .map(|k| k.as_str().to_string())
-            .unwrap_or_default()),
-        requested_model: Set(ctx.logical_model.clone()),
-        upstream_model: Set(ctx.actual_model.clone().unwrap_or_default()),
-        upstream_request_id: Set(ctx
-            .upstream_request_id
-            .clone()
-            .or_else(|| outcome.upstream_request_id().map(str::to_string))
-            .unwrap_or_default()),
-        request_headers: Set(ctx
-            .sent_headers
-            .clone()
-            .unwrap_or(Value::Object(Default::default()))),
-        request_body: Set(upstream_request_body.unwrap_or(Value::Object(Default::default()))),
-        response_body: Set(outcome.response_snapshot()),
-        response_status_code: Set(outcome.upstream_status() as i32),
-        status: Set(if outcome.is_success() {
-            request_execution::RequestExecutionStatus::Succeeded
-        } else {
-            request_execution::RequestExecutionStatus::Failed
-        }),
-        error_message: Set(outcome.error_message().to_string()),
-        duration_ms: Set(duration_ms),
-        first_token_ms: Set(first_token_ms),
-        started_at: Set(now),
-        finished_at: Set(Some(now)),
-        ..Default::default()
+    // ─── 2) ai.request_execution（N 条，按 attempt_no 顺序）─────────
+    let mut last_execution_id: i64 = 0;
+    for att in &attempts {
+        let exec = request_execution::ActiveModel {
+            ai_request_id: Set(req_model.id),
+            request_id: Set(ctx.request_id.clone()),
+            attempt_no: Set(att.attempt_no),
+            channel_id: Set(att.channel_id),
+            account_id: Set(att.account_id),
+            endpoint: Set(ctx.endpoint.to_string()),
+            request_format: Set(att.request_format.clone()),
+            requested_model: Set(ctx.logical_model.clone()),
+            upstream_model: Set(att.upstream_model.clone()),
+            upstream_request_id: Set(att.upstream_request_id.clone().unwrap_or_default()),
+            request_headers: Set(att.sent_headers.clone()),
+            request_body: Set(att
+                .request_body
+                .clone()
+                .unwrap_or(Value::Object(Default::default()))),
+            response_body: Set(att.response_body.clone()),
+            response_status_code: Set(att.response_status_code),
+            status: Set(if att.success {
+                request_execution::RequestExecutionStatus::Succeeded
+            } else {
+                request_execution::RequestExecutionStatus::Failed
+            }),
+            error_message: Set(att.error_message.clone()),
+            duration_ms: Set(att.duration_ms),
+            first_token_ms: Set(att.first_token_ms),
+            started_at: Set(att.started_at),
+            finished_at: Set(Some(att.finished_at)),
+            ..Default::default()
+        }
+        .insert(&txn)
+        .await?;
+        last_execution_id = exec.id;
     }
-    .insert(&txn)
-    .await?;
 
     // ─── 3) ai.log ────────────────────────────────────────────────
     let (prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens) = (
@@ -242,7 +290,7 @@ async fn persist(
             .as_ref()
             .map(|a| a.name.clone())
             .unwrap_or_default()),
-        execution_id: Set(exec.id),
+        execution_id: Set(last_execution_id),
         endpoint: Set(ctx.endpoint.to_string()),
         request_format: Set(ctx.format.as_str().to_string()),
         requested_model: Set(ctx.logical_model.clone()),
@@ -256,14 +304,14 @@ async fn persist(
         total_tokens: Set(total_tokens),
         cached_tokens: Set(cached_tokens),
         reasoning_tokens: Set(reasoning_tokens),
-        quota: Set(0), // P6 settle 后 UPDATE 回来
+        quota: Set(0),
         cost_total: Set(BigDecimal::from(0)),
         price_reference: Set(String::new()),
         elapsed_time: Set(duration_ms),
         first_token_time: Set(first_token_ms),
         is_stream: Set(ctx.is_stream),
         request_id: Set(ctx.request_id.clone()),
-        dedupe_key: Set(ctx.request_id.clone()), // v1 直接复用 request_id
+        dedupe_key: Set(ctx.request_id.clone()),
         upstream_request_id: Set(ctx
             .upstream_request_id
             .clone()
@@ -343,8 +391,29 @@ mod tests {
         let ctx = mk_ctx();
         assert_eq!(ctx.token.user_id, 2);
         assert_eq!(ctx.token.token_id, 1);
-        // channel/account 未 attach 时为 0
         assert_eq!(ctx.channel_id(), 0);
         assert_eq!(ctx.account_id(), 0);
+    }
+
+    #[test]
+    fn synthesize_single_attempt_carries_ctx_and_outcome_fields() {
+        let ctx = mk_ctx();
+        let out = super::super::context::success(Usage::default(), 200);
+        let att = synthesize_single_attempt(&ctx, &out, None);
+        assert_eq!(att.attempt_no, 1);
+        assert!(att.success);
+        assert_eq!(att.response_status_code, 200);
+        assert_eq!(att.error_message, "");
+        assert_eq!(att.channel_id, 0);
+        assert_eq!(att.account_id, 0);
+    }
+
+    #[test]
+    fn synthesize_single_attempt_failure_propagates_status_and_message() {
+        let ctx = mk_ctx();
+        let out = super::super::context::failure(503, "upstream responded 503");
+        let att = synthesize_single_attempt(&ctx, &out, None);
+        assert!(!att.success);
+        assert_eq!(att.error_message, "upstream responded 503");
     }
 }
