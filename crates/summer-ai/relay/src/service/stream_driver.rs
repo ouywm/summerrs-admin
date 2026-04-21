@@ -243,8 +243,10 @@ where
                     break;
                 }
 
-                // adapter 解析成 canonical
-                let canonical: Option<ChatStreamEvent> =
+                // adapter 解析成 canonical（一个上游 chunk 可能对应多个事件——
+                // Mistral 等会把 content + finish_reason 同块发出，OpenAI 并行
+                // 工具调用也可能在一个 chunk 里 emit 多个 ToolCallDelta）
+                let canonical_events: Vec<ChatStreamEvent> =
                     match AdapterDispatcher::parse_chat_stream_event(kind, &target, &data) {
                         Ok(v) => v,
                         Err(e) => {
@@ -252,35 +254,39 @@ where
                             continue;
                         }
                     };
-                let Some(canonical_event) = canonical else { continue };
-
-                // 抓 usage —— End 事件里带，直接覆盖（后到的更权威）
-                if let ChatStreamEvent::End(ref end_evt) = canonical_event
-                    && let Some(u) = &end_evt.usage
-                {
-                    final_usage = Some(u.clone());
+                if canonical_events.is_empty() {
+                    continue;
                 }
 
-                // ingress 转成客户端 wire events
-                let client_events = match I::from_canonical_stream_event(
-                    canonical_event,
-                    &mut state,
-                    &ctx,
-                ) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(?e, "ingress from_canonical_stream_event error, skip");
-                        continue;
+                for canonical_event in canonical_events {
+                    // 抓 usage —— End 事件里带，直接覆盖（后到的更权威）
+                    if let ChatStreamEvent::End(ref end_evt) = canonical_event
+                        && let Some(u) = &end_evt.usage
+                    {
+                        final_usage = Some(u.clone());
                     }
-                };
 
-                // 序列化 + yield
-                for evt in client_events {
-                    match serialize_client_event(&evt, client_format) {
-                        Ok(b) => yield Ok(b),
+                    // ingress 转成客户端 wire events
+                    let client_events = match I::from_canonical_stream_event(
+                        canonical_event,
+                        &mut state,
+                        &ctx,
+                    ) {
+                        Ok(v) => v,
                         Err(e) => {
-                            tracing::warn!(?e, "serialize client event error");
+                            tracing::warn!(?e, "ingress from_canonical_stream_event error, skip");
                             continue;
+                        }
+                    };
+
+                    // 序列化 + yield
+                    for evt in client_events {
+                        match serialize_client_event(&evt, client_format) {
+                            Ok(b) => yield Ok(b),
+                            Err(e) => {
+                                tracing::warn!(?e, "serialize client event error");
+                                continue;
+                            }
                         }
                     }
                 }

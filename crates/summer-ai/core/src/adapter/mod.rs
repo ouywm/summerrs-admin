@@ -282,11 +282,14 @@ pub trait Adapter {
 
     /// 解析上游 SSE 的**单个**原始事件（已去 `data: ` 前缀的 JSON 行）。
     ///
-    /// 返回 `Ok(None)` 表示这个事件应被忽略（例如 `: keep-alive` 注释、`[DONE]` 终止标记）。
+    /// 返回 `Vec<ChatStreamEvent>`——**一个上游 chunk 可对应多个 canonical 事件**：
+    /// - 空 Vec：应被忽略（例如 `: keep-alive` 注释、`[DONE]` 终止标记）。
+    /// - 多个：上游把 content + finish_reason 打包在同一 chunk（Ollama/Mistral 风格），
+    ///   或并行 tool_calls 在同一 chunk 同时发出多个时，要 emit 多个事件。
     fn parse_chat_stream_event(
         target: &ServiceTarget,
         raw: &str,
-    ) -> AdapterResult<Option<ChatStreamEvent>>;
+    ) -> AdapterResult<Vec<ChatStreamEvent>>;
 
     // ─────────────── 运维 / 管理面 ───────────────
 

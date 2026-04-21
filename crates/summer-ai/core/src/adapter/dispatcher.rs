@@ -116,7 +116,7 @@ impl AdapterDispatcher {
         kind: AdapterKind,
         target: &ServiceTarget,
         raw: &str,
-    ) -> AdapterResult<Option<ChatStreamEvent>> {
+    ) -> AdapterResult<Vec<ChatStreamEvent>> {
         match kind {
             AdapterKind::OpenAI => OpenAIAdapter::parse_chat_stream_event(target, raw),
             AdapterKind::OpenAICompat => OpenAICompatAdapter::parse_chat_stream_event(target, raw),

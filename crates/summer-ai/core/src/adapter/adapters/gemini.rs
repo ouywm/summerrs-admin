@@ -110,14 +110,14 @@ impl Adapter for GeminiAdapter {
     fn parse_chat_stream_event(
         _target: &ServiceTarget,
         raw: &str,
-    ) -> AdapterResult<Option<ChatStreamEvent>> {
+    ) -> AdapterResult<Vec<ChatStreamEvent>> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let chunk: GeminiChatResponse =
             serde_json::from_str(trimmed).map_err(AdapterError::DeserializeResponse)?;
-        Ok(gemini_chunk_to_canonical(chunk))
+        Ok(gemini_chunk_to_canonical(chunk).into_iter().collect())
     }
 }
 
@@ -780,6 +780,8 @@ mod tests {
         }"#;
         let e = GeminiAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::TextDelta { text } => assert_eq!(text, "hi"),
@@ -800,6 +802,8 @@ mod tests {
         }"#;
         let e = GeminiAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::End(end) => {

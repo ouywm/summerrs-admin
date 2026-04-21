@@ -20,7 +20,8 @@ use crate::adapter::{
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
 use crate::types::{
-    ChatRequest, ChatResponse, ChatStreamEvent, ModelList, StreamEnd, ToolCallDelta, Usage,
+    ChatRequest, ChatResponse, ChatStreamEvent, FinishReason, ModelList, StreamEnd, ToolCallDelta,
+    Usage,
 };
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ impl Adapter for OpenAIAdapter {
     fn parse_chat_stream_event(
         target: &ServiceTarget,
         raw: &str,
-    ) -> AdapterResult<Option<ChatStreamEvent>> {
+    ) -> AdapterResult<Vec<ChatStreamEvent>> {
         shared::parse_chat_stream_event(Self::KIND.as_lower_str(), target, raw)
     }
 
@@ -129,7 +130,7 @@ impl Adapter for OpenAICompatAdapter {
     fn parse_chat_stream_event(
         target: &ServiceTarget,
         raw: &str,
-    ) -> AdapterResult<Option<ChatStreamEvent>> {
+    ) -> AdapterResult<Vec<ChatStreamEvent>> {
         shared::parse_chat_stream_event(Self::KIND.as_lower_str(), target, raw)
     }
 
@@ -185,27 +186,31 @@ mod shared {
     ///
     /// | 上游 chunk 形态 | canonical 事件 |
     /// |---|---|
-    /// | `[DONE]` | `Ok(None)` 忽略 |
-    /// | `delta.role` 非空 **且** `delta.content` 空/缺失 | `Start { adapter, model }` |
-    /// | `delta.content` 非空（role 是否存在不影响） | `TextDelta { text }` |
-    /// | `delta.reasoning_content` 或 `delta.reasoning` 非空 | `ReasoningDelta { text }` |
-    /// | `delta.tool_calls[*]` | `ToolCallDelta(...)`（当前取首个） |
-    /// | `choice.finish_reason` 非空 | `End { finish_reason, usage }` |
-    /// | `choices` 空 + `usage` 非空（OpenAI 末尾 usage-only chunk） | `End { usage }` |
-    /// | 其他 | `Ok(None)`（忽略 keep-alive 等） |
+    /// | `[DONE]` | 空 Vec（忽略） |
+    /// | `delta.role` 非空 **且** `delta.content` 空/缺失 | `[Start { adapter, model }]` |
+    /// | `delta.content` 非空（role 是否存在不影响） | 含 `TextDelta { text }` |
+    /// | `delta.reasoning_content` 或 `delta.reasoning` 非空 | 含 `ReasoningDelta { text }` |
+    /// | `delta.tool_calls[*]` | 每个元素一个 `ToolCallDelta(...)`（并行工具调用） |
+    /// | `choice.finish_reason` 非空 | 最后追加 `End { finish_reason, usage }` |
+    /// | `choices` 空 + `usage` 非空（OpenAI 末尾 usage-only chunk） | `[End { usage }]` |
+    /// | 其他 | 空 Vec（忽略 keep-alive 等） |
     ///
-    /// **关于 role + content 并存的 chunk**：标准 OpenAI 首块 `{role:"assistant", content:""}`
-    /// → `Start`；一些聚合网关（如 one-hub 风格）会**每一个** chunk 都重复 role +
-    /// 非空 content，这种时候 content 优先走 TextDelta，否则整条流的文本都会被吞掉。
+    /// **多事件组合**：上游常把 `content + finish_reason`（Mistral）或
+    /// `tool_calls + finish_reason`（Ollama）打包在同一 chunk，按 rust-genai
+    /// 的做法一次 emit 多个事件——只发首个会丢失 content / finish / 并行 tool_call。
+    ///
+    /// **关于 role + content 并存**：标准 OpenAI 首块 `{role:"assistant",content:""}`
+    /// 是 `Start`；某些聚合网关（one-hub 风格）每块都带 role + 非空 content，
+    /// 按 content 走 TextDelta 避免整条流被吞。
     pub(super) fn parse_chat_stream_event(
         adapter_lower: &'static str,
         target: &ServiceTarget,
         raw: &str,
-    ) -> AdapterResult<Option<ChatStreamEvent>> {
+    ) -> AdapterResult<Vec<ChatStreamEvent>> {
         // 1. 终止标记
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed == "[DONE]" {
-            return Ok(None);
+            return Ok(Vec::new());
         }
 
         // 2. 解析 JSON
@@ -233,16 +238,16 @@ mod shared {
         let Some(choice) = choice else {
             // usage-only 末尾 chunk
             if usage.is_some() {
-                return Ok(Some(ChatStreamEvent::End(StreamEnd {
+                return Ok(vec![ChatStreamEvent::End(StreamEnd {
                     finish_reason: None,
                     usage,
-                })));
+                })]);
             }
-            return Ok(None);
+            return Ok(Vec::new());
         };
 
         // 6. finish_reason（可能存在也可能 null）
-        let finish_reason = choice
+        let finish_reason: Option<FinishReason> = choice
             .get("finish_reason")
             .filter(|x| !x.is_null())
             .and_then(|x| serde_json::from_value(x.clone()).ok());
@@ -250,38 +255,30 @@ mod shared {
         // 7. delta（首/中间块核心字段）
         let empty_map = Value::Null;
         let delta = choice.get("delta").unwrap_or(&empty_map);
-
         let role_str = delta.get("role").and_then(Value::as_str);
         let content_str = delta.get("content").and_then(Value::as_str);
 
-        // 7.1 Start：首 chunk，带 role 但 content 为空 / 缺失
-        //
-        // 标准 OpenAI 首 chunk 长这样：`{"role":"assistant","content":""}`——开始事件。
-        // 但部分兼容实现（如 one-hub 风格聚合网关）**每个 chunk 都带 role + 非空 content**，
-        // 那种情况下应该按 content 走 TextDelta，不能因为带 role 就吞掉 content。
+        let mut events: Vec<ChatStreamEvent> = Vec::new();
+
+        // 7.1 Start：role 存在且 content 空/缺失。content 非空时不发 Start（避免吞掉文字），
+        //     ingress 侧的 `role_emitted` 兜底保证客户端 wire 格式仍带 role-only chunk。
         if role_str.is_some() && content_str.map(str::is_empty).unwrap_or(true) {
-            return Ok(Some(ChatStreamEvent::Start {
+            events.push(ChatStreamEvent::Start {
                 adapter: adapter_lower.to_string(),
                 model,
-            }));
+            });
         }
 
-        // 7.2 TextDelta：只要 content 非空即可（带不带 role 都一样）
+        // 7.2 TextDelta：content 非空（Mistral 等会把 content 和 finish_reason 一并塞进末块）
         if let Some(text) = content_str
             && !text.is_empty()
         {
-            return Ok(Some(ChatStreamEvent::TextDelta {
+            events.push(ChatStreamEvent::TextDelta {
                 text: text.to_string(),
-            }));
+            });
         }
 
-        // 7.3 ReasoningDelta（不同上游字段名不统一）
-        //
-        // - DeepSeek / o1 等用 `reasoning_content`
-        // - OpenRouter / Ollama 等用 `reasoning`
-        //
-        // 对齐 rust-genai (openai/streamer.rs:249-253)：`reasoning_content` 优先，
-        // 缺失时回退 `reasoning`，保证两类上游的思考过程都能透传。
+        // 7.3 ReasoningDelta：reasoning_content 优先，fallback reasoning
         let reasoning_text = delta
             .get("reasoning_content")
             .and_then(Value::as_str)
@@ -289,43 +286,53 @@ mod shared {
         if let Some(text) = reasoning_text
             && !text.is_empty()
         {
-            return Ok(Some(ChatStreamEvent::ReasoningDelta {
+            events.push(ChatStreamEvent::ReasoningDelta {
                 text: text.to_string(),
-            }));
+            });
         }
 
-        // 7.4 ToolCallDelta（当前只处理首个；后续 chunk 会继续带）
+        // 7.4 ToolCallDelta：并行 tool_call 同 chunk 多条，全部 emit
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-            if let Some(tc) = tool_calls.first() {
+            for tc in tool_calls {
                 let index = tc.get("index").and_then(Value::as_i64).unwrap_or(0) as i32;
-                let id = tc.get("id").and_then(Value::as_str).map(str::to_string);
+                let id = tc
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
                 let function = tc.get("function");
                 let name = function
                     .and_then(|f| f.get("name"))
                     .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
                     .map(str::to_string);
                 let arguments_delta = function
                     .and_then(|f| f.get("arguments"))
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                return Ok(Some(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+                // 完全空 delta（没 id 没 name 没 args）跳过，避免产生噪声事件
+                if id.is_none() && name.is_none() && arguments_delta.is_none() {
+                    continue;
+                }
+                events.push(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
                     index,
                     id,
                     name,
                     arguments_delta,
-                })));
+                }));
             }
         }
 
-        // 8. End（finish_reason 或 usage 非空）
+        // 8. End：finish_reason 非空或 usage 非空时 emit；要在 content / tool_calls 之后
+        //    push，保证同一 chunk 里内容先发、End 收尾。
         if finish_reason.is_some() || usage.is_some() {
-            return Ok(Some(ChatStreamEvent::End(StreamEnd {
+            events.push(ChatStreamEvent::End(StreamEnd {
                 finish_reason,
                 usage,
-            })));
+            }));
         }
 
-        Ok(None)
+        Ok(events)
     }
 
     /// GET `{endpoint}/models` 拉取可用模型 id 列表。
@@ -521,7 +528,7 @@ mod tests {
     fn stream_done_returns_none() {
         let t = bearer_target("https://api.openai.com");
         let e = OpenAIAdapter::parse_chat_stream_event(&t, "[DONE]").unwrap();
-        assert!(e.is_none());
+        assert!(e.is_empty());
     }
 
     #[test]
@@ -530,12 +537,12 @@ mod tests {
         assert!(
             OpenAIAdapter::parse_chat_stream_event(&t, "")
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
         assert!(
             OpenAIAdapter::parse_chat_stream_event(&t, "   ")
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
     }
 
@@ -545,6 +552,8 @@ mod tests {
         let raw = r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::Start { adapter, model } => {
@@ -561,6 +570,8 @@ mod tests {
         let raw = r#"{"id":"x","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::TextDelta { text } => assert_eq!(text, "hello"),
@@ -576,6 +587,8 @@ mod tests {
         let raw = r#"{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"Use"},"finish_reason":null}]}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::TextDelta { text } => assert_eq!(text, "Use"),
@@ -589,6 +602,8 @@ mod tests {
         let raw = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"let me think"},"finish_reason":null}]}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::ReasoningDelta { text } => assert_eq!(text, "let me think"),
@@ -603,6 +618,8 @@ mod tests {
         let raw = r#"{"choices":[{"index":0,"delta":{"reasoning":"considering options"},"finish_reason":null}]}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::ReasoningDelta { text } => assert_eq!(text, "considering options"),
@@ -617,6 +634,8 @@ mod tests {
         let raw = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"primary","reasoning":"secondary"},"finish_reason":null}]}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::ReasoningDelta { text } => assert_eq!(text, "primary"),
@@ -630,6 +649,8 @@ mod tests {
         let raw = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"tc_1","type":"function","function":{"name":"weather","arguments":"{\"city\""}}]},"finish_reason":null}]}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::ToolCallDelta(d) => {
@@ -653,6 +674,8 @@ mod tests {
         let raw = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::End(end) => {
@@ -670,6 +693,8 @@ mod tests {
             r#"{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}"#;
         let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::End(end) => {
@@ -681,5 +706,59 @@ mod tests {
             }
             other => panic!("expected End, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stream_content_and_finish_in_same_chunk_emits_both_events() {
+        // Mistral / 某些聚合网关会把最后一段 content 和 finish_reason 打包在同一 chunk：
+        // `{delta:{content:"!"}, finish_reason:"stop"}`。必须同时 emit TextDelta + End，
+        // 否则 content 要么丢、要么 End 永不发送（客户端靠 [DONE] 兜底）。
+        let t = bearer_target("https://api.openai.com");
+        let raw = r#"{"choices":[{"index":0,"delta":{"content":"bye"},"finish_reason":"stop"}]}"#;
+        let events = OpenAIAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 2, "expected TextDelta + End");
+        match &events[0] {
+            ChatStreamEvent::TextDelta { text } => assert_eq!(text, "bye"),
+            other => panic!("expected TextDelta first, got {other:?}"),
+        }
+        match &events[1] {
+            ChatStreamEvent::End(end) => assert!(end.finish_reason.is_some()),
+            other => panic!("expected End last, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_parallel_tool_calls_emit_multiple_deltas_in_one_chunk() {
+        // OpenAI parallel_tool_calls=true 时，单个 chunk 的 delta.tool_calls 可以同时
+        // 出现多个 index 不同的 tool_call——必须全部 emit，否则并行调用只会看到第一个。
+        let t = bearer_target("https://api.openai.com");
+        let raw = r#"{"choices":[{"index":0,"delta":{"tool_calls":[
+            {"index":0,"id":"a","type":"function","function":{"name":"fa","arguments":""}},
+            {"index":1,"id":"b","type":"function","function":{"name":"fb","arguments":""}}
+        ]},"finish_reason":null}]}"#;
+        let events = OpenAIAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 2);
+        for (expected_idx, expected_name, ev) in [(0, "fa", &events[0]), (1, "fb", &events[1])] {
+            match ev {
+                ChatStreamEvent::ToolCallDelta(d) => {
+                    assert_eq!(d.index, expected_idx);
+                    assert_eq!(d.name.as_deref(), Some(expected_name));
+                }
+                other => panic!("expected ToolCallDelta, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stream_tool_calls_and_finish_in_same_chunk_emit_both() {
+        // Ollama 等会把 tool_calls + finish_reason="tool_calls" 一起发——End 必须同时 emit。
+        let t = bearer_target("https://api.openai.com");
+        let raw = r#"{"choices":[{"index":0,"delta":{"tool_calls":[
+            {"index":0,"id":"c","type":"function","function":{"name":"fx","arguments":"{}"}}
+        ]},"finish_reason":"tool_calls"}]}"#;
+        let events = OpenAIAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], ChatStreamEvent::ToolCallDelta(_)));
+        assert!(matches!(events[1], ChatStreamEvent::End(_)));
     }
 }

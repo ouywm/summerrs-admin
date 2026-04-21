@@ -103,14 +103,16 @@ impl Adapter for ClaudeAdapter {
     fn parse_chat_stream_event(
         _target: &ServiceTarget,
         raw: &str,
-    ) -> AdapterResult<Option<ChatStreamEvent>> {
+    ) -> AdapterResult<Vec<ChatStreamEvent>> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let event: ClaudeStreamEvent =
             serde_json::from_str(trimmed).map_err(AdapterError::DeserializeResponse)?;
-        Ok(claude_stream_event_to_canonical(event))
+        Ok(claude_stream_event_to_canonical(event)
+            .into_iter()
+            .collect())
     }
 
     fn fetch_model_names(
@@ -846,6 +848,8 @@ mod tests {
         }"#;
         let e = ClaudeAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::Start { adapter, model } => {
@@ -863,6 +867,8 @@ mod tests {
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#;
         let e = ClaudeAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::TextDelta { text } => assert_eq!(text, "hi"),
@@ -879,6 +885,8 @@ mod tests {
         }"#;
         let e = ClaudeAdapter::parse_chat_stream_event(&t, start)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::ToolCallDelta(d) => {
@@ -895,6 +903,8 @@ mod tests {
         }"#;
         let e = ClaudeAdapter::parse_chat_stream_event(&t, delta)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::ToolCallDelta(d) => {
@@ -914,6 +924,8 @@ mod tests {
         }"#;
         let e = ClaudeAdapter::parse_chat_stream_event(&t, raw)
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         match e {
             ChatStreamEvent::End(end) => {
@@ -930,12 +942,12 @@ mod tests {
         assert!(
             ClaudeAdapter::parse_chat_stream_event(&t, r#"{"type":"ping"}"#)
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
         assert!(
             ClaudeAdapter::parse_chat_stream_event(&t, r#"{"type":"message_stop"}"#)
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
     }
 }
