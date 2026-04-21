@@ -49,6 +49,7 @@ indexmap = "2.13.0"
 inventory = "0.3"
 ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master" }
 #ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
+bigdecimal = "0.4.10"
 ipnetwork = "0.20.0"
 jsonwebtoken = "10.3.0"
 kanal = "0.1"
