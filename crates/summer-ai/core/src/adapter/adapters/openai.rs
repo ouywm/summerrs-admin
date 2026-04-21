@@ -186,16 +186,17 @@ mod shared {
     /// | 上游 chunk 形态 | canonical 事件 |
     /// |---|---|
     /// | `[DONE]` | `Ok(None)` 忽略 |
-    /// | `delta.role` 非空 | `Start { adapter, model }` |
-    /// | `delta.content` 非空 | `TextDelta { text }` |
+    /// | `delta.role` 非空 **且** `delta.content` 空/缺失 | `Start { adapter, model }` |
+    /// | `delta.content` 非空（role 是否存在不影响） | `TextDelta { text }` |
     /// | `delta.reasoning_content` 非空（DeepSeek / o1） | `ReasoningDelta { text }` |
     /// | `delta.tool_calls[*]` | `ToolCallDelta(...)`（当前取首个） |
     /// | `choice.finish_reason` 非空 | `End { finish_reason, usage }` |
     /// | `choices` 空 + `usage` 非空（OpenAI 末尾 usage-only chunk） | `End { usage }` |
     /// | 其他 | `Ok(None)`（忽略 keep-alive 等） |
     ///
-    /// **注**：同一 chunk 内若多字段并存（如 role+content），按上表顺序返第一个；
-    /// OpenAI 实际响应中这种情况极少（首块通常只带 role）。
+    /// **关于 role + content 并存的 chunk**：标准 OpenAI 首块 `{role:"assistant", content:""}`
+    /// → `Start`；一些聚合网关（如 one-hub 风格）会**每一个** chunk 都重复 role +
+    /// 非空 content，这种时候 content 优先走 TextDelta，否则整条流的文本都会被吞掉。
     pub(super) fn parse_chat_stream_event(
         adapter_lower: &'static str,
         target: &ServiceTarget,
@@ -250,21 +251,28 @@ mod shared {
         let empty_map = Value::Null;
         let delta = choice.get("delta").unwrap_or(&empty_map);
 
-        // 7.1 Start（delta.role 存在 = 首块）
-        if delta.get("role").and_then(Value::as_str).is_some() {
+        let role_str = delta.get("role").and_then(Value::as_str);
+        let content_str = delta.get("content").and_then(Value::as_str);
+
+        // 7.1 Start：首 chunk，带 role 但 content 为空 / 缺失
+        //
+        // 标准 OpenAI 首 chunk 长这样：`{"role":"assistant","content":""}`——开始事件。
+        // 但部分兼容实现（如 one-hub 风格聚合网关）**每个 chunk 都带 role + 非空 content**，
+        // 那种情况下应该按 content 走 TextDelta，不能因为带 role 就吞掉 content。
+        if role_str.is_some() && content_str.map(str::is_empty).unwrap_or(true) {
             return Ok(Some(ChatStreamEvent::Start {
                 adapter: adapter_lower.to_string(),
                 model,
             }));
         }
 
-        // 7.2 TextDelta
-        if let Some(text) = delta.get("content").and_then(Value::as_str) {
-            if !text.is_empty() {
-                return Ok(Some(ChatStreamEvent::TextDelta {
-                    text: text.to_string(),
-                }));
-            }
+        // 7.2 TextDelta：只要 content 非空即可（带不带 role 都一样）
+        if let Some(text) = content_str
+            && !text.is_empty()
+        {
+            return Ok(Some(ChatStreamEvent::TextDelta {
+                text: text.to_string(),
+            }));
         }
 
         // 7.3 ReasoningDelta（DeepSeek / o1 的 reasoning_content）
@@ -546,6 +554,21 @@ mod tests {
             .unwrap();
         match e {
             ChatStreamEvent::TextDelta { text } => assert_eq!(text, "hello"),
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_chunk_with_role_and_nonempty_content_is_text_delta() {
+        // 回归：部分聚合网关（hybgzs / one-hub 风格）每个 chunk 都带 role + 非空 content，
+        // 以前的实现看到 role 就回 Start，把所有 content 吞掉，整条流只剩空 role delta。
+        let t = bearer_target("https://ai.hybgzs.com");
+        let raw = r#"{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"Use"},"finish_reason":null}]}"#;
+        let e = OpenAIAdapter::parse_chat_stream_event(&t, raw)
+            .unwrap()
+            .unwrap();
+        match e {
+            ChatStreamEvent::TextDelta { text } => assert_eq!(text, "Use"),
             other => panic!("expected TextDelta, got {other:?}"),
         }
     }
