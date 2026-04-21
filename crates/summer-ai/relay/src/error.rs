@@ -22,6 +22,19 @@ use summer_web::axum::Json;
 use summer_web::axum::http::StatusCode;
 use summer_web::axum::response::{IntoResponse, Response};
 
+/// 失败后的重试策略分类。P9 韧性层用：pipeline 外层按此决定是否换 key / 换 channel / 立即终止。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryKind {
+    /// 同 channel 内换一个 account/key 再试。典型场景：429 rate-limit —— 只是当前 key 被限流，
+    /// 换个 key/账号仍可继续用这家上游。
+    SameChannel,
+    /// 切到下一个 channel 候选重试。典型场景：上游 5xx / 529 overloaded / 连接超时 /
+    /// 反序列化失败（上游返了怪东西）。
+    CrossChannel,
+    /// 不 retry，直接返回给客户端。典型：4xx 参数错、鉴权失败、quota 耗尽、本地配置错。
+    Fatal,
+}
+
 /// 错误 JSON 格式风格——由入口协议决定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorFlavor {
@@ -130,6 +143,43 @@ impl RelayError {
             Self::QuotaExhausted => StatusCode::PAYMENT_REQUIRED,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::StreamProcessing(_) => StatusCode::BAD_GATEWAY,
+        }
+    }
+
+    /// 按错误类型决定 P9 retry 行为。
+    ///
+    /// - 上游 429 → `SameChannel`（当前 key 被限流，换 key 继续）
+    /// - 上游 408/409/425/5xx / 连接 / timeout / 上游 body 反序列化失败 → `CrossChannel`
+    /// - 其它 4xx（400/401/403/404/...）/ 本地配置错 / 路由已空 / 鉴权失败 → `Fatal`
+    pub fn retry_kind(&self) -> RetryKind {
+        match self {
+            Self::Adapter(AdapterError::UpstreamStatus { status, .. }) => {
+                classify_upstream_status(*status)
+            }
+            Self::UpstreamStatus { status, .. } => classify_upstream_status(*status),
+
+            // 网络层（DNS / connect / read / timeout）→ 换一家上游大概率能好
+            Self::Http(_) | Self::Adapter(AdapterError::Network(_)) => RetryKind::CrossChannel,
+
+            // 上游返回怪数据（parse 失败）—— 换 channel 试试
+            Self::Adapter(AdapterError::DeserializeResponse(_)) => RetryKind::CrossChannel,
+
+            // 参数 / 本地序列化 / header 组装 / 凭证解析 / 协议不支持 → 立刻返
+            Self::Adapter(AdapterError::Unsupported { .. })
+            | Self::Adapter(AdapterError::SerializeRequest(_))
+            | Self::Adapter(AdapterError::InvalidHeader(_))
+            | Self::Adapter(AdapterError::ResolveAuth(_)) => RetryKind::Fatal,
+
+            // 基础设施 / 业务决策 / 流处理错——retry 也救不回
+            Self::Database(_)
+            | Self::Redis(_)
+            | Self::MissingConfig(_)
+            | Self::NoAvailableChannel { .. }
+            | Self::Unauthenticated(_)
+            | Self::TokenExpired
+            | Self::QuotaExhausted
+            | Self::NotImplemented(_)
+            | Self::StreamProcessing(_) => RetryKind::Fatal,
         }
     }
 
@@ -321,6 +371,20 @@ impl RelayError {
             Self::Http(_) | Self::Adapter(AdapterError::Network(_)) => "UNAVAILABLE",
             Self::UpstreamStatus { .. } | Self::Adapter(_) => "INTERNAL",
         }
+    }
+}
+
+/// 根据上游 HTTP 状态码分类。
+fn classify_upstream_status(status: u16) -> RetryKind {
+    match status {
+        // 限流：换 key/账号大概率能解（同家 provider 不同 key 有独立配额）
+        429 => RetryKind::SameChannel,
+        // 5xx 全部认为"上游问题"——切下一家
+        500..=599 => RetryKind::CrossChannel,
+        // 408/425 超时 / 过早；409 冲突（偶发性）——也切下一家试试
+        408 | 409 | 425 => RetryKind::CrossChannel,
+        // 400/401/403/404 等都是请求级问题，换地方也一样报错
+        _ => RetryKind::Fatal,
     }
 }
 
@@ -560,5 +624,109 @@ mod tests {
         assert_eq!(err.status_code(), StatusCode::BAD_GATEWAY);
         assert_eq!(err.gemini_status(), "INTERNAL");
         assert_eq!(err.claude_type(), "api_error");
+    }
+
+    // ---------- RetryKind 分类 ----------
+
+    #[test]
+    fn retry_kind_upstream_429_is_same_channel() {
+        let err = RelayError::UpstreamStatus {
+            status: 429,
+            body: Bytes::new(),
+        };
+        assert_eq!(err.retry_kind(), RetryKind::SameChannel);
+    }
+
+    #[test]
+    fn retry_kind_upstream_5xx_is_cross_channel() {
+        for s in [500u16, 502, 503, 504, 529] {
+            let err = RelayError::UpstreamStatus {
+                status: s,
+                body: Bytes::new(),
+            };
+            assert_eq!(
+                err.retry_kind(),
+                RetryKind::CrossChannel,
+                "status {s} should be CrossChannel"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_kind_upstream_4xx_params_is_fatal() {
+        for s in [400u16, 401, 403, 404, 422] {
+            let err = RelayError::UpstreamStatus {
+                status: s,
+                body: Bytes::new(),
+            };
+            assert_eq!(
+                err.retry_kind(),
+                RetryKind::Fatal,
+                "status {s} should be Fatal"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_kind_adapter_upstream_status_classifies_same_way() {
+        let err = RelayError::Adapter(AdapterError::UpstreamStatus {
+            status: 429,
+            message: String::new(),
+        });
+        assert_eq!(err.retry_kind(), RetryKind::SameChannel);
+
+        let err = RelayError::Adapter(AdapterError::UpstreamStatus {
+            status: 503,
+            message: String::new(),
+        });
+        assert_eq!(err.retry_kind(), RetryKind::CrossChannel);
+    }
+
+    #[test]
+    fn retry_kind_network_and_parse_are_cross_channel() {
+        let bad_json: serde_json::Error = serde_json::from_str::<Value>("{bad}").unwrap_err();
+        let parse_err = RelayError::Adapter(AdapterError::DeserializeResponse(bad_json));
+        assert_eq!(parse_err.retry_kind(), RetryKind::CrossChannel);
+    }
+
+    #[test]
+    fn retry_kind_unsupported_is_fatal() {
+        let err = RelayError::Adapter(AdapterError::Unsupported {
+            adapter: "foo",
+            feature: "tools",
+        });
+        assert_eq!(err.retry_kind(), RetryKind::Fatal);
+    }
+
+    #[test]
+    fn retry_kind_business_errors_are_fatal() {
+        assert_eq!(
+            RelayError::Unauthenticated("x").retry_kind(),
+            RetryKind::Fatal
+        );
+        assert_eq!(RelayError::TokenExpired.retry_kind(), RetryKind::Fatal);
+        assert_eq!(RelayError::QuotaExhausted.retry_kind(), RetryKind::Fatal);
+        assert_eq!(
+            RelayError::NoAvailableChannel {
+                model: "gpt-4".into()
+            }
+            .retry_kind(),
+            RetryKind::Fatal
+        );
+        assert_eq!(
+            RelayError::NotImplemented("x").retry_kind(),
+            RetryKind::Fatal
+        );
+    }
+
+    #[test]
+    fn retry_kind_408_and_409_are_cross_channel() {
+        for s in [408u16, 409, 425] {
+            let err = RelayError::UpstreamStatus {
+                status: s,
+                body: Bytes::new(),
+            };
+            assert_eq!(err.retry_kind(), RetryKind::CrossChannel);
+        }
     }
 }

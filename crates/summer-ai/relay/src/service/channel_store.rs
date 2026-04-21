@@ -59,6 +59,16 @@ pub fn channel_type_to_adapter_kind(kind: channel::ChannelType) -> AdapterKind {
 // ChannelStore
 // ---------------------------------------------------------------------------
 
+/// `candidates()` 返回的单个路由候选。
+///
+/// 由 P9 retry 循环迭代消费：失败时切下一个候选，直到成功或清单用尽。
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    pub channel: channel::Model,
+    pub account: channel_account::Model,
+    pub selected_key: String,
+}
+
 /// 渠道 / 账号路由存储（Redis cache + DB fallback）
 #[derive(Clone, Service)]
 pub struct ChannelStore {
@@ -69,72 +79,78 @@ pub struct ChannelStore {
 }
 
 impl ChannelStore {
-    /// 按逻辑模型名挑 `(channel, account, selected_key)` 组合。
+    /// 按逻辑模型名列出全部可用候选（channel × account × key），按 P9 retry 期望的顺序排列。
     ///
-    /// - 第 1-5 步同旧版：按 model/channel/account 筛选 + 权重随机
-    /// - **第 6 步（新）**：从被选 account 的 `enabled_api_keys()` 里用 [`RandomKeyPicker`] 挑一个 key
-    /// - **account 全禁跳过**：如果某 account 所有 key 都在 `disabled_api_keys` 列表里，跳到下一个候选
+    /// 排列规则：
+    /// 1. channel 按 `priority` 降序分组；同组内按 `weight` 加权随机**洗牌**（不是只挑一个）
+    /// 2. 每个 channel 下再按同规则展开 `account`——过滤掉 `rate_limited_until` / `overload_until`
+    ///    未过期的 account
+    /// 3. 每个 account 用 `RandomKeyPicker` 从 `enabled_api_keys()` 里挑**一个** key 作为该候选的凭证
     ///
-    /// 全部 channel / account 都选不到 key → 返 `Ok(None)`（handler 侧返 `NoAvailableChannel`）。
+    /// 返 `Vec<Candidate>`，可能为空（表示路由空 —— handler 返 `NoAvailableChannel`）。
+    pub async fn candidates(&self, logical_model: &str) -> Result<Vec<Candidate>, RelayError> {
+        let channel_ids = self.load_model_channels(logical_model).await?;
+        if channel_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let channels = self.load_channels(&channel_ids).await?;
+        if channels.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 组装 Candidate 顺序：channel 洗牌 × account 洗牌 × key 随机单选
+        let channel_order = weighted_shuffle(channels, |c| (c.priority, c.weight));
+        let picker = RandomKeyPicker;
+        let now = chrono::Utc::now().fixed_offset();
+
+        let mut out: Vec<Candidate> = Vec::new();
+        for channel in channel_order {
+            let account_ids = self.load_channel_accounts(channel.id).await?;
+            if account_ids.is_empty() {
+                continue;
+            }
+            let accounts = self.load_accounts(&account_ids).await?;
+            let alive: Vec<channel_account::Model> = accounts
+                .into_iter()
+                .filter(|a| a.rate_limited_until.map(|t| t < now).unwrap_or(true))
+                .filter(|a| a.overload_until.map(|t| t < now).unwrap_or(true))
+                .collect();
+            let account_order = weighted_shuffle(alive, |a| (a.priority, a.weight));
+            for account in account_order {
+                let enabled_keys = account.enabled_api_keys();
+                if let Some(k) = picker.pick(&enabled_keys) {
+                    out.push(Candidate {
+                        channel: channel.clone(),
+                        account,
+                        selected_key: k.to_string(),
+                    });
+                } else {
+                    tracing::debug!(
+                        account_id = account.id,
+                        channel_id = account.channel_id,
+                        "account has no enabled api key, skipping"
+                    );
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// 兼容旧调用方的薄包装：返 `candidates()` 的第一个候选。
+    ///
+    /// 新代码（pipeline P9 retry）应直接用 `candidates()`；该方法保留给未接入 retry 的调用点。
     pub async fn pick(
         &self,
         logical_model: &str,
     ) -> Result<Option<(channel::Model, channel_account::Model, String)>, RelayError> {
-        // 第 1 步：模型 → channel_ids
-        let channel_ids = self.load_model_channels(logical_model).await?;
-        if channel_ids.is_empty() {
-            return Ok(None);
+        let mut list = self.candidates(logical_model).await?;
+        if list.is_empty() {
+            Ok(None)
+        } else {
+            let c = list.remove(0);
+            Ok(Some((c.channel, c.account, c.selected_key)))
         }
-
-        // 第 2 步：channel_ids → channels
-        let channels = self.load_channels(&channel_ids).await?;
-        if channels.is_empty() {
-            return Ok(None);
-        }
-
-        // 第 3 步：权重选 channel
-        let refs: Vec<&channel::Model> = channels.iter().collect();
-        let Some(picked_channel) = weighted_pick(&refs, |c| (c.priority, c.weight)).cloned() else {
-            return Ok(None);
-        };
-
-        // 第 4 步：channel_id → account_ids
-        let account_ids = self.load_channel_accounts(picked_channel.id).await?;
-        if account_ids.is_empty() {
-            return Ok(None);
-        }
-
-        // 第 5 步：account_ids → accounts + cooldown 过滤
-        let accounts = self.load_accounts(&account_ids).await?;
-        let now = chrono::Utc::now().fixed_offset();
-        let mut candidates: Vec<&channel_account::Model> = accounts
-            .iter()
-            .filter(|a| a.rate_limited_until.map(|t| t < now).unwrap_or(true))
-            .collect();
-
-        // 第 6 步：循环选 account + key —— account 全禁则剔除，选下一个
-        let picker = RandomKeyPicker;
-        while !candidates.is_empty() {
-            let Some(picked) = weighted_pick(&candidates, |a| (a.priority, a.weight)) else {
-                return Ok(None);
-            };
-            // 拿到一个引用后，尝试选一个可用 key
-            let enabled_keys = picked.enabled_api_keys();
-            if let Some(selected) = picker.pick(&enabled_keys) {
-                let selected_key = selected.to_string();
-                let picked_account = (*picked).clone();
-                return Ok(Some((picked_channel, picked_account, selected_key)));
-            }
-            // 该 account 所有 key 都被禁（或根本没 key）→ 从候选里剔除，下一轮
-            tracing::debug!(
-                account_id = picked.id,
-                channel_id = picked.channel_id,
-                "account has no enabled api key, skipping"
-            );
-            let banned_id = picked.id;
-            candidates.retain(|a| a.id != banned_id);
-        }
-        Ok(None)
     }
 
     // ---------------- Redis key helpers ----------------
@@ -476,50 +492,51 @@ pub fn build_service_target(
 }
 
 // ---------------------------------------------------------------------------
-// weighted_pick —— 纯函数（从前代内存版本继承下来，测试覆盖）
+// weighted_shuffle —— 纯函数（测试覆盖）
 // ---------------------------------------------------------------------------
 
-/// 在候选中取最高 `priority` 一组，然后在该组内按 `weight` 加权随机。
+/// 把 `items` 按 `priority` 降序分组；组内按 `weight` 反复加权随机抽取（不放回），
+/// 组间按 priority 降序拼接后返回。
 ///
-/// `key` 返回 `(priority, weight)`。`weight ≤ 0` 折成 1。
-fn weighted_pick<'a, T, K>(items: &'a [&'a T], key: K) -> Option<&'a T>
+/// 第一个元素的分布 = "一次加权随机"的结果；P9 retry 外层把整个序列作为尝试顺序消费。
+fn weighted_shuffle<T, K>(items: Vec<T>, key: K) -> Vec<T>
 where
     K: Fn(&T) -> (i32, i32),
 {
     if items.is_empty() {
-        return None;
+        return Vec::new();
     }
-    let top_priority = items.iter().map(|t| key(t).0).max()?;
 
-    let top: Vec<(&T, i32)> = items
-        .iter()
-        .filter_map(|t| {
-            let (pri, w) = key(t);
-            if pri == top_priority {
-                Some((*t, w.max(1)))
+    let mut by_priority: std::collections::BTreeMap<i32, Vec<T>> = Default::default();
+    for it in items {
+        let (pri, _) = key(&it);
+        by_priority.entry(pri).or_default().push(it);
+    }
+
+    let mut out: Vec<T> = Vec::new();
+    // BTreeMap 迭代升序；要降序
+    for (_pri, mut group) in by_priority.into_iter().rev() {
+        while !group.is_empty() {
+            let total: u64 = group.iter().map(|t| key(t).1.max(1) as u64).sum();
+            let picked_idx = if total == 0 {
+                0
             } else {
-                None
-            }
-        })
-        .collect();
-
-    if top.is_empty() {
-        return None;
-    }
-    let total: u64 = top.iter().map(|(_, w)| *w as u64).sum();
-    if total == 0 {
-        return top.first().map(|(t, _)| *t);
-    }
-
-    let mut roll = rand::random_range(0..total);
-    for (item, w) in &top {
-        let w = *w as u64;
-        if roll < w {
-            return Some(*item);
+                let mut roll = rand::random_range(0..total);
+                let mut idx = group.len() - 1;
+                for (i, t) in group.iter().enumerate() {
+                    let w = key(t).1.max(1) as u64;
+                    if roll < w {
+                        idx = i;
+                        break;
+                    }
+                    roll -= w;
+                }
+                idx
+            };
+            out.push(group.remove(picked_idx));
         }
-        roll -= w;
     }
-    top.last().map(|(t, _)| *t)
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -694,7 +711,7 @@ mod tests {
         assert_eq!(channel_type_to_adapter_kind(D::Ollama), AdapterKind::Ollama);
     }
 
-    // ---------- weighted_pick（用 tuple stub，不依赖 channel::Model）----------
+    // ---------- weighted_shuffle（用 tuple stub，不依赖 channel::Model）----------
 
     #[derive(Debug, Clone, Copy)]
     struct Item {
@@ -708,13 +725,13 @@ mod tests {
     }
 
     #[test]
-    fn weighted_pick_returns_none_on_empty() {
-        let items: Vec<&Item> = Vec::new();
-        assert!(weighted_pick(&items, key_of).is_none());
+    fn weighted_shuffle_empty_input_returns_empty() {
+        let out = weighted_shuffle::<Item, _>(Vec::new(), key_of);
+        assert!(out.is_empty());
     }
 
     #[test]
-    fn weighted_pick_top_priority_wins() {
+    fn weighted_shuffle_orders_by_priority_desc() {
         let a = Item {
             id: 1,
             priority: 1,
@@ -725,14 +742,39 @@ mod tests {
             priority: 10,
             weight: 100,
         };
-        let items = vec![&a, &b];
+        // 运行多轮：高 priority 永远排第一
         for _ in 0..50 {
-            assert_eq!(weighted_pick(&items, key_of).unwrap().id, 2);
+            let out = weighted_shuffle(vec![a, b], key_of);
+            assert_eq!(out[0].id, 2);
+            assert_eq!(out[1].id, 1);
         }
     }
 
     #[test]
-    fn weighted_pick_weight_distribution_within_same_priority() {
+    fn weighted_shuffle_returns_full_permutation() {
+        let a = Item {
+            id: 1,
+            priority: 1,
+            weight: 50,
+        };
+        let b = Item {
+            id: 2,
+            priority: 1,
+            weight: 50,
+        };
+        let c = Item {
+            id: 3,
+            priority: 1,
+            weight: 50,
+        };
+        let out = weighted_shuffle(vec![a, b, c], key_of);
+        assert_eq!(out.len(), 3);
+        let ids: std::collections::HashSet<_> = out.iter().map(|i| i.id).collect();
+        assert_eq!(ids, [1, 2, 3].into_iter().collect());
+    }
+
+    #[test]
+    fn weighted_shuffle_first_element_follows_weight_distribution() {
         let a = Item {
             id: 1,
             priority: 1,
@@ -743,19 +785,20 @@ mod tests {
             priority: 1,
             weight: 1,
         };
-        let items = vec![&a, &b];
         let n = 400;
         let mut count_a = 0;
         for _ in 0..n {
-            if weighted_pick(&items, key_of).unwrap().id == 1 {
+            let out = weighted_shuffle(vec![a, b], key_of);
+            if out[0].id == 1 {
                 count_a += 1;
             }
         }
-        assert!(count_a > n * 80 / 100, "a hits = {count_a} of {n}");
+        // 99:1 权重 → 第一个应有 >= 80% 概率是 a
+        assert!(count_a > n * 80 / 100, "a first hits = {count_a} of {n}");
     }
 
     #[test]
-    fn weighted_pick_zero_weight_falls_back_to_min_one() {
+    fn weighted_shuffle_zero_or_negative_weight_folds_to_one() {
         let a = Item {
             id: 1,
             priority: 1,
@@ -766,9 +809,7 @@ mod tests {
             priority: 1,
             weight: -5,
         };
-        let items = vec![&a, &b];
-        // 两个 weight 被折成 1:1，任何一个都可能被选
-        let picked = weighted_pick(&items, key_of).unwrap();
-        assert!(picked.id == 1 || picked.id == 2);
+        let out = weighted_shuffle(vec![a, b], key_of);
+        assert_eq!(out.len(), 2);
     }
 }
