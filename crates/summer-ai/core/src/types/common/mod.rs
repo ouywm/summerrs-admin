@@ -18,6 +18,6 @@ pub mod usage;
 pub use message::{
     AudioResponse, ChatMessage, ContentPart, ImageUrl, InputAudio, MessageContent, Role,
 };
-pub use stream_event::{ChatStreamEvent, StreamEnd, ToolCallDelta};
+pub use stream_event::{ChatStreamEvent, StreamEnd, StreamError, ToolCallDelta};
 pub use tool::{Tool, ToolCall, ToolCallFunction, ToolChoice, ToolFunction};
 pub use usage::{CompletionTokensDetails, FinishReason, PromptTokensDetails, Usage};

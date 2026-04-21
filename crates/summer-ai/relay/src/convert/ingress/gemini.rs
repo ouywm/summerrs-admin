@@ -206,7 +206,7 @@ fn append_gemini_content(
 
     for part in parts {
         match part {
-            GeminiPart::Text { text } => {
+            GeminiPart::Text { text, .. } => {
                 if parts_buf.is_empty() {
                     if !text_buf.is_empty() {
                         text_buf.push('\n');
@@ -264,8 +264,12 @@ fn append_gemini_content(
                     .unwrap_or_else(|| "call_unknown".to_string());
                 tool_responses.push((call_id, body));
             }
+            GeminiPart::ThoughtSignature { .. } => {
+                // Request 里极少出现独立的 thoughtSignature part（一般是 response 侧），
+                // 作为 canonical ChatRequest 时没对应字段可挂，忽略。
+            }
             GeminiPart::Other(_) => {
-                // 未知 part（executableCode / codeExecutionResult / thought 等）暂时忽略
+                // 未知 part（executableCode / codeExecutionResult 等）暂时忽略
             }
         }
     }
@@ -279,6 +283,7 @@ fn append_gemini_content(
             name: None,
             tool_calls: None,
             tool_call_id: Some(call_id),
+            reasoning_content: None,
             audio: None,
         });
     }
@@ -300,6 +305,7 @@ fn append_gemini_content(
     out.push(ChatMessage {
         role: role_enum,
         content: message_content,
+        reasoning_content: None,
         refusal: None,
         name: None,
         tool_calls: if tool_calls.is_empty() {
@@ -316,7 +322,7 @@ fn append_gemini_content(
 
 fn extract_text_from_part(part: GeminiPart) -> Option<String> {
     match part {
-        GeminiPart::Text { text } => Some(text),
+        GeminiPart::Text { text, .. } => Some(text),
         _ => None,
     }
 }
@@ -490,7 +496,7 @@ fn canonical_choice_to_gemini_candidate(choice: ChatChoice) -> AdapterResult<Gem
 
     if let Some(text) = message_text(&message) {
         if !text.is_empty() {
-            parts.push(GeminiPart::Text { text });
+            parts.push(GeminiPart::plain_text(text));
         }
     }
 
@@ -592,7 +598,7 @@ fn from_canonical_stream_event_impl(
                     index: state.emitted_candidates,
                     content: Some(GeminiContent {
                         role: Some("model".to_string()),
-                        parts: vec![GeminiPart::Text { text }],
+                        parts: vec![GeminiPart::plain_text(text)],
                     }),
                     finish_reason: None,
                     safety_ratings: Vec::new(),
@@ -611,6 +617,17 @@ fn from_canonical_stream_event_impl(
         }
         ChatStreamEvent::ToolCallDelta(_) => {
             // 流式工具调用增量 pending（见文件头 Known limitations）
+        }
+        ChatStreamEvent::ThoughtSignature { .. } => {
+            // Gemini 无对应的 thought signature 字段（仅 Claude extended thinking 有）。
+        }
+        ChatStreamEvent::UsageDelta(_) => {
+            // Gemini wire 的 usage 由 End 事件派生的最终 usageMetadata 承载，
+            // 中期 UsageDelta 只给 stream_driver 累计 final_usage 用。
+        }
+        ChatStreamEvent::Error(_) => {
+            // Gemini 流协议没有 inline error event；stream_driver 会 break 并置 Failure，
+            // HTTP 层的 trailer / 连接断开足以让客户端感知。
         }
         ChatStreamEvent::End(end) => {
             out.push(GeminiChatResponse {
@@ -870,7 +887,7 @@ mod tests {
         let candidate = &gem.candidates[0];
         assert_eq!(candidate.finish_reason.as_deref(), Some("STOP"));
         match &candidate.content.as_ref().unwrap().parts[0] {
-            GeminiPart::Text { text } => assert_eq!(text, "hello"),
+            GeminiPart::Text { text, .. } => assert_eq!(text, "hello"),
             _ => panic!(),
         }
         let u = gem.usage_metadata.unwrap();
@@ -890,6 +907,7 @@ mod tests {
                 message: ChatMessage {
                     role: Role::Assistant,
                     content: None,
+                    reasoning_content: None,
                     refusal: None,
                     name: None,
                     tool_calls: Some(vec![ToolCall {
@@ -959,7 +977,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         let parts = &out[0].candidates[0].content.as_ref().unwrap().parts;
         match &parts[0] {
-            GeminiPart::Text { text } => assert_eq!(text, "hi"),
+            GeminiPart::Text { text, .. } => assert_eq!(text, "hi"),
             _ => panic!(),
         }
     }

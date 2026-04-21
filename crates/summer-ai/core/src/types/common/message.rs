@@ -26,6 +26,13 @@ pub struct ChatMessage {
     /// assistant 仅返回 tool_calls / audio 时 content 可为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<MessageContent>,
+    /// 思考链内容（非流式响应用）。DeepSeek R1 / Kimi / OpenRouter 上游字段名
+    /// 是 `reasoning_content`；OpenAI o1 / Ollama 用 `reasoning`（反序列化时作
+    /// fallback，见 serde alias）。Claude 非流式的 `thinking` content block、
+    /// Gemini 的 `part.thought=true` 对应的 text 也映射到这里。流式下走
+    /// `ChatStreamEvent::ReasoningDelta`，此字段保持 None。
+    #[serde(default, alias = "reasoning", skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     /// o1 / GPT-4o 在拒绝回答时会填 `refusal` 而非 `content`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
@@ -57,6 +64,7 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             content: Some(MessageContent::text(text)),
+            reasoning_content: None,
             refusal: None,
             name: None,
             tool_calls: None,
@@ -69,6 +77,7 @@ impl ChatMessage {
         Self {
             role,
             content: Some(content),
+            reasoning_content: None,
             refusal: None,
             name: None,
             tool_calls: None,
@@ -181,6 +190,7 @@ mod tests {
                     },
                 },
             ])),
+            reasoning_content: None,
             refusal: None,
             name: None,
             tool_calls: None,
@@ -209,5 +219,36 @@ mod tests {
         .unwrap();
         assert_eq!(msg.refusal.as_deref(), Some("I can't help with that."));
         assert!(msg.content.is_none());
+    }
+
+    #[test]
+    fn reasoning_content_deserializes_from_either_field_name() {
+        // DeepSeek R1 / Kimi / OpenRouter 用 `reasoning_content`；OpenAI o1 / Ollama
+        // 的某些版本用 `reasoning`。serde alias 让 canonical 一个字段承接两者，
+        // 避免 non-stream 响应里思考链被直接吞掉。
+        let m1: ChatMessage = serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_content": "think A"
+        }))
+        .unwrap();
+        assert_eq!(m1.reasoning_content.as_deref(), Some("think A"));
+
+        let m2: ChatMessage = serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": "answer",
+            "reasoning": "think B"
+        }))
+        .unwrap();
+        assert_eq!(m2.reasoning_content.as_deref(), Some("think B"));
+    }
+
+    #[test]
+    fn reasoning_content_none_skipped_in_serialize() {
+        // None 时不能序列化成 `"reasoning_content": null`，否则发请求给上游会
+        // 被当成字段显式为 null，个别严格上游会 400。
+        let msg = ChatMessage::assistant("hello");
+        let value = serde_json::to_value(&msg).unwrap();
+        assert!(value.get("reasoning_content").is_none());
     }
 }

@@ -60,6 +60,7 @@ pub fn estimate_usage(req: &ChatRequest) -> Usage {
         total_tokens: prompt_tokens + completion_tokens,
         prompt_tokens_details: Some(PromptTokensDetails {
             cached_tokens: None,
+            cache_creation_tokens: None,
             audio_tokens: None,
         }),
         completion_tokens_details: Some(CompletionTokensDetails {
@@ -120,6 +121,7 @@ mod tests {
         ChatMessage {
             role: Role::User,
             content: Some(MessageContent::text(text)),
+            reasoning_content: None,
             refusal: None,
             name: None,
             tool_calls: None,
@@ -179,6 +181,7 @@ mod tests {
                     },
                 },
             ])),
+            reasoning_content: None,
             refusal: None,
             name: None,
             tool_calls: None,

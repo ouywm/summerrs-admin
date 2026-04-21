@@ -167,6 +167,21 @@ fn from_canonical_stream_event_impl(
             // 后续需要暴露给客户端时，再在这里映射到 `delta.reasoning` 或额外字段。
             Vec::new()
         }
+        ChatStreamEvent::ThoughtSignature { .. } => {
+            // Chat Completions wire 无对应字段（仅 Responses + Claude 支持 thinking）。忽略。
+            Vec::new()
+        }
+        ChatStreamEvent::UsageDelta(_) => {
+            // OpenAI chat wire 的 usage 只出现在末尾 usage-only chunk（由 End 事件派生），
+            // 中期 UsageDelta 只用于 stream_driver 累计 final_usage，不对外 emit 额外 chunk。
+            Vec::new()
+        }
+        ChatStreamEvent::Error(_) => {
+            // 上游中途报错：stream_driver 已接管，立刻终止流并置 Failure outcome；
+            // Chat wire 无标准错误 chunk 协议，这里不再 emit 任何 client chunk，
+            // 客户端依赖连接断开 + outcome 失败信号感知。
+            Vec::new()
+        }
         ChatStreamEvent::ToolCallDelta(tc) => {
             let ToolCallDelta {
                 index,

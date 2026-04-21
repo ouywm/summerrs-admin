@@ -25,9 +25,9 @@ use crate::types::ingress_wire::gemini::{
     GeminiUsageMetadata,
 };
 use crate::types::{
-    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart, FinishReason,
-    ImageUrl, MessageContent, PromptTokensDetails, Role, StreamEnd, ToolCall, ToolCallDelta,
-    ToolCallFunction, ToolFunction, Usage,
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, CompletionTokensDetails,
+    ContentPart, FinishReason, ImageUrl, MessageContent, PromptTokensDetails, Role, StreamEnd,
+    ToolCall, ToolCallDelta, ToolCallFunction, ToolFunction, Usage,
 };
 
 /// Google Gemini GenerateContent 协议（`generativelanguage.googleapis.com`）。
@@ -202,7 +202,7 @@ fn canonical_to_gemini_request(req: &ChatRequest) -> AdapterResult<GeminiGenerat
         let combined = system_texts.join("\n");
         Some(
             crate::types::ingress_wire::gemini::GeminiSystemInstruction {
-                parts: vec![GeminiPart::Text { text: combined }],
+                parts: vec![GeminiPart::plain_text(combined)],
             },
         )
     };
@@ -275,11 +275,11 @@ fn canonical_content_to_gemini_parts(msg: &ChatMessage) -> Vec<GeminiPart> {
     };
     match content {
         MessageContent::Text(s) if s.is_empty() => Vec::new(),
-        MessageContent::Text(s) => vec![GeminiPart::Text { text: s.clone() }],
+        MessageContent::Text(s) => vec![GeminiPart::plain_text(s.clone())],
         MessageContent::Parts(parts) => parts
             .iter()
             .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(GeminiPart::Text { text: text.clone() }),
+                ContentPart::Text { text } => Some(GeminiPart::plain_text(text.clone())),
                 ContentPart::ImageUrl { image_url } => Some(canonical_image_to_gemini(image_url)),
                 ContentPart::InputAudio { .. } => None, // Gemini 没有 inline audio（应走 fileData）
             })
@@ -361,18 +361,36 @@ fn gemini_candidate_to_choice(
     c: crate::types::ingress_wire::gemini::GeminiCandidate,
 ) -> ChatChoice {
     let mut text_buf = String::new();
+    let mut reasoning_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut tc_counter: u32 = 0;
 
     if let Some(content) = c.content {
         for part in content.parts {
             match part {
-                GeminiPart::Text { text } => {
+                // Gemini 2.5 legacy：`thought=true` 表示这段 text 是思考链；
+                // 之前按普通 text 拼进 content，reasoning 污染了客户端输出。
+                GeminiPart::Text {
+                    text,
+                    thought: true,
+                    ..
+                } => {
+                    if !reasoning_buf.is_empty() {
+                        reasoning_buf.push('\n');
+                    }
+                    reasoning_buf.push_str(&text);
+                }
+                GeminiPart::Text { text, .. } => {
                     if !text_buf.is_empty() {
                         text_buf.push('\n');
                     }
                     text_buf.push_str(&text);
+                    // Text.thought_signature 在 response 侧目前无处落——canonical
+                    // ChatMessage 没 signature 字段（流式才有 ChatStreamEvent::ThoughtSignature）。
+                    // 非流式 multi-turn 续接在这个协议下不常见，先忽略。
                 }
+                // 独立的 signature-only part（Gemini 3+）：同上，非流式 response 无对应字段，忽略。
+                GeminiPart::ThoughtSignature { .. } => {}
                 GeminiPart::FunctionCall { function_call } => {
                     tc_counter += 1;
                     let GeminiFunctionCall { name, args } = function_call;
@@ -397,6 +415,11 @@ fn gemini_candidate_to_choice(
                 None
             } else {
                 Some(MessageContent::Text(text_buf))
+            },
+            reasoning_content: if reasoning_buf.is_empty() {
+                None
+            } else {
+                Some(reasoning_buf)
             },
             refusal: None,
             name: None,
@@ -429,15 +452,27 @@ fn gemini_finish_reason_to_canonical(reason: &str) -> Option<FinishReason> {
 }
 
 fn gemini_usage_to_canonical(m: GeminiUsageMetadata) -> Usage {
+    // Gemini 2.5 用 `thoughtsTokenCount` 暴露思考消耗，必须映射到 canonical
+    // `completion_tokens_details.reasoning_tokens`（与 OpenAI o1 对齐），billing
+    // 才能按 reasoning 分桶计费。另外 Gemini 的 `candidatesTokenCount` 已经包含
+    // thoughtsTokenCount（文档要求），所以不要再加一次到 completion_tokens。
+    let completion_tokens_details = m.thoughts_token_count.map(|t| CompletionTokensDetails {
+        reasoning_tokens: Some(t),
+        audio_tokens: None,
+        accepted_prediction_tokens: None,
+        rejected_prediction_tokens: None,
+    });
+
     Usage {
         prompt_tokens: m.prompt_token_count,
         completion_tokens: m.candidates_token_count,
         total_tokens: m.total_token_count,
         prompt_tokens_details: m.cached_content_token_count.map(|c| PromptTokensDetails {
             cached_tokens: Some(c),
+            cache_creation_tokens: None,
             audio_tokens: None,
         }),
-        completion_tokens_details: None,
+        completion_tokens_details,
     }
 }
 
@@ -466,17 +501,46 @@ fn gemini_chunk_to_canonical(chunk: GeminiChatResponse) -> Vec<ChatStreamEvent> 
 
     let finish_reason_raw = candidate.finish_reason.clone();
 
-    // 先把 parts 里的 text 累积、functionCall 全部收集（并行 tool_call）
+    // 先把 parts 里的 text / reasoning / signature / functionCall 全部分桶。
+    // Gemini 一个 chunk 内可能同时含多种 part（思考中 + 部分正文 + signature），
+    // 必须全部 emit，不能丢任何一种。
     let parts = candidate.content.map(|c| c.parts).unwrap_or_default();
     let mut text_buf = String::new();
+    let mut reasoning_buf = String::new();
+    let mut thought_signatures: Vec<String> = Vec::new();
     let mut function_calls: Vec<GeminiFunctionCall> = Vec::new();
     for part in parts {
         match part {
-            GeminiPart::Text { text } => {
+            // Gemini 2.5 legacy：`thought=true` 的 text 是思考链，不是正文。
+            GeminiPart::Text {
+                text,
+                thought: true,
+                thought_signature,
+            } => {
+                if !reasoning_buf.is_empty() {
+                    reasoning_buf.push('\n');
+                }
+                reasoning_buf.push_str(&text);
+                if let Some(sig) = thought_signature {
+                    thought_signatures.push(sig);
+                }
+            }
+            // 正文 text part，可能同时挂 signature（Gemini 3+）。
+            GeminiPart::Text {
+                text,
+                thought_signature,
+                ..
+            } => {
                 if !text_buf.is_empty() {
                     text_buf.push('\n');
                 }
                 text_buf.push_str(&text);
+                if let Some(sig) = thought_signature {
+                    thought_signatures.push(sig);
+                }
+            }
+            GeminiPart::ThoughtSignature { thought_signature } => {
+                thought_signatures.push(thought_signature);
             }
             GeminiPart::FunctionCall { function_call } => {
                 function_calls.push(function_call);
@@ -487,8 +551,16 @@ fn gemini_chunk_to_canonical(chunk: GeminiChatResponse) -> Vec<ChatStreamEvent> 
 
     let mut events: Vec<ChatStreamEvent> = Vec::new();
 
+    if !reasoning_buf.is_empty() {
+        events.push(ChatStreamEvent::ReasoningDelta {
+            text: reasoning_buf,
+        });
+    }
     if !text_buf.is_empty() {
         events.push(ChatStreamEvent::TextDelta { text: text_buf });
+    }
+    for signature in thought_signatures {
+        events.push(ChatStreamEvent::ThoughtSignature { signature });
     }
 
     for (idx, fc) in function_calls.into_iter().enumerate() {
@@ -641,6 +713,7 @@ mod tests {
             vec![ChatMessage {
                 role: Role::Assistant,
                 content: Some(MessageContent::Text("let me check".to_string())),
+                reasoning_content: None,
                 refusal: None,
                 name: None,
                 tool_calls: Some(vec![ToolCall {
@@ -672,6 +745,7 @@ mod tests {
                 ChatMessage {
                     role: Role::Assistant,
                     content: None,
+                    reasoning_content: None,
                     refusal: None,
                     name: None,
                     tool_calls: Some(vec![ToolCall {
@@ -714,6 +788,7 @@ mod tests {
                         },
                     },
                 ])),
+                reasoning_content: None,
                 refusal: None,
                 name: None,
                 tool_calls: None,
@@ -880,5 +955,144 @@ mod tests {
                 other => panic!("expected ToolCallDelta, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn stream_thought_true_part_becomes_reasoning_delta() {
+        // Gemini 2.5 legacy：`{"text":"...","thought":true}` 这段 text 是思考链，
+        // 必须 emit ReasoningDelta 而不是 TextDelta —— 否则客户端正文里混入思考内容。
+        let t = target();
+        let raw = r#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[
+                    {"text":"let me think","thought":true}
+                ]}
+            }]
+        }"#;
+        let events = GeminiAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChatStreamEvent::ReasoningDelta { text } => assert_eq!(text, "let me think"),
+            other => panic!("expected ReasoningDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_thought_signature_only_part_is_emitted() {
+        // Gemini 3+ 的 signature-only part（无 text）必须被识别并透传，
+        // 不然 multi-turn thinking 续接时客户端没法回传 signature → 上游 400。
+        let t = target();
+        let raw = r#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[
+                    {"thoughtSignature":"sig-xyz"}
+                ]}
+            }]
+        }"#;
+        let events = GeminiAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChatStreamEvent::ThoughtSignature { signature } => {
+                assert_eq!(signature, "sig-xyz");
+            }
+            other => panic!("expected ThoughtSignature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_text_part_with_attached_signature_emits_both() {
+        // Gemini 3+ 可能把 signature 直接挂在正文 text part 上：
+        // `{"text":"hello","thoughtSignature":"sig"}`。text 要当正文，signature 单独 emit。
+        let t = target();
+        let raw = r#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[
+                    {"text":"hello","thoughtSignature":"sig-attached"}
+                ]}
+            }]
+        }"#;
+        let events = GeminiAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], ChatStreamEvent::TextDelta { ref text } if text == "hello"));
+        assert!(matches!(
+            events[1],
+            ChatStreamEvent::ThoughtSignature { ref signature } if signature == "sig-attached"
+        ));
+    }
+
+    #[test]
+    fn non_stream_thought_true_part_goes_to_reasoning_content() {
+        // 非流式 response：`thought=true` 的 text 进 message.reasoning_content，
+        // content 保留正文。
+        let t = target();
+        let body = br#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[
+                    {"text":"internal thought","thought":true},
+                    {"text":"public answer"}
+                ]},
+                "finishReason":"STOP"
+            }],
+            "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}
+        }"#;
+        let resp = GeminiAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        assert_eq!(msg.reasoning_content.as_deref(), Some("internal thought"));
+        match msg.content.as_ref().unwrap() {
+            MessageContent::Text(t) => assert_eq!(t, "public answer"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn usage_thoughts_token_count_maps_to_reasoning_tokens() {
+        // Gemini 2.5 的 usageMetadata.thoughtsTokenCount 是思考消耗，要映射到
+        // canonical completion_tokens_details.reasoning_tokens（和 OpenAI o1 对齐）。
+        // candidatesTokenCount 按 Gemini 文档已经包含 thoughtsTokenCount，
+        // 所以 completion_tokens 保持原值、不再叠加。
+        let t = target();
+        let body = br#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[{"text":"answer"}]},
+                "finishReason":"STOP"
+            }],
+            "usageMetadata":{
+                "promptTokenCount":10,
+                "candidatesTokenCount":50,
+                "thoughtsTokenCount":35,
+                "totalTokenCount":60
+            }
+        }"#;
+        let resp = GeminiAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        assert_eq!(resp.usage.prompt_tokens, 10);
+        assert_eq!(resp.usage.completion_tokens, 50); // 不把 35 加一次
+        let details =
+            resp.usage.completion_tokens_details.as_ref().expect(
+                "completion_tokens_details should be present when thoughts_token_count is set",
+            );
+        assert_eq!(details.reasoning_tokens, Some(35));
+    }
+
+    #[test]
+    fn usage_without_thoughts_token_count_keeps_details_none() {
+        // 上游不带 thoughtsTokenCount 时，completion_tokens_details 维持 None，
+        // 不要发 `{reasoning_tokens: None}` 的空 wrapper —— billing 根据存在性判断
+        // 是否有 thinking 消耗。
+        let t = target();
+        let body = br#"{
+            "candidates":[{
+                "index":0,
+                "content":{"role":"model","parts":[{"text":"hi"}]},
+                "finishReason":"STOP"
+            }],
+            "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}
+        }"#;
+        let resp = GeminiAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        assert!(resp.usage.completion_tokens_details.is_none());
     }
 }

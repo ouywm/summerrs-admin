@@ -32,7 +32,7 @@ use crate::types::ingress_wire::claude::{
 };
 use crate::types::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart, FinishReason,
-    ImageUrl, MessageContent, PromptTokensDetails, Role, StreamEnd, ToolCall, ToolCallDelta,
+    MessageContent, PromptTokensDetails, Role, StreamEnd, StreamError, ToolCall, ToolCallDelta,
     ToolCallFunction, Usage,
 };
 
@@ -110,9 +110,7 @@ impl Adapter for ClaudeAdapter {
         }
         let event: ClaudeStreamEvent =
             serde_json::from_str(trimmed).map_err(AdapterError::DeserializeResponse)?;
-        Ok(claude_stream_event_to_canonical(event)
-            .into_iter()
-            .collect())
+        Ok(claude_stream_event_to_canonical(event))
     }
 
     fn fetch_model_names(
@@ -471,6 +469,7 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
     } = resp;
 
     let mut text_buf = String::new();
+    let mut reasoning_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
 
     for block in content {
@@ -484,16 +483,30 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
             ClaudeContentBlock::ToolUse {
                 id, name, input, ..
             } => {
-                let arguments = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
+                // input=null 时 serde_json::to_string 会产出 "null" —— 客户端
+                // `JSON.parse("null")` 合法但 `arguments.x` 全部 undefined。
+                // 按 Anthropic 协议 tool_use.input 必是 object,null 视作空对象。
+                let arguments = if input.is_null() {
+                    "{}".to_string()
+                } else {
+                    serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string())
+                };
                 tool_calls.push(ToolCall {
                     id,
                     kind: "function".to_string(),
                     function: ToolCallFunction { name, arguments },
                 });
             }
-            // 其他 block（thinking / redacted_thinking / ...）作为文本拼接或忽略
-            ClaudeContentBlock::Thinking { .. }
-            | ClaudeContentBlock::RedactedThinking { .. }
+            // extended thinking 的文本进 reasoning_content，让客户端能看到思考链；
+            // redacted_thinking 只有加密 data 没有明文，忽略（multi-turn 续接在流式
+            // 路径里靠 ThoughtSignature 而非 content block）。
+            ClaudeContentBlock::Thinking { thinking, .. } => {
+                if !reasoning_buf.is_empty() {
+                    reasoning_buf.push('\n');
+                }
+                reasoning_buf.push_str(&thinking);
+            }
+            ClaudeContentBlock::RedactedThinking { .. }
             | ClaudeContentBlock::Image { .. }
             | ClaudeContentBlock::ToolResult { .. }
             | ClaudeContentBlock::Document { .. }
@@ -507,6 +520,11 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
             None
         } else {
             Some(MessageContent::Text(text_buf))
+        },
+        reasoning_content: if reasoning_buf.is_empty() {
+            None
+        } else {
+            Some(reasoning_buf)
         },
         refusal: None,
         name: None,
@@ -551,15 +569,33 @@ fn stop_reason_to_finish_reason(reason: ClaudeStopReason) -> FinishReason {
 }
 
 fn claude_usage_to_canonical(usage: ClaudeUsage) -> Usage {
-    let total = (usage.input_tokens as i64) + (usage.output_tokens as i64);
-    Usage {
-        prompt_tokens: usage.input_tokens as i64,
-        completion_tokens: usage.output_tokens as i64,
-        total_tokens: total,
-        prompt_tokens_details: usage.cache_read_input_tokens.map(|v| PromptTokensDetails {
-            cached_tokens: Some(v as i64),
+    // Anthropic 的 `input_tokens` 不包含 cache_creation / cache_read —— 三者相加
+    // 才是"真正的 prompt 侧 token 消耗"。直接用 input_tokens 会让 billing 少算
+    // cache 部分（0.1x 的 read、1.25x 的 write 全丢），也和 OpenAI 风格里
+    // prompt_tokens 含 cached_tokens 的惯例不一致。
+    let input = usage.input_tokens as i64;
+    let cache_creation = usage.cache_creation_input_tokens.map(|v| v as i64);
+    let cache_read = usage.cache_read_input_tokens.map(|v| v as i64);
+
+    let prompt_tokens = input + cache_creation.unwrap_or(0) + cache_read.unwrap_or(0);
+    let completion_tokens = usage.output_tokens as i64;
+    let total_tokens = prompt_tokens + completion_tokens;
+
+    let prompt_tokens_details = if cache_creation.is_some() || cache_read.is_some() {
+        Some(PromptTokensDetails {
+            cached_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
             audio_tokens: None,
-        }),
+        })
+    } else {
+        None
+    };
+
+    Usage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        prompt_tokens_details,
         completion_tokens_details: None,
     }
 }
@@ -568,64 +604,83 @@ fn claude_usage_to_canonical(usage: ClaudeUsage) -> Usage {
 // Claude SSE event → canonical stream event
 // ---------------------------------------------------------------------------
 
-fn claude_stream_event_to_canonical(event: ClaudeStreamEvent) -> Option<ChatStreamEvent> {
+fn claude_stream_event_to_canonical(event: ClaudeStreamEvent) -> Vec<ChatStreamEvent> {
     match event {
         ClaudeStreamEvent::MessageStart { message } => {
-            let ClaudeStreamMessageStart { model, .. } = message;
-            Some(ChatStreamEvent::Start {
+            // message_start 是 Claude stream 里唯一携带完整 prompt 侧 usage 的事件：
+            // `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` 都
+            // 在这儿。后续 `message_delta.usage` 只会累积 output_tokens，prompt 侧是 0。
+            // 因此这里除了 Start 之外还要 emit 一个 UsageDelta 把 prompt/cache 带出去，
+            // 不然 stream_driver 的 final_usage 在流结尾拿到的 prompt_tokens 就是 0。
+            let ClaudeStreamMessageStart { model, usage, .. } = message;
+            let mut events = Vec::with_capacity(2);
+            events.push(ChatStreamEvent::Start {
                 adapter: "anthropic".to_string(),
                 model,
-            })
+            });
+            let canonical_usage = claude_usage_to_canonical(usage);
+            if canonical_usage.prompt_tokens > 0
+                || canonical_usage.completion_tokens > 0
+                || canonical_usage.prompt_tokens_details.is_some()
+            {
+                events.push(ChatStreamEvent::UsageDelta(canonical_usage));
+            }
+            events
         }
         ClaudeStreamEvent::ContentBlockStart {
             index,
             content_block,
         } => match content_block {
             ClaudeStreamContentBlock::ToolUse { id, name, .. } => {
-                Some(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+                vec![ChatStreamEvent::ToolCallDelta(ToolCallDelta {
                     index: index as i32,
                     id: Some(id),
                     name: Some(name),
                     arguments_delta: None,
-                }))
+                })]
             }
             // text / thinking 的 content_block_start 里 text 通常空 → 忽略，等 delta
-            _ => None,
+            _ => Vec::new(),
         },
         ClaudeStreamEvent::ContentBlockDelta { index, delta } => match delta {
-            ClaudeStreamDelta::TextDelta { text } => Some(ChatStreamEvent::TextDelta { text }),
+            ClaudeStreamDelta::TextDelta { text } => vec![ChatStreamEvent::TextDelta { text }],
             ClaudeStreamDelta::ThinkingDelta { thinking } => {
-                Some(ChatStreamEvent::ReasoningDelta { text: thinking })
+                vec![ChatStreamEvent::ReasoningDelta { text: thinking }]
             }
             ClaudeStreamDelta::InputJsonDelta { partial_json } => {
-                Some(ChatStreamEvent::ToolCallDelta(ToolCallDelta {
+                vec![ChatStreamEvent::ToolCallDelta(ToolCallDelta {
                     index: index as i32,
                     id: None,
                     name: None,
                     arguments_delta: Some(partial_json),
-                }))
+                })]
             }
-            ClaudeStreamDelta::SignatureDelta { .. } => None,
+            // signature_delta 是 Claude extended thinking 的 multi-turn 续接凭证——
+            // 下一轮客户端要把完整 signature 回传上游以继承思考状态。丢弃会导致
+            // thinking + multi-turn 的第二轮 400。透传给 ingress 让客户端拿到。
+            ClaudeStreamDelta::SignatureDelta { signature } => {
+                vec![ChatStreamEvent::ThoughtSignature { signature }]
+            }
         },
-        ClaudeStreamEvent::ContentBlockStop { .. } => None,
+        ClaudeStreamEvent::ContentBlockStop { .. } => Vec::new(),
         ClaudeStreamEvent::MessageDelta { delta, usage } => {
             let finish_reason = delta.stop_reason.map(stop_reason_to_finish_reason);
             let canonical_usage = usage.map(claude_usage_to_canonical);
-            Some(ChatStreamEvent::End(StreamEnd {
+            vec![ChatStreamEvent::End(StreamEnd {
                 finish_reason,
                 usage: canonical_usage,
-            }))
+            })]
         }
-        ClaudeStreamEvent::MessageStop => None, // 已由 message_delta 产出 End
-        ClaudeStreamEvent::Ping => None,
+        ClaudeStreamEvent::MessageStop => Vec::new(), // 已由 message_delta 产出 End
+        ClaudeStreamEvent::Ping => Vec::new(),
         ClaudeStreamEvent::Error { error } => {
-            // 把 error 作为一个 End 事件透传，携带 stop_reason=None
-            tracing::warn!(error.kind = %error.kind, error.message = %error.message,
-                "anthropic stream error event");
-            Some(ChatStreamEvent::End(StreamEnd {
-                finish_reason: Some(FinishReason::Stop),
-                usage: None,
-            }))
+            // 上游 SSE 中途报错：emit canonical Error，stream_driver 会终止流并置
+            // outcome 为 Failure（触发 billing refund / tracking failure）。
+            // 之前假装成 End{Stop} 会让计费 settle 成功、客户端以为响应完整。
+            vec![ChatStreamEvent::Error(StreamError {
+                message: error.message,
+                kind: Some(error.kind),
+            })]
         }
     }
 }
@@ -731,6 +786,7 @@ mod tests {
                 ChatMessage {
                     role: Role::Assistant,
                     content: None,
+                    reasoning_content: None,
                     refusal: None,
                     name: None,
                     tool_calls: Some(vec![ToolCall {
@@ -769,6 +825,7 @@ mod tests {
             vec![ChatMessage {
                 role: Role::Assistant,
                 content: Some(MessageContent::Text("let me check".to_string())),
+                reasoning_content: None,
                 refusal: None,
                 name: None,
                 tool_calls: Some(vec![ToolCall {
@@ -814,6 +871,9 @@ mod tests {
 
     #[test]
     fn parse_response_basic() {
+        // Claude 的 input_tokens 不含 cache_read / cache_creation —— canonical 层
+        // 必须把三者相加作为 prompt_tokens（对齐 OpenAI 语义里 prompt 含 cached），
+        // 不然 billing 会少算 cache 部分的 token（0.1x 的 read、1.25x 的 write）。
         let t = target();
         let body = br#"{
             "id":"msg_1","type":"message","role":"assistant",
@@ -825,17 +885,90 @@ mod tests {
         let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
         assert_eq!(resp.id, "msg_1");
         assert_eq!(resp.first_text(), Some("hello"));
-        assert_eq!(resp.usage.prompt_tokens, 5);
+        // 5 (input) + 3 (cache_read) = 8
+        assert_eq!(resp.usage.prompt_tokens, 8);
         assert_eq!(resp.usage.completion_tokens, 2);
-        assert_eq!(
-            resp.usage
-                .prompt_tokens_details
-                .as_ref()
-                .unwrap()
-                .cached_tokens,
-            Some(3)
-        );
+        assert_eq!(resp.usage.total_tokens, 10);
+        let details = resp.usage.prompt_tokens_details.as_ref().unwrap();
+        assert_eq!(details.cached_tokens, Some(3));
+        assert_eq!(details.cache_creation_tokens, None);
         assert_eq!(resp.choices[0].finish_reason, Some(FinishReason::Stop));
+    }
+
+    #[test]
+    fn parse_response_with_cache_creation_sums_into_prompt_tokens() {
+        // cache_creation 是 1.25x 计费的 "写入 prompt cache"，必须进 prompt_tokens
+        // 且在 prompt_tokens_details.cache_creation_tokens 独立暴露。
+        let t = target();
+        let body = br#"{
+            "id":"msg_x","type":"message","role":"assistant",
+            "content":[{"type":"text","text":"hi"}],
+            "model":"claude-sonnet-4-5",
+            "stop_reason":"end_turn",
+            "usage":{
+                "input_tokens":10,
+                "output_tokens":4,
+                "cache_creation_input_tokens":200,
+                "cache_read_input_tokens":80
+            }
+        }"#;
+        let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        // 10 + 200 + 80 = 290
+        assert_eq!(resp.usage.prompt_tokens, 290);
+        assert_eq!(resp.usage.completion_tokens, 4);
+        assert_eq!(resp.usage.total_tokens, 294);
+        let details = resp.usage.prompt_tokens_details.as_ref().unwrap();
+        assert_eq!(details.cached_tokens, Some(80));
+        assert_eq!(details.cache_creation_tokens, Some(200));
+    }
+
+    #[test]
+    fn parse_response_extended_thinking_goes_into_reasoning_content() {
+        // Claude extended thinking 的 content block 是 `{"type":"thinking","thinking":"..."}`，
+        // 非流式响应下之前直接丢弃 —— 客户端完全看不到思考链。现在入 canonical
+        // ChatMessage.reasoning_content，egress 再决定是否透传。
+        let t = target();
+        let body = br#"{
+            "id":"msg_t","type":"message","role":"assistant",
+            "content":[
+                {"type":"thinking","thinking":"let me reason"},
+                {"type":"text","text":"final answer"}
+            ],
+            "model":"claude-sonnet-4-5",
+            "stop_reason":"end_turn",
+            "usage":{"input_tokens":5,"output_tokens":2}
+        }"#;
+        let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        assert_eq!(
+            msg.reasoning_content.as_deref(),
+            Some("let me reason"),
+            "thinking block should populate reasoning_content"
+        );
+        // content 仍只含正文
+        match msg.content.as_ref().unwrap() {
+            MessageContent::Text(t) => assert_eq!(t, "final answer"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_response_tool_use_input_null_becomes_empty_object() {
+        // 上游极少会把 `tool_use.input` 置为 null（协议上要求是 object），但若发生
+        // 过，之前会被 `serde_json::to_string` 序列成 `"null"`，客户端 `JSON.parse`
+        // 后得到 `null` 而非 `{}`，`arguments.x` 全部 undefined 直接炸参数。
+        // 这里锁死 null → `"{}"`。
+        let t = target();
+        let body = br#"{
+            "id":"msg_n","type":"message","role":"assistant",
+            "content":[{"type":"tool_use","id":"tu_x","name":"noop","input":null}],
+            "model":"claude-sonnet-4-5",
+            "stop_reason":"tool_use",
+            "usage":{"input_tokens":1,"output_tokens":1}
+        }"#;
+        let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let tcs = resp.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tcs[0].function.arguments, "{}");
     }
 
     #[test]
@@ -858,6 +991,58 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn stream_message_start_emits_start_then_usage_delta() {
+        // message_start 是 Claude stream 里唯一送 prompt 侧 usage 的事件：
+        // input_tokens + cache_creation + cache_read 全部在这儿。必须 emit 出
+        // Start + UsageDelta 两个事件，否则 stream_driver 的 final_usage
+        // 在流尾只会拿到 message_delta 的 output_tokens，prompt 整条归 0，
+        // billing 无法为 prompt 花费计费。
+        let t = target();
+        let raw = r#"{
+            "type":"message_start",
+            "message":{"id":"msg_1","type":"message","role":"assistant","content":[],
+                "model":"claude-sonnet-4-5",
+                "usage":{
+                    "input_tokens":12,
+                    "output_tokens":0,
+                    "cache_creation_input_tokens":200,
+                    "cache_read_input_tokens":80
+                }
+            }
+        }"#;
+        let events = ClaudeAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 2, "expected Start + UsageDelta");
+        assert!(matches!(events[0], ChatStreamEvent::Start { .. }));
+        match &events[1] {
+            ChatStreamEvent::UsageDelta(u) => {
+                // 12 + 200 + 80 = 292
+                assert_eq!(u.prompt_tokens, 292);
+                assert_eq!(u.completion_tokens, 0);
+                let details = u.prompt_tokens_details.as_ref().unwrap();
+                assert_eq!(details.cached_tokens, Some(80));
+                assert_eq!(details.cache_creation_tokens, Some(200));
+            }
+            other => panic!("expected UsageDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_message_start_without_prompt_usage_skips_usage_delta() {
+        // 上游偶尔发 message_start 但 input_tokens=0 + 无 cache 字段（e.g. 预热
+        // / replay）；此时 emit 一个空 UsageDelta 只会让 stream_driver 无意义
+        // merge，干脆只发 Start。
+        let t = target();
+        let raw = r#"{
+            "type":"message_start",
+            "message":{"id":"msg_1","type":"message","role":"assistant","content":[],
+                "model":"claude-sonnet-4-5","usage":{"input_tokens":0,"output_tokens":0}}
+        }"#;
+        let events = ClaudeAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ChatStreamEvent::Start { .. }));
     }
 
     #[test]
@@ -949,5 +1134,48 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn stream_error_event_maps_to_canonical_error() {
+        // Claude `event: error` 必须映射到 canonical `Error`，stream_driver 据此
+        // 走 Failure 路径（refund billing / 记失败）；之前假装成 End+Stop 会
+        // 让计费成功落库、客户端以为响应完整。
+        let t = target();
+        let raw = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        let e = ClaudeAdapter::parse_chat_stream_event(&t, raw)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        match e {
+            ChatStreamEvent::Error(err) => {
+                assert_eq!(err.message, "Overloaded");
+                assert_eq!(err.kind.as_deref(), Some("overloaded_error"));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_signature_delta_maps_to_thought_signature() {
+        // Claude extended thinking 的 `signature_delta` 用于 multi-turn 续接：
+        // 下一轮客户端要回传完整 signature 上游才能接着思考。之前直接丢弃
+        // 会让 thinking + multi-turn 的下一轮 400（signature 缺失）。
+        let t = target();
+        let raw = r#"{
+            "type":"content_block_delta",
+            "index":0,
+            "delta":{"type":"signature_delta","signature":"EqMC..."}
+        }"#;
+        let e = ClaudeAdapter::parse_chat_stream_event(&t, raw)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        match e {
+            ChatStreamEvent::ThoughtSignature { signature } => assert_eq!(signature, "EqMC..."),
+            other => panic!("expected ThoughtSignature, got {other:?}"),
+        }
     }
 }

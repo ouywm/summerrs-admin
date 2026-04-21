@@ -57,12 +57,40 @@ pub struct GeminiSystemInstruction {
     pub parts: Vec<GeminiPart>,
 }
 
-/// Gemini Part —— 5 种主要形态，用 untagged + 单字段 struct 表达。
+/// Gemini Part —— 多种 part 形态，用 untagged enum 表达。
+///
+/// 字段组合变体（protocol nuances）：
+/// - `Text { text, thought: false, .. }` — 正常文本输出。
+/// - `Text { text, thought: true, .. }` — Gemini 2.5 legacy 的思考链文本；
+///   直接当 reasoning 处理，不能混进普通 content。
+/// - `Text { text, thought_signature: Some(_), .. }` — Gemini 3+ 在正文 part
+///   上直接挂 signature。signature 要透传给客户端做 multi-turn 续接。
+/// - `ThoughtSignature { thought_signature }` — Gemini 3+ 独立的 signature-only
+///   part（无 text 字段）。
+///
+/// 变体顺序决定 untagged 反序列化优先级：`Text` 在前以便正常文本/thought legacy
+/// 能被识别；`ThoughtSignature` 放后面，`{"thoughtSignature":"..."}` 缺少 text
+/// 字段时 Text 变体失败 → 自动 fallback 到此变体。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GeminiPart {
     Text {
         text: String,
+        /// Gemini 2.5 legacy：`thought=true` 表示这段 text 是思考链，不是正文。
+        #[serde(default, skip_serializing_if = "is_false")]
+        thought: bool,
+        /// Gemini 3+ 的 thought signature（multi-turn 续接凭证）。
+        #[serde(
+            rename = "thoughtSignature",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        thought_signature: Option<String>,
+    },
+    /// 独立的 signature-only part（无 text 字段；Gemini 3+）。
+    ThoughtSignature {
+        #[serde(rename = "thoughtSignature")]
+        thought_signature: String,
     },
     InlineData {
         #[serde(rename = "inlineData")]
@@ -80,8 +108,23 @@ pub enum GeminiPart {
         #[serde(rename = "functionResponse")]
         function_response: GeminiFunctionResponse,
     },
-    /// 代码执行 / 视频 metadata / thought 等 —— 透传。
+    /// 代码执行 / 视频 metadata 等 —— 透传。
     Other(serde_json::Value),
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl GeminiPart {
+    /// 纯文本 part，`thought=false` 且无 signature —— 最常见的构造路径。
+    pub fn plain_text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            thought: false,
+            thought_signature: None,
+        }
+    }
 }
 
 /// 行内数据（图像/音频 base64）。
@@ -309,7 +352,7 @@ mod tests {
         assert_eq!(req.contents.len(), 1);
         assert_eq!(req.contents[0].role.as_deref(), Some("user"));
         match &req.contents[0].parts[0] {
-            GeminiPart::Text { text } => assert_eq!(text, "hi"),
+            GeminiPart::Text { text, .. } => assert_eq!(text, "hi"),
             _ => panic!("expected Text part"),
         }
     }
@@ -324,7 +367,7 @@ mod tests {
         let sys = req.system_instruction.unwrap();
         assert_eq!(sys.parts.len(), 1);
         match &sys.parts[0] {
-            GeminiPart::Text { text } => assert_eq!(text, "you are helpful"),
+            GeminiPart::Text { text, .. } => assert_eq!(text, "you are helpful"),
             _ => panic!("expected Text part"),
         }
     }

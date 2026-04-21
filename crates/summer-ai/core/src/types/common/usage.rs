@@ -25,9 +25,16 @@ pub struct Usage {
 /// `prompt_tokens` 的细分。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PromptTokensDetails {
-    /// Prompt cache 命中的 token 数。
+    /// Prompt cache 命中的 token 数（读，Claude 计费 0.1x / OpenAI 默认 0.5x）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<i64>,
+    /// Prompt cache 写入的 token 数（Claude 计费 1.25x，OpenAI 协议无此概念）。
+    ///
+    /// Anthropic 的 `usage.cache_creation_input_tokens` 映射到这里；细分 5m/1h
+    /// TTL 还会同时出现在上游 wire 的 `cache_creation` 对象，但 canonical 层只
+    /// 暴露总量，细分透传到各 ingress 的 extra 字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<i64>,
     /// 音频输入 token 数（多模态）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_tokens: Option<i64>,

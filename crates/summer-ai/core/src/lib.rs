@@ -25,6 +25,6 @@ pub use types::{
     AudioOutputOptions, AudioResponse, ChatChoice, ChatMessage, ChatRequest, ChatResponse,
     ChatStreamEvent, CompletionTokensDetails, ContentPart, FinishReason, ImageUrl, InputAudio,
     JsonSchemaFormat, MessageContent, ModelInfo, ModelList, PromptTokensDetails, ResponseFormat,
-    Role, StreamEnd, StreamOptions, Tool, ToolCall, ToolCallDelta, ToolCallFunction, ToolChoice,
-    ToolFunction, Usage,
+    Role, StreamEnd, StreamError, StreamOptions, Tool, ToolCall, ToolCallDelta, ToolCallFunction,
+    ToolChoice, ToolFunction, Usage,
 };

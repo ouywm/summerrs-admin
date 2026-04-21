@@ -35,7 +35,10 @@ use futures::stream::Stream;
 use serde::Serialize;
 use tokio::sync::oneshot;
 
-use summer_ai_core::{AdapterDispatcher, AdapterKind, ChatStreamEvent, ServiceTarget, Usage};
+use summer_ai_core::{
+    AdapterDispatcher, AdapterKind, ChatStreamEvent, CompletionTokensDetails, PromptTokensDetails,
+    ServiceTarget, StreamError, Usage,
+};
 use summer_web::axum::body::Body;
 use summer_web::axum::http::{HeaderValue, StatusCode, header};
 use summer_web::axum::response::{IntoResponse, Response};
@@ -259,11 +262,42 @@ where
                 }
 
                 for canonical_event in canonical_events {
-                    // 抓 usage —— End 事件里带，直接覆盖（后到的更权威）
-                    if let ChatStreamEvent::End(ref end_evt) = canonical_event
-                        && let Some(u) = &end_evt.usage
-                    {
-                        final_usage = Some(u.clone());
+                    // 抓 usage ——
+                    // - `UsageDelta`：上游中期派发（Claude message_start 的 input+cache
+                    //   就走这里，prompt 侧齐全、output=0）；按字段 merge，不能覆盖。
+                    // - `End.usage`：上游尾块（Claude message_delta 的 output；OpenAI
+                    //   末尾 usage-only chunk 的完整 usage）。也走 merge，让先到的
+                    //   prompt 数据不被 output-only 的 usage 覆盖成 0。
+                    match &canonical_event {
+                        ChatStreamEvent::UsageDelta(u) => {
+                            final_usage = Some(merge_stream_usage(final_usage.take(), u));
+                        }
+                        ChatStreamEvent::End(end_evt) => {
+                            if let Some(u) = &end_evt.usage {
+                                final_usage = Some(merge_stream_usage(final_usage.take(), u));
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    // Error 事件：立刻终止流，置 Failure outcome。不再 yield 后续
+                    // 事件，避免客户端收到正常的 completed 信号。
+                    if let ChatStreamEvent::Error(ref err) = canonical_event {
+                        tracing::warn!(
+                            error.kind = ?err.kind,
+                            error.message = %err.message,
+                            "upstream stream error event"
+                        );
+                        if let Some(tx) = outcome_slot.take() {
+                            let _ = tx.send(build_stream_error_outcome(
+                                err,
+                                upstream_status,
+                                upstream_request_id.clone(),
+                                final_usage.clone(),
+                            ));
+                        }
+                        upstream_done = true;
+                        break;
                     }
 
                     // ingress 转成客户端 wire events
@@ -300,11 +334,15 @@ where
         // OpenAI 协议约定流尾要显式发一个 `data: [DONE]\n\n` 告诉 SDK 停止读。
         // 其它协议（Claude message_stop / Gemini candidate.finish_reason /
         // Responses response.completed）的终止信号已由各自 Egress 在上面 yield 出去。
-        if matches!(client_format, ClientSseFormat::OpenAI) {
+        //
+        // `outcome_slot.is_none()` 表示已经提前送过 outcome（错误路径会 .take() + send
+        // Failure），这时候不能再发 [DONE]——否则 OpenAI SDK 把 [DONE] 当正常完成，
+        // 客户端看不到错误。
+        if outcome_slot.is_some() && matches!(client_format, ClientSseFormat::OpenAI) {
             yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
         }
 
-        // 正常结束：送 outcome
+        // 正常结束：送 outcome（错误路径已经 .take() 过，这里 Option 为 None 不执行）
         if let Some(tx) = outcome_slot.take() {
             let _ = tx.send(StreamOutcome {
                 upstream_status,
@@ -333,6 +371,106 @@ fn extract_upstream_request_id(headers: &reqwest::header::HeaderMap) -> Option<S
         }
     }
     None
+}
+
+/// 按字段 merge 两个 stream 过程中的 `Usage` 快照。
+///
+/// 为什么要 merge：Claude stream 上游的 prompt 侧 usage 在 `message_start` 发（对应
+/// 我们的 `UsageDelta`，带 input_tokens + cache），completion 侧在 `message_delta`
+/// 发（对应 `End.usage`，只带 output_tokens）。若直接覆盖，后到的 `End.usage`
+/// 会把 prompt_tokens 拉回 0，billing 就看不到 prompt 花费。
+///
+/// Merge 规则：
+/// - `prompt_tokens` / `completion_tokens`：取非零值（后到覆盖，但 0 不会抹掉非零）。
+/// - `total_tokens`：merge 完后重算为 prompt + completion（上游给的 total 可能
+///   在中期只算了部分，不足信）。
+/// - `prompt_tokens_details` / `completion_tokens_details`：取非 `None`，内部
+///   按字段同样"非零/非 None 覆盖"合并。
+fn merge_stream_usage(prev: Option<Usage>, new: &Usage) -> Usage {
+    let prev = prev.unwrap_or_default();
+    let prompt_tokens = if new.prompt_tokens > 0 {
+        new.prompt_tokens
+    } else {
+        prev.prompt_tokens
+    };
+    let completion_tokens = if new.completion_tokens > 0 {
+        new.completion_tokens
+    } else {
+        prev.completion_tokens
+    };
+    let prompt_tokens_details = merge_prompt_tokens_details(
+        prev.prompt_tokens_details,
+        new.prompt_tokens_details.clone(),
+    );
+    let completion_tokens_details = merge_completion_tokens_details(
+        prev.completion_tokens_details,
+        new.completion_tokens_details.clone(),
+    );
+    Usage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+        prompt_tokens_details,
+        completion_tokens_details,
+    }
+}
+
+fn merge_prompt_tokens_details(
+    prev: Option<PromptTokensDetails>,
+    new: Option<PromptTokensDetails>,
+) -> Option<PromptTokensDetails> {
+    match (prev, new) {
+        (None, n) => n,
+        (p, None) => p,
+        (Some(p), Some(n)) => Some(PromptTokensDetails {
+            cached_tokens: n.cached_tokens.or(p.cached_tokens),
+            cache_creation_tokens: n.cache_creation_tokens.or(p.cache_creation_tokens),
+            audio_tokens: n.audio_tokens.or(p.audio_tokens),
+        }),
+    }
+}
+
+fn merge_completion_tokens_details(
+    prev: Option<CompletionTokensDetails>,
+    new: Option<CompletionTokensDetails>,
+) -> Option<CompletionTokensDetails> {
+    match (prev, new) {
+        (None, n) => n,
+        (p, None) => p,
+        (Some(p), Some(n)) => Some(CompletionTokensDetails {
+            reasoning_tokens: n.reasoning_tokens.or(p.reasoning_tokens),
+            audio_tokens: n.audio_tokens.or(p.audio_tokens),
+            accepted_prediction_tokens: n
+                .accepted_prediction_tokens
+                .or(p.accepted_prediction_tokens),
+            rejected_prediction_tokens: n
+                .rejected_prediction_tokens
+                .or(p.rejected_prediction_tokens),
+        }),
+    }
+}
+
+/// 根据上游 SSE 里带出来的 `StreamError`，组装给 handler 的 `Failure` outcome。
+///
+/// 错误信息前缀 `upstream stream error` 让 tracking / billing 层一眼分辨
+/// 这是上游中途抛错（非传输断开），`kind` 若有则附带（Claude 的
+/// `overloaded_error` / OpenAI 的 `insufficient_quota` 等）。
+fn build_stream_error_outcome(
+    err: &StreamError,
+    upstream_status: u16,
+    upstream_request_id: Option<String>,
+    usage: Option<Usage>,
+) -> StreamOutcome {
+    let error_msg = match &err.kind {
+        Some(k) => format!("upstream stream error ({k}): {}", err.message),
+        None => format!("upstream stream error: {}", err.message),
+    };
+    StreamOutcome {
+        upstream_status,
+        upstream_request_id,
+        usage,
+        error: Some(error_msg),
+    }
 }
 
 /// 找到一个完整 SSE event 的结束位置（`\n\n` 之后的索引）。
@@ -491,9 +629,7 @@ mod tests {
                 index: 0,
                 content: Some(GeminiContent {
                     role: Some("model".to_string()),
-                    parts: vec![GeminiPart::Text {
-                        text: "hi".to_string(),
-                    }],
+                    parts: vec![GeminiPart::plain_text("hi")],
                 }),
                 finish_reason: None,
                 safety_ratings: Vec::new(),
@@ -509,5 +645,140 @@ mod tests {
         assert!(s.starts_with("data: "));
         assert!(s.ends_with("\n\n"));
         assert!(!s.contains("event:"));
+    }
+
+    #[test]
+    fn build_stream_error_outcome_includes_kind_when_present() {
+        // 上游带 kind 时，错误消息要附上括号形式的 kind，方便 tracking / billing
+        // 区分不同类型的上游错误（overloaded_error / insufficient_quota 等）。
+        let outcome = build_stream_error_outcome(
+            &StreamError {
+                message: "Overloaded".to_string(),
+                kind: Some("overloaded_error".to_string()),
+            },
+            200,
+            Some("req-123".to_string()),
+            None,
+        );
+        assert_eq!(outcome.upstream_status, 200);
+        assert_eq!(outcome.upstream_request_id.as_deref(), Some("req-123"));
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("upstream stream error (overloaded_error): Overloaded")
+        );
+    }
+
+    #[test]
+    fn build_stream_error_outcome_omits_kind_parens_when_absent() {
+        // 无 kind 时不要生成空括号 `()` —— 之前若直接 format 会出 `error (): msg`，
+        // 日志检索很难看。
+        let outcome = build_stream_error_outcome(
+            &StreamError {
+                message: "boom".to_string(),
+                kind: None,
+            },
+            502,
+            None,
+            None,
+        );
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("upstream stream error: boom")
+        );
+        assert_eq!(outcome.upstream_status, 502);
+    }
+
+    #[test]
+    fn build_stream_error_outcome_propagates_usage() {
+        // 错误发生前已经累积的 usage 要带到 outcome，让 billing 层能按已产出的
+        // tokens 退费/计费，而不是整单丢弃。
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            ..Default::default()
+        };
+        let outcome = build_stream_error_outcome(
+            &StreamError {
+                message: "x".to_string(),
+                kind: None,
+            },
+            200,
+            None,
+            Some(usage),
+        );
+        let u = outcome.usage.expect("usage should be carried through");
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 5);
+    }
+
+    #[test]
+    fn merge_stream_usage_preserves_prompt_tokens_when_followup_has_zero() {
+        // Claude 的典型流式序列：
+        //   1) message_start → UsageDelta{prompt=290, completion=0, cache=(200,80)}
+        //   2) message_delta → End{usage{prompt=0, completion=42}}
+        // 若按"后到覆盖"，第二步会把 prompt 冲成 0 —— billing 只看到 completion。
+        // merge 必须保留第一步的 prompt / cache。
+        let first = Usage {
+            prompt_tokens: 290,
+            completion_tokens: 0,
+            total_tokens: 290,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(80),
+                cache_creation_tokens: Some(200),
+                audio_tokens: None,
+            }),
+            completion_tokens_details: None,
+        };
+        let second = Usage {
+            prompt_tokens: 0,
+            completion_tokens: 42,
+            total_tokens: 42,
+            ..Default::default()
+        };
+
+        let merged = merge_stream_usage(Some(first), &second);
+
+        assert_eq!(merged.prompt_tokens, 290);
+        assert_eq!(merged.completion_tokens, 42);
+        assert_eq!(merged.total_tokens, 332);
+        let details = merged.prompt_tokens_details.as_ref().unwrap();
+        assert_eq!(details.cached_tokens, Some(80));
+        assert_eq!(details.cache_creation_tokens, Some(200));
+    }
+
+    #[test]
+    fn merge_stream_usage_newer_nonzero_overrides_older() {
+        // OpenAI 的末尾 usage-only chunk 可能会把 prompt / completion 都重刷一遍，
+        // 此时 new 的非零值要覆盖 prev（更权威）。
+        let first = Usage {
+            prompt_tokens: 5,
+            completion_tokens: 3,
+            total_tokens: 8,
+            ..Default::default()
+        };
+        let second = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 7,
+            total_tokens: 17,
+            ..Default::default()
+        };
+        let merged = merge_stream_usage(Some(first), &second);
+        assert_eq!(merged.prompt_tokens, 10);
+        assert_eq!(merged.completion_tokens, 7);
+        assert_eq!(merged.total_tokens, 17);
+    }
+
+    #[test]
+    fn merge_stream_usage_prev_none_uses_new() {
+        let new = Usage {
+            prompt_tokens: 5,
+            completion_tokens: 2,
+            total_tokens: 7,
+            ..Default::default()
+        };
+        let merged = merge_stream_usage(None, &new);
+        assert_eq!(merged.prompt_tokens, 5);
+        assert_eq!(merged.completion_tokens, 2);
     }
 }

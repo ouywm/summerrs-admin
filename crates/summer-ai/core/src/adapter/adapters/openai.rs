@@ -20,8 +20,8 @@ use crate::adapter::{
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
 use crate::types::{
-    ChatRequest, ChatResponse, ChatStreamEvent, FinishReason, ModelList, StreamEnd, ToolCallDelta,
-    Usage,
+    ChatRequest, ChatResponse, ChatStreamEvent, FinishReason, MessageContent, ModelList, StreamEnd,
+    StreamError, ToolCallDelta, Usage,
 };
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,82 @@ mod shared {
 
     /// 解析 OpenAI 非流式响应。
     pub(super) fn parse_chat_response(body: Bytes) -> AdapterResult<ChatResponse> {
-        serde_json::from_slice(&body).map_err(AdapterError::DeserializeResponse)
+        let mut resp: ChatResponse =
+            serde_json::from_slice(&body).map_err(AdapterError::DeserializeResponse)?;
+        adjust_xai_reasoning_tokens(&mut resp.usage, &resp.model);
+        // DeepSeek R1 本地部署（Ollama / vLLM / sglang）会把思考链塞在 content 里的
+        // `<think>...</think>` 标签中，而非走 `reasoning_content` 字段。正式 API
+        // 本身不用这种表达，所以只在 reasoning_content 为空、content 含标签时
+        // 才做提取。
+        for choice in &mut resp.choices {
+            extract_think_tag_into_reasoning(&mut choice.message);
+        }
+        Ok(resp)
+    }
+
+    /// 从 `ChatMessage.content` 里抽出 `<think>...</think>` 包裹的思考链，
+    /// 塞进 `reasoning_content`。content 清理为去掉标签的正文。
+    ///
+    /// 只在 `reasoning_content` 原本为 None 时执行，避免覆盖上游已经正确分字段
+    /// 的情况（DeepSeek 官方 API、Kimi、OpenRouter 等）。
+    pub(super) fn extract_think_tag_into_reasoning(msg: &mut crate::types::ChatMessage) {
+        if msg.reasoning_content.is_some() {
+            return;
+        }
+        let Some(MessageContent::Text(text)) = &msg.content else {
+            return;
+        };
+        let Some((cleaned, thinking)) = split_think_tag(text) else {
+            return;
+        };
+        msg.reasoning_content = Some(thinking);
+        msg.content = Some(MessageContent::Text(cleaned));
+    }
+
+    /// 在字符串里定位 `<think>...</think>`，返回 `(去标签后的正文, 思考内容)`。
+    ///
+    /// 规则（对齐 rust-genai `openai/adapter_impl.rs::extract_think`）：
+    /// - `<think>` 不必在最开头（部分上游会在前面塞几个空行 / 一段 prelude）。
+    /// - 只处理第一次出现的一对标签；嵌套 `<think>` 的罕见情形按第一个 `</think>` 关闭。
+    /// - 思考内容 `trim` 掉首尾空白；after_think 去掉 leading 空白，避免 cleaned
+    ///   开头留空行。
+    /// - 找不到成对标签返回 `None`，调用方保持 content 不变。
+    fn split_think_tag(s: &str) -> Option<(String, String)> {
+        const START: &str = "<think>";
+        const END: &str = "</think>";
+        let start_pos = s.find(START)?;
+        let after_start = &s[start_pos + START.len()..];
+        let end_offset = after_start.find(END)?;
+        let think = after_start[..end_offset].trim().to_string();
+        let before = &s[..start_pos];
+        let after = after_start[end_offset + END.len()..].trim_start();
+        Some((format!("{before}{after}"), think))
+    }
+
+    /// 修补 xAI grok-3 家族上游协议 bug：`completion_tokens` 不含 `reasoning_tokens`。
+    ///
+    /// OpenAI / o1 的约定是 `completion_tokens` 已经包含 `reasoning_tokens`；但 xAI
+    /// 的 grok-3 / grok-3-mini 把思考 tokens 单独列在 `completion_tokens_details`
+    /// 里而不加进 `completion_tokens`，导致 billing 按 completion 计费时漏算。
+    ///
+    /// 检测策略：按 rust-genai 的做法，看 response.model 是否以 `grok-3` 开头；
+    /// 命中则把 `reasoning_tokens` 累加到 `completion_tokens` 和 `total_tokens` 上，
+    /// 使这两个字段与 OpenAI 惯例对齐。
+    pub(super) fn adjust_xai_reasoning_tokens(usage: &mut Usage, model: &str) {
+        if !model.starts_with("grok-3") {
+            return;
+        }
+        let Some(details) = usage.completion_tokens_details.as_ref() else {
+            return;
+        };
+        let Some(reasoning) = details.reasoning_tokens else {
+            return;
+        };
+        if reasoning <= 0 {
+            return;
+        }
+        usage.completion_tokens += reasoning;
+        usage.total_tokens += reasoning;
     }
 
     /// 解析 OpenAI SSE 单个事件（已去 `data: ` 前缀）。
@@ -216,6 +291,19 @@ mod shared {
         // 2. 解析 JSON
         let v: Value = serde_json::from_str(trimmed).map_err(AdapterError::DeserializeResponse)?;
 
+        // 2.1 error chunk：OpenAI 在 stream 中途遇错时会发 `{"error":{...}}`。对齐
+        //     rust-genai openai/streamer.rs:13 `take_stream_error`，单独识别并转成
+        //     canonical Error 事件，stream_driver 会终止流 + Failure outcome。
+        if let Some(err) = v.get("error").filter(|x| !x.is_null()) {
+            let message = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("upstream stream error")
+                .to_string();
+            let kind = err.get("type").and_then(Value::as_str).map(str::to_string);
+            return Ok(vec![ChatStreamEvent::Error(StreamError { message, kind })]);
+        }
+
         // 3. model（Start 事件用；未给则用 actual_model 兜底）
         let model = v
             .get("model")
@@ -224,10 +312,24 @@ mod shared {
             .to_string();
 
         // 4. usage（可能与 choices 同块，也可能是独立末尾 chunk）
+        //
+        // Groq 的 openai-compatible 流式 response 把 usage 挂在 `x_groq.usage` 而非顶层，
+        // 顶层 `usage` 可能完全缺失。优先读 `x_groq.usage`，没有再 fallback 顶层，
+        // 兼容 Groq 与所有其他 provider。
         let usage: Option<Usage> = v
-            .get("usage")
+            .get("x_groq")
+            .and_then(|g| g.get("usage"))
             .filter(|x| !x.is_null())
-            .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok());
+            .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok())
+            .or_else(|| {
+                v.get("usage")
+                    .filter(|x| !x.is_null())
+                    .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok())
+            })
+            .map(|mut u| {
+                adjust_xai_reasoning_tokens(&mut u, &model);
+                u
+            });
 
         // 5. choices[0]
         let choice = v
@@ -760,5 +862,227 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], ChatStreamEvent::ToolCallDelta(_)));
         assert!(matches!(events[1], ChatStreamEvent::End(_)));
+    }
+
+    #[test]
+    fn stream_error_chunk_maps_to_canonical_error() {
+        // OpenAI 在 stream 中途遇错时会下发 `{"error":{"message":..,"type":..}}` chunk，
+        // 之前会因为没 choices + 没 usage 被当成 keep-alive 丢掉，客户端完全感知不到失败。
+        // 必须识别出来 emit Error，stream_driver 会终止流并置 Failure outcome。
+        let t = bearer_target("https://api.openai.com");
+        let raw = r#"{"error":{"message":"quota exceeded","type":"insufficient_quota"}}"#;
+        let events = OpenAIAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChatStreamEvent::Error(err) => {
+                assert_eq!(err.message, "quota exceeded");
+                assert_eq!(err.kind.as_deref(), Some("insufficient_quota"));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_groq_x_groq_usage_takes_precedence() {
+        // Groq 的 openai-compatible 流式 response 把 usage 放在 `x_groq.usage` 而非顶层。
+        // 此时必须读 x_groq.usage，否则 billing 看到的 tokens 为 0。
+        let t = bearer_target("https://api.groq.com/openai");
+        let raw = r#"{
+            "choices":[],
+            "x_groq":{"usage":{"prompt_tokens":20,"completion_tokens":30,"total_tokens":50}}
+        }"#;
+        let events = OpenAIAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChatStreamEvent::End(end) => {
+                let u = end.usage.as_ref().expect("usage must come from x_groq");
+                assert_eq!(u.prompt_tokens, 20);
+                assert_eq!(u.completion_tokens, 30);
+                assert_eq!(u.total_tokens, 50);
+            }
+            other => panic!("expected End, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_top_level_usage_still_works_for_non_groq() {
+        // 非 Groq 供应商 x_groq 字段不存在，必须 fallback 顶层 usage —— 这是 OpenAI
+        // 官方行为，不能因为加了 x_groq 优先就把顶层 usage 丢了。
+        let t = bearer_target("https://api.openai.com");
+        let raw = r#"{
+            "choices":[],
+            "usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}
+        }"#;
+        let events = OpenAIAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChatStreamEvent::End(end) => {
+                let u = end.usage.as_ref().unwrap();
+                assert_eq!(u.prompt_tokens, 3);
+                assert_eq!(u.completion_tokens, 4);
+            }
+            other => panic!("expected End, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_stream_xai_grok3_reasoning_tokens_added_into_completion() {
+        // xAI grok-3 协议 bug：`completion_tokens` 不含 `reasoning_tokens`。
+        // canonical 层必须补加，让 billing 按 completion 计费时不漏 thinking tokens
+        // —— 这是和 OpenAI o1 的 "completion 已含 reasoning" 惯例对齐。
+        let t = bearer_target("https://api.x.ai");
+        let body = br#"{
+            "id":"resp_x","object":"chat.completion","created":0,
+            "model":"grok-3-mini",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+            "usage":{
+                "prompt_tokens":10,
+                "completion_tokens":5,
+                "total_tokens":15,
+                "completion_tokens_details":{"reasoning_tokens":30}
+            }
+        }"#;
+        let resp = OpenAIAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        // 5 + 30 = 35，total 15 + 30 = 45
+        assert_eq!(resp.usage.completion_tokens, 35);
+        assert_eq!(resp.usage.total_tokens, 45);
+        assert_eq!(
+            resp.usage
+                .completion_tokens_details
+                .as_ref()
+                .unwrap()
+                .reasoning_tokens,
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn non_stream_non_xai_reasoning_tokens_not_touched() {
+        // 非 xAI 的 OpenAI 家（o1）完全遵守 "completion_tokens 已含 reasoning_tokens"，
+        // 不能被再次累加。确保 adjustment 只针对 grok-3 前缀。
+        let t = bearer_target("https://api.openai.com");
+        let body = br#"{
+            "id":"resp_o1","object":"chat.completion","created":0,
+            "model":"o1-mini",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+            "usage":{
+                "prompt_tokens":10,
+                "completion_tokens":42,
+                "total_tokens":52,
+                "completion_tokens_details":{"reasoning_tokens":30}
+            }
+        }"#;
+        let resp = OpenAIAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        assert_eq!(resp.usage.completion_tokens, 42);
+        assert_eq!(resp.usage.total_tokens, 52);
+    }
+
+    #[test]
+    fn stream_xai_grok3_reasoning_tokens_merged_on_usage_chunk() {
+        // 流式路径下 xAI 末尾 usage-only chunk 也要走同一修补；否则 stream_driver
+        // 累加 final_usage 时仍然漏计 reasoning。
+        let t = bearer_target("https://api.x.ai");
+        let raw = r#"{
+            "model":"grok-3",
+            "choices":[],
+            "usage":{
+                "prompt_tokens":4,
+                "completion_tokens":2,
+                "total_tokens":6,
+                "completion_tokens_details":{"reasoning_tokens":10}
+            }
+        }"#;
+        let events = OpenAIAdapter::parse_chat_stream_event(&t, raw).unwrap();
+        match &events[0] {
+            ChatStreamEvent::End(end) => {
+                let u = end.usage.as_ref().unwrap();
+                // 2 + 10 = 12
+                assert_eq!(u.completion_tokens, 12);
+                assert_eq!(u.total_tokens, 16);
+            }
+            other => panic!("expected End, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_stream_deepseek_r1_think_tag_moves_to_reasoning_content() {
+        // DeepSeek R1 本地部署（Ollama / vLLM）把思考链塞 content 的 `<think>...</think>`
+        // 标签中。canonical 层必须识别并抽到 reasoning_content —— 否则客户端
+        // content 里带着原始标签，UI 直接看到 "<think>..." 字符串。
+        let t = bearer_target("http://localhost:11434");
+        let body = br#"{
+            "id":"r","object":"chat.completion","created":0,
+            "model":"deepseek-r1:7b",
+            "choices":[{"index":0,"message":{
+                "role":"assistant",
+                "content":"<think>let me think step by step</think>\n\nfinal answer"
+            },"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":3,"completion_tokens":10,"total_tokens":13}
+        }"#;
+        let resp = OpenAIAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        assert_eq!(
+            msg.reasoning_content.as_deref(),
+            Some("let me think step by step")
+        );
+        match msg.content.as_ref().unwrap() {
+            MessageContent::Text(t) => assert_eq!(t, "final answer"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_stream_think_tag_not_touched_when_reasoning_content_already_set() {
+        // DeepSeek 官方 API 会正确分 reasoning_content 字段。此时 content 里
+        // 恰好含 `<think>` 字面量（比如用户示例代码）不能被误抽 —— 上游已明确
+        // 分了字段，canonical 不应再修改。
+        let t = bearer_target("https://api.deepseek.com");
+        let body = br#"{
+            "id":"r","object":"chat.completion","created":0,
+            "model":"deepseek-reasoner",
+            "choices":[{"index":0,"message":{
+                "role":"assistant",
+                "content":"Here is an example: <think>not a real think tag</think>",
+                "reasoning_content":"real reasoning from API"
+            },"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":3,"completion_tokens":10,"total_tokens":13}
+        }"#;
+        let resp = OpenAIAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        assert_eq!(
+            msg.reasoning_content.as_deref(),
+            Some("real reasoning from API")
+        );
+        // content 原样保留
+        match msg.content.as_ref().unwrap() {
+            MessageContent::Text(t) => {
+                assert!(t.contains("<think>"));
+                assert!(t.contains("</think>"));
+            }
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn non_stream_think_tag_missing_close_is_preserved() {
+        // content 里只有 `<think>` 没有 `</think>`（极端边缘）：不做提取，
+        // 保持 content 原样，避免把未完成的思考当作正文全吞了。
+        let t = bearer_target("http://localhost:11434");
+        let body = br#"{
+            "id":"r","object":"chat.completion","created":0,
+            "model":"deepseek-r1:7b",
+            "choices":[{"index":0,"message":{
+                "role":"assistant",
+                "content":"<think>incomplete"
+            },"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+        }"#;
+        let resp = OpenAIAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        assert!(msg.reasoning_content.is_none());
+        match msg.content.as_ref().unwrap() {
+            MessageContent::Text(t) => assert_eq!(t, "<think>incomplete"),
+            _ => panic!("expected Text"),
+        }
     }
 }

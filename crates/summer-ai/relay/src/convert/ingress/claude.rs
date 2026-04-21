@@ -28,10 +28,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use summer_ai_core::types::ingress_wire::claude::{
-    ClaudeContent, ClaudeContentBlock, ClaudeImageSource, ClaudeMessage, ClaudeMessagesRequest,
-    ClaudeResponse, ClaudeStopReason, ClaudeStreamContentBlock, ClaudeStreamDelta,
-    ClaudeStreamEvent, ClaudeStreamMessageDelta, ClaudeStreamMessageStart, ClaudeSystem,
-    ClaudeTool, ClaudeToolChoice, ClaudeToolResultContent, ClaudeUsage,
+    ClaudeContent, ClaudeContentBlock, ClaudeErrorBody, ClaudeImageSource, ClaudeMessage,
+    ClaudeMessagesRequest, ClaudeResponse, ClaudeStopReason, ClaudeStreamContentBlock,
+    ClaudeStreamDelta, ClaudeStreamEvent, ClaudeStreamMessageDelta, ClaudeStreamMessageStart,
+    ClaudeSystem, ClaudeTool, ClaudeToolChoice, ClaudeToolResultContent, ClaudeUsage,
 };
 use summer_ai_core::{
     AdapterError, AdapterKind, AdapterResult, ChatMessage, ChatRequest, ChatResponse,
@@ -274,6 +274,7 @@ fn append_claude_message(
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
                 audio: None,
             });
             return Ok(());
@@ -349,6 +350,7 @@ fn append_claude_message(
             name,
             tool_calls: None,
             tool_call_id: Some(tool_use_id),
+            reasoning_content: None,
             audio: None,
         });
     }
@@ -372,6 +374,7 @@ fn append_claude_message(
     out.push(ChatMessage {
         role: role_enum,
         content: message_content,
+        reasoning_content: None,
         refusal: None,
         name: None,
         tool_calls: if tool_calls.is_empty() {
@@ -663,6 +666,42 @@ fn from_canonical_stream_event_impl(
             });
             out.push(ClaudeStreamEvent::MessageStop);
             state.done = true;
+        }
+        ChatStreamEvent::ThoughtSignature { signature } => {
+            // Claude extended thinking 的 signature_delta 紧跟在 thinking_delta 之后，
+            // 归属同一个 thinking content_block。只有当前 block 是 Thinking 时才透传，
+            // 避免在没打开 thinking block 的情况下凭空产出 signature（上游协议不允许）。
+            ensure_message_start(&mut out, state, ctx, None);
+            if state.last_message_type == ClaudeLastMessageType::Thinking {
+                out.push(content_block_delta(
+                    state.index as u32,
+                    ClaudeStreamDelta::SignatureDelta { signature },
+                ));
+            } else {
+                tracing::debug!(
+                    "dropping ThoughtSignature outside of a thinking block (last_message_type={:?})",
+                    state.last_message_type
+                );
+            }
+        }
+        ChatStreamEvent::Error(err) => {
+            // 上游 SSE 中途报错：按 Claude wire 的 `event: error` 格式透传，
+            // 客户端可正常识别；stream_driver 会紧接着终止流并置 Failure outcome。
+            ensure_message_start(&mut out, state, ctx, None);
+            out.push(ClaudeStreamEvent::Error {
+                error: ClaudeErrorBody {
+                    kind: err.kind.unwrap_or_else(|| "api_error".to_string()),
+                    message: err.message,
+                },
+            });
+            state.done = true;
+        }
+        ChatStreamEvent::UsageDelta(_) => {
+            // Claude wire 的 usage 已经通过 message_start（估算 input）+ message_delta
+            // （累积 output）发给客户端。中期 UsageDelta 主要是上游真实 prompt 侧
+            // usage 的补位，交给 stream_driver 合并进 final_usage 做 billing；
+            // 这里不改客户端已看到的 message_start，避免 wire 协议违规（client
+            // 期待 usage 只在 message_start / message_delta 两处出现）。
         }
     }
 
@@ -1106,6 +1145,7 @@ mod tests {
                 message: ChatMessage {
                     role: Role::Assistant,
                     content: Some(MessageContent::Text("let me check".to_string())),
+                    reasoning_content: None,
                     refusal: None,
                     name: None,
                     tool_calls: Some(vec![ToolCall {
@@ -1183,6 +1223,7 @@ mod tests {
             total_tokens: 150,
             prompt_tokens_details: Some(PromptTokensDetails {
                 cached_tokens: Some(80),
+                cache_creation_tokens: None,
                 audio_tokens: None,
             }),
             ..Default::default()
@@ -1554,5 +1595,136 @@ mod tests {
             &ctx,
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn stream_thought_signature_inside_thinking_block_is_passed_through() {
+        // thinking block 内收到 ThoughtSignature，应该 emit signature_delta，
+        // 客户端要保存起来用于 multi-turn 下一轮回传，不能丢。
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ReasoningDelta {
+                text: "思考中".to_string(),
+            },
+        );
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ThoughtSignature {
+                signature: "EqMC...".to_string(),
+            },
+        );
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            ClaudeStreamEvent::ContentBlockDelta { index, delta } => {
+                assert_eq!(*index, 0);
+                match delta {
+                    ClaudeStreamDelta::SignatureDelta { signature } => {
+                        assert_eq!(signature, "EqMC...");
+                    }
+                    other => panic!("expected SignatureDelta, got {other:?}"),
+                }
+            }
+            other => panic!("expected ContentBlockDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_thought_signature_outside_thinking_block_is_dropped() {
+        // Claude wire 规定 signature_delta 只能跟在 thinking_delta 后面，
+        // 不能在 text/tool 块里凭空出现 —— 否则上游校验 400。
+        // 当前 block 不是 Thinking 时必须丢弃。
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "hello".to_string(),
+            },
+        );
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ThoughtSignature {
+                signature: "should-be-dropped".to_string(),
+            },
+        );
+        assert!(
+            out.is_empty(),
+            "ThoughtSignature outside thinking block should be dropped, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn stream_error_event_is_transparent_as_wire_error() {
+        // 上游 SSE 中途报错 → 透传为 Claude wire 的 `event: error`，
+        // 客户端可以按原生 Claude 协议识别。stream_driver 会紧接着终止流。
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::Error(summer_ai_core::StreamError {
+                message: "Overloaded".to_string(),
+                kind: Some("overloaded_error".to_string()),
+            }),
+        );
+        // 首个事件会先补 MessageStart（保持与 wire 协议一致），然后发 Error。
+        let err_ev = out
+            .iter()
+            .find(|e| matches!(e, ClaudeStreamEvent::Error { .. }))
+            .expect("expected ClaudeStreamEvent::Error");
+        match err_ev {
+            ClaudeStreamEvent::Error { error } => {
+                assert_eq!(error.kind, "overloaded_error");
+                assert_eq!(error.message, "Overloaded");
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            matches!(state, StreamConvertState::Claude(ref s) if s.done),
+            "Error event should mark Claude state as done"
+        );
+
+        // done 之后继续喂事件应返空。
+        let after = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "late".to_string(),
+            },
+        );
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn stream_error_event_uses_default_kind_when_missing() {
+        // 上游只给 message 不给 type 时，我们必须填一个合法的 kind，
+        // Claude wire 的 `ClaudeErrorBody.kind` 是必填 —— 之前空串会让客户端 JSON 解析失败。
+        let ctx = stream_ctx();
+        let mut state = init_state();
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::Error(summer_ai_core::StreamError {
+                message: "unknown".to_string(),
+                kind: None,
+            }),
+        );
+        let err_ev = out
+            .iter()
+            .find(|e| matches!(e, ClaudeStreamEvent::Error { .. }))
+            .expect("expected ClaudeStreamEvent::Error");
+        match err_ev {
+            ClaudeStreamEvent::Error { error } => {
+                assert_eq!(error.kind, "api_error");
+                assert_eq!(error.message, "unknown");
+            }
+            _ => unreachable!(),
+        }
     }
 }

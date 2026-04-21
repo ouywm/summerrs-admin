@@ -340,6 +340,7 @@ mod tests {
             total_tokens: prompt + completion,
             prompt_tokens_details: Some(PromptTokensDetails {
                 cached_tokens: Some(cached),
+                cache_creation_tokens: None,
                 audio_tokens: None,
             }),
             completion_tokens_details: None,

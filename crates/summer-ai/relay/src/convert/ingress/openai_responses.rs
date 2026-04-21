@@ -190,6 +190,7 @@ fn message_item_to_chat_message(m: OpenAIResponsesMessageItem) -> AdapterResult<
         name: None,
         tool_calls: None,
         tool_call_id: None,
+        reasoning_content: None,
         audio: None,
     })
 }
@@ -260,6 +261,7 @@ fn function_call_item_to_chat_message(fc: OpenAIResponsesFunctionCallItem) -> Ch
     ChatMessage {
         role: Role::Assistant,
         content: None,
+        reasoning_content: None,
         refusal: None,
         name: None,
         tool_calls: Some(vec![ToolCall {
@@ -481,6 +483,26 @@ fn from_canonical_stream_event_impl(
             state.final_usage = end.usage;
             state.final_status = finish_reason_to_status(end.finish_reason);
             emit_completed(&mut out, state);
+            state.done = true;
+        }
+        ChatStreamEvent::ThoughtSignature { .. } => {
+            // Responses 的 reasoning/thought 规格尚不稳定，保持与 ReasoningDelta 一致忽略。
+            ensure_initialized(&mut out, state, ctx, None);
+        }
+        ChatStreamEvent::UsageDelta(_) => {
+            // Responses wire 的 usage 在 `response.completed` 事件里一次性给；
+            // 中期 UsageDelta 只给 stream_driver 累计 final_usage。
+        }
+        ChatStreamEvent::Error(err) => {
+            // 透传为 Responses wire 的 `error` 事件（type="error"），客户端据此感知失败。
+            // stream_driver 会紧接着终止流并置 Failure outcome。
+            ensure_initialized(&mut out, state, ctx, None);
+            out.push(OpenAIResponsesStreamEvent::Error {
+                code: err.kind,
+                message: err.message,
+                param: None,
+                sequence_number: advance_seq(state),
+            });
             state.done = true;
         }
     }
