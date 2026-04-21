@@ -200,6 +200,7 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
         stream,
         stream_options: None,
         reasoning_effort: None,
+        verbosity: None,
         seed: None,
         service_tier: None,
         user,

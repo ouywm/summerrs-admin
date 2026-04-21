@@ -171,6 +171,7 @@ fn to_canonical_impl(
         stream: false, // path 决定（`:streamGenerateContent` vs `:generateContent`），由 handler 设
         stream_options: None,
         reasoning_effort,
+        verbosity: None,
         seed: None,
         service_tier: None,
         user: None,
@@ -385,7 +386,7 @@ fn split_generation_config(
     Option<i64>,
     Option<i64>,
     Option<serde_json::Value>,
-    Option<String>,
+    Option<summer_ai_core::ReasoningEffort>,
     serde_json::Map<String, serde_json::Value>,
 ) {
     let Some(cfg) = config else {
@@ -446,9 +447,9 @@ fn split_generation_config(
     let reasoning_effort = thinking_config.and_then(|tc| match tc.thinking_budget {
         None | Some(0) => None,
         Some(n) if n <= 0 => None,
-        Some(n) if n <= 1024 => Some("low".to_string()),
-        Some(n) if n <= 4096 => Some("medium".to_string()),
-        Some(_) => Some("high".to_string()),
+        Some(n) if n <= 1024 => Some(summer_ai_core::ReasoningEffort::Low),
+        Some(n) if n <= 4096 => Some(summer_ai_core::ReasoningEffort::Medium),
+        Some(_) => Some(summer_ai_core::ReasoningEffort::High),
     });
 
     (
@@ -852,7 +853,10 @@ mod tests {
         assert_eq!(c.top_p, Some(0.9));
         assert_eq!(c.n, Some(2));
         assert_eq!(c.max_tokens, Some(512));
-        assert_eq!(c.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            c.reasoning_effort,
+            Some(summer_ai_core::ReasoningEffort::Medium)
+        );
         // top_k 透传到 extra
         assert_eq!(c.extra["top_k"], 40);
         // stopSequences 裁剪到前 4

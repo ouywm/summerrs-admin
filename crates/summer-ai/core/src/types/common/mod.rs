@@ -11,6 +11,7 @@
 //! 放到 `types/openai/`（或对应 provider 目录），不放这里。
 
 pub mod message;
+pub mod options;
 pub mod stream_event;
 pub mod tool;
 pub mod usage;
@@ -18,6 +19,9 @@ pub mod usage;
 pub use message::{
     AudioResponse, CacheControl, ChatMessage, ContentPart, ImageUrl, InputAudio, MessageContent,
     MessageOptions, Role,
+};
+pub use options::{
+    ReasoningEffort, ServiceTier, Verbosity, WebSearchContextSize, WebSearchOptions,
 };
 pub use stream_event::{ChatStreamEvent, StreamEnd, StreamError, ToolCallDelta};
 pub use tool::{Tool, ToolCall, ToolCallFunction, ToolChoice, ToolFunction};

@@ -11,7 +11,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::common::{ChatMessage, FinishReason, Tool, ToolChoice, Usage};
+use crate::types::common::{
+    ChatMessage, FinishReason, ReasoningEffort, ServiceTier, Tool, ToolChoice, Usage, Verbosity,
+    WebSearchOptions,
+};
 
 /// `POST /v1/chat/completions` 请求体。字段顺序按官方文档列出。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -97,15 +100,19 @@ pub struct ChatRequest {
     pub stream_options: Option<StreamOptions>,
 
     // --------------------------- 推理 / 其它 ---------------------------
-    /// o1 系列："low" / "medium" / "high"。
+    /// o-series / GPT-5：`minimal` / `low` / `medium` / `high`，或上游特定的
+    /// token budget（Anthropic thinking / Gemini thinkingBudget 数字形态）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// GPT-5 系列的回答详尽度提示（`low` / `medium` / `high`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<Verbosity>,
     /// 固定种子用于 deterministic（best-effort，不保证 100% 复现）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
-    /// `"auto"` / `"default"`。
+    /// OpenAI 服务等级偏好（`auto` / `default` / `flex` / `priority` / `scale`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<String>,
+    pub service_tier: Option<ServiceTier>,
 
     // ------------------------- 账户 / 审计 -----------------------------
     /// 用户标识（OpenAI abuse 检测用）。
@@ -119,7 +126,7 @@ pub struct ChatRequest {
     pub store: Option<bool>,
     /// Web search 工具参数（GPT-4o-search-preview 等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub web_search_options: Option<serde_json::Value>,
+    pub web_search_options: Option<WebSearchOptions>,
 
     // ---------------------- 未来新增字段的兜底透传 ----------------------
     /// OpenAI 未来可能加新字段；同时也用来透传第三方 compat 厂商的私有字段。
@@ -155,7 +162,7 @@ pub struct ChatResponse {
     pub system_fingerprint: Option<String>,
     /// 上游实际使用的 service_tier（对应请求里的 `service_tier` 字段）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<String>,
+    pub service_tier: Option<ServiceTier>,
 }
 
 impl ChatResponse {
@@ -284,7 +291,7 @@ mod tests {
         assert_eq!(req.max_completion_tokens, Some(1024));
         assert_eq!(req.logit_bias.as_ref().unwrap()["50256"], -100.0);
         assert_eq!(req.top_logprobs, Some(5));
-        assert_eq!(req.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(req.reasoning_effort, Some(ReasoningEffort::Medium));
         assert_eq!(req.user.as_deref(), Some("u-123"));
     }
 
