@@ -13,47 +13,33 @@
 //!   RelayContext::begin
 //!       │
 //!       ▼
-//!   ChannelStore::pick ──(err)──► tracking.emit Failure → 抛 RelayError
+//!   ChannelStore::candidates ──(空)──► NoAvailableChannel → tracking.emit_with_attempts
 //!       │
 //!       ▼
-//!   build_service_target + attach_channel
+//!   IngressConverter::to_canonical（用第一个候选的 kind / actual_model）
 //!       │
-//!       ▼
-//!   IngressConverter::to_canonical
+//!       ├─── is_stream=false ───► for candidate in candidates:
+//!       │                              attach_channel + invoke_non_stream
+//!       │                              ├── Ok → push AttemptRecord(success) → return
+//!       │                              └── Err → push AttemptRecord(failure)
+//!       │                                   ├── retry_kind=Fatal → break
+//!       │                                   └── 否则 continue 下一个候选
+//!       │                         循环结束还没 return → emit_with_attempts(最后 err)
 //!       │
-//!       ├─── is_stream=false ───► invoke_non_stream
-//!       │                             │
-//!       │                             ├──(err)──► tracking.emit Failure
-//!       │                             │
-//!       │                             ▼
-//!       │                         from_canonical → tracking.emit Success
-//!       │                             │
-//!       │                             ▼
-//!       │                         EngineOutcome::NonStream
-//!       │
-//!       └─── is_stream=true ────► invoke_stream_raw
+//!       └─── is_stream=true ────► invoke_stream_raw（单 attempt，保留原 tracking 路径）
 //!                                     │
-//!                                     ├──(err)──► tracking.emit Failure
-//!                                     │
-//!                                     ▼
-//!                                oneshot::channel<StreamOutcome>
-//!                                tokio::spawn(等 rx → tracking.emit)
-//!                                     │
-//!                                     ▼
-//!                                transcode_stream<I>(upstream, ..., tx)
-//!                                     │
-//!                                     ▼
-//!                                EngineOutcome::Stream(BoxStream)
+//!                                     └── oneshot + tokio::spawn(tracking.emit)
 //! ```
 //!
 //! # 不做什么
 //!
 //! - **不做** billing（P6 加：在 `execute()` 的开头插 `reserve`，结束插 `settle/refund`）
-//! - **不做** retry / failover（P9 加：在外面套一层 `Retryable` wrapper）
+//! - **流式不做** retry（stream 一旦开始输出再切 channel 无法复原客户端侧已发的字节）
 //! - **不做** egress format 最后包装（`sse_response` / `Json` 由 handler 自己做——
 //!   因为 Gemini `streamGenerateContent` 有 SSE vs JSON-array 两种呈现模式）
 
 use std::pin::Pin;
+use std::time::Instant;
 
 use bytes::Bytes;
 use futures::stream::Stream;
@@ -65,17 +51,13 @@ use summer_ai_core::AdapterDispatcher;
 use crate::auth::AiTokenContext;
 use crate::context::RelayContext;
 use crate::convert::ingress::{IngressConverter, IngressCtx, IngressFormat};
-use crate::error::{RelayError, RelayResult};
-use crate::service::channel_store::{ChannelStore, build_service_target};
+use crate::error::{RelayError, RelayResult, RetryKind};
+use crate::service::channel_store::{Candidate, ChannelStore, build_service_target};
 use crate::service::chat;
 use crate::service::stream_driver::{self, StreamOutcome};
-use crate::service::tracking::{TrackingOutcome, TrackingService};
+use crate::service::tracking::{AttemptRecord, TrackingOutcome, TrackingService};
 
 /// 一次入口请求的所有上下文参数。
-///
-/// 字段接 by-value —— `reqwest::Client` / `ChannelStore` / `TrackingService` 都是
-/// `Clone` 成本低的 handle（内部 `Arc`），每 handler 调用 clone 一次即可，避免
-/// 给 `execute` 加生命周期参数。
 pub struct PipelineCall<I: IngressConverter> {
     /// HTTP 路径（路由模板，如 `"/v1/chat/completions"`），用于 tracking `ai.request.endpoint`。
     pub endpoint: String,
@@ -96,8 +78,6 @@ pub struct PipelineCall<I: IngressConverter> {
     /// 客户端 wire 请求（将被消费，传给 `I::to_canonical`）。
     pub client_req: I::ClientRequest,
     /// 客户端 wire 请求的 JSON 快照——落 `ai.request.request_body` / `ai.log.content` 用。
-    ///
-    /// 序列化开销和原请求重复一次，v1 能忍。`None` 时只落空对象。
     pub client_req_snapshot: Option<Value>,
     /// Reqwest 客户端（上游 HTTP 请求发送器）。
     pub http: reqwest::Client,
@@ -108,14 +88,8 @@ pub struct PipelineCall<I: IngressConverter> {
 }
 
 /// 客户端响应的抽象 —— 交给 handler 包装成各自协议的 `Response`。
-///
-/// 非流式：直接是客户端 wire 响应类型（`ChatResponse` / `ClaudeResponse` / ...）；
-/// 流式：一个 `BoxStream<Bytes>`，handler 自己决定 `sse_response` 还是 `collect_sse_to_json_array`。
 pub enum EngineOutcome<I: IngressConverter> {
-    /// 非流式响应 —— handler 用 `Json(r).into_response()` 直接返。
     NonStream(I::ClientResponse),
-    /// 流式响应 —— handler 用 `Body::from_stream(s)` + `sse_response(body)` 封 SSE，
-    /// 或者 `collect_sse_to_json_array(s)` 转 JSON-array（Gemini 默认）。
     Stream(Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>),
 }
 
@@ -128,8 +102,8 @@ where
 {
     /// 跑完整流程：选路 → 翻译 → 发上游 → 响应 + tracking。
     ///
-    /// 失败路径：**所有** `return Err(...)` 前都先 `tracking.emit(Failure, ...)`，保证
-    /// DB 里能看到失败的 request / execution / log 记录。
+    /// 非流式场景下开启 P9 retry：按 `ChannelStore::candidates()` 返回的顺序遍历，
+    /// 遇可重试错（`CrossChannel` / `SameChannel`）切下一个候选；遇 `Fatal` 立即终止。
     pub async fn execute(self) -> RelayResult<EngineOutcome<I>> {
         let Self {
             endpoint,
@@ -147,7 +121,7 @@ where
             tracking,
         } = self;
 
-        let mut ctx = RelayContext::begin(
+        let ctx = RelayContext::begin(
             token,
             endpoint,
             format,
@@ -158,235 +132,413 @@ where
             client_headers,
         );
 
-        // ─── 1. 选路 ───────────────────────────────────────────────
-        let picked = match store.pick(&logical_model).await {
-            Ok(Some(t)) => t,
-            Ok(None) => {
-                let err = RelayError::NoAvailableChannel {
-                    model: logical_model.clone(),
-                };
-                emit_failure(&tracking, &ctx, &err, client_req_snapshot, None);
-                return Err(err);
-            }
+        // ─── 1. 选路候选列表 ───────────────────────────────────────
+        let candidates = match store.candidates(&logical_model).await {
+            Ok(list) => list,
             Err(e) => {
-                emit_failure(&tracking, &ctx, &e, client_req_snapshot, None);
+                tracking.emit_with_attempts(
+                    ctx.clone(),
+                    failure_outcome_from(&e),
+                    Vec::new(),
+                    client_req_snapshot,
+                );
                 return Err(e);
             }
         };
-        let (channel, account, selected_key) = picked;
-
-        let (kind, target) =
-            match build_service_target(&channel, &account, &selected_key, &logical_model) {
-                Ok(t) => t,
-                Err(e) => {
-                    emit_failure(&tracking, &ctx, &e, client_req_snapshot, None);
-                    return Err(e);
-                }
+        if candidates.is_empty() {
+            let err = RelayError::NoAvailableChannel {
+                model: logical_model.clone(),
             };
+            tracking.emit_with_attempts(
+                ctx.clone(),
+                failure_outcome_from(&err),
+                Vec::new(),
+                client_req_snapshot,
+            );
+            return Err(err);
+        }
+
+        // ─── 2. to_canonical（用第一个候选的 ingress_ctx；canonical 是中性表达）
+        let first = &candidates[0];
+        let first_target_info = match build_service_target(
+            &first.channel,
+            &first.account,
+            &first.selected_key,
+            &logical_model,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                tracking.emit_with_attempts(
+                    ctx.clone(),
+                    failure_outcome_from(&e),
+                    Vec::new(),
+                    client_req_snapshot,
+                );
+                return Err(e);
+            }
+        };
+        let first_ingress_ctx = IngressCtx::new(
+            first_target_info.0,
+            &logical_model,
+            &first_target_info.1.actual_model,
+        );
+        let mut canonical_req = match I::to_canonical(client_req, &first_ingress_ctx) {
+            Ok(r) => r,
+            Err(e) => {
+                let err = RelayError::from(e);
+                tracking.emit_with_attempts(
+                    ctx.clone(),
+                    failure_outcome_from(&err),
+                    Vec::new(),
+                    client_req_snapshot,
+                );
+                return Err(err);
+            }
+        };
+        canonical_req.stream = is_stream;
+        let upstream_req_snapshot = serde_json::to_value(&canonical_req).ok();
+
+        // ─── 3. 分流：stream / non-stream ───────────────────────────
+        if is_stream {
+            // 流式路径保持**单 attempt**：用第一个候选，不 retry。
+            let candidate = first.clone();
+            let (kind, target) = first_target_info;
+            execute_stream::<I>(
+                ctx,
+                candidate,
+                kind,
+                target,
+                canonical_req,
+                upstream_req_snapshot,
+                client_req_snapshot,
+                http,
+                tracking,
+            )
+            .await
+        } else {
+            execute_non_stream_with_retry::<I>(
+                ctx,
+                candidates,
+                &logical_model,
+                canonical_req,
+                upstream_req_snapshot,
+                client_req_snapshot,
+                http,
+                tracking,
+            )
+            .await
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 非流式 + retry 循环
+// ---------------------------------------------------------------------------
+
+async fn execute_non_stream_with_retry<I>(
+    mut ctx: RelayContext,
+    candidates: Vec<Candidate>,
+    logical_model: &str,
+    canonical_req: summer_ai_core::ChatRequest,
+    upstream_req_snapshot: Option<Value>,
+    client_req_snapshot: Option<Value>,
+    http: reqwest::Client,
+    tracking: TrackingService,
+) -> RelayResult<EngineOutcome<I>>
+where
+    I: IngressConverter + Send + 'static,
+    I::ClientResponse: serde::Serialize + Send,
+{
+    let mut attempts: Vec<AttemptRecord> = Vec::new();
+    let mut last_err: Option<RelayError> = None;
+
+    for (idx, candidate) in candidates.into_iter().enumerate() {
+        let attempt_no = (idx + 1) as i32;
+        let attempt_start = Instant::now();
+        let attempt_started_at = chrono::Utc::now().fixed_offset();
+
+        let (kind, target) = match build_service_target(
+            &candidate.channel,
+            &candidate.account,
+            &candidate.selected_key,
+            logical_model,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                // target 构建错属 Fatal（例如 OAuth 未实装 / key 为空）
+                attempts.push(mk_attempt_no_upstream(
+                    attempt_no,
+                    &candidate,
+                    String::new(),
+                    String::new(),
+                    upstream_req_snapshot.clone(),
+                    &e,
+                    attempt_started_at,
+                    attempt_start,
+                ));
+                last_err = Some(e);
+                break;
+            }
+        };
 
         let cost_profile = AdapterDispatcher::cost_profile(kind);
         ctx.attach_channel(
-            &channel,
-            &account,
-            &selected_key,
+            &candidate.channel,
+            &candidate.account,
+            &candidate.selected_key,
             kind,
             cost_profile,
             target.actual_model.clone(),
         );
 
+        let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, &target.actual_model);
+
         tracing::debug!(
             request_id = %ctx.request_id,
-            endpoint = ctx.endpoint,
-            format = format.as_str(),
-            token_id = ctx.token.token_id,
-            user_id = ctx.token.user_id,
-            logical_model = %ctx.logical_model,
-            actual_model = %target.actual_model,
-            adapter = %kind.as_lower_str(),
-            channel_id = channel.id,
-            account_id = account.id,
-            key_prefix = %&selected_key[..selected_key.len().min(6)],
-            is_stream = ctx.is_stream,
-            "relay pipeline prepared"
+            attempt_no,
+            channel_id = candidate.channel.id,
+            account_id = candidate.account.id,
+            adapter = kind.as_lower_str(),
+            "pipeline attempt starting"
         );
 
-        // ─── 2. ingress to_canonical ────────────────────────────────
-        let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, &target.actual_model);
-        let mut canonical_req = match I::to_canonical(client_req, &ingress_ctx) {
-            Ok(r) => r,
-            Err(e) => {
-                let err = RelayError::from(e);
-                emit_failure(&tracking, &ctx, &err, client_req_snapshot, None);
-                return Err(err);
-            }
-        };
-        canonical_req.stream = is_stream;
+        let mut sent_headers_sink: Option<Value> = None;
+        let invoke_result =
+            chat::invoke_non_stream(&http, kind, &target, &canonical_req, &mut sent_headers_sink)
+                .await;
+        let sent_headers = sent_headers_sink
+            .take()
+            .unwrap_or(Value::Object(Default::default()));
+        let attempt_duration = ms_since(attempt_start);
+        let attempt_finished_at = chrono::Utc::now().fixed_offset();
 
-        let upstream_req_snapshot = serde_json::to_value(&canonical_req).ok();
-
-        // ─── 3. 分流：stream / non-stream ───────────────────────────
-        if is_stream {
-            let mut sent_headers_sink: Option<Value> = None;
-            let invoke_result = chat::invoke_stream_raw(
-                &http,
-                kind,
-                &target,
-                &canonical_req,
-                &mut sent_headers_sink,
-            )
-            .await;
-            if let Some(h) = sent_headers_sink.take() {
-                ctx.set_sent_headers(h);
-            }
-            let invoked = match invoke_result {
-                Ok(u) => u,
-                Err(e) => {
-                    emit_failure(
-                        &tracking,
-                        &ctx,
-                        &e,
-                        client_req_snapshot,
-                        upstream_req_snapshot,
-                    );
-                    return Err(e);
+        match invoke_result {
+            Ok(invoked) => {
+                let upstream_request_id = invoked.upstream_request_id.clone();
+                if let Some(id) = upstream_request_id.clone() {
+                    ctx.upstream_request_id = Some(id);
                 }
-            };
-            if let Some(id) = invoked.upstream_request_id.clone() {
-                ctx.upstream_request_id = Some(id);
-            }
-            let upstream = invoked.inner;
+                if let Some(h) = Some(sent_headers.clone()) {
+                    ctx.set_sent_headers(h);
+                }
+                let canonical_resp = invoked.inner;
+                let usage = canonical_resp.usage.clone();
+                let resp_snapshot = serde_json::to_value(&canonical_resp).ok();
 
-            let (tx, rx) = oneshot::channel::<StreamOutcome>();
-            let tracking_spawn = tracking.clone();
-            let ctx_spawn = ctx.clone();
-            let client_snap_spawn = client_req_snapshot;
-            let upstream_snap_spawn = upstream_req_snapshot;
-            let upstream_id_hdr = invoked.upstream_request_id;
+                attempts.push(AttemptRecord {
+                    attempt_no,
+                    channel_id: candidate.channel.id,
+                    account_id: candidate.account.id,
+                    request_format: kind.as_str().to_string(),
+                    upstream_model: target.actual_model.clone(),
+                    upstream_request_id: upstream_request_id.clone(),
+                    sent_headers,
+                    request_body: upstream_req_snapshot.clone(),
+                    response_body: resp_snapshot.clone(),
+                    response_status_code: 200,
+                    success: true,
+                    error_message: String::new(),
+                    duration_ms: attempt_duration,
+                    first_token_ms: 0,
+                    started_at: attempt_started_at,
+                    finished_at: attempt_finished_at,
+                });
 
-            tokio::spawn(async move {
-                // 等 transcode_stream 发来的最终态；客户端断连会 drop tx → rx 拿 RecvError。
-                let outcome = match rx.await {
-                    Ok(so) if so.error.is_some() => TrackingOutcome::Failure {
-                        client_status: 502,
-                        upstream_status: Some(so.upstream_status),
-                        message: so.error.unwrap_or_else(|| "upstream stream error".into()),
-                        response_snapshot: None,
-                    },
-                    Ok(so) => TrackingOutcome::Success {
-                        upstream_status: so.upstream_status,
-                        usage: so.usage.unwrap_or_default(),
-                        response_snapshot: None,
-                        // 流式：优先用 stream_driver 从流里嗅到的 id；否则回退到响应头上抽的 id
-                        upstream_request_id: so.upstream_request_id.or(upstream_id_hdr),
-                    },
-                    Err(_) => TrackingOutcome::Failure {
-                        client_status: 499,
-                        upstream_status: None,
-                        message: "stream aborted before completion".into(),
-                        response_snapshot: None,
-                    },
+                let client_resp = match I::from_canonical(canonical_resp, &ingress_ctx) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let err = RelayError::from(e);
+                        tracking.emit_with_attempts(
+                            ctx,
+                            failure_outcome_from(&err),
+                            attempts,
+                            client_req_snapshot,
+                        );
+                        return Err(err);
+                    }
                 };
-                tracking_spawn.emit(ctx_spawn, outcome, client_snap_spawn, upstream_snap_spawn);
-            });
 
-            let body_stream =
-                stream_driver::transcode_stream::<I>(upstream, kind, target, ingress_ctx, tx);
-            Ok(EngineOutcome::Stream(Box::pin(body_stream)))
-        } else {
-            let mut sent_headers_sink: Option<Value> = None;
-            let invoke_result = chat::invoke_non_stream(
-                &http,
-                kind,
-                &target,
-                &canonical_req,
-                &mut sent_headers_sink,
-            )
-            .await;
-            if let Some(h) = sent_headers_sink.take() {
-                ctx.set_sent_headers(h);
+                let outcome = TrackingOutcome::Success {
+                    upstream_status: 200,
+                    usage,
+                    response_snapshot: resp_snapshot,
+                    upstream_request_id,
+                };
+                tracking.emit_with_attempts(ctx, outcome, attempts, client_req_snapshot);
+                return Ok(EngineOutcome::NonStream(client_resp));
             }
-            let invoked = match invoke_result {
-                Ok(r) => r,
-                Err(e) => {
-                    emit_failure(
-                        &tracking,
-                        &ctx,
-                        &e,
-                        client_req_snapshot,
-                        upstream_req_snapshot,
-                    );
-                    return Err(e);
+            Err(e) => {
+                let upstream_status = extract_upstream_status(&e);
+                let resp_snapshot = extract_upstream_body(&e);
+                attempts.push(AttemptRecord {
+                    attempt_no,
+                    channel_id: candidate.channel.id,
+                    account_id: candidate.account.id,
+                    request_format: kind.as_str().to_string(),
+                    upstream_model: target.actual_model.clone(),
+                    upstream_request_id: None,
+                    sent_headers,
+                    request_body: upstream_req_snapshot.clone(),
+                    response_body: resp_snapshot,
+                    response_status_code: upstream_status.unwrap_or(0) as i32,
+                    success: false,
+                    error_message: e.to_string(),
+                    duration_ms: attempt_duration,
+                    first_token_ms: 0,
+                    started_at: attempt_started_at,
+                    finished_at: attempt_finished_at,
+                });
+
+                match e.retry_kind() {
+                    RetryKind::Fatal => {
+                        tracing::debug!(
+                            request_id = %ctx.request_id,
+                            attempt_no,
+                            error = %e,
+                            "fatal error, aborting retry"
+                        );
+                        last_err = Some(e);
+                        break;
+                    }
+                    RetryKind::SameChannel | RetryKind::CrossChannel => {
+                        tracing::warn!(
+                            request_id = %ctx.request_id,
+                            attempt_no,
+                            error = %e,
+                            "retryable error, trying next candidate"
+                        );
+                        last_err = Some(e);
+                        continue;
+                    }
                 }
-            };
-            let upstream_request_id = invoked.upstream_request_id;
-            if let Some(id) = upstream_request_id.clone() {
-                ctx.upstream_request_id = Some(id);
             }
-            let canonical_resp = invoked.inner;
-
-            let usage = canonical_resp.usage.clone();
-            let resp_snapshot = serde_json::to_value(&canonical_resp).ok();
-
-            let client_resp = match I::from_canonical(canonical_resp, &ingress_ctx) {
-                Ok(r) => r,
-                Err(e) => {
-                    let err = RelayError::from(e);
-                    emit_failure(
-                        &tracking,
-                        &ctx,
-                        &err,
-                        client_req_snapshot,
-                        upstream_req_snapshot,
-                    );
-                    return Err(err);
-                }
-            };
-
-            let outcome = TrackingOutcome::Success {
-                upstream_status: 200,
-                usage,
-                response_snapshot: resp_snapshot,
-                upstream_request_id,
-            };
-            tracking.emit(ctx, outcome, client_req_snapshot, upstream_req_snapshot);
-
-            Ok(EngineOutcome::NonStream(client_resp))
         }
+    }
+
+    let err = last_err.unwrap_or_else(|| RelayError::NoAvailableChannel {
+        model: logical_model.to_string(),
+    });
+    tracking.emit_with_attempts(
+        ctx,
+        failure_outcome_from(&err),
+        attempts,
+        client_req_snapshot,
+    );
+    Err(err)
+}
+
+// ---------------------------------------------------------------------------
+// 流式路径：单 attempt（流一旦开始无法优雅切 channel）
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_stream<I>(
+    mut ctx: RelayContext,
+    candidate: Candidate,
+    kind: summer_ai_core::AdapterKind,
+    target: summer_ai_core::ServiceTarget,
+    canonical_req: summer_ai_core::ChatRequest,
+    upstream_req_snapshot: Option<Value>,
+    client_req_snapshot: Option<Value>,
+    http: reqwest::Client,
+    tracking: TrackingService,
+) -> RelayResult<EngineOutcome<I>>
+where
+    I: IngressConverter + Send + 'static,
+    I::ClientStreamEvent: serde::Serialize + Send,
+{
+    let cost_profile = AdapterDispatcher::cost_profile(kind);
+    ctx.attach_channel(
+        &candidate.channel,
+        &candidate.account,
+        &candidate.selected_key,
+        kind,
+        cost_profile,
+        target.actual_model.clone(),
+    );
+
+    let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, &target.actual_model);
+
+    let mut sent_headers_sink: Option<Value> = None;
+    let invoke_result =
+        chat::invoke_stream_raw(&http, kind, &target, &canonical_req, &mut sent_headers_sink).await;
+    if let Some(h) = sent_headers_sink.take() {
+        ctx.set_sent_headers(h);
+    }
+    let invoked = match invoke_result {
+        Ok(u) => u,
+        Err(e) => {
+            tracking.emit(
+                ctx.clone(),
+                failure_outcome_from(&e),
+                client_req_snapshot,
+                upstream_req_snapshot,
+            );
+            return Err(e);
+        }
+    };
+    if let Some(id) = invoked.upstream_request_id.clone() {
+        ctx.upstream_request_id = Some(id);
+    }
+    let upstream = invoked.inner;
+
+    let (tx, rx) = oneshot::channel::<StreamOutcome>();
+    let tracking_spawn = tracking.clone();
+    let ctx_spawn = ctx.clone();
+    let client_snap_spawn = client_req_snapshot;
+    let upstream_snap_spawn = upstream_req_snapshot;
+    let upstream_id_hdr = invoked.upstream_request_id;
+
+    tokio::spawn(async move {
+        let outcome = match rx.await {
+            Ok(so) if so.error.is_some() => TrackingOutcome::Failure {
+                client_status: 502,
+                upstream_status: Some(so.upstream_status),
+                message: so.error.unwrap_or_else(|| "upstream stream error".into()),
+                response_snapshot: None,
+            },
+            Ok(so) => TrackingOutcome::Success {
+                upstream_status: so.upstream_status,
+                usage: so.usage.unwrap_or_default(),
+                response_snapshot: None,
+                upstream_request_id: so.upstream_request_id.or(upstream_id_hdr),
+            },
+            Err(_) => TrackingOutcome::Failure {
+                client_status: 499,
+                upstream_status: None,
+                message: "stream aborted before completion".into(),
+                response_snapshot: None,
+            },
+        };
+        tracking_spawn.emit(ctx_spawn, outcome, client_snap_spawn, upstream_snap_spawn);
+    });
+
+    let body_stream = stream_driver::transcode_stream::<I>(upstream, kind, target, ingress_ctx, tx);
+    Ok(EngineOutcome::Stream(Box::pin(body_stream)))
+}
+
+// ---------------------------------------------------------------------------
+// 辅助：错误摘要 → TrackingOutcome::Failure
+// ---------------------------------------------------------------------------
+
+fn failure_outcome_from(err: &RelayError) -> TrackingOutcome {
+    TrackingOutcome::Failure {
+        client_status: err.status_code().as_u16(),
+        upstream_status: extract_upstream_status(err),
+        message: err.to_string(),
+        response_snapshot: extract_upstream_body(err),
     }
 }
 
-/// 失败场景的统一 emit —— 从 `RelayError` 读 HTTP status、上游 body、信息摘要。
-fn emit_failure(
-    tracking: &TrackingService,
-    ctx: &RelayContext,
-    err: &RelayError,
-    client_snap: Option<Value>,
-    upstream_snap: Option<Value>,
-) {
-    let client_status = err.status_code().as_u16();
-    let upstream_status = match err {
+fn extract_upstream_status(err: &RelayError) -> Option<u16> {
+    use summer_ai_core::AdapterError;
+    match err {
         RelayError::UpstreamStatus { status, .. } => Some(*status),
-        RelayError::Adapter(summer_ai_core::AdapterError::UpstreamStatus { status, .. }) => {
-            Some(*status)
-        }
+        RelayError::Adapter(AdapterError::UpstreamStatus { status, .. }) => Some(*status),
         _ => None,
-    };
-    let message = err.to_string();
-    let response_snapshot = extract_upstream_body(err);
-    let outcome = TrackingOutcome::Failure {
-        client_status,
-        upstream_status,
-        message,
-        response_snapshot,
-    };
-    tracking.emit(ctx.clone(), outcome, client_snap, upstream_snap);
+    }
 }
 
-/// 从上游错误里把 body 回收成 `Value` 供 tracking 落库。
-///
-/// - `RelayError::UpstreamStatus.body` 是原始 bytes；优先 JSON 解析，失败包 `{"raw": ...}`。
-/// - `AdapterError::UpstreamStatus.message` 本身就是 body 的 UTF-8 字符串，同理处理。
-/// - 其他 error（本地 DB / 鉴权 / 配置错）没有上游 body，返 None。
 fn extract_upstream_body(err: &RelayError) -> Option<Value> {
     use summer_ai_core::AdapterError;
 
@@ -398,7 +550,6 @@ fn extract_upstream_body(err: &RelayError) -> Option<Value> {
     if bytes.is_empty() {
         return None;
     }
-    // 限长，避免 16KB 以上的上游错误刷爆 JSONB（Postgres 内部压缩但仍耗空间）
     const MAX_BODY_BYTES: usize = 16 * 1024;
     let trimmed = if bytes.len() > MAX_BODY_BYTES {
         &bytes[..MAX_BODY_BYTES]
@@ -411,5 +562,41 @@ fn extract_upstream_body(err: &RelayError) -> Option<Value> {
             let s = String::from_utf8_lossy(trimmed).to_string();
             Some(serde_json::json!({ "raw": s }))
         }
+    }
+}
+
+fn ms_since(start: Instant) -> i32 {
+    start.elapsed().as_millis().min(i32::MAX as u128) as i32
+}
+
+/// 构造一条"没到发上游就挂"的 `AttemptRecord`（比如 `build_service_target` 失败）。
+#[allow(clippy::too_many_arguments)]
+fn mk_attempt_no_upstream(
+    attempt_no: i32,
+    candidate: &Candidate,
+    request_format: String,
+    upstream_model: String,
+    request_body: Option<Value>,
+    err: &RelayError,
+    started_at: sea_orm::prelude::DateTimeWithTimeZone,
+    start: Instant,
+) -> AttemptRecord {
+    AttemptRecord {
+        attempt_no,
+        channel_id: candidate.channel.id,
+        account_id: candidate.account.id,
+        request_format,
+        upstream_model,
+        upstream_request_id: None,
+        sent_headers: Value::Object(Default::default()),
+        request_body,
+        response_body: None,
+        response_status_code: 0,
+        success: false,
+        error_message: err.to_string(),
+        duration_ms: ms_since(start),
+        first_token_ms: 0,
+        started_at,
+        finished_at: chrono::Utc::now().fixed_offset(),
     }
 }
