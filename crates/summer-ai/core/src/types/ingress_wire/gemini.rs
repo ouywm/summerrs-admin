@@ -12,6 +12,50 @@
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Tool wire key constants
+// ---------------------------------------------------------------------------
+
+/// Gemini tool 对象是 key-based 平面结构，这些常量是 wire 里的**字段名**（不是 type 值）。
+///
+/// 形态：`{"functionDeclarations": [...], "googleSearch": {}, "urlContext": {}}`。
+/// adapter 识别 canonical `Tool.kind` 的 [`kind_prefix`] 前缀后写入对应 wire key。
+pub mod wire_key {
+    /// Function tool 声明数组的 wire key。
+    pub const FUNCTION_DECLARATIONS: &str = "functionDeclarations";
+    /// Google Search grounding 的 wire key。
+    pub const GOOGLE_SEARCH: &str = "googleSearch";
+    /// URL Context grounding 的 wire key（Gemini 2.5+）。
+    pub const URL_CONTEXT: &str = "urlContext";
+    /// 代码执行的 wire key。
+    pub const CODE_EXECUTION: &str = "codeExecution";
+}
+
+/// canonical `Tool.kind` 识别前缀。跨 provider 方言命中规则：
+///
+/// - `web_search*` / `google_search*` / `googleSearch` → 都映射到 [`wire_key::GOOGLE_SEARCH`]
+/// - `url_context*` / `urlContext` → [`wire_key::URL_CONTEXT`]
+/// - `code_execution` / `code_interpreter` / `codeExecution` → [`wire_key::CODE_EXECUTION`]
+///
+/// 其余 kind（`mcp` / 未知）Gemini 不支持，adapter 会 `warn!` 丢弃
+/// （Gemini 对未知 tool 字段严格 400）。
+pub mod kind_prefix {
+    /// Web search / google search 家族。
+    pub const WEB_SEARCH: &str = "web_search";
+    pub const GOOGLE_SEARCH: &str = "google_search";
+    /// camelCase 来自 Gemini 方言直接透传时的 kind。
+    pub const GOOGLE_SEARCH_CAMEL: &str = "googleSearch";
+
+    /// URL context 家族。
+    pub const URL_CONTEXT: &str = "url_context";
+    pub const URL_CONTEXT_CAMEL: &str = "urlContext";
+
+    /// Code execution / code interpreter 家族。
+    pub const CODE_EXECUTION: &str = "code_execution";
+    pub const CODE_INTERPRETER: &str = "code_interpreter";
+    pub const CODE_EXECUTION_CAMEL: &str = "codeExecution";
+}
+
+// ---------------------------------------------------------------------------
 // Request
 // ---------------------------------------------------------------------------
 

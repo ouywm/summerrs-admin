@@ -503,11 +503,24 @@ fn canonical_tool_to_claude(t: &crate::types::Tool) -> ClaudeTool {
         };
     }
 
-    // Built-in / server tool 路径
-    let (wire_type, default_name) = if t.kind.starts_with("web_search") {
-        ("web_search_20250305".to_string(), "web_search")
-    } else if t.kind.starts_with("mcp") {
-        ("mcp_connector_20250716".to_string(), "mcp")
+    // Built-in / server tool 路径：把 canonical 方言/前缀映射到 Anthropic 当前
+    // server tool 版本号。`prefix::*` 是家族匹配，`server_tool::*` 是具体 wire type。
+    let (wire_type, default_name) = if t
+        .kind
+        .starts_with(crate::types::ingress_wire::claude::prefix::WEB_SEARCH)
+    {
+        (
+            crate::types::ingress_wire::claude::server_tool::WEB_SEARCH.to_string(),
+            "web_search",
+        )
+    } else if t
+        .kind
+        .starts_with(crate::types::ingress_wire::claude::prefix::MCP)
+    {
+        (
+            crate::types::ingress_wire::claude::server_tool::MCP_CONNECTOR.to_string(),
+            "mcp",
+        )
     } else {
         (t.kind.clone(), "")
     };

@@ -367,10 +367,16 @@ fn flatten_tools(tools: Vec<GeminiTool>) -> Option<Vec<Tool>> {
             });
         }
         if let Some(gs) = google_search {
-            out.push(make_builtin_tool("google_search", gs));
+            out.push(make_builtin_tool(
+                summer_ai_core::types::ingress_wire::gemini::kind_prefix::GOOGLE_SEARCH,
+                gs,
+            ));
         }
         if let Some(ce) = code_execution {
-            out.push(make_builtin_tool("code_execution", ce));
+            out.push(make_builtin_tool(
+                summer_ai_core::types::ingress_wire::gemini::kind_prefix::CODE_EXECUTION,
+                ce,
+            ));
         }
         for (kind, value) in extra {
             // kind 是 Gemini 的 camelCase key（`urlContext` / `googleSearchRetrieval`）

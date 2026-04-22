@@ -295,14 +295,21 @@ fn build_gemini_tools(
             continue;
         }
         let k = t.kind.as_str();
-        if k.starts_with("web_search") || k.starts_with("google_search") || k == "googleSearch" {
+        use crate::types::ingress_wire::gemini::{kind_prefix, wire_key};
+        if k.starts_with(kind_prefix::WEB_SEARCH)
+            || k.starts_with(kind_prefix::GOOGLE_SEARCH)
+            || k == kind_prefix::GOOGLE_SEARCH_CAMEL
+        {
             tool.google_search = Some(serde_json::Value::Object(t.extra.clone()));
-        } else if k.starts_with("url_context") || k == "urlContext" {
+        } else if k.starts_with(kind_prefix::URL_CONTEXT) || k == kind_prefix::URL_CONTEXT_CAMEL {
             tool.extra.insert(
-                "urlContext".to_string(),
+                wire_key::URL_CONTEXT.to_string(),
                 serde_json::Value::Object(t.extra.clone()),
             );
-        } else if k == "code_execution" || k == "code_interpreter" || k == "codeExecution" {
+        } else if k == kind_prefix::CODE_EXECUTION
+            || k == kind_prefix::CODE_INTERPRETER
+            || k == kind_prefix::CODE_EXECUTION_CAMEL
+        {
             tool.code_execution = Some(serde_json::Value::Object(t.extra.clone()));
         } else {
             tracing::warn!(
