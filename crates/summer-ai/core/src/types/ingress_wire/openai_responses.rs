@@ -447,13 +447,18 @@ pub enum OpenAIResponsesStreamEvent {
 // Unused helpers
 // =========================================================================
 
-/// 给 `Tool` 兼容性 helper：从旧式 chat Tool 转 Responses Function tool。
+/// 给 `Tool` 兼容性 helper：从 canonical chat Tool 转 Responses Function tool。
+///
+/// 只适用于 `kind == "function"` 的 tool。非 function kind（`web_search` / `mcp` /
+/// `file_search` 等）应该在 ingress/adapter 层专门处理，这里碰到会退化成 `""` 名
+/// 占位（实际调用方需要自己判断不是 function tool 后走 built-in 路径）。
 impl From<Tool> for OpenAIResponsesTool {
     fn from(t: Tool) -> Self {
+        let func = t.function;
         Self::Function(OpenAIResponsesFunctionTool {
-            name: t.function.name,
-            description: t.function.description,
-            parameters: t.function.parameters,
+            name: func.as_ref().map(|f| f.name.clone()).unwrap_or_default(),
+            description: func.as_ref().and_then(|f| f.description.clone()),
+            parameters: func.and_then(|f| f.parameters),
             strict: None,
         })
     }

@@ -1090,4 +1090,89 @@ mod tests {
             _ => panic!("expected Text"),
         }
     }
+
+    // ------------------------------------------------------------------
+    // Built-in / MCP tool passthrough
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn openai_adapter_passthrough_web_search_preview() {
+        // OpenAI 是 identity adapter —— built-in tool 必须原样落到 wire，不能因为
+        // canonical Tool 结构改造丢字段。客户端发 {type:"web_search_preview"}
+        // 要能被上游 OpenAI chat.completions 识别。
+        let t = bearer_target("https://api.openai.com");
+        let mut req = ChatRequest::new("gpt-4o", vec![ChatMessage::user("search")]);
+        req.tools = Some(vec![crate::types::Tool::builtin(
+            "web_search_preview",
+            serde_json::Map::new(),
+        )]);
+        let data = OpenAIAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = data.payload["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "web_search_preview");
+        assert!(
+            tools[0].get("function").is_none(),
+            "built-in tool 不该带 function 字段（会被 OpenAI 400）"
+        );
+    }
+
+    #[test]
+    fn openai_adapter_passthrough_mcp_with_server_fields() {
+        // MCP connector：OpenAI chat.completions / Responses 都认 `{type:"mcp",
+        // server_label, server_url, authorization_token, allowed_tools}`。字段平铺
+        // 必须保留到 wire，不能降级成 `{type:"mcp", ...}` 缺字段。
+        let t = bearer_target("https://api.openai.com");
+        let mut extra = serde_json::Map::new();
+        extra.insert("server_label".to_string(), serde_json::json!("brave"));
+        extra.insert(
+            "server_url".to_string(),
+            serde_json::json!("https://example.com/mcp"),
+        );
+        extra.insert("authorization_token".to_string(), serde_json::json!("sk-x"));
+        extra.insert(
+            "allowed_tools".to_string(),
+            serde_json::json!(["search", "fetch"]),
+        );
+        let mut req = ChatRequest::new("gpt-4o", vec![ChatMessage::user("q")]);
+        req.tools = Some(vec![crate::types::Tool::builtin("mcp", extra)]);
+        let data = OpenAIAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = data.payload["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["type"], "mcp");
+        assert_eq!(tools[0]["server_label"], "brave");
+        assert_eq!(tools[0]["server_url"], "https://example.com/mcp");
+        assert_eq!(tools[0]["authorization_token"], "sk-x");
+        assert_eq!(
+            tools[0]["allowed_tools"],
+            serde_json::json!(["search", "fetch"])
+        );
+        assert!(tools[0].get("function").is_none());
+    }
+
+    #[test]
+    fn openai_adapter_mixes_function_and_builtin_tools() {
+        // tools 数组里同时有 function + web_search + mcp 时，三者都必须进 wire，
+        // 各自按自己的 wire 形态（function 有 function 字段；built-in 没有）。
+        let t = bearer_target("https://api.openai.com");
+        let mut mcp_extra = serde_json::Map::new();
+        mcp_extra.insert("server_url".to_string(), serde_json::json!("https://x.com"));
+        let mut req = ChatRequest::new("gpt-4o", vec![ChatMessage::user("q")]);
+        req.tools = Some(vec![
+            crate::types::Tool::function(crate::types::ToolFunction {
+                name: "weather".to_string(),
+                description: None,
+                parameters: Some(serde_json::json!({"type":"object"})),
+            }),
+            crate::types::Tool::builtin("web_search_preview", serde_json::Map::new()),
+            crate::types::Tool::builtin("mcp", mcp_extra),
+        ]);
+        let data = OpenAIAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = data.payload["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "weather");
+        assert_eq!(tools[1]["type"], "web_search_preview");
+        assert!(tools[1].get("function").is_none());
+        assert_eq!(tools[2]["type"], "mcp");
+        assert_eq!(tools[2]["server_url"], "https://x.com");
+    }
 }

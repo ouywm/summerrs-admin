@@ -180,24 +180,13 @@ fn canonical_to_claude_request(
     // messages：把 role:tool 合并到下一个 user 消息的 content 里作 tool_result
     let messages = merge_tool_messages(&non_system_messages)?;
 
-    // tools
+    // tools：function tool 走标准路径；非 function kind 视为 Anthropic server tool
+    // （`web_search_20250305` / `mcp_connector_20250716` / `computer_*` / etc.），
+    // 客户端 extra 字段原样透传到 wire。见 canonical_tool_to_claude。
     let tools = req
         .tools
         .as_ref()
-        .map(|ts| {
-            ts.iter()
-                .map(|t| ClaudeTool {
-                    name: t.function.name.clone(),
-                    description: t.function.description.clone(),
-                    input_schema: t
-                        .function
-                        .parameters
-                        .clone()
-                        .unwrap_or_else(|| serde_json::json!({"type": "object"})),
-                    cache_control: None,
-                })
-                .collect()
-        })
+        .map(|ts| ts.iter().map(canonical_tool_to_claude).collect())
         .unwrap_or_default();
 
     // tool_choice
@@ -474,6 +463,69 @@ fn parse_image_url(url: &str) -> ClaudeImageSource {
     }
     ClaudeImageSource::Url {
         url: url.to_string(),
+    }
+}
+
+/// canonical `Tool` → Claude wire `ClaudeTool`。
+///
+/// 分派规则：
+///
+/// - `kind == "function"`：普通 function tool。`name` 必填，从 `Tool.function` 取；
+///   `input_schema` 从 `Tool.function.parameters` 取，缺省用 `{type:"object"}` 占位
+///   （Claude 强制要求 `input_schema`）。`type` 字段不写（Claude custom tool 不带
+///   `type`）。
+///
+/// - `kind` 以 `"web_search"` 开头：Anthropic server tool `web_search_20250305`。
+///   如果客户端传的 kind 已经是 Anthropic 方言（`web_search_20250305`），原样透传；
+///   否则（比如 OpenAI 方言 `web_search_preview`）映射成 `web_search_20250305`。
+///   `name` 字段：Anthropic 要求 server tool 都带 `name`（`"web_search"`）；若 extra
+///   已经带了就用，否则按 kind 派生。
+///
+/// - `kind` 以 `"mcp"` 开头：映射成 `mcp_connector_20250716`。extra 里的
+///   `server_url` / `server_label` / `authorization_token` / `allowed_tools` 原样透传。
+///
+/// - 其他 kind（`computer_20241022` / `bash_20241022` / `text_editor_20250728` 或
+///   未知 Anthropic server tool）：`type` 字段直接取 kind，extra 原样平铺，
+///   让上游做最终判断。
+fn canonical_tool_to_claude(t: &crate::types::Tool) -> ClaudeTool {
+    if t.is_function() {
+        let func = t.function.as_ref();
+        return ClaudeTool {
+            kind: None,
+            name: func.map(|f| f.name.clone()).unwrap_or_default(),
+            description: func.and_then(|f| f.description.clone()),
+            input_schema: Some(
+                func.and_then(|f| f.parameters.clone())
+                    .unwrap_or_else(|| serde_json::json!({"type":"object"})),
+            ),
+            cache_control: None,
+            extra: serde_json::Map::new(),
+        };
+    }
+
+    // Built-in / server tool 路径
+    let (wire_type, default_name) = if t.kind.starts_with("web_search") {
+        ("web_search_20250305".to_string(), "web_search")
+    } else if t.kind.starts_with("mcp") {
+        ("mcp_connector_20250716".to_string(), "mcp")
+    } else {
+        (t.kind.clone(), "")
+    };
+
+    // extra 里的 `name` 优先（客户端给了就用），否则按默认派生
+    let mut extra = t.extra.clone();
+    let name = extra
+        .remove("name")
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| default_name.to_string());
+
+    ClaudeTool {
+        kind: Some(wire_type),
+        name,
+        description: None,
+        input_schema: None,
+        cache_control: None,
+        extra,
     }
 }
 
@@ -1332,5 +1384,110 @@ mod tests {
             ChatStreamEvent::ThoughtSignature { signature } => assert_eq!(signature, "EqMC..."),
             other => panic!("expected ThoughtSignature, got {other:?}"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Built-in / MCP tool 透传 & 翻译
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn function_tool_maps_without_type_field() {
+        // Claude custom tool wire 不带 `type` 字段；function 必须映射成
+        // {name, description, input_schema} 而非带 type。
+        let t = target();
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("hi")]);
+        req.tools = Some(vec![crate::types::Tool::function(
+            crate::types::ToolFunction {
+                name: "weather".to_string(),
+                description: Some("Get weather".to_string()),
+                parameters: Some(serde_json::json!({"type":"object"})),
+            },
+        )]);
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert!(tools[0].get("type").is_none(), "custom tool 不该带 type");
+        assert_eq!(tools[0]["name"], "weather");
+        assert_eq!(tools[0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn web_search_kind_maps_to_claude_server_tool_with_config() {
+        // 客户端发 OpenAI 方言 web_search_preview（或直接 web_search_20250305），
+        // 都要落成 Claude wire 的 `{type:"web_search_20250305", name:"web_search", ...}`。
+        // 目前 extra 里的 max_uses / allowed_domains 必须原样保留到 wire。
+        let t = target();
+        let mut extra = serde_json::Map::new();
+        extra.insert("max_uses".to_string(), serde_json::json!(5));
+        extra.insert(
+            "allowed_domains".to_string(),
+            serde_json::json!(["example.com"]),
+        );
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("search")]);
+        req.tools = Some(vec![crate::types::Tool::builtin(
+            "web_search_preview",
+            extra,
+        )]);
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["type"], "web_search_20250305");
+        assert_eq!(tools[0]["name"], "web_search");
+        assert_eq!(tools[0]["max_uses"], 5);
+        assert_eq!(
+            tools[0]["allowed_domains"],
+            serde_json::json!(["example.com"])
+        );
+    }
+
+    #[test]
+    fn mcp_kind_maps_to_mcp_connector_with_server_fields() {
+        // MCP tool：canonical kind="mcp"（或已经是 mcp_connector_20250716）都要
+        // 输出 `{type:"mcp_connector_20250716", name:"mcp", server_url, server_label, ...}`。
+        // server_url / server_label / authorization_token / allowed_tools 是 MCP 的
+        // 核心配置，不能因为翻译丢失。
+        let t = target();
+        let mut extra = serde_json::Map::new();
+        extra.insert("server_label".to_string(), serde_json::json!("brave"));
+        extra.insert(
+            "server_url".to_string(),
+            serde_json::json!("https://example.com/mcp"),
+        );
+        extra.insert("authorization_token".to_string(), serde_json::json!("sk-x"));
+        extra.insert(
+            "allowed_tools".to_string(),
+            serde_json::json!(["search", "fetch"]),
+        );
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("q")]);
+        req.tools = Some(vec![crate::types::Tool::builtin("mcp", extra)]);
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["type"], "mcp_connector_20250716");
+        assert_eq!(tools[0]["server_label"], "brave");
+        assert_eq!(tools[0]["server_url"], "https://example.com/mcp");
+        assert_eq!(tools[0]["authorization_token"], "sk-x");
+        assert_eq!(
+            tools[0]["allowed_tools"],
+            serde_json::json!(["search", "fetch"])
+        );
+    }
+
+    #[test]
+    fn unknown_builtin_kind_passes_through_as_type() {
+        // 其他 Anthropic server tool（computer_20241022 / bash_20241022 /
+        // text_editor_20250728 / 未知）：kind 直接作为 type 写入，extra 平铺。
+        // 不丢字段，让上游判断是否认可。
+        let t = target();
+        let mut extra = serde_json::Map::new();
+        extra.insert("display_width_px".to_string(), serde_json::json!(1024));
+        extra.insert("display_height_px".to_string(), serde_json::json!(768));
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("q")]);
+        req.tools = Some(vec![crate::types::Tool::builtin(
+            "computer_20241022",
+            extra,
+        )]);
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["type"], "computer_20241022");
+        assert_eq!(tools[0]["display_width_px"], 1024);
     }
 }

@@ -164,6 +164,21 @@ pub struct GeminiFunctionResponse {
 // ---------------------------------------------------------------------------
 
 /// `tools[]` 元素（Gemini 把多个函数声明包在一个 tool 对象的 `functionDeclarations`）。
+///
+/// Gemini 的 tool 对象是 key-based 平面结构，多个 built-in 字段共存在同一个对象里：
+///
+/// ```json
+/// {
+///   "functionDeclarations": [...],
+///   "googleSearch": {},
+///   "urlContext": {},
+///   "codeExecution": {}
+/// }
+/// ```
+///
+/// 除 `function_declarations` / `google_search` / `code_execution` 外的其他 built-in
+/// 通过 `#[serde(flatten)] extra` 原样透传（`url_context` / `googleSearchRetrieval`
+/// legacy / `grounding` 等），Gemini adapter 映射时按 kind 分派写入。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeminiTool {
@@ -176,6 +191,11 @@ pub struct GeminiTool {
     /// 代码执行（预留透传）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_execution: Option<serde_json::Value>,
+    /// 其余 Gemini built-in（`urlContext` / `googleSearchRetrieval` / `grounding`
+    /// 等）。canonical 层不枚举每种，`#[serde(flatten)]` 让 adapter / ingress 都
+    /// 可以双向保留。
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// 函数声明（类似 OpenAI 的 function tool）。

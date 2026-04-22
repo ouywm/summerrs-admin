@@ -1053,7 +1053,7 @@ mod tests {
         let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
         let tools = c.tools.expect("tools should be present");
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].function.name, "get_weather");
+        assert_eq!(tools[0].function.as_ref().unwrap().name, "get_weather");
     }
 
     #[test]

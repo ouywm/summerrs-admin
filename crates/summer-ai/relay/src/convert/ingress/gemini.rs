@@ -331,24 +331,73 @@ fn extract_text_from_part(part: GeminiPart) -> Option<String> {
     }
 }
 
-/// Gemini `tools[]` 每个元素可含多条 functionDeclarations；canonical 要扁平化。
+/// Gemini `tools[]` → canonical `Vec<Tool>`。
+///
+/// 每个 GeminiTool 是 key-based 平面结构，可以同时携带多个 built-in 字段。展开规则：
+///
+/// - `function_declarations[]` → canonical function tool（每个 decl 单独一个 Tool）
+/// - `google_search` 非空 → canonical Tool `kind: "google_search"`，value 进 extra
+/// - `code_execution` 非空 → canonical Tool `kind: "code_execution"`
+/// - `extra`（flatten 承载的 `urlContext` / `googleSearchRetrieval` / `grounding`
+///   等）→ 每个 key 一个 Tool，kind 使用 camelCase 原样保留，value 平铺到 extra
+///
+/// 这样路由到其他上游（比如 Claude）时，`canonical_tool_to_claude` 能识别
+/// `kind.starts_with("google_search")` 映射成 `web_search_20250305`；回到 Gemini
+/// 上游时 `build_gemini_tools` 识别同样的 kind 族重新写入 google_search 字段。
 fn flatten_tools(tools: Vec<GeminiTool>) -> Option<Vec<Tool>> {
     let mut out = Vec::new();
     for tool in tools {
-        for decl in tool.function_declarations {
+        let GeminiTool {
+            function_declarations,
+            google_search,
+            code_execution,
+            extra,
+        } = tool;
+
+        for decl in function_declarations {
             out.push(Tool {
                 kind: "function".to_string(),
-                function: ToolFunction {
+                function: Some(ToolFunction {
                     name: decl.name,
                     description: decl.description,
                     parameters: decl.parameters,
-                },
+                }),
                 strict: None,
+                extra: serde_json::Map::new(),
             });
         }
-        // google_search / code_execution 工具暂时丢弃（canonical 不建模）
+        if let Some(gs) = google_search {
+            out.push(make_builtin_tool("google_search", gs));
+        }
+        if let Some(ce) = code_execution {
+            out.push(make_builtin_tool("code_execution", ce));
+        }
+        for (kind, value) in extra {
+            // kind 是 Gemini 的 camelCase key（`urlContext` / `googleSearchRetrieval`）
+            out.push(make_builtin_tool(&kind, value));
+        }
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+/// 构造一个 built-in canonical Tool：value 如果是对象就直接作为 extra，
+/// 其他形态（`null` / 字符串）塞到 `extra["_value"]` 以免丢失。
+fn make_builtin_tool(kind: &str, value: serde_json::Value) -> Tool {
+    let extra = match value {
+        serde_json::Value::Object(m) => m,
+        serde_json::Value::Null => serde_json::Map::new(),
+        other => {
+            let mut m = serde_json::Map::new();
+            m.insert("_value".to_string(), other);
+            m
+        }
+    };
+    Tool {
+        kind: kind.to_string(),
+        function: None,
+        strict: None,
+        extra,
+    }
 }
 
 fn tool_config_to_choice(config: GeminiToolConfig) -> Option<ToolChoice> {
@@ -791,8 +840,8 @@ mod tests {
         let c = GeminiIngress::to_canonical(req, &ctx()).unwrap();
         let tools = c.tools.unwrap();
         assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].function.name, "a");
-        assert_eq!(tools[1].function.name, "b");
+        assert_eq!(tools[0].function.as_ref().unwrap().name, "a");
+        assert_eq!(tools[1].function.as_ref().unwrap().name, "b");
     }
 
     #[test]

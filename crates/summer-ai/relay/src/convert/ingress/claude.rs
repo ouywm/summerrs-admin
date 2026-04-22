@@ -415,15 +415,53 @@ fn claude_tool_result_to_string(content: Option<ClaudeToolResultContent>) -> Ada
     }
 }
 
+/// Claude wire `ClaudeTool` → canonical `Tool`。
+///
+/// 识别规则：
+/// - `kind` 字段缺失 → Anthropic custom tool：映射成 canonical function tool
+///   （`name` / `description` / `input_schema → parameters`）。
+/// - `kind` 字段存在（`web_search_20250305` / `mcp_connector_20250716` /
+///   `computer_20241022` / ...）→ built-in：`Tool.kind` 保留为 Anthropic 方言
+///   的 type 字符串，`Tool.extra` 承载 `name` + `max_uses` / `allowed_domains` /
+///   `server_url` / ... 所有配置字段。
+///
+/// 下游 adapter 不是 Claude 时（比如路由到 Gemini），`build_gemini_tools` 会按
+/// `kind` 再做一次翻译（`web_search*` → `googleSearch`）；路由回 Claude 上游时，
+/// `canonical_tool_to_claude` 识别 `kind.starts_with("web_search")` 重新输出
+/// `web_search_20250305`，字段不丢。
 fn claude_tool_to_canonical(tool: ClaudeTool) -> Tool {
-    Tool {
-        kind: "function".to_string(),
-        function: ToolFunction {
-            name: tool.name,
-            description: tool.description,
-            parameters: Some(tool.input_schema),
+    let ClaudeTool {
+        kind,
+        name,
+        description,
+        input_schema,
+        cache_control: _,
+        extra,
+    } = tool;
+
+    match kind {
+        None => Tool {
+            kind: "function".to_string(),
+            function: Some(ToolFunction {
+                name,
+                description,
+                parameters: input_schema,
+            }),
+            strict: None,
+            extra: serde_json::Map::new(),
         },
-        strict: None,
+        Some(k) => {
+            // built-in：把 `name` 也塞进 extra（Anthropic server tool wire 需要带），
+            // 其余 max_uses / allowed_domains / server_url 等字段已经在 extra 里。
+            let mut extra = extra;
+            extra.insert("name".to_string(), serde_json::Value::String(name));
+            Tool {
+                kind: k,
+                function: None,
+                strict: None,
+                extra,
+            }
+        }
     }
 }
 
@@ -1734,5 +1772,86 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Built-in / MCP tool ingress reverse-mapping
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn claude_custom_tool_maps_to_canonical_function() {
+        // 客户端发 Claude 原生 function tool（不带 type、带 input_schema）：
+        // ingress 把 ClaudeTool → canonical Tool::function，让路由到其他上游
+        // 时 adapter 能按 function 处理。
+        let raw = serde_json::json!({
+            "model":"claude-sonnet-4-5",
+            "max_tokens":256,
+            "messages":[{"role":"user","content":"hi"}],
+            "tools":[{"name":"weather","input_schema":{"type":"object"}}]
+        });
+        let req: ClaudeMessagesRequest = serde_json::from_value(raw).unwrap();
+        let c = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let tools = c.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert!(tools[0].is_function());
+        let f = tools[0].function.as_ref().unwrap();
+        assert_eq!(f.name, "weather");
+        assert_eq!(f.parameters.as_ref().unwrap()["type"], "object");
+    }
+
+    #[test]
+    fn claude_web_search_tool_preserves_kind_and_config() {
+        // Claude server tool `web_search_20250305`：ingress 要保留 kind 让 adapter
+        // 按 built-in 路径处理；max_uses / allowed_domains 进 extra。路由到 Gemini
+        // 时 build_gemini_tools 识别 kind 开头转成 googleSearch。
+        let raw = serde_json::json!({
+            "model":"claude-sonnet-4-5",
+            "max_tokens":256,
+            "messages":[{"role":"user","content":"search"}],
+            "tools":[{
+                "type":"web_search_20250305",
+                "name":"web_search",
+                "max_uses":5,
+                "allowed_domains":["example.com"]
+            }]
+        });
+        let req: ClaudeMessagesRequest = serde_json::from_value(raw).unwrap();
+        let c = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let tools = c.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert!(!tools[0].is_function());
+        assert_eq!(tools[0].kind, "web_search_20250305");
+        assert_eq!(tools[0].extra["name"], "web_search");
+        assert_eq!(tools[0].extra["max_uses"], 5);
+        assert_eq!(
+            tools[0].extra["allowed_domains"],
+            serde_json::json!(["example.com"])
+        );
+    }
+
+    #[test]
+    fn claude_mcp_connector_tool_preserves_server_fields() {
+        // MCP connector：Claude wire 里是
+        // `{type:"mcp_connector_20250716", name, server_url, ...}`。
+        // ingress 把 server_url / server_label / authorization_token 全部保留到 extra。
+        let raw = serde_json::json!({
+            "model":"claude-sonnet-4-5",
+            "max_tokens":256,
+            "messages":[{"role":"user","content":"q"}],
+            "tools":[{
+                "type":"mcp_connector_20250716",
+                "name":"mcp",
+                "server_url":"https://example.com/mcp",
+                "server_label":"brave",
+                "authorization_token":"sk-x"
+            }]
+        });
+        let req: ClaudeMessagesRequest = serde_json::from_value(raw).unwrap();
+        let c = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        let tools = c.tools.unwrap();
+        assert_eq!(tools[0].kind, "mcp_connector_20250716");
+        assert_eq!(tools[0].extra["server_url"], "https://example.com/mcp");
+        assert_eq!(tools[0].extra["server_label"], "brave");
+        assert_eq!(tools[0].extra["authorization_token"], "sk-x");
     }
 }

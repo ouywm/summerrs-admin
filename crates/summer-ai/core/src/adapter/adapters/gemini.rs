@@ -21,7 +21,7 @@ use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
 use crate::types::ingress_wire::gemini::{
     GeminiChatResponse, GeminiContent, GeminiFileData, GeminiFunctionCall, GeminiFunctionResponse,
-    GeminiGenerateContentRequest, GeminiGenerationConfig, GeminiInlineData, GeminiPart, GeminiTool,
+    GeminiGenerateContentRequest, GeminiGenerationConfig, GeminiInlineData, GeminiPart,
     GeminiUsageMetadata,
 };
 use crate::types::{
@@ -207,21 +207,12 @@ fn canonical_to_gemini_request(req: &ChatRequest) -> AdapterResult<GeminiGenerat
         )
     };
 
-    // tools
+    // tools：Gemini 的 tools[] 是 key-based 平面结构——function tool 合并进单个
+    // GeminiTool.functionDeclarations；built-in（web_search / url_context /
+    // code_execution）按 kind 分派到对应字段；mcp / 未知 kind 无对应字段 warn 丢弃
+    // （Gemini 对未知 tool 字段严格 400）。
     let tools = if let Some(canonical_tools) = &req.tools {
-        let decls = canonical_tools
-            .iter()
-            .map(|t| gemini_function_declaration(&t.function))
-            .collect::<Vec<_>>();
-        if decls.is_empty() {
-            Vec::new()
-        } else {
-            vec![GeminiTool {
-                function_declarations: decls,
-                google_search: None,
-                code_execution: None,
-            }]
-        }
+        build_gemini_tools(canonical_tools)
     } else {
         Vec::new()
     };
@@ -266,6 +257,69 @@ fn gemini_function_declaration(
         name: f.name.clone(),
         description: f.description.clone(),
         parameters: f.parameters.clone(),
+    }
+}
+
+/// canonical `tools: Vec<Tool>` → Gemini `tools: Vec<GeminiTool>`。
+///
+/// Gemini 的 tool 对象是 key-based 平面结构，多个 built-in 可以共存在一个对象里。
+/// 我们的策略：
+///
+/// - 所有 function tool 合并到 **单个** `GeminiTool.function_declarations`
+/// - `web_search*` / `google_search*` / `googleSearch` → `google_search: {}`
+/// - `url_context*` → 写到 `extra["urlContext"] = {}`
+/// - `code_execution` / `code_interpreter` → `code_execution: {}`
+/// - `mcp*` / 其他未知 kind：Gemini 不支持，`tracing::warn!` 丢弃（若透传到上游
+///   会 400 整个请求拒收）
+///
+/// 如果全部都是 function tool，输出 **单个** GeminiTool；如果混合了 built-in，
+/// function_declarations 和 built-in 字段共存在同一个对象里（Gemini 接受）。
+fn build_gemini_tools(
+    canonical_tools: &[crate::types::Tool],
+) -> Vec<crate::types::ingress_wire::gemini::GeminiTool> {
+    use crate::types::ingress_wire::gemini::GeminiTool;
+
+    let mut tool = GeminiTool {
+        function_declarations: Vec::new(),
+        google_search: None,
+        code_execution: None,
+        extra: serde_json::Map::new(),
+    };
+
+    for t in canonical_tools {
+        if t.is_function() {
+            if let Some(f) = t.function.as_ref() {
+                tool.function_declarations
+                    .push(gemini_function_declaration(f));
+            }
+            continue;
+        }
+        let k = t.kind.as_str();
+        if k.starts_with("web_search") || k.starts_with("google_search") || k == "googleSearch" {
+            tool.google_search = Some(serde_json::Value::Object(t.extra.clone()));
+        } else if k.starts_with("url_context") || k == "urlContext" {
+            tool.extra.insert(
+                "urlContext".to_string(),
+                serde_json::Value::Object(t.extra.clone()),
+            );
+        } else if k == "code_execution" || k == "code_interpreter" || k == "codeExecution" {
+            tool.code_execution = Some(serde_json::Value::Object(t.extra.clone()));
+        } else {
+            tracing::warn!(
+                kind = %k,
+                "gemini adapter: tool kind not mappable; dropping (Gemini rejects unknown tool fields)"
+            );
+        }
+    }
+
+    if tool.function_declarations.is_empty()
+        && tool.google_search.is_none()
+        && tool.code_execution.is_none()
+        && tool.extra.is_empty()
+    {
+        Vec::new()
+    } else {
+        vec![tool]
     }
 }
 
@@ -1189,5 +1243,81 @@ mod tests {
             MessageContent::Text(t) => assert_eq!(t, "hi there"),
             _ => panic!("expected Text"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Built-in tool dispatch
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn web_search_kind_maps_to_google_search_field() {
+        // 客户端发 OpenAI `web_search_preview` / Claude `web_search_20250305` /
+        // Gemini `googleSearch`：adapter 都要统一落成 Gemini wire 的
+        // `tools: [{googleSearch: {}}]`。Gemini 对未知 tool 字段严格 400，
+        // 所以这个翻译是跨 provider 路由的硬需求。
+        let t = target();
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("what's new?")]);
+        req.tools = Some(vec![crate::types::Tool::builtin(
+            "web_search_preview",
+            serde_json::Map::new(),
+        )]);
+        let wire = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert!(tools[0]["googleSearch"].is_object());
+    }
+
+    #[test]
+    fn function_tools_combine_into_single_gemini_tool() {
+        // 多个 function tool 必须合并到单个 GeminiTool.functionDeclarations
+        // —— Gemini wire 期望的是一个 tool 对象 + 一个 declarations 数组，而不是
+        // 每个 function 一个 tool 对象（会被某些 Gemini endpoint 拒收）。
+        let t = target();
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("q")]);
+        req.tools = Some(vec![
+            crate::types::Tool::function(crate::types::ToolFunction {
+                name: "a".to_string(),
+                description: None,
+                parameters: None,
+            }),
+            crate::types::Tool::function(crate::types::ToolFunction {
+                name: "b".to_string(),
+                description: None,
+                parameters: None,
+            }),
+        ]);
+        let wire = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        let decls = tools[0]["functionDeclarations"].as_array().unwrap();
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0]["name"], "a");
+        assert_eq!(decls[1]["name"], "b");
+    }
+
+    #[test]
+    fn mcp_kind_is_dropped_with_warning_for_gemini() {
+        // Gemini 不支持 MCP，对未知 tool 字段严格拒收。adapter 必须丢弃 mcp
+        // tool 而不是透传到 wire，否则 Gemini 会 400 整个请求。
+        let t = target();
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "server_url".to_string(),
+            serde_json::json!("https://example.com"),
+        );
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("q")]);
+        req.tools = Some(vec![crate::types::Tool::builtin("mcp", extra)]);
+        let wire = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        // mcp 被丢弃 → tools 数组应该不出现在 wire（或空）
+        let tools = wire.payload.get("tools");
+        assert!(
+            tools.is_none()
+                || tools
+                    .unwrap()
+                    .as_array()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(false),
+            "mcp tool 应该被丢弃，got {tools:?}"
+        );
     }
 }

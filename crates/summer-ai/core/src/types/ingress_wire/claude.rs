@@ -185,14 +185,40 @@ pub struct CacheControl {
 }
 
 /// 工具声明。
+///
+/// Claude `/v1/messages` 的 `tools` 字段兼容两种形态：
+///
+/// 1. **Custom function tool** ——  `{name, description, input_schema, cache_control}`。
+///    不带 `type` 字段；`input_schema` 必填；adapter 映射 canonical `Tool::function`。
+///
+/// 2. **Server tool / built-in** —— `{type, name, ...config}`。比如：
+///    - `web_search_20250305`：带 `max_uses` / `allowed_domains` / `blocked_domains`
+///      / `user_location`
+///    - `computer_20241022` / `text_editor_20250728` / `bash_20241022`
+///    - `mcp_connector_20250716`：带 `server_url` / `server_label` /
+///      `authorization_token` / `allowed_tools`
+///
+/// wire 上区别：built-in 有 `type`，custom 没有。`input_schema` custom 必填，built-in
+/// 不允许。`#[serde(flatten)] extra` 承载任意 built-in 配置字段，保证 adapter 翻译时
+/// 不丢字段。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeTool {
+    /// Built-in tool 的 `type` 字段（`web_search_20250305` / `mcp_connector_20250716`
+    /// 等）；custom function tool 不带。
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub input_schema: serde_json::Value,
+    /// Custom function tool 的 JSON Schema；built-in 不允许带此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
+    /// Built-in 工具的私有配置（`max_uses` / `allowed_domains` / `server_url` 等）。
+    /// custom tool 留空；built-in 平铺承载，wire 上与 `name` 同层。
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// `tool_choice` 字段。
