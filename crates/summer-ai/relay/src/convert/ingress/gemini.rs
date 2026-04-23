@@ -178,6 +178,7 @@ fn to_canonical_impl(
         metadata: None,
         store: None,
         web_search_options: None,
+        responses_extras: None,
         extra,
     })
 }

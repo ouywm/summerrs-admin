@@ -6,7 +6,10 @@
 //! 字段是 `ai.token` 表的子集——只拷贝下游会用到的，其他（rpm/tpm/ip 白名单等）
 //! 由各自的中间件自己查。
 
+use summer_ai_core::{EndpointScope, parse_json_scopes};
 use summer_ai_model::entity::platform::token;
+
+use crate::error::RelayError;
 
 /// 鉴权通过后注入到 `Request::extensions` 的 token 上下文。
 #[derive(Debug, Clone)]
@@ -25,8 +28,10 @@ pub struct AiTokenContext {
     pub group_code_override: String,
     /// 允许使用的模型白名单。本阶段只保存，不校验。
     pub allowed_models: Vec<String>,
-    /// 允许使用的 endpoint 白名单。本阶段只保存，不校验。
-    pub allowed_endpoint_scopes: Vec<String>,
+    /// 允许的 endpoint 家族白名单（强类型）。空 Vec 表示不限制。
+    ///
+    /// 由 `ai.token.endpoint_scopes` JSONB 解析而来；未知字符串 drop + warn。
+    pub allowed_endpoint_scopes: Vec<EndpointScope>,
 }
 
 impl AiTokenContext {
@@ -43,9 +48,27 @@ impl AiTokenContext {
             remain_quota: m.remain_quota,
             group_code_override: m.group_code_override.clone(),
             allowed_models: json_string_array(&m.models),
-            allowed_endpoint_scopes: json_string_array(&m.endpoint_scopes),
+            allowed_endpoint_scopes: parse_json_scopes(&m.endpoint_scopes),
         }
     }
+}
+
+pub fn ensure_endpoint_scope_allowed(
+    token: &AiTokenContext,
+    required: EndpointScope,
+) -> Result<(), RelayError> {
+    if !token.allowed_endpoint_scopes.is_empty()
+        && !token.allowed_endpoint_scopes.contains(&required)
+    {
+        return Err(RelayError::Forbidden(match required {
+            EndpointScope::Chat => "this token is not allowed to access /v1/chat/completions",
+            EndpointScope::Responses => "this token is not allowed to access /v1/responses",
+            EndpointScope::Embeddings => "this token is not allowed to access embeddings endpoints",
+            EndpointScope::Images => "this token is not allowed to access image endpoints",
+            EndpointScope::Audio => "this token is not allowed to access audio endpoints",
+        }));
+    }
+    Ok(())
 }
 
 fn json_string_array(v: &serde_json::Value) -> Vec<String> {
@@ -118,7 +141,7 @@ mod tests {
         assert_eq!(ctx.remain_quota, 1000);
         assert_eq!(ctx.group_code_override, "vip");
         assert_eq!(ctx.allowed_models, vec!["gpt-4o-mini", "claude-sonnet"]);
-        assert_eq!(ctx.allowed_endpoint_scopes, vec!["chat"]);
+        assert_eq!(ctx.allowed_endpoint_scopes, vec![EndpointScope::Chat]);
         assert_eq!(ctx.key_prefix, "sk-test");
     }
 
@@ -126,5 +149,29 @@ mod tests {
     fn json_string_array_empty_on_non_array() {
         assert!(json_string_array(&serde_json::json!({})).is_empty());
         assert!(json_string_array(&serde_json::Value::Null).is_empty());
+    }
+
+    #[test]
+    fn ensure_endpoint_scope_allowed_allows_empty_scope_list() {
+        let mut ctx = AiTokenContext::from_model(&mk_model(true, 100));
+        ctx.allowed_endpoint_scopes = Vec::new();
+        assert!(ensure_endpoint_scope_allowed(&ctx, EndpointScope::Responses).is_ok());
+        assert!(ensure_endpoint_scope_allowed(&ctx, EndpointScope::Chat).is_ok());
+    }
+
+    #[test]
+    fn ensure_endpoint_scope_allowed_rejects_responses_when_only_chat_allowed() {
+        let ctx = AiTokenContext::from_model(&mk_model(true, 100));
+        let err = ensure_endpoint_scope_allowed(&ctx, EndpointScope::Responses).unwrap_err();
+        assert!(matches!(err, RelayError::Forbidden(msg) if msg.contains("/v1/responses")));
+    }
+
+    #[test]
+    fn ensure_endpoint_scope_allowed_rejects_chat_when_only_responses_allowed() {
+        let mut model = mk_model(true, 100);
+        model.endpoint_scopes = serde_json::json!(["responses"]);
+        let ctx = AiTokenContext::from_model(&model);
+        let err = ensure_endpoint_scope_allowed(&ctx, EndpointScope::Chat).unwrap_err();
+        assert!(matches!(err, RelayError::Forbidden(msg) if msg.contains("/v1/chat/completions")));
     }
 }

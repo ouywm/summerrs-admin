@@ -207,6 +207,7 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
         metadata: None,
         store: None,
         web_search_options: None,
+        responses_extras: None,
         extra,
     })
 }

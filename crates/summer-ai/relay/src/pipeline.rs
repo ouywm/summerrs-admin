@@ -62,7 +62,7 @@ use summer_ai_billing::{
     BillingError, BillingService, CostBreakdown, PriceResolver, PriceTable, Reservation,
     compute_cost, estimate_quota,
 };
-use summer_ai_core::AdapterDispatcher;
+use summer_ai_core::{AdapterDispatcher, EndpointScope};
 
 use crate::auth::AiTokenContext;
 use crate::context::RelayContext;
@@ -167,9 +167,11 @@ where
             user_agent,
             client_headers,
         );
+        let scope = EndpointScope::from(format);
+        let service = chat::service_type_for(scope, is_stream);
 
         // ─── 1. 选路候选列表 ───────────────────────────────────────
-        let candidates = match store.candidates(&logical_model).await {
+        let candidates = match store.candidates(&logical_model, scope).await {
             Ok(list) => list,
             Err(e) => {
                 tracking.emit_with_attempts(
@@ -201,6 +203,7 @@ where
             &first.account,
             &first.selected_key,
             &logical_model,
+            scope,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -268,6 +271,7 @@ where
                 candidate,
                 kind,
                 target,
+                service,
                 canonical_req,
                 upstream_req_snapshot,
                 client_req_snapshot,
@@ -282,6 +286,7 @@ where
                 ctx,
                 candidates,
                 &logical_model,
+                service,
                 canonical_req,
                 upstream_req_snapshot,
                 client_req_snapshot,
@@ -304,6 +309,7 @@ async fn execute_non_stream_with_retry<I>(
     mut ctx: RelayContext,
     candidates: Vec<Candidate>,
     logical_model: &str,
+    service: summer_ai_core::ServiceType,
     canonical_req: summer_ai_core::ChatRequest,
     upstream_req_snapshot: Option<Value>,
     client_req_snapshot: Option<Value>,
@@ -329,6 +335,7 @@ where
             &candidate.account,
             &candidate.selected_key,
             logical_model,
+            EndpointScope::from(ctx.format),
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -371,9 +378,15 @@ where
         );
 
         let mut sent_headers_sink: Option<Value> = None;
-        let invoke_result =
-            chat::invoke_non_stream(&http, kind, &target, &canonical_req, &mut sent_headers_sink)
-                .await;
+        let invoke_result = chat::invoke_non_stream(
+            &http,
+            kind,
+            &target,
+            service,
+            &canonical_req,
+            &mut sent_headers_sink,
+        )
+        .await;
         let sent_headers = sent_headers_sink
             .take()
             .unwrap_or(Value::Object(Default::default()));
@@ -530,6 +543,7 @@ async fn execute_stream<I>(
     candidate: Candidate,
     kind: summer_ai_core::AdapterKind,
     target: summer_ai_core::ServiceTarget,
+    service: summer_ai_core::ServiceType,
     canonical_req: summer_ai_core::ChatRequest,
     upstream_req_snapshot: Option<Value>,
     client_req_snapshot: Option<Value>,
@@ -555,8 +569,15 @@ where
     let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, target.actual_model());
 
     let mut sent_headers_sink: Option<Value> = None;
-    let invoke_result =
-        chat::invoke_stream_raw(&http, kind, &target, &canonical_req, &mut sent_headers_sink).await;
+    let invoke_result = chat::invoke_stream_raw(
+        &http,
+        kind,
+        &target,
+        service,
+        &canonical_req,
+        &mut sent_headers_sink,
+    )
+    .await;
     if let Some(h) = sent_headers_sink.take() {
         ctx.set_sent_headers(h);
     }

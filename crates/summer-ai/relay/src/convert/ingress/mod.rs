@@ -16,7 +16,7 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use summer_ai_core::{
-    AdapterKind, AdapterResult, ChatRequest, ChatResponse, ChatStreamEvent, Usage,
+    AdapterKind, AdapterResult, ChatRequest, ChatResponse, ChatStreamEvent, EndpointScope, Usage,
 };
 
 pub mod claude;
@@ -54,6 +54,41 @@ impl IngressFormat {
             Self::Gemini => "gemini",
             Self::OpenAIResponses => "openai_responses",
         }
+    }
+}
+
+impl From<IngressFormat> for EndpointScope {
+    fn from(value: IngressFormat) -> Self {
+        match value {
+            IngressFormat::OpenAI | IngressFormat::Claude | IngressFormat::Gemini => Self::Chat,
+            IngressFormat::OpenAIResponses => Self::Responses,
+        }
+    }
+}
+
+#[cfg(test)]
+mod ingress_format_tests {
+    use super::IngressFormat;
+    use summer_ai_core::EndpointScope;
+
+    #[test]
+    fn ingress_format_maps_to_endpoint_scope() {
+        assert_eq!(
+            EndpointScope::from(IngressFormat::OpenAI),
+            EndpointScope::Chat
+        );
+        assert_eq!(
+            EndpointScope::from(IngressFormat::Claude),
+            EndpointScope::Chat
+        );
+        assert_eq!(
+            EndpointScope::from(IngressFormat::Gemini),
+            EndpointScope::Chat
+        );
+        assert_eq!(
+            EndpointScope::from(IngressFormat::OpenAIResponses),
+            EndpointScope::Responses
+        );
     }
 }
 

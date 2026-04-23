@@ -22,17 +22,18 @@
 //!
 //! 当前依赖 TTL 兜底；后续接入 `summer-stream` 后由 admin CRUD 发事件主动失效。
 
+use crate::error::RelayError;
+use crate::service::key_picker::{KeyPicker, RandomKeyPicker};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use summer::plugin::Service;
-use summer_ai_core::{AdapterKind, AuthData, Endpoint, ServiceTarget};
+use summer_ai_core::{
+    AdapterError, AdapterKind, AuthData, Endpoint, EndpointScope, ServiceTarget, parse_json_scopes,
+};
 use summer_ai_model::entity::channels::{channel, channel_account};
 use summer_redis::Redis;
 use summer_redis::redis;
 use summer_redis::redis::AsyncCommands;
 use summer_sea_orm::DbConn;
-
-use crate::error::RelayError;
-use crate::service::key_picker::{KeyPicker, RandomKeyPicker};
 
 /// Redis key TTL（秒）。故意设短，TTL 兜底失效路径。
 const CACHE_TTL_SECS: u64 = 300;
@@ -53,6 +54,43 @@ pub fn channel_type_to_adapter_kind(kind: channel::ChannelType) -> AdapterKind {
         // Baidu 暂没有 dedicated adapter，兜底为 OpenAICompat
         DbKind::Baidu => AdapterKind::OpenAICompat,
     }
+}
+
+pub fn resolve_adapter_kind(c: channel::ChannelType, e: EndpointScope) -> Option<AdapterKind> {
+    match (c, e) {
+        // ─── OpenAI ───
+        (channel::ChannelType::OpenAi, EndpointScope::Chat) => Some(AdapterKind::OpenAI),
+        (channel::ChannelType::OpenAi, EndpointScope::Responses) => Some(AdapterKind::OpenAIResp),
+
+        // ─── Azure ───
+        (channel::ChannelType::Azure, EndpointScope::Chat) => Some(AdapterKind::Azure),
+        (channel::ChannelType::Azure, EndpointScope::Responses) => None,
+
+        // ─── Anthropic ───
+        (channel::ChannelType::Anthropic, EndpointScope::Chat) => Some(AdapterKind::Claude),
+        (channel::ChannelType::Anthropic, EndpointScope::Responses) => None,
+
+        // ─── Gemini ───
+        (channel::ChannelType::Gemini, EndpointScope::Chat) => Some(AdapterKind::Gemini),
+        (channel::ChannelType::Gemini, _) => None,
+
+        // ─── Ollama ───
+        (channel::ChannelType::Ollama, EndpointScope::Chat) => Some(AdapterKind::Ollama),
+        (channel::ChannelType::Ollama, _) => None,
+
+        // ─── Ali ───
+        (channel::ChannelType::Ali, EndpointScope::Chat) => Some(AdapterKind::Aliyun),
+
+        // ─── Baidu ───
+        (channel::ChannelType::Baidu, EndpointScope::Chat) => Some(AdapterKind::OpenAICompat),
+
+        // ─── 其他未支持 ───
+        _ => None,
+    }
+}
+
+fn channel_supports_scope(channel: &channel::Model, scope: EndpointScope) -> bool {
+    parse_json_scopes(&channel.endpoint_scopes).contains(&scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -88,13 +126,22 @@ impl ChannelStore {
     /// 3. 每个 account 用 `RandomKeyPicker` 从 `enabled_api_keys()` 里挑**一个** key 作为该候选的凭证
     ///
     /// 返 `Vec<Candidate>`，可能为空（表示路由空 —— handler 返 `NoAvailableChannel`）。
-    pub async fn candidates(&self, logical_model: &str) -> Result<Vec<Candidate>, RelayError> {
+    pub async fn candidates(
+        &self,
+        logical_model: &str,
+        scope: EndpointScope,
+    ) -> Result<Vec<Candidate>, RelayError> {
         let channel_ids = self.load_model_channels(logical_model).await?;
         if channel_ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        let channels = self.load_channels(&channel_ids).await?;
+        let channels: Vec<channel::Model> = self
+            .load_channels(&channel_ids)
+            .await?
+            .into_iter()
+            .filter(|channel| channel_supports_scope(channel, scope))
+            .collect();
         if channels.is_empty() {
             return Ok(Vec::new());
         }
@@ -140,11 +187,12 @@ impl ChannelStore {
     /// 兼容旧调用方的薄包装：返 `candidates()` 的第一个候选。
     ///
     /// 新代码（pipeline P9 retry）应直接用 `candidates()`；该方法保留给未接入 retry 的调用点。
+    #[deprecated(note = "use candidates(logical_model, scope) instead")]
     pub async fn pick(
         &self,
         logical_model: &str,
     ) -> Result<Option<(channel::Model, channel_account::Model, String)>, RelayError> {
-        let mut list = self.candidates(logical_model).await?;
+        let mut list = self.candidates(logical_model, EndpointScope::Chat).await?;
         if list.is_empty() {
             Ok(None)
         } else {
@@ -456,6 +504,7 @@ pub fn build_service_target(
     account: &channel_account::Model,
     selected_key: &str,
     logical_model: &str,
+    scope: EndpointScope,
 ) -> Result<ServiceTarget, RelayError> {
     if account.is_oauth() {
         return Err(RelayError::NotImplemented("oauth credentials"));
@@ -466,7 +515,12 @@ pub fn build_service_target(
         ));
     }
 
-    let kind = channel_type_to_adapter_kind(channel.channel_type);
+    let kind = resolve_adapter_kind(channel.channel_type, scope).ok_or(RelayError::Adapter(
+        AdapterError::Unsupported {
+            adapter: "channel_store",
+            feature: "channel_type_endpoint_scope",
+        },
+    ))?;
     let actual_model = channel.resolve_upstream_model(logical_model);
     let endpoint = Endpoint::from_owned(channel.base_url.clone());
     let auth = AuthData::from_single(selected_key.to_string());
@@ -643,7 +697,7 @@ mod tests {
     // ---------- build_service_target ----------
 
     #[test]
-    fn build_service_target_maps_channel_type_and_applies_model_mapping() {
+    fn build_service_target_maps_chat_scope_and_applies_model_mapping() {
         let mut channel = mk_channel(
             1,
             vec!["gpt-4"],
@@ -655,10 +709,35 @@ mod tests {
         channel.model_mapping = serde_json::json!({"gpt-4": "gpt-4-turbo"});
         let account = mk_account(10, 1, "sk-a", 1, 100);
 
-        let target = build_service_target(&channel, &account, "sk-a", "gpt-4").unwrap();
+        let target =
+            build_service_target(&channel, &account, "sk-a", "gpt-4", EndpointScope::Chat).unwrap();
         assert_eq!(target.kind(), AdapterKind::OpenAI);
         assert_eq!(target.actual_model(), "gpt-4-turbo");
         assert_eq!(target.endpoint.trimmed(), "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn build_service_target_maps_responses_scope_to_openai_resp() {
+        let channel = mk_channel(
+            1,
+            vec!["gpt-5"],
+            1,
+            100,
+            channel::ChannelType::OpenAi,
+            "https://api.openai.com/v1",
+        );
+        let account = mk_account(10, 1, "sk-a", 1, 100);
+
+        let target = build_service_target(
+            &channel,
+            &account,
+            "sk-a",
+            "gpt-5",
+            EndpointScope::Responses,
+        )
+        .unwrap();
+
+        assert_eq!(target.kind(), AdapterKind::OpenAIResp);
     }
 
     #[test]
@@ -672,7 +751,8 @@ mod tests {
             "https://a",
         );
         let account = mk_account(10, 1, "sk-a", 1, 100);
-        let err = build_service_target(&channel, &account, "", "x").unwrap_err();
+        let err =
+            build_service_target(&channel, &account, "", "x", EndpointScope::Chat).unwrap_err();
         assert!(matches!(err, RelayError::MissingConfig(_)));
     }
 
@@ -695,21 +775,55 @@ mod tests {
                 "expires_at": "2026-04-20T12:00:00Z"
             }
         });
-        let err = build_service_target(&channel, &account, "ignored", "x").unwrap_err();
+        let err = build_service_target(&channel, &account, "ignored", "x", EndpointScope::Chat)
+            .unwrap_err();
         assert!(matches!(err, RelayError::NotImplemented(m) if m.contains("oauth")));
     }
 
     #[test]
-    fn channel_type_to_adapter_kind_basic_cases() {
+    fn resolve_adapter_kind_uses_endpoint_scope() {
         use channel::ChannelType as D;
-        assert_eq!(channel_type_to_adapter_kind(D::OpenAi), AdapterKind::OpenAI);
+
         assert_eq!(
-            channel_type_to_adapter_kind(D::Anthropic),
-            AdapterKind::Claude
+            resolve_adapter_kind(D::OpenAi, EndpointScope::Chat),
+            Some(AdapterKind::OpenAI)
         );
-        assert_eq!(channel_type_to_adapter_kind(D::Gemini), AdapterKind::Gemini);
-        assert_eq!(channel_type_to_adapter_kind(D::Azure), AdapterKind::Azure);
-        assert_eq!(channel_type_to_adapter_kind(D::Ollama), AdapterKind::Ollama);
+        assert_eq!(
+            resolve_adapter_kind(D::OpenAi, EndpointScope::Responses),
+            Some(AdapterKind::OpenAIResp)
+        );
+        assert_eq!(
+            resolve_adapter_kind(D::Anthropic, EndpointScope::Responses),
+            None
+        );
+        assert_eq!(
+            resolve_adapter_kind(D::Azure, EndpointScope::Responses),
+            None
+        );
+        assert_eq!(
+            resolve_adapter_kind(D::Gemini, EndpointScope::Responses),
+            None
+        );
+    }
+
+    #[test]
+    fn channel_supports_scope_checks_endpoint_scopes_json() {
+        let mut channel = mk_channel(
+            1,
+            vec!["gpt-4"],
+            1,
+            100,
+            channel::ChannelType::OpenAi,
+            "https://api.openai.com/v1",
+        );
+        channel.endpoint_scopes = serde_json::json!(["chat", "responses"]);
+        assert!(channel_supports_scope(&channel, EndpointScope::Chat));
+        assert!(channel_supports_scope(&channel, EndpointScope::Responses));
+        assert!(!channel_supports_scope(&channel, EndpointScope::Embeddings));
+
+        channel.endpoint_scopes = serde_json::json!(["chat", "responce", 42]);
+        assert!(channel_supports_scope(&channel, EndpointScope::Chat));
+        assert!(!channel_supports_scope(&channel, EndpointScope::Responses));
     }
 
     // ---------- weighted_shuffle（用 tuple stub，不依赖 channel::Model）----------

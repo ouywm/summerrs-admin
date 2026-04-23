@@ -11,11 +11,11 @@
 //!     - `FunctionCallOutput` → `ChatMessage::tool_response(call_id, output)`
 //!     - `Unknown` → 丢弃并 warn
 //! - `instructions` → 若非空，在 messages 前插入一条 system 消息
-//! - `tools: [Function]` → canonical `Tool::function(...)`；`Unknown` tool 丢弃并 warn
+//! - `tools`：function → canonical `Tool::function(...)`；built-in → `Tool::builtin(...)`
 //! - `max_output_tokens` → canonical `max_completion_tokens`
 //! - `stream` 位由外层 handler 覆盖，不在 converter 里动
-//! - `reasoning` / `previous_response_id` / `store` / `metadata` 等 Responses 专有字段
-//!   本轮不向上游传递（上游是 chat.completions，不认识这些）
+//! - `reasoning.summary` / `previous_response_id` / `instructions` → `responses_extras`
+//! - `store` / `metadata` 等已有 canonical 字段直接写入
 //!
 //! ## Response (from_canonical)
 //!
@@ -48,8 +48,8 @@ use summer_ai_core::types::ingress_wire::openai_responses::{
 };
 use summer_ai_core::{
     AdapterError, AdapterResult, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent,
-    ContentPart, FinishReason, ImageUrl, MessageContent, Role, Tool, ToolCall, ToolCallDelta,
-    ToolCallFunction, ToolChoice, ToolFunction, Usage,
+    ContentPart, FinishReason, ImageUrl, MessageContent, ReasoningEffort, ResponsesExtras, Role,
+    Tool, ToolCall, ToolCallDelta, ToolCallFunction, ToolChoice, ToolFunction, Usage,
 };
 
 use super::{
@@ -95,17 +95,36 @@ impl IngressConverter for OpenAIResponsesIngress {
 // =========================================================================
 
 fn to_canonical_impl(req: OpenAIResponsesRequest, ctx: &IngressCtx) -> AdapterResult<ChatRequest> {
+    let OpenAIResponsesRequest {
+        model: _,
+        input,
+        instructions,
+        tools,
+        tool_choice,
+        temperature,
+        top_p,
+        max_output_tokens,
+        stream: _,
+        parallel_tool_calls,
+        previous_response_id,
+        reasoning,
+        store,
+        user,
+        metadata,
+        extra,
+    } = req;
+    let extra: serde_json::Map<String, serde_json::Value> = extra.into_iter().collect();
+
     let mut messages: Vec<ChatMessage> = Vec::new();
+    let instructions = instructions.filter(|value| !value.is_empty());
 
     // 1) instructions → 前置 system 消息
-    if let Some(instructions) = req.instructions {
-        if !instructions.is_empty() {
-            messages.push(ChatMessage::system(instructions));
-        }
+    if let Some(text) = instructions.clone() {
+        messages.push(ChatMessage::system(text));
     }
 
     // 2) input → messages
-    match req.input {
+    match input {
         OpenAIResponsesInput::Text(text) => {
             messages.push(ChatMessage::user(text));
         }
@@ -119,35 +138,56 @@ fn to_canonical_impl(req: OpenAIResponsesRequest, ctx: &IngressCtx) -> AdapterRe
     }
 
     // 3) tools
-    let tools: Vec<Tool> = req
-        .tools
+    let tools: Vec<Tool> = tools
         .into_iter()
-        .filter_map(|t| match t {
-            OpenAIResponsesTool::Function(f) => Some(function_tool_to_canonical(f)),
-            OpenAIResponsesTool::Unknown => {
-                tracing::warn!("responses ingress: unsupported built-in tool in request, dropped");
-                None
-            }
+        .map(|t| match t {
+            OpenAIResponsesTool::Function(f) => function_tool_to_canonical(f),
+            OpenAIResponsesTool::Builtin { kind, extra } => Tool::builtin(kind, extra),
         })
         .collect();
 
-    let tool_choice: Option<ToolChoice> = req.tool_choice.and_then(|v| {
-        // Responses API 的 tool_choice 可能是 "auto"/"none"/"required" 或对象形式
-        // 直接尝试反序列化为 canonical ToolChoice（兼容两种）
-        serde_json::from_value::<ToolChoice>(v).ok()
-    });
+    let tool_choice: Option<ToolChoice> =
+        tool_choice.and_then(|v| serde_json::from_value::<ToolChoice>(v).ok());
+
+    let (reasoning_effort, reasoning_summary) = match reasoning {
+        Some(reasoning) => (
+            reasoning
+                .effort
+                .as_deref()
+                .and_then(ReasoningEffort::from_keyword),
+            reasoning.summary,
+        ),
+        None => (None, None),
+    };
+
+    let responses_extras = if previous_response_id.is_some()
+        || reasoning_summary.is_some()
+        || instructions.is_some()
+    {
+        Some(ResponsesExtras {
+            previous_response_id,
+            reasoning_summary,
+            instructions,
+        })
+    } else {
+        None
+    };
 
     Ok(ChatRequest {
         model: ctx.actual_model.clone(),
         messages,
-        temperature: req.temperature,
-        top_p: req.top_p,
-        max_completion_tokens: req.max_output_tokens,
-        parallel_tool_calls: req.parallel_tool_calls,
-        user: req.user,
-        metadata: req.metadata,
+        temperature,
+        top_p,
+        max_completion_tokens: max_output_tokens,
+        parallel_tool_calls,
+        reasoning_effort,
+        user,
+        metadata,
+        store,
         tools: if tools.is_empty() { None } else { Some(tools) },
         tool_choice,
+        responses_extras,
+        extra,
         // stream 位由 handler 根据路径（`POST /v1/responses` 非流 vs 设 stream=true）覆盖
         stream: false,
         ..Default::default()
@@ -1057,15 +1097,54 @@ mod tests {
     }
 
     #[test]
-    fn to_canonical_unknown_builtin_tool_dropped() {
+    fn to_canonical_builtin_tool_preserved() {
         let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
             "model": "gpt-5",
             "input": "hi",
-            "tools": [{"type":"web_search_preview"}]
+            "tools": [{
+                "type":"web_search_preview",
+                "search_context_size":"medium"
+            }]
         }))
         .unwrap();
         let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
-        assert!(c.tools.is_none());
+        let tools = c.tools.expect("tools should be present");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].kind, "web_search_preview");
+        assert!(tools[0].function.is_none());
+        assert_eq!(
+            tools[0].extra["search_context_size"],
+            serde_json::json!("medium")
+        );
+    }
+
+    #[test]
+    fn to_canonical_previous_response_id_reasoning_summary_and_instructions_go_to_responses_extras()
+    {
+        let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5",
+            "input": "hi",
+            "instructions": "be concise",
+            "previous_response_id": "resp_prev",
+            "reasoning": {
+                "effort": "high",
+                "summary": "auto"
+            },
+            "store": true
+        }))
+        .unwrap();
+        let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
+        let extras = c.responses_extras.expect("responses_extras should exist");
+        assert_eq!(extras.instructions.as_deref(), Some("be concise"));
+        assert_eq!(extras.previous_response_id.as_deref(), Some("resp_prev"));
+        assert_eq!(extras.reasoning_summary.as_deref(), Some("auto"));
+        assert_eq!(
+            c.reasoning_effort,
+            Some(summer_ai_core::ReasoningEffort::High)
+        );
+        assert_eq!(c.store, Some(true));
+        assert!(matches!(c.messages[0].role, Role::System));
+        assert_eq!(c.messages[0].text(), Some("be concise"));
     }
 
     #[test]

@@ -99,6 +99,9 @@ pub enum RelayError {
     #[error("token quota exhausted")]
     QuotaExhausted,
 
+    #[error("forbidden: {0}")]
+    Forbidden(&'static str),
+
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
 
@@ -141,6 +144,7 @@ impl RelayError {
             Self::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
             Self::TokenExpired => StatusCode::UNAUTHORIZED,
             Self::QuotaExhausted => StatusCode::PAYMENT_REQUIRED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::StreamProcessing(_) => StatusCode::BAD_GATEWAY,
         }
@@ -178,6 +182,7 @@ impl RelayError {
             | Self::Unauthenticated(_)
             | Self::TokenExpired
             | Self::QuotaExhausted
+            | Self::Forbidden(_)
             | Self::NotImplemented(_)
             | Self::StreamProcessing(_) => RetryKind::Fatal,
         }
@@ -195,6 +200,7 @@ impl RelayError {
             Self::Adapter(AdapterError::Network(_)) => "upstream_unreachable",
             Self::Http(_) => "upstream_unreachable",
             Self::UpstreamStatus { .. } => "upstream_error",
+            Self::Forbidden(_) => "forbidden",
             Self::Database(_) => "database_error",
             Self::Redis(_) => "redis_error",
             Self::MissingConfig(_) => "configuration_error",
@@ -236,6 +242,7 @@ impl RelayError {
                 }
                 ErrorFlavor::Gemini => "Quota exceeded.".to_string(),
             },
+            Self::Forbidden(msg) => (*msg).to_string(),
             Self::NoAvailableChannel { model } => {
                 format!("The model `{model}` is currently unavailable. Please try again later.")
             }
@@ -299,6 +306,7 @@ impl RelayError {
         match self {
             Self::Unauthenticated(_) | Self::TokenExpired => "invalid_request_error",
             Self::QuotaExhausted => "insufficient_quota",
+            Self::Forbidden(_) => "invalid_request_error",
             Self::NoAvailableChannel { .. } => "api_error",
             Self::Adapter(AdapterError::Unsupported { .. }) => "invalid_request_error",
             _ => self.kind(),
@@ -310,6 +318,7 @@ impl RelayError {
             Self::Unauthenticated(_) => Value::String("invalid_api_key".into()),
             Self::TokenExpired => Value::String("expired_api_key".into()),
             Self::QuotaExhausted => Value::String("insufficient_quota".into()),
+            Self::Forbidden(_) => Value::String("forbidden".into()),
             Self::NoAvailableChannel { .. } => Value::String("model_not_found".into()),
             _ => Value::Null,
         }
@@ -331,6 +340,7 @@ impl RelayError {
             Self::Unauthenticated(_) | Self::TokenExpired => "authentication_error",
             // 402 Payment Required —— Claude 官方用 `billing_error`，不是 permission_error
             Self::QuotaExhausted => "billing_error",
+            Self::Forbidden(_) => "permission_error",
             Self::NoAvailableChannel { .. } => "not_found_error",
             Self::Adapter(AdapterError::Unsupported { .. }) => "invalid_request_error",
             Self::Adapter(AdapterError::SerializeRequest(_))
@@ -361,6 +371,7 @@ impl RelayError {
         match self {
             Self::Unauthenticated(_) | Self::TokenExpired => "UNAUTHENTICATED",
             Self::QuotaExhausted => "RESOURCE_EXHAUSTED",
+            Self::Forbidden(_) => "PERMISSION_DENIED",
             Self::Adapter(AdapterError::Unsupported { .. })
             | Self::Adapter(AdapterError::SerializeRequest(_))
             | Self::Adapter(AdapterError::DeserializeResponse(_)) => "INVALID_ARGUMENT",
@@ -624,6 +635,16 @@ mod tests {
         assert_eq!(err.status_code(), StatusCode::BAD_GATEWAY);
         assert_eq!(err.gemini_status(), "INTERNAL");
         assert_eq!(err.claude_type(), "api_error");
+    }
+
+    #[test]
+    fn forbidden_maps_to_permission_errors_across_flavors() {
+        let err = RelayError::Forbidden("responses scope required");
+        assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
+        assert_eq!(err.kind(), "forbidden");
+        assert_eq!(err.openai_code(), Value::String("forbidden".into()));
+        assert_eq!(err.claude_type(), "permission_error");
+        assert_eq!(err.gemini_status(), "PERMISSION_DENIED");
     }
 
     // ---------- RetryKind 分类 ----------

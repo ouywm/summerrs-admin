@@ -4,14 +4,16 @@
 //! 鉴权 / 选路 / 翻译（Responses ↔ canonical）/ 发上游 / tracking 都在 engine 内。
 
 use summer_ai_billing::{BillingService, PriceResolver};
-use summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesRequest;
+use summer_ai_core::{
+    EndpointScope, types::ingress_wire::openai_responses::OpenAIResponsesRequest,
+};
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::post;
 
-use crate::auth::AiToken;
+use crate::auth::{AiToken, ensure_endpoint_scope_allowed};
 use crate::convert::ingress::{IngressFormat, OpenAIResponsesIngress};
 use crate::error::OpenAIResult;
 use crate::extract::RelayRequestMeta;
@@ -35,6 +37,8 @@ pub async fn responses(
     meta: RelayRequestMeta,
     Json(req): Json<OpenAIResponsesRequest>,
 ) -> OpenAIResult<Response> {
+    ensure_endpoint_scope_allowed(&token, EndpointScope::Responses)?;
+
     let logical_model = req.model.clone();
     let is_stream = req.stream;
     let client_req_snapshot = serde_json::to_value(&req).ok();

@@ -11,7 +11,8 @@
 use bytes::Bytes;
 use serde_json::Value;
 use summer_ai_core::{
-    AdapterDispatcher, AdapterKind, ChatRequest, ChatResponse, ServiceTarget, ServiceType,
+    AdapterDispatcher, AdapterKind, ChatRequest, ChatResponse, EndpointScope, ServiceTarget,
+    ServiceType,
 };
 
 use crate::error::{RelayError, RelayResult};
@@ -23,6 +24,15 @@ pub struct Invoked<T> {
     pub upstream_request_id: Option<String>,
 }
 
+pub const fn service_type_for(scope: EndpointScope, is_stream: bool) -> ServiceType {
+    match (scope, is_stream) {
+        (EndpointScope::Responses, false) => ServiceType::Responses,
+        (EndpointScope::Responses, true) => ServiceType::ResponsesStream,
+        _ if is_stream => ServiceType::ChatStream,
+        _ => ServiceType::Chat,
+    }
+}
+
 /// 非流式 chat：build → post → parse。
 ///
 /// `sent_headers_sink` 在**发出上游请求之前**就会被填（成功和失败都填），供
@@ -32,10 +42,11 @@ pub async fn invoke_non_stream(
     http: &reqwest::Client,
     kind: AdapterKind,
     target: &ServiceTarget,
+    service: ServiceType,
     request: &ChatRequest,
     sent_headers_sink: &mut Option<Value>,
 ) -> RelayResult<Invoked<ChatResponse>> {
-    let wire = AdapterDispatcher::build_chat_request(kind, target, ServiceType::Chat, request)?;
+    let wire = AdapterDispatcher::build_chat_request(kind, target, service, request)?;
     *sent_headers_sink = Some(sanitize_reqwest_headers(&wire.headers));
 
     tracing::debug!(
@@ -72,11 +83,11 @@ pub async fn invoke_stream_raw(
     http: &reqwest::Client,
     kind: AdapterKind,
     target: &ServiceTarget,
+    service: ServiceType,
     request: &ChatRequest,
     sent_headers_sink: &mut Option<Value>,
 ) -> RelayResult<Invoked<reqwest::Response>> {
-    let wire =
-        AdapterDispatcher::build_chat_request(kind, target, ServiceType::ChatStream, request)?;
+    let wire = AdapterDispatcher::build_chat_request(kind, target, service, request)?;
     *sent_headers_sink = Some(sanitize_reqwest_headers(&wire.headers));
 
     tracing::debug!(
@@ -109,4 +120,41 @@ async fn upstream_error(response: reqwest::Response) -> RelayError {
     let status = response.status().as_u16();
     let body = response.bytes().await.unwrap_or_else(|_| Bytes::new());
     RelayError::UpstreamStatus { status, body }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_type_for_maps_responses_variants() {
+        assert_eq!(
+            service_type_for(EndpointScope::Responses, false),
+            ServiceType::Responses
+        );
+        assert_eq!(
+            service_type_for(EndpointScope::Responses, true),
+            ServiceType::ResponsesStream
+        );
+    }
+
+    #[test]
+    fn service_type_for_keeps_chat_variants_for_other_scopes() {
+        assert_eq!(
+            service_type_for(EndpointScope::Chat, false),
+            ServiceType::Chat
+        );
+        assert_eq!(
+            service_type_for(EndpointScope::Chat, true),
+            ServiceType::ChatStream
+        );
+        assert_eq!(
+            service_type_for(EndpointScope::Embeddings, false),
+            ServiceType::Chat
+        );
+        assert_eq!(
+            service_type_for(EndpointScope::Images, true),
+            ServiceType::ChatStream
+        );
+    }
 }
