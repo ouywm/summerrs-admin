@@ -180,9 +180,10 @@ fn canonical_to_claude_request(
     // messages：把 role:tool 合并到下一个 user 消息的 content 里作 tool_result
     let messages = merge_tool_messages(&non_system_messages)?;
 
-    // tools：function tool 走标准路径；非 function kind 视为 Anthropic server tool
-    // （`web_search_20250305` / `mcp_connector_20250716` / `computer_*` / etc.），
-    // 客户端 extra 字段原样透传到 wire。见 canonical_tool_to_claude。
+    // tools：function tool 走标准路径（翻译 parameters → input_schema，Claude wire
+    // 契约必需）；非 function kind 的 `kind` 字符串原样作为 Claude wire 的 `type`
+    // 字段，`extra` 原样平铺。客户端传什么版本就发什么版本，Anthropic 升级到
+    // `web_search_20260601` 时客户端直接传新版号即可工作，relay 零改动。
     let tools = req
         .tools
         .as_ref()
@@ -468,25 +469,21 @@ fn parse_image_url(url: &str) -> ClaudeImageSource {
 
 /// canonical `Tool` → Claude wire `ClaudeTool`。
 ///
-/// 分派规则：
+/// 分派规则（纯透传策略）：
 ///
-/// - `kind == "function"`：普通 function tool。`name` 必填，从 `Tool.function` 取；
-///   `input_schema` 从 `Tool.function.parameters` 取，缺省用 `{type:"object"}` 占位
-///   （Claude 强制要求 `input_schema`）。`type` 字段不写（Claude custom tool 不带
-///   `type`）。
+/// - `kind == "function"`：custom function tool。从 `Tool.function` 取 name /
+///   description / parameters，`parameters → input_schema`（wire 字段名差异），
+///   缺省用 `{type:"object"}` 占位（Claude wire 强制 `input_schema`）。`type`
+///   字段不写（Claude custom tool 不带 `type`）。
 ///
-/// - `kind` 以 `"web_search"` 开头：Anthropic server tool `web_search_20250305`。
-///   如果客户端传的 kind 已经是 Anthropic 方言（`web_search_20250305`），原样透传；
-///   否则（比如 OpenAI 方言 `web_search_preview`）映射成 `web_search_20250305`。
-///   `name` 字段：Anthropic 要求 server tool 都带 `name`（`"web_search"`）；若 extra
-///   已经带了就用，否则按 kind 派生。
+/// - 其他 `kind`（`web_search_20250305` / `mcp_connector_20250716` /
+///   `computer_20241022` / 未来任意版本号 / 客户端自定义字符串）：**原样透传**。
+///   `kind` 直接作为 Claude wire 的 `type` 字段写入，`extra` 原样平铺到同级。
+///   客户端要对自己传的版本号负责；Anthropic 明天上 `web_search_20260601`，
+///   客户端把 kind 改成新版号即可工作，relay 无需跟进升级。
 ///
-/// - `kind` 以 `"mcp"` 开头：映射成 `mcp_connector_20250716`。extra 里的
-///   `server_url` / `server_label` / `authorization_token` / `allowed_tools` 原样透传。
-///
-/// - 其他 kind（`computer_20241022` / `bash_20241022` / `text_editor_20250728` 或
-///   未知 Anthropic server tool）：`type` 字段直接取 kind，extra 原样平铺，
-///   让上游做最终判断。
+/// - `extra.name` 如果存在就作为 Claude wire 的 `name` 字段（Anthropic server
+///   tool 普遍要求带 name）；否则留空字符串，让 Anthropic 自己按 type 判定。
 fn canonical_tool_to_claude(t: &crate::types::Tool) -> ClaudeTool {
     if t.is_function() {
         let func = t.function.as_ref();
@@ -503,37 +500,17 @@ fn canonical_tool_to_claude(t: &crate::types::Tool) -> ClaudeTool {
         };
     }
 
-    // Built-in / server tool 路径：把 canonical 方言/前缀映射到 Anthropic 当前
-    // server tool 版本号。`prefix::*` 是家族匹配，`server_tool::*` 是具体 wire type。
-    let (wire_type, default_name) = if t
-        .kind
-        .starts_with(crate::types::ingress_wire::claude::prefix::WEB_SEARCH)
-    {
-        (
-            crate::types::ingress_wire::claude::server_tool::WEB_SEARCH.to_string(),
-            "web_search",
-        )
-    } else if t
-        .kind
-        .starts_with(crate::types::ingress_wire::claude::prefix::MCP)
-    {
-        (
-            crate::types::ingress_wire::claude::server_tool::MCP_CONNECTOR.to_string(),
-            "mcp",
-        )
-    } else {
-        (t.kind.clone(), "")
-    };
-
-    // extra 里的 `name` 优先（客户端给了就用），否则按默认派生
+    // Built-in / server tool 路径：kind 原样作为 wire `type`，extra 平铺。
+    // `name` 从 extra 里取（客户端给了就用）；没给就留空，不做"web_search"/"mcp"
+    // 这种按 kind 派生的猜测——那是硬编码入侵，客户端该传什么 name 自己清楚。
     let mut extra = t.extra.clone();
     let name = extra
         .remove("name")
         .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_else(|| default_name.to_string());
+        .unwrap_or_default();
 
     ClaudeTool {
-        kind: Some(wire_type),
+        kind: Some(t.kind.clone()),
         name,
         description: None,
         input_schema: None,
@@ -1425,12 +1402,15 @@ mod tests {
     }
 
     #[test]
-    fn web_search_kind_maps_to_claude_server_tool_with_config() {
-        // 客户端发 OpenAI 方言 web_search_preview（或直接 web_search_20250305），
-        // 都要落成 Claude wire 的 `{type:"web_search_20250305", name:"web_search", ...}`。
-        // 目前 extra 里的 max_uses / allowed_domains 必须原样保留到 wire。
+    fn builtin_kind_passes_through_verbatim_with_config() {
+        // 纯透传策略：客户端传什么 kind 就原样作为 Claude wire 的 `type`。
+        // 这里用 OpenAI 方言 `web_search_preview`——即便 Claude 上游不认这个值
+        // 会 400，也是客户端选择传 OpenAI 方言路由到 Claude 上游的代价，
+        // relay 不替它硬映射到 `web_search_20250305`。
+        // extra 里的 max_uses / allowed_domains / name 必须 100% 原样保留。
         let t = target();
         let mut extra = serde_json::Map::new();
+        extra.insert("name".to_string(), serde_json::json!("web_search"));
         extra.insert("max_uses".to_string(), serde_json::json!(5));
         extra.insert(
             "allowed_domains".to_string(),
@@ -1443,7 +1423,7 @@ mod tests {
         )]);
         let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
         let tools = wire.payload["tools"].as_array().unwrap();
-        assert_eq!(tools[0]["type"], "web_search_20250305");
+        assert_eq!(tools[0]["type"], "web_search_preview");
         assert_eq!(tools[0]["name"], "web_search");
         assert_eq!(tools[0]["max_uses"], 5);
         assert_eq!(
@@ -1453,11 +1433,47 @@ mod tests {
     }
 
     #[test]
-    fn mcp_kind_maps_to_mcp_connector_with_server_fields() {
-        // MCP tool：canonical kind="mcp"（或已经是 mcp_connector_20250716）都要
-        // 输出 `{type:"mcp_connector_20250716", name:"mcp", server_url, server_label, ...}`。
-        // server_url / server_label / authorization_token / allowed_tools 是 MCP 的
-        // 核心配置，不能因为翻译丢失。
+    fn anthropic_dialect_kind_passes_through_unchanged() {
+        // 客户端传 Anthropic 方言 `web_search_20250305` 时必须原样透传到 wire，
+        // 不能被 relay 再改写（哪怕改写成"同一个"值，也不能走任何翻译分支——
+        // 将来 Anthropic 升级到 `web_search_20260601` 时客户端直接传新版号即可，
+        // relay 零改动）。
+        let t = target();
+        let mut extra = serde_json::Map::new();
+        extra.insert("name".to_string(), serde_json::json!("web_search"));
+        extra.insert("max_uses".to_string(), serde_json::json!(3));
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("q")]);
+        req.tools = Some(vec![crate::types::Tool::builtin(
+            "web_search_20250305",
+            extra,
+        )]);
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["type"], "web_search_20250305");
+        assert_eq!(tools[0]["name"], "web_search");
+        assert_eq!(tools[0]["max_uses"], 3);
+    }
+
+    #[test]
+    fn future_version_kind_is_not_downgraded() {
+        // 回归：假想 Anthropic 2026 年升级到 web_search_20260601。客户端
+        // 用新版号，relay 必须透传不能把它降级回 20250305。
+        let t = target();
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("q")]);
+        req.tools = Some(vec![crate::types::Tool::builtin(
+            "web_search_20260601",
+            serde_json::Map::new(),
+        )]);
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["type"], "web_search_20260601");
+    }
+
+    #[test]
+    fn mcp_kind_passes_through_with_server_fields() {
+        // MCP tool：canonical kind 原样作为 wire type；server_url / server_label /
+        // authorization_token / allowed_tools 全部透传。客户端传 `mcp` 还是
+        // `mcp_connector_20250716` 由客户端决定，relay 不介入。
         let t = target();
         let mut extra = serde_json::Map::new();
         extra.insert("server_label".to_string(), serde_json::json!("brave"));
@@ -1471,7 +1487,10 @@ mod tests {
             serde_json::json!(["search", "fetch"]),
         );
         let mut req = ChatRequest::new("x", vec![ChatMessage::user("q")]);
-        req.tools = Some(vec![crate::types::Tool::builtin("mcp", extra)]);
+        req.tools = Some(vec![crate::types::Tool::builtin(
+            "mcp_connector_20250716",
+            extra,
+        )]);
         let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
         let tools = wire.payload["tools"].as_array().unwrap();
         assert_eq!(tools[0]["type"], "mcp_connector_20250716");

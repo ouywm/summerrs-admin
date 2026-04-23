@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::types::common::{
-    ChatMessage, FinishReason, ReasoningEffort, ServiceTier, Tool, ToolChoice, Usage, Verbosity,
-    WebSearchOptions,
+    ChatMessage, FinishReason, ReasoningEffort, ResponsesExtras, ServiceTier, Tool, ToolChoice,
+    Usage, Verbosity, WebSearchOptions,
 };
 
 /// `POST /v1/chat/completions` 请求体。字段顺序按官方文档列出。
@@ -127,6 +127,9 @@ pub struct ChatRequest {
     /// Web search 工具参数（GPT-4o-search-preview 等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search_options: Option<WebSearchOptions>,
+    /// OpenAI Responses API 独有的 canonical 内部扩展。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses_extras: Option<ResponsesExtras>,
 
     // ---------------------- 未来新增字段的兜底透传 ----------------------
     /// OpenAI 未来可能加新字段；同时也用来透传第三方 compat 厂商的私有字段。

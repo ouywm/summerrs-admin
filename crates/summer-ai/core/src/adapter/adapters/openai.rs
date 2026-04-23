@@ -152,18 +152,30 @@ mod shared {
     /// 构造 POST `/v1/chat/completions` 的 HTTP 请求数据。
     pub(super) fn build_chat_request(
         target: &ServiceTarget,
-        _service: ServiceType,
+        service: ServiceType,
         request: &ChatRequest,
     ) -> AdapterResult<WebRequestData> {
+        match service {
+            ServiceType::Chat | ServiceType::ChatStream => {}
+            ServiceType::Responses | ServiceType::ResponsesStream => {
+                return Err(AdapterError::Unsupported {
+                    adapter: target.kind().as_str(),
+                    feature: "responses",
+                });
+            }
+        }
+
         let url = build_url(target.endpoint.trimmed());
 
-        // payload：原样序列化 ChatRequest，只把 model 覆盖成 actual_model
+        // payload：原样序列化 ChatRequest，只把 model 覆盖成 actual_model，并剥掉
+        // canonical 内部字段 responses_extras，避免误发到 chat/completions 上游。
         let mut payload = serde_json::to_value(request).map_err(AdapterError::SerializeRequest)?;
         if let Some(obj) = payload.as_object_mut() {
             obj.insert(
                 "model".to_string(),
                 Value::String(target.actual_model().to_string()),
             );
+            obj.remove("responses_extras");
         }
 
         let headers = build_headers(target)?;
@@ -577,6 +589,37 @@ mod tests {
         let req = ChatRequest::new("alias-name", vec![ChatMessage::user("hi")]);
         let data = OpenAIAdapter::build_chat_request(&target, ServiceType::Chat, &req).unwrap();
         assert_eq!(data.payload["model"], "gpt-4o-mini");
+    }
+
+    #[test]
+    fn build_request_strips_internal_responses_extras_field() {
+        let target = bearer_target("https://api.openai.com");
+        let mut req = ChatRequest::new("gpt-4o", vec![ChatMessage::user("hi")]);
+        req.responses_extras = Some(crate::types::ResponsesExtras {
+            previous_response_id: Some("resp_prev".into()),
+            reasoning_summary: Some("auto".into()),
+            instructions: Some("be concise".into()),
+        });
+        let data = OpenAIAdapter::build_chat_request(&target, ServiceType::Chat, &req).unwrap();
+        assert!(
+            data.payload.get("responses_extras").is_none(),
+            "chat wire must not leak canonical internal field responses_extras"
+        );
+    }
+
+    #[test]
+    fn openai_chat_adapter_rejects_responses_service_type() {
+        let target = bearer_target("https://api.openai.com");
+        let req = ChatRequest::new("gpt-4o", vec![ChatMessage::user("hi")]);
+        let err =
+            OpenAIAdapter::build_chat_request(&target, ServiceType::Responses, &req).unwrap_err();
+        assert!(matches!(
+            err,
+            AdapterError::Unsupported {
+                feature: "responses",
+                ..
+            }
+        ));
     }
 
     #[test]

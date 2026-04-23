@@ -15,9 +15,12 @@ pub mod resolver;
 pub mod types;
 
 pub use adapter::{
-    Adapter, AdapterDispatcher, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType,
-    WebRequestData,
-    adapters::{ClaudeAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter},
+    Adapter, AdapterDispatcher, AdapterKind, AuthStrategy, Capabilities, CostProfile,
+    EndpointScope, ServiceType, UnknownEndpointScope, WebRequestData,
+    adapters::{
+        ClaudeAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter, OpenAIRespAdapter,
+    },
+    parse_json_scopes,
 };
 pub use error::{AdapterError, AdapterResult, AuthResolveError};
 pub use resolver::{AuthData, Endpoint, ModelIden, ServiceTarget};
@@ -25,7 +28,7 @@ pub use types::{
     AudioOutputOptions, AudioResponse, CacheControl, ChatChoice, ChatMessage, ChatRequest,
     ChatResponse, ChatStreamEvent, CompletionTokensDetails, ContentPart, FinishReason, ImageUrl,
     InputAudio, JsonSchemaFormat, MessageContent, MessageOptions, ModelInfo, ModelList,
-    PromptTokensDetails, ReasoningEffort, ResponseFormat, Role, ServiceTier, StreamEnd,
-    StreamError, StreamOptions, Tool, ToolCall, ToolCallDelta, ToolCallFunction, ToolChoice,
-    ToolFunction, Usage, Verbosity, WebSearchContextSize, WebSearchOptions,
+    PromptTokensDetails, ReasoningEffort, ResponseFormat, ResponsesExtras, Role, ServiceTier,
+    StreamEnd, StreamError, StreamOptions, Tool, ToolCall, ToolCallDelta, ToolCallFunction,
+    ToolChoice, ToolFunction, Usage, Verbosity, WebSearchContextSize, WebSearchOptions,
 };

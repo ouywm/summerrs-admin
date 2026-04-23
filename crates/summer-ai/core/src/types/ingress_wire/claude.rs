@@ -22,55 +22,6 @@
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
-// Server-tool wire constants
-// ---------------------------------------------------------------------------
-
-/// Anthropic `/v1/messages` server tool 的 `type` 字段常量。
-///
-/// wire 形态：`{"type":"<const>", "name":"...", ...config}`。跟着官方文档升级
-/// （Anthropic 用带日期 id 做版本控制）。canonical 里的 `Tool.kind` 可能是
-/// **上游方言**（`web_search_20250305`）、**跨 provider 方言**（OpenAI 的
-/// `web_search_preview`）、或**家族前缀**（`web_search`）—— adapter 统一用
-/// [`prefix`] 前缀匹配到这里的常量再写入 wire。
-///
-/// 参考：<https://docs.anthropic.com/en/docs/build-with-claude/tool-use/>
-pub mod server_tool {
-    /// Web search tool（跟 Anthropic 升级更新；最近版本 2025-03-05）。
-    pub const WEB_SEARCH: &str = "web_search_20250305";
-
-    /// Model Context Protocol connector（2025-07-16 版本）。
-    pub const MCP_CONNECTOR: &str = "mcp_connector_20250716";
-
-    /// Computer use tool（桌面自动化）。
-    pub const COMPUTER: &str = "computer_20241022";
-
-    /// Bash tool（shell 命令执行）。
-    pub const BASH: &str = "bash_20241022";
-
-    /// Text editor tool（文件读写）。
-    pub const TEXT_EDITOR: &str = "text_editor_20250728";
-}
-
-/// canonical `Tool.kind` 识别前缀（跨版本、跨 provider 方言兼容）。
-///
-/// 上游把 tool 的 wire id 做成 `<family>_<yyyymmdd>` 的模式（OpenAI / Anthropic
-/// 均遵循）。prefix 前缀匹配让 `web_search_20250305` / `web_search_20260601` /
-/// OpenAI 方言 `web_search_preview` 都能命中同一个翻译分支，未来版本不需要
-/// 改 adapter 代码。
-pub mod prefix {
-    /// Web search 家族（`web_search`、`web_search_20250305`、`web_search_preview`、...）。
-    pub const WEB_SEARCH: &str = "web_search";
-    /// MCP connector 家族（`mcp`、`mcp_connector_20250716`、...）。
-    pub const MCP: &str = "mcp";
-    /// Computer use 家族。
-    pub const COMPUTER: &str = "computer";
-    /// Text editor 家族。
-    pub const TEXT_EDITOR: &str = "text_editor";
-    /// Bash 家族。
-    pub const BASH: &str = "bash";
-}
-
-// ---------------------------------------------------------------------------
 // Request
 // ---------------------------------------------------------------------------
 

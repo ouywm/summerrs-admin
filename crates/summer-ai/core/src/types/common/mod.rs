@@ -12,6 +12,7 @@
 
 pub mod message;
 pub mod options;
+pub mod responses_extras;
 pub mod stream_event;
 pub mod tool;
 pub mod usage;
@@ -23,6 +24,7 @@ pub use message::{
 pub use options::{
     ReasoningEffort, ServiceTier, Verbosity, WebSearchContextSize, WebSearchOptions,
 };
+pub use responses_extras::ResponsesExtras;
 pub use stream_event::{ChatStreamEvent, StreamEnd, StreamError, ToolCallDelta};
 pub use tool::{Tool, ToolCall, ToolCallFunction, ToolChoice, ToolFunction};
 pub use usage::{CompletionTokensDetails, FinishReason, PromptTokensDetails, Usage};

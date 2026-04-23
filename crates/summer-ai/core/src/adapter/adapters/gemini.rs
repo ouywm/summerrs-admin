@@ -263,21 +263,24 @@ fn gemini_function_declaration(
 /// canonical `tools: Vec<Tool>` → Gemini `tools: Vec<GeminiTool>`。
 ///
 /// Gemini 的 tool 对象是 key-based 平面结构，多个 built-in 可以共存在一个对象里。
-/// 我们的策略：
+/// 策略：**最小 key 映射 + 其余透传**。
 ///
 /// - 所有 function tool 合并到 **单个** `GeminiTool.function_declarations`
-/// - `web_search*` / `google_search*` / `googleSearch` → `google_search: {}`
-/// - `url_context*` → 写到 `extra["urlContext"] = {}`
-/// - `code_execution` / `code_interpreter` → `code_execution: {}`
-/// - `mcp*` / 其他未知 kind：Gemini 不支持，`tracing::warn!` 丢弃（若透传到上游
-///   会 400 整个请求拒收）
+/// - `web_search*` / `google_search*` / `googleSearch` → `googleSearch: {...}`
+///   （跨 provider 方言翻译：OpenAI `web_search_preview` / Claude
+///   `web_search_20250305` 客户端路由到 Gemini 时能自动命中）
+/// - `url_context*` / `urlContext` → `extra["urlContext"] = {...}`
+/// - `code_execution` / `code_interpreter` / `codeExecution` → `codeExecution: {...}`
+/// - **其他任意 kind（包括 `mcp*`、未来新 built-in、客户端自定义字符串）**：
+///   把 `kind` 原样作为 wire key 写进 extra，`t.extra` 作为 value。Gemini 不认
+///   就 400 返给客户端——这是客户端传未知 kind 的代价，relay 不替它决定。
 ///
 /// 如果全部都是 function tool，输出 **单个** GeminiTool；如果混合了 built-in，
 /// function_declarations 和 built-in 字段共存在同一个对象里（Gemini 接受）。
 fn build_gemini_tools(
     canonical_tools: &[crate::types::Tool],
 ) -> Vec<crate::types::ingress_wire::gemini::GeminiTool> {
-    use crate::types::ingress_wire::gemini::GeminiTool;
+    use crate::types::ingress_wire::gemini::{GeminiTool, kind_prefix, wire_key};
 
     let mut tool = GeminiTool {
         function_declarations: Vec::new(),
@@ -295,27 +298,22 @@ fn build_gemini_tools(
             continue;
         }
         let k = t.kind.as_str();
-        use crate::types::ingress_wire::gemini::{kind_prefix, wire_key};
+        let value = serde_json::Value::Object(t.extra.clone());
         if k.starts_with(kind_prefix::WEB_SEARCH)
             || k.starts_with(kind_prefix::GOOGLE_SEARCH)
             || k == kind_prefix::GOOGLE_SEARCH_CAMEL
         {
-            tool.google_search = Some(serde_json::Value::Object(t.extra.clone()));
+            tool.google_search = Some(value);
         } else if k.starts_with(kind_prefix::URL_CONTEXT) || k == kind_prefix::URL_CONTEXT_CAMEL {
-            tool.extra.insert(
-                wire_key::URL_CONTEXT.to_string(),
-                serde_json::Value::Object(t.extra.clone()),
-            );
+            tool.extra.insert(wire_key::URL_CONTEXT.to_string(), value);
         } else if k == kind_prefix::CODE_EXECUTION
             || k == kind_prefix::CODE_INTERPRETER
             || k == kind_prefix::CODE_EXECUTION_CAMEL
         {
-            tool.code_execution = Some(serde_json::Value::Object(t.extra.clone()));
+            tool.code_execution = Some(value);
         } else {
-            tracing::warn!(
-                kind = %k,
-                "gemini adapter: tool kind not mappable; dropping (Gemini rejects unknown tool fields)"
-            );
+            // 未知 kind：原样作为 wire key 写入 extra，让 Gemini 自己判断。
+            tool.extra.insert(k.to_string(), value);
         }
     }
 
@@ -1303,9 +1301,10 @@ mod tests {
     }
 
     #[test]
-    fn mcp_kind_is_dropped_with_warning_for_gemini() {
-        // Gemini 不支持 MCP，对未知 tool 字段严格拒收。adapter 必须丢弃 mcp
-        // tool 而不是透传到 wire，否则 Gemini 会 400 整个请求。
+    fn mcp_kind_passes_through_as_wire_key_for_gemini() {
+        // 纯透传策略：Gemini wire 不认 `mcp` key，但 adapter 不替客户端决定丢弃。
+        // kind 原样作为 wire key 写进 tools[0]，Gemini 收到不认的 key 会 400
+        // 返给客户端——这是客户端选择把 MCP tool 路由到 Gemini 的代价。
         let t = target();
         let mut extra = serde_json::Map::new();
         extra.insert(
@@ -1315,16 +1314,9 @@ mod tests {
         let mut req = ChatRequest::new("x", vec![ChatMessage::user("q")]);
         req.tools = Some(vec![crate::types::Tool::builtin("mcp", extra)]);
         let wire = GeminiAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
-        // mcp 被丢弃 → tools 数组应该不出现在 wire（或空）
-        let tools = wire.payload.get("tools");
-        assert!(
-            tools.is_none()
-                || tools
-                    .unwrap()
-                    .as_array()
-                    .map(|a| a.is_empty())
-                    .unwrap_or(false),
-            "mcp tool 应该被丢弃，got {tools:?}"
-        );
+        let tools = wire.payload["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        // mcp 作为 wire key 平铺到 tool 对象里，value 是原 extra
+        assert_eq!(tools[0]["mcp"]["server_url"], "https://example.com");
     }
 }

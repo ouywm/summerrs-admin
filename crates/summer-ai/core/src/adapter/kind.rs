@@ -256,6 +256,15 @@ impl std::fmt::Display for InvalidAdapterKind {
 
 impl std::error::Error for InvalidAdapterKind {}
 
+pub struct AdapterDescriptor {
+    protocol: ProtocolKind,
+    flavor: FlavorKind,
+}
+
+enum ProtocolKind {}
+
+enum FlavorKind {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

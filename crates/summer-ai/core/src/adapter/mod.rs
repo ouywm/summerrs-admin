@@ -21,6 +21,7 @@
 
 pub mod adapters;
 pub mod dispatcher;
+pub mod endpoint_scope;
 pub mod kind;
 
 use bytes::Bytes;
@@ -34,6 +35,7 @@ use crate::resolver::{AuthData, Endpoint, ServiceTarget};
 use crate::types::{ChatRequest, ChatResponse, ChatStreamEvent};
 
 pub use dispatcher::AdapterDispatcher;
+pub use endpoint_scope::{EndpointScope, UnknownEndpointScope, parse_json_scopes};
 pub use kind::{AdapterKind, InvalidAdapterKind};
 
 // ---------------------------------------------------------------------------
@@ -187,10 +189,15 @@ pub enum AuthStrategy {
 /// Adapter 当前能处理的服务类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceType {
-    /// 非流式 chat
+    /// 非流式 chat（OpenAI `/v1/chat/completions` / Claude `/v1/messages` /
+    /// Gemini `:generateContent`）
     Chat,
     /// 流式 chat（SSE）
     ChatStream,
+    /// 非流式 Responses（OpenAI `/v1/responses`）
+    Responses,
+    /// 流式 Responses（SSE）
+    ResponsesStream,
 }
 
 // ---------------------------------------------------------------------------

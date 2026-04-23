@@ -5,6 +5,7 @@ version = "0.0.1"
 
 [dependencies]
 async-trait = { workspace = true }
+serde = { workspace = true }
 summer = { workspace = true }
 summer-ai-admin = { workspace = true }
 summer-ai-billing = { workspace = true }

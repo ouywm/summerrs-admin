@@ -10,12 +10,14 @@
 //! - **响应侧** `output` 只生成 `message` / `function_call` 两类 item，映射 canonical
 //!   `ChatResponse.choices[0].message`。
 //! - **built-in tools**（`web_search_preview` / `file_search` / `computer_use_preview` /
-//!   `image_generation` / `mcp`）不做语义实现——收到 tools 里有这些类型就作为 `Unknown`
-//!   原样透传到上游 `ChatRequest.tools`；上游只认识 `function` 类型会报错，符合预期。
+//!   `image_generation` / `mcp`）会保留原始 `type` 与其余字段，交给 canonical / adapter
+//!   层继续透传。
 //! - **流事件**类型完整定义（便于下一轮接入），本轮 converter 走 `Unsupported`。
 
 use std::collections::HashMap;
 
+use serde::de::{self, Deserializer};
+use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -75,6 +77,16 @@ pub struct OpenAIResponsesRequest {
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
+
+// #[serde(tag = "type")]
+// #[derive(Deserialize, Serialize)]
+// pub enum ContentPart {
+//     #[serde(rename = "text")]
+//     Text { text: String },
+//
+//     #[serde(rename = "input_text")]
+//     InputText { text: String },
+// }
 
 /// Reasoning 配置（o-series / GPT-5）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,19 +202,20 @@ pub struct OpenAIResponsesFunctionCallOutputItem {
 
 /// 请求 `tools` 字段里的 tool。
 ///
-/// 只支持 `function`；built-in tools 走 `Unknown` 原样保留。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+/// Responses API 的 `function` tool 会把字段扁平放在根层；其余 built-in tool
+/// （`web_search_preview` / `file_search` / `mcp` / ...）保留原始 `type` 与其余字段。
+#[derive(Debug, Clone, PartialEq)]
 pub enum OpenAIResponsesTool {
-    /// 普通 function tool，结构等同 chat API 的 `{"type":"function","function":{...}}`
-    /// 但 Responses API 把 function 字段**扁平**（name/parameters/description 直接在 tool 对象上）。
+    /// 普通 function tool。
     Function(OpenAIResponsesFunctionTool),
-    /// 未识别的 built-in tool，透传给上游（上游多半会拒绝）。
-    #[serde(other)]
-    Unknown,
+    /// OpenAI built-in / provider-native tool。
+    Builtin {
+        kind: String,
+        extra: serde_json::Map<String, Value>,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenAIResponsesFunctionTool {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -211,6 +224,56 @@ pub struct OpenAIResponsesFunctionTool {
     pub parameters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+}
+
+impl Serialize for OpenAIResponsesTool {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        match self {
+            Self::Function(tool) => {
+                map.serialize_entry("type", "function")?;
+                map.serialize_entry("name", &tool.name)?;
+                if let Some(description) = &tool.description {
+                    map.serialize_entry("description", description)?;
+                }
+                if let Some(parameters) = &tool.parameters {
+                    map.serialize_entry("parameters", parameters)?;
+                }
+                if let Some(strict) = tool.strict {
+                    map.serialize_entry("strict", &strict)?;
+                }
+            }
+            Self::Builtin { kind, extra } => {
+                map.serialize_entry("type", kind)?;
+                for (k, v) in extra {
+                    map.serialize_entry(k, v)?;
+                }
+            }
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for OpenAIResponsesTool {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let mut obj = match value {
+            Value::Object(obj) => obj,
+            _ => return Err(de::Error::custom("responses tool must be an object")),
+        };
+        let kind = obj
+            .remove("type")
+            .and_then(|v| v.as_str().map(ToOwned::to_owned))
+            .ok_or_else(|| de::Error::custom("responses tool missing string field `type`"))?;
+
+        if kind == "function" {
+            let tool: OpenAIResponsesFunctionTool =
+                serde_json::from_value(Value::Object(obj)).map_err(de::Error::custom)?;
+            Ok(Self::Function(tool))
+        } else {
+            Ok(Self::Builtin { kind, extra: obj })
+        }
+    }
 }
 
 // =========================================================================
@@ -447,20 +510,30 @@ pub enum OpenAIResponsesStreamEvent {
 // Unused helpers
 // =========================================================================
 
-/// 给 `Tool` 兼容性 helper：从 canonical chat Tool 转 Responses Function tool。
+/// 从 canonical `Tool` 转成 Responses API tool。
 ///
-/// 只适用于 `kind == "function"` 的 tool。非 function kind（`web_search` / `mcp` /
-/// `file_search` 等）应该在 ingress/adapter 层专门处理，这里碰到会退化成 `""` 名
-/// 占位（实际调用方需要自己判断不是 function tool 后走 built-in 路径）。
+/// - `kind == "function"`：转成扁平的 function tool，并保留 `strict`
+/// - 其他 kind：作为 built-in tool 原样透传 `type` 与额外字段
 impl From<Tool> for OpenAIResponsesTool {
     fn from(t: Tool) -> Self {
-        let func = t.function;
-        Self::Function(OpenAIResponsesFunctionTool {
-            name: func.as_ref().map(|f| f.name.clone()).unwrap_or_default(),
-            description: func.as_ref().and_then(|f| f.description.clone()),
-            parameters: func.and_then(|f| f.parameters),
-            strict: None,
-        })
+        if t.is_function() {
+            let func = t.function.unwrap_or(crate::types::common::ToolFunction {
+                name: String::new(),
+                description: None,
+                parameters: None,
+            });
+            Self::Function(OpenAIResponsesFunctionTool {
+                name: func.name,
+                description: func.description,
+                parameters: func.parameters,
+                strict: t.strict,
+            })
+        } else {
+            Self::Builtin {
+                kind: t.kind,
+                extra: t.extra,
+            }
+        }
     }
 }
 

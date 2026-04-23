@@ -3,7 +3,9 @@
 pub mod claude;
 pub mod gemini;
 pub mod openai;
+pub mod openai_resp;
 
 pub use claude::ClaudeAdapter;
 pub use gemini::GeminiAdapter;
 pub use openai::{OpenAIAdapter, OpenAICompatAdapter};
+pub use openai_resp::OpenAIRespAdapter;

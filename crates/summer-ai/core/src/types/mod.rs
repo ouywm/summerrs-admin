@@ -17,9 +17,9 @@ pub mod openai;
 pub use common::{
     AudioResponse, CacheControl, ChatMessage, ChatStreamEvent, CompletionTokensDetails,
     ContentPart, FinishReason, ImageUrl, InputAudio, MessageContent, MessageOptions,
-    PromptTokensDetails, ReasoningEffort, Role, ServiceTier, StreamEnd, StreamError, Tool,
-    ToolCall, ToolCallDelta, ToolCallFunction, ToolChoice, ToolFunction, Usage, Verbosity,
-    WebSearchContextSize, WebSearchOptions,
+    PromptTokensDetails, ReasoningEffort, ResponsesExtras, Role, ServiceTier, StreamEnd,
+    StreamError, Tool, ToolCall, ToolCallDelta, ToolCallFunction, ToolChoice, ToolFunction, Usage,
+    Verbosity, WebSearchContextSize, WebSearchOptions,
 };
 
 // OpenAI 协议 wire 类型
