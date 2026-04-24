@@ -1,18 +1,6 @@
 //! OpenAI `/v1/responses` API wire 类型。
 //!
 //! 对齐 [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses)。
-//!
-//! # 设计取舍
-//!
-//! - **仅覆盖客户端 → 我们可能收到**的请求形态：`input` 支持 string 或 `Vec<InputItem>`；
-//!   Item 里只处理 `message` / `function_call_output`（client 回调），其他 item 走
-//!   `#[serde(other)]` 通道丢到 `Unknown` 变体保留原 JSON。
-//! - **响应侧** `output` 只生成 `message` / `function_call` 两类 item，映射 canonical
-//!   `ChatResponse.choices[0].message`。
-//! - **built-in tools**（`web_search_preview` / `file_search` / `computer_use_preview` /
-//!   `image_generation` / `mcp`）会保留原始 `type` 与其余字段，交给 canonical / adapter
-//!   层继续透传。
-//! - **流事件**类型完整定义（便于下一轮接入），本轮 converter 走 `Unsupported`。
 
 use std::collections::HashMap;
 
@@ -42,18 +30,25 @@ pub struct OpenAIResponsesRequest {
     pub tools: Vec<OpenAIResponsesTool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<Value>,
+    pub tool_choice: Option<OpenAIResponsesToolChoice>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<i64>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<i64>,
+
     #[serde(default, skip_serializing_if = "skip_if_false")]
     pub stream: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<OpenAIResponsesStreamOptions>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
@@ -73,28 +68,148 @@ pub struct OpenAIResponsesRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
 
+    /// 是否在后台运行响应。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<bool>,
+
+    /// 上下文管理配置。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_management: Vec<OpenAIResponsesContextManagement>,
+
+    /// 此响应所属的会话。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<OpenAIResponsesConversation>,
+
+    /// 指定要包含在响应中的额外输出数据。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+
+    /// 引用 prompt 模板及其变量。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<OpenAIResponsesPrompt>,
+
+    /// 用于缓存的 key。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
+
+    /// 缓存保留策略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_retention: Option<String>,
+
+    /// 安全标识符。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_identifier: Option<String>,
+
+    /// 服务层级。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+
+    /// 文本响应配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<OpenAIResponsesTextConfig>,
+
+    /// 返回最可能 token 的数量。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<i64>,
+
+    /// 截断策略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<String>,
+
     /// 其他厂商/实验字段的直通通道。
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
 
-// #[serde(tag = "type")]
-// #[derive(Deserialize, Serialize)]
-// pub enum ContentPart {
-//     #[serde(rename = "text")]
-//     Text { text: String },
-//
-//     #[serde(rename = "input_text")]
-//     InputText { text: String },
-// }
+/// 流选项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesStreamOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_obfuscation: Option<bool>,
+}
+
+/// 上下文管理配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesContextManagement {
+    #[serde(rename = "type")]
+    pub type_: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_threshold: Option<i64>,
+}
+
+/// 会话参数。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesConversation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// Prompt 引用。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesPrompt {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variables: Option<HashMap<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// 文本响应配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesTextConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<OpenAIResponsesTextFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>,
+}
+
+/// 文本格式配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenAIResponsesTextFormat {
+    Text,
+    JsonObject,
+    JsonSchema {
+        name: String,
+        schema: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+}
 
 /// Reasoning 配置（o-series / GPT-5）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesReasoning {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
+    pub effort: Option<OpenAIResponsesReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
+    pub summary: Option<OpenAIResponsesReasoningSummary>,
+    /// 已废弃，使用 summary。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generate_summary: Option<String>,
+}
+
+/// Reasoning effort 枚举。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenAIResponsesReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+/// Reasoning summary 枚举。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenAIResponsesReasoningSummary {
+    Auto,
+    Concise,
+    Detailed,
 }
 
 /// `input` 字段的双形态。
@@ -111,11 +226,57 @@ pub enum OpenAIResponsesInput {
 pub enum OpenAIResponsesInputItem {
     /// 对话消息。
     Message(OpenAIResponsesMessageItem),
-    /// 上一轮 assistant 发起的工具调用（通常不由 client 再发，由 store=true 的前序响应继承）。
+    /// 上一轮 assistant 发起的工具调用。
     FunctionCall(OpenAIResponsesFunctionCallItem),
     /// client 对某个 tool_call 的执行结果。
     FunctionCallOutput(OpenAIResponsesFunctionCallOutputItem),
-    /// 未识别的 Item 类型——丢 `Unknown` 保留原 JSON，converter 丢弃或透传。
+    /// Reasoning 内容。
+    Reasoning(OpenAIResponsesReasoningItem),
+    /// 文件搜索调用。
+    FileSearchCall(OpenAIResponsesFileSearchCallItem),
+    /// Computer use 调用。
+    ComputerCall(OpenAIResponsesComputerCallItem),
+    /// Computer use 调用输出。
+    ComputerCallOutput(OpenAIResponsesComputerCallOutputItem),
+    /// Web 搜索调用。
+    WebSearchCall(OpenAIResponsesWebSearchCallItem),
+    /// 工具搜索调用。
+    ToolSearchCall(OpenAIResponsesToolSearchCallItem),
+    /// 工具搜索输出。
+    ToolSearchOutput(OpenAIResponsesToolSearchOutputItem),
+    /// 图片生成调用。
+    ImageGenerationCall(OpenAIResponsesImageGenerationCallItem),
+    /// 代码解释器调用。
+    CodeInterpreterCall(OpenAIResponsesCodeInterpreterCallItem),
+    /// 本地 Shell 调用。
+    LocalShellCall(OpenAIResponsesLocalShellCallItem),
+    /// 本地 Shell 调用输出。
+    LocalShellCallOutput(OpenAIResponsesLocalShellCallOutputItem),
+    /// Shell 调用。
+    ShellCall(OpenAIResponsesShellCallItem),
+    /// Shell 调用输出。
+    ShellCallOutput(OpenAIResponsesShellCallOutputItem),
+    /// Apply patch 调用。
+    ApplyPatchCall(OpenAIResponsesApplyPatchCallItem),
+    /// Apply patch 调用输出。
+    ApplyPatchCallOutput(OpenAIResponsesApplyPatchCallOutputItem),
+    /// MCP 工具列表。
+    McpListTools(OpenAIResponsesMcpListToolsItem),
+    /// MCP 审批请求。
+    McpApprovalRequest(OpenAIResponsesMcpApprovalRequestItem),
+    /// MCP 审批响应。
+    McpApprovalResponse(OpenAIResponsesMcpApprovalResponseItem),
+    /// MCP 调用。
+    McpCall(OpenAIResponsesMcpCallItem),
+    /// 自定义工具调用。
+    CustomToolCall(OpenAIResponsesCustomToolCallItem),
+    /// 自定义工具调用输出。
+    CustomToolCallOutput(OpenAIResponsesCustomToolCallOutputItem),
+    /// Item 引用。
+    ItemReference(OpenAIResponsesItemReference),
+    /// Compaction 项。
+    Compaction(OpenAIResponsesCompactionItem),
+    /// 未识别的 Item 类型——丢 `Unknown` 保留原 JSON。
     #[serde(other)]
     Unknown,
 }
@@ -130,6 +291,8 @@ pub struct OpenAIResponsesMessageItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     pub content: OpenAIResponsesMessageContent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 /// message.content 的双形态（string 或 parts 数组）。
@@ -163,19 +326,23 @@ pub enum OpenAIResponsesInputContentPart {
         filename: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file_data: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
-    /// 输出 text part（Responses API 响应里用；client 理论不发，这里也允许解析）。
+    /// 输出 text part（Responses API 响应里用）。
     OutputText {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        annotations: Vec<Value>,
+        annotations: Vec<OpenAIResponsesAnnotation>,
     },
-    /// 未识别 part 类型——透明丢弃或透传。
+    /// 未识别 part 类型。
     #[serde(other)]
     Unknown,
 }
 
-/// input 里的 function_call item（store=true 时前序 response 继承）。
+/// input 里的 function_call item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesFunctionCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,24 +353,565 @@ pub struct OpenAIResponsesFunctionCallItem {
     pub arguments: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
-/// input 里的 function_call_output item（client 回调）。
+/// input 里的 function_call_output item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesFunctionCallOutputItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub call_id: String,
-    /// 工具执行结果文本。
+    /// 工具执行结果。
+    pub output: OpenAIResponsesFunctionCallOutput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// function_call_output 的输出可以是字符串或内容数组。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAIResponsesFunctionCallOutput {
+    Text(String),
+    Parts(Vec<OpenAIResponsesInputContentPart>),
+}
+
+/// Reasoning item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesReasoningItem {
+    pub id: String,
+    pub summary: Vec<OpenAIResponsesReasoningSummaryContent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<OpenAIResponsesReasoningTextContent>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesReasoningSummaryContent {
+    pub text: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesReasoningTextContent {
+    pub text: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+/// File search call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesFileSearchCallItem {
+    pub id: String,
+    pub queries: Vec<String>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub results: Option<Vec<OpenAIResponsesFileSearchResult>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesFileSearchResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<HashMap<String, Value>>,
+}
+
+/// Computer call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesComputerCallItem {
+    pub id: String,
+    pub call_id: String,
+    pub pending_safety_checks: Vec<OpenAIResponsesSafetyCheck>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<OpenAIResponsesComputerAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actions: Option<Vec<OpenAIResponsesComputerAction>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesSafetyCheck {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Computer action。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenAIResponsesComputerAction {
+    Click {
+        button: String,
+        x: i64,
+        y: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keys: Option<Vec<String>>,
+    },
+    DoubleClick {
+        x: i64,
+        y: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keys: Option<Vec<String>>,
+    },
+    Drag {
+        path: Vec<OpenAIResponsesDragPoint>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keys: Option<Vec<String>>,
+    },
+    Keypress {
+        keys: Vec<String>,
+    },
+    Move {
+        x: i64,
+        y: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keys: Option<Vec<String>>,
+    },
+    Screenshot,
+    Scroll {
+        scroll_x: i64,
+        scroll_y: i64,
+        x: i64,
+        y: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keys: Option<Vec<String>>,
+    },
+    Type {
+        text: String,
+    },
+    Wait,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesDragPoint {
+    pub x: i64,
+    pub y: i64,
+}
+
+/// Computer call output item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesComputerCallOutputItem {
+    pub call_id: String,
+    pub output: OpenAIResponsesComputerScreenshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledged_safety_checks: Option<Vec<OpenAIResponsesSafetyCheck>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesComputerScreenshot {
+    #[serde(rename = "type")]
+    pub type_: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+}
+
+/// Web search call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesWebSearchCallItem {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<OpenAIResponsesWebSearchAction>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenAIResponsesWebSearchAction {
+    Search {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queries: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sources: Option<Vec<OpenAIResponsesWebSearchSource>>,
+    },
+    OpenPage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    FindInPage {
+        pattern: String,
+        url: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesWebSearchSource {
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub url: String,
+}
+
+/// Tool search call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolSearchCallItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Tool search output item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolSearchOutputItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub tools: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Image generation call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesImageGenerationCallItem {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    pub status: String,
+}
+
+/// Code interpreter call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesCodeInterpreterCallItem {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub container_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<Vec<OpenAIResponsesCodeInterpreterOutput>>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenAIResponsesCodeInterpreterOutput {
+    Logs { logs: String },
+    Image { url: String },
+}
+
+/// Local shell call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesLocalShellCallItem {
+    pub id: String,
+    pub action: OpenAIResponsesLocalShellAction,
+    pub call_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesLocalShellAction {
+    pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(rename = "type")]
+    pub type_: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+}
+
+/// Local shell call output item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesLocalShellCallOutputItem {
+    pub id: String,
     pub output: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
 
+/// Shell call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesShellCallItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub action: OpenAIResponsesShellCallAction,
+    pub call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesShellCallAction {
+    pub commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_length: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
+}
+
+/// Shell call output item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesShellCallOutputItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub call_id: String,
+    pub output: Vec<OpenAIResponsesShellCallOutputContent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_length: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesShellCallOutputContent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<OpenAIResponsesShellCallOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenAIResponsesShellCallOutcome {
+    Timeout,
+    Exit { exit_code: i64 },
+}
+
+/// Apply patch call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesApplyPatchCallItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub call_id: String,
+    pub operation: OpenAIResponsesApplyPatchOperation,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenAIResponsesApplyPatchOperation {
+    CreateFile { path: String, diff: String },
+    DeleteFile { path: String },
+    UpdateFile { path: String, diff: String },
+}
+
+/// Apply patch call output item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesApplyPatchCallOutputItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub call_id: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+/// MCP list tools item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesMcpListToolsItem {
+    pub id: String,
+    pub server_label: String,
+    pub tools: Vec<OpenAIResponsesMcpToolDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesMcpToolDefinition {
+    pub name: String,
+    pub input_schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Value>,
+}
+
+/// MCP approval request item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesMcpApprovalRequestItem {
+    pub id: String,
+    pub arguments: String,
+    pub name: String,
+    pub server_label: String,
+}
+
+/// MCP approval response item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesMcpApprovalResponseItem {
+    pub approval_request_id: String,
+    pub approve: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// MCP call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesMcpCallItem {
+    pub id: String,
+    pub arguments: String,
+    pub name: String,
+    pub server_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Custom tool call item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesCustomToolCallItem {
+    pub call_id: String,
+    pub input: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
+/// Custom tool call output item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesCustomToolCallOutputItem {
+    pub call_id: String,
+    pub output: OpenAIResponsesCustomToolCallOutput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAIResponsesCustomToolCallOutput {
+    Text(String),
+    Parts(Vec<OpenAIResponsesInputContentPart>),
+}
+
+/// Item reference。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesItemReference {
+    pub id: String,
+}
+
+/// Compaction item。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesCompactionItem {
+    pub encrypted_content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+// =========================================================================
+// Tool Choice
+// =========================================================================
+
+/// 工具选择策略。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAIResponsesToolChoice {
+    /// 简单字符串选项。
+    Simple(String),
+    /// 指定函数调用。
+    Function(OpenAIResponsesToolChoiceFunction),
+    /// 指定 MCP 工具。
+    Mcp(OpenAIResponsesToolChoiceMcp),
+    /// 指定自定义工具。
+    Custom(OpenAIResponsesToolChoiceCustom),
+    /// 允许的工具列表。
+    AllowedTools(OpenAIResponsesToolChoiceAllowed),
+    /// 内置工具类型。
+    Builtin(OpenAIResponsesToolChoiceTypes),
+    /// Apply patch 工具。
+    ApplyPatch(OpenAIResponsesToolChoiceApplyPatch),
+    /// Shell 工具。
+    Shell(OpenAIResponsesToolChoiceShell),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolChoiceFunction {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolChoiceMcp {
+    pub server_label: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolChoiceCustom {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolChoiceAllowed {
+    pub mode: String,
+    pub tools: Vec<Value>,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolChoiceTypes {
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolChoiceApplyPatch {
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesToolChoiceShell {
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+// =========================================================================
+// Tools
+// =========================================================================
+
 /// 请求 `tools` 字段里的 tool。
-///
-/// Responses API 的 `function` tool 会把字段扁平放在根层；其余 built-in tool
-/// （`web_search_preview` / `file_search` / `mcp` / ...）保留原始 `type` 与其余字段。
 #[derive(Debug, Clone, PartialEq)]
 pub enum OpenAIResponsesTool {
     /// 普通 function tool。
@@ -224,6 +932,8 @@ pub struct OpenAIResponsesFunctionTool {
     pub parameters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
 }
 
 impl Serialize for OpenAIResponsesTool {
@@ -241,6 +951,9 @@ impl Serialize for OpenAIResponsesTool {
                 }
                 if let Some(strict) = tool.strict {
                     map.serialize_entry("strict", &strict)?;
+                }
+                if let Some(defer_loading) = tool.defer_loading {
+                    map.serialize_entry("defer_loading", &defer_loading)?;
                 }
             }
             Self::Builtin { kind, extra } => {
@@ -288,6 +1001,8 @@ pub struct OpenAIResponsesResponse {
     #[serde(default = "default_response_object")]
     pub object: String,
     pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
     pub model: String,
     /// `completed` / `in_progress` / `failed` / `incomplete` / `cancelled`。
     pub status: String,
@@ -298,12 +1013,12 @@ pub struct OpenAIResponsesResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<OpenAIResponsesUsage>,
 
-    /// 所有 output message 里 text parts 的拼接。SDK 经常直接用这个字段，做好填充。
+    /// 所有 output message 里 text parts 的拼接。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_text: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub incomplete_details: Option<Value>,
+    pub incomplete_details: Option<OpenAIResponsesIncompleteDetails>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -313,6 +1028,7 @@ pub struct OpenAIResponsesResponse {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
 
@@ -338,7 +1054,39 @@ pub struct OpenAIResponsesResponse {
     pub metadata: Option<HashMap<String, String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<Value>,
+    pub error: Option<OpenAIResponsesError>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<Value>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<i64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesIncompleteDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesError {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// 响应 `output` 数组里的 Item。
@@ -347,7 +1095,30 @@ pub struct OpenAIResponsesResponse {
 pub enum OpenAIResponsesOutputItem {
     Message(OpenAIResponsesOutputMessage),
     FunctionCall(OpenAIResponsesOutputFunctionCall),
-    /// 未来可能新增的 item（如 reasoning / web_search_call），直接 JSON 透传。
+    Reasoning(OpenAIResponsesReasoningItem),
+    FileSearchCall(OpenAIResponsesFileSearchCallItem),
+    ComputerCall(OpenAIResponsesComputerCallItem),
+    ComputerCallOutput(OpenAIResponsesComputerCallOutputItem),
+    WebSearchCall(OpenAIResponsesWebSearchCallItem),
+    ToolSearchCall(OpenAIResponsesToolSearchCallItem),
+    ToolSearchOutput(OpenAIResponsesToolSearchOutputItem),
+    ImageGenerationCall(OpenAIResponsesImageGenerationCallItem),
+    CodeInterpreterCall(OpenAIResponsesCodeInterpreterCallItem),
+    LocalShellCall(OpenAIResponsesLocalShellCallItem),
+    LocalShellCallOutput(OpenAIResponsesLocalShellCallOutputItem),
+    ShellCall(OpenAIResponsesShellCallItem),
+    ShellCallOutput(OpenAIResponsesShellCallOutputItem),
+    ApplyPatchCall(OpenAIResponsesApplyPatchCallItem),
+    ApplyPatchCallOutput(OpenAIResponsesApplyPatchCallOutputItem),
+    McpListTools(OpenAIResponsesMcpListToolsItem),
+    McpApprovalRequest(OpenAIResponsesMcpApprovalRequestItem),
+    McpApprovalResponse(OpenAIResponsesMcpApprovalResponseItem),
+    McpCall(OpenAIResponsesMcpCallItem),
+    CustomToolCall(OpenAIResponsesCustomToolCallItem),
+    CustomToolCallOutput(OpenAIResponsesCustomToolCallOutputItem),
+    ItemReference(OpenAIResponsesItemReference),
+    Compaction(OpenAIResponsesCompactionItem),
+    /// 未识别 item 类型。
     #[serde(other)]
     Unknown,
 }
@@ -362,6 +1133,8 @@ pub struct OpenAIResponsesOutputMessage {
     #[serde(default = "default_output_message_role")]
     pub role: String,
     pub content: Vec<OpenAIResponsesOutputContentPart>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,7 +1143,9 @@ pub enum OpenAIResponsesOutputContentPart {
     OutputText {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        annotations: Vec<Value>,
+        annotations: Vec<OpenAIResponsesAnnotation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        logprobs: Option<Vec<OpenAIResponsesLogprob>>,
     },
     Refusal {
         refusal: String,
@@ -378,6 +1153,53 @@ pub enum OpenAIResponsesOutputContentPart {
     /// 未识别 part 类型。
     #[serde(other)]
     Unknown,
+}
+
+/// 注解类型。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenAIResponsesAnnotation {
+    FileCitation {
+        file_id: String,
+        filename: String,
+        index: i64,
+    },
+    UrlCitation {
+        end_index: i64,
+        start_index: i64,
+        title: String,
+        url: String,
+    },
+    ContainerFileCitation {
+        container_id: String,
+        end_index: i64,
+        file_id: String,
+        filename: String,
+        start_index: i64,
+    },
+    FilePath {
+        file_id: String,
+        index: i64,
+    },
+}
+
+/// Logprob 信息。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesLogprob {
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<i64>>,
+    pub logprob: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<Vec<OpenAIResponsesTopLogprob>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesTopLogprob {
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<i64>>,
+    pub logprob: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -389,9 +1211,11 @@ pub struct OpenAIResponsesOutputFunctionCall {
     pub arguments: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
-/// Responses API 自家 usage 结构（字段名与 chat API 不同：`input_tokens` 而非 `prompt_tokens`）。
+/// Responses API 自家 usage 结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenAIResponsesUsage {
     #[serde(default)]
@@ -407,10 +1231,48 @@ pub struct OpenAIResponsesUsage {
 }
 
 // =========================================================================
-// Stream events（本轮仅定义 wire 类型，converter 未实现）
+// Filters (for FileSearch)
 // =========================================================================
 
-/// Responses API 流事件。事件名跟 OpenAI 官方命名一致。
+/// 比较过滤器。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesComparisonFilter {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub value: OpenAIResponsesFilterValue,
+}
+
+/// 过滤器值。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAIResponsesFilterValue {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+    Array(Vec<OpenAIResponsesFilterArrayValue>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAIResponsesFilterArrayValue {
+    String(String),
+    Number(f64),
+}
+
+/// 复合过滤器。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIResponsesCompoundFilter {
+    pub filters: Vec<Value>,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+// =========================================================================
+// Stream events
+// =========================================================================
+
+/// Responses API 流事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum OpenAIResponsesStreamEvent {
@@ -507,13 +1369,10 @@ pub enum OpenAIResponsesStreamEvent {
 }
 
 // =========================================================================
-// Unused helpers
+// Helpers
 // =========================================================================
 
 /// 从 canonical `Tool` 转成 Responses API tool。
-///
-/// - `kind == "function"`：转成扁平的 function tool，并保留 `strict`
-/// - 其他 kind：作为 built-in tool 原样透传 `type` 与额外字段
 impl From<Tool> for OpenAIResponsesTool {
     fn from(t: Tool) -> Self {
         if t.is_function() {
@@ -527,6 +1386,7 @@ impl From<Tool> for OpenAIResponsesTool {
                 description: func.description,
                 parameters: func.parameters,
                 strict: t.strict,
+                defer_loading: None,
             })
         } else {
             Self::Builtin {
@@ -554,7 +1414,7 @@ fn skip_if_false(v: &bool) -> bool {
 }
 
 // =========================================================================
-// Tests —— 只跑 serde round-trip，语义转换在 relay 层测。
+// Tests
 // =========================================================================
 
 #[cfg(test)]
@@ -618,10 +1478,41 @@ mod tests {
     #[test]
     fn unknown_input_item_type_is_preserved_as_unknown_variant() {
         let items: Vec<OpenAIResponsesInputItem> = serde_json::from_value(serde_json::json!([
-            {"type":"reasoning","id":"r1","content":[]}
+            {"type":"reasoning","id":"r1","summary":[{"text":"test","type":"summary_text"}]}
         ]))
         .unwrap();
-        matches!(items[0], OpenAIResponsesInputItem::Unknown);
+        // Now reasoning is a known variant, so it should parse as Reasoning
+        matches!(items[0], OpenAIResponsesInputItem::Reasoning(_));
+    }
+
+    #[test]
+    fn tool_choice_simple_parses() {
+        let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5",
+            "input": "hello",
+            "tool_choice": "auto"
+        }))
+        .unwrap();
+        if let Some(OpenAIResponsesToolChoice::Simple(s)) = &req.tool_choice {
+            assert_eq!(s, "auto");
+        } else {
+            panic!("expected Simple tool_choice");
+        }
+    }
+
+    #[test]
+    fn tool_choice_function_parses() {
+        let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5",
+            "input": "hello",
+            "tool_choice": {"type": "function", "name": "get_weather"}
+        }))
+        .unwrap();
+        if let Some(OpenAIResponsesToolChoice::Function(f)) = &req.tool_choice {
+            assert_eq!(f.name, "get_weather");
+        } else {
+            panic!("expected Function tool_choice");
+        }
     }
 
     #[test]
@@ -630,6 +1521,7 @@ mod tests {
             id: "resp_1".into(),
             object: "response".into(),
             created_at: 0,
+            completed_at: Some(1),
             model: "gpt-5".into(),
             status: "completed".into(),
             output: vec![OpenAIResponsesOutputItem::Message(
@@ -640,7 +1532,9 @@ mod tests {
                     content: vec![OpenAIResponsesOutputContentPart::OutputText {
                         text: "hi".into(),
                         annotations: vec![],
+                        logprobs: None,
                     }],
+                    phase: None,
                 },
             )],
             usage: Some(OpenAIResponsesUsage {
@@ -663,6 +1557,12 @@ mod tests {
             user: None,
             metadata: None,
             error: None,
+            service_tier: None,
+            store: None,
+            text: None,
+            truncation: None,
+            top_logprobs: None,
+            prompt: None,
         };
         let s = serde_json::to_string(&resp).unwrap();
         assert!(s.contains("\"type\":\"message\""));
@@ -682,5 +1582,39 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         assert!(s.contains("\"type\":\"response.output_text.delta\""));
         assert!(s.contains("\"delta\":\"hi\""));
+    }
+
+    #[test]
+    fn reasoning_effort_parses() {
+        let reasoning: OpenAIResponsesReasoning = serde_json::from_value(serde_json::json!({
+            "effort": "high",
+            "summary": "concise"
+        }))
+        .unwrap();
+        assert!(matches!(
+            reasoning.effort,
+            Some(OpenAIResponsesReasoningEffort::High)
+        ));
+        assert!(matches!(
+            reasoning.summary,
+            Some(OpenAIResponsesReasoningSummary::Concise)
+        ));
+    }
+
+    #[test]
+    fn text_format_json_schema_parses() {
+        let config: OpenAIResponsesTextConfig = serde_json::from_value(serde_json::json!({
+            "format": {
+                "type": "json_schema",
+                "name": "my_schema",
+                "schema": {"type": "object"}
+            }
+        }))
+        .unwrap();
+        if let Some(OpenAIResponsesTextFormat::JsonSchema { name, .. }) = config.format {
+            assert_eq!(name, "my_schema");
+        } else {
+            panic!("expected JsonSchema format");
+        }
     }
 }

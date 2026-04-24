@@ -18,51 +18,51 @@ use serde::{Deserialize, Serialize};
 pub enum AdapterKind {
     // ─── 1-4: OpenAI 家族 ───
     /// OpenAI 官方 (`api.openai.com`) 的 `/v1/chat/completions`。
-    OpenAI = 1,
+    OpenAI,
     /// OpenAI `/v1/responses` API（GPT-5 / o1 等 reasoning 模型）。
-    OpenAIResp = 2,
+    OpenAIResp,
     /// OpenAI 兼容第三方（兜底变体，厂商无 native 适配时用）。
-    OpenAICompat = 3,
+    OpenAICompat,
     /// Azure OpenAI Service。
-    Azure = 4,
+    Azure,
 
     // ─── 5-8: Native 协议 ───
     /// Claude `/v1/messages`。
-    Claude = 5,
+    Claude,
     /// Google Gemini `generateContent`。
-    Gemini = 6,
+    Gemini,
     /// Cohere native。
-    Cohere = 7,
+    Cohere,
     /// Ollama native (`localhost:11434`)。
-    Ollama = 8,
+    Ollama,
 
     // ─── 9-21: OpenAI-compat 变种（有 native 细节差异）───
     /// Ollama Cloud（`ollama.com`，Bearer 鉴权）。
-    OllamaCloud = 9,
+    OllamaCloud,
     /// Groq。
-    Groq = 10,
+    Groq,
     /// DeepSeek。
-    DeepSeek = 11,
+    DeepSeek,
     /// xAI (Grok)。
-    Xai = 12,
+    Xai,
     /// Fireworks AI。
-    Fireworks = 13,
+    Fireworks,
     /// Together AI。
-    Together = 14,
+    Together,
     /// Nebius AI Studio。
-    Nebius = 15,
+    Nebius,
     /// Mimo。
-    Mimo = 16,
+    Mimo,
     /// Z.AI (原 ChatGLM / 智谱)。
-    Zai = 17,
+    Zai,
     /// BigModel（智谱 Open Platform）。
-    BigModel = 18,
+    BigModel,
     /// 阿里云 Dashscope / 百炼。
-    Aliyun = 19,
+    Aliyun,
     /// Google Vertex AI（支持 Gemini + Claude）。
-    Vertex = 20,
+    Vertex,
     /// GitHub Models（OpenAI/Claude/Google 聚合）。
-    GithubCopilot = 21,
+    GithubCopilot,
 }
 
 impl AdapterKind {
@@ -207,7 +207,6 @@ impl std::fmt::Display for AdapterKind {
 }
 
 // ─── i16 ↔ AdapterKind（绑定 ai.channel.channel_type 列）───
-
 impl TryFrom<i16> for AdapterKind {
     type Error = InvalidAdapterKind;
     fn try_from(value: i16) -> Result<Self, Self::Error> {
@@ -240,7 +239,29 @@ impl TryFrom<i16> for AdapterKind {
 
 impl From<AdapterKind> for i16 {
     fn from(kind: AdapterKind) -> Self {
-        kind as i16
+        match kind {
+            AdapterKind::OpenAI => 1,
+            AdapterKind::OpenAIResp => 2,
+            AdapterKind::OpenAICompat => 3,
+            AdapterKind::Azure => 4,
+            AdapterKind::Claude => 5,
+            AdapterKind::Gemini => 6,
+            AdapterKind::Cohere => 7,
+            AdapterKind::Ollama => 8,
+            AdapterKind::OllamaCloud => 9,
+            AdapterKind::Groq => 10,
+            AdapterKind::DeepSeek => 11,
+            AdapterKind::Xai => 12,
+            AdapterKind::Fireworks => 13,
+            AdapterKind::Together => 14,
+            AdapterKind::Nebius => 15,
+            AdapterKind::Mimo => 16,
+            AdapterKind::Zai => 17,
+            AdapterKind::BigModel => 18,
+            AdapterKind::Aliyun => 19,
+            AdapterKind::Vertex => 20,
+            AdapterKind::GithubCopilot => 21,
+        }
     }
 }
 

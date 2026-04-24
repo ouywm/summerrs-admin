@@ -13,16 +13,20 @@ use crate::adapter::{
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
 use crate::types::ingress_wire::openai_responses::{
-    OpenAIResponsesFunctionCallItem, OpenAIResponsesFunctionCallOutputItem, OpenAIResponsesInput,
+    OpenAIResponsesContextManagement, OpenAIResponsesConversation, OpenAIResponsesFunctionCallItem,
+    OpenAIResponsesFunctionCallOutput, OpenAIResponsesFunctionCallOutputItem, OpenAIResponsesInput,
     OpenAIResponsesInputContentPart, OpenAIResponsesInputItem, OpenAIResponsesMessageContent,
     OpenAIResponsesMessageItem, OpenAIResponsesOutputContentPart, OpenAIResponsesOutputItem,
-    OpenAIResponsesReasoning, OpenAIResponsesRequest, OpenAIResponsesResponse,
-    OpenAIResponsesStreamEvent, OpenAIResponsesTool, OpenAIResponsesUsage,
+    OpenAIResponsesPrompt, OpenAIResponsesReasoning, OpenAIResponsesReasoningEffort,
+    OpenAIResponsesReasoningSummary, OpenAIResponsesRequest, OpenAIResponsesResponse,
+    OpenAIResponsesStreamEvent, OpenAIResponsesStreamOptions, OpenAIResponsesTextConfig,
+    OpenAIResponsesTextFormat, OpenAIResponsesTool, OpenAIResponsesToolChoice,
+    OpenAIResponsesToolChoiceFunction, OpenAIResponsesUsage,
 };
 use crate::types::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart, FinishReason,
-    MessageContent, ModelList, ReasoningEffort, Role, StreamEnd, StreamError, ToolCall,
-    ToolCallDelta, Usage,
+    MessageContent, ModelList, ReasoningEffort, ResponseFormat, Role, ServiceTier, StreamEnd,
+    StreamError, ToolCall, ToolCallDelta, ToolChoice as CanonicalToolChoice, Usage, Verbosity,
 };
 
 /// OpenAI 官方 `/v1/responses` 协议。
@@ -146,16 +150,9 @@ impl Adapter for OpenAIRespAdapter {
                     message: response
                         .error
                         .as_ref()
-                        .and_then(|e| e.get("message"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("responses stream failed")
-                        .to_string(),
-                    kind: response
-                        .error
-                        .as_ref()
-                        .and_then(|e| e.get("code"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
+                        .and_then(|e| e.message.clone())
+                        .unwrap_or_else(|| "responses stream failed".to_string()),
+                    kind: response.error.as_ref().and_then(|e| e.code.clone()),
                 })]
             }
             OpenAIResponsesStreamEvent::Error { code, message, .. } => {
@@ -243,34 +240,77 @@ fn canonical_to_responses_request(
     let reasoning_summary = req
         .responses_extras
         .as_ref()
-        .and_then(|e| e.reasoning_summary.clone());
+        .and_then(|e| e.reasoning_summary.clone())
+        .and_then(|s| {
+            serde_json::from_value::<OpenAIResponsesReasoningSummary>(serde_json::json!(s)).ok()
+        });
     let reasoning = if req.reasoning_effort.is_some() || reasoning_summary.is_some() {
         Some(OpenAIResponsesReasoning {
             effort: req
                 .reasoning_effort
                 .as_ref()
-                .map(reasoning_effort_to_openai_string),
+                .map(reasoning_effort_to_openai),
             summary: reasoning_summary,
+            generate_summary: None,
         })
     } else {
         None
     };
+
+    let mut extra = req
+        .extra
+        .clone()
+        .into_iter()
+        .collect::<HashMap<String, Value>>();
+
+    let background = take_extra_typed::<bool>(&mut extra, "background");
+    let context_management =
+        take_extra_typed::<Vec<OpenAIResponsesContextManagement>>(&mut extra, "context_management")
+            .unwrap_or_default();
+    let conversation = take_extra_typed::<OpenAIResponsesConversation>(&mut extra, "conversation");
+    let include = take_extra_typed::<Vec<String>>(&mut extra, "include").unwrap_or_default();
+    let prompt = take_extra_typed::<OpenAIResponsesPrompt>(&mut extra, "prompt");
+    let prompt_cache_key = take_extra_typed::<String>(&mut extra, "prompt_cache_key");
+    let prompt_cache_retention = take_extra_typed::<String>(&mut extra, "prompt_cache_retention");
+    let safety_identifier = take_extra_typed::<String>(&mut extra, "safety_identifier");
+    let stream_options =
+        take_extra_typed::<OpenAIResponsesStreamOptions>(&mut extra, "stream_options");
+    let truncation = take_extra_typed::<String>(&mut extra, "truncation");
+    let max_tool_calls = take_extra_typed::<i64>(&mut extra, "max_tool_calls");
+    let text = build_text_config(req.response_format.as_ref(), req.verbosity.as_ref());
 
     Ok(OpenAIResponsesRequest {
         model: target.actual_model().to_string(),
         input,
         instructions,
         tools,
-        tool_choice: req
-            .tool_choice
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(AdapterError::SerializeRequest)?,
+        tool_choice: req.tool_choice.as_ref().map(|tc| match tc {
+            CanonicalToolChoice::Mode(mode) => OpenAIResponsesToolChoice::Simple(mode.clone()),
+            CanonicalToolChoice::Named(value) => {
+                // 尝试解析为具体的 tool_choice 类型
+                if let Some(name) = value.get("name").and_then(|n| n.as_str()) {
+                    if value.get("type").and_then(|t| t.as_str()) == Some("function") {
+                        OpenAIResponsesToolChoice::Function(OpenAIResponsesToolChoiceFunction {
+                            name: name.to_string(),
+                            type_: "function".to_string(),
+                        })
+                    } else {
+                        // 其他复杂类型，用 serde 反序列化
+                        serde_json::from_value(value.clone()).unwrap_or_else(|_| {
+                            OpenAIResponsesToolChoice::Simple("auto".to_string())
+                        })
+                    }
+                } else {
+                    serde_json::from_value(value.clone())
+                        .unwrap_or_else(|_| OpenAIResponsesToolChoice::Simple("auto".to_string()))
+                }
+            }
+        }),
         temperature: req.temperature,
         top_p: req.top_p,
         max_output_tokens: req.max_completion_tokens.or(req.max_tokens),
         stream,
+        stream_options,
         parallel_tool_calls: req.parallel_tool_calls,
         previous_response_id: req
             .responses_extras
@@ -280,11 +320,20 @@ fn canonical_to_responses_request(
         store: req.store,
         user: req.user.clone(),
         metadata: req.metadata.clone(),
-        extra: req
-            .extra
-            .clone()
-            .into_iter()
-            .collect::<HashMap<String, Value>>(),
+        background,
+        context_management,
+        conversation,
+        include,
+        prompt,
+        prompt_cache_key,
+        prompt_cache_retention,
+        safety_identifier,
+        service_tier: req.service_tier.as_ref().map(service_tier_to_wire),
+        text,
+        top_logprobs: req.top_logprobs,
+        truncation,
+        max_tool_calls,
+        extra,
     })
 }
 
@@ -324,7 +373,9 @@ fn canonical_messages_to_input_items(
                 OpenAIResponsesFunctionCallOutputItem {
                     id: None,
                     call_id: message.tool_call_id.clone().unwrap_or_default(),
-                    output: render_message_text(message).unwrap_or_default(),
+                    output: OpenAIResponsesFunctionCallOutput::Text(
+                        render_message_text(message).unwrap_or_default(),
+                    ),
                     status: None,
                 },
             )),
@@ -343,6 +394,7 @@ fn canonical_messages_to_input_items(
                                 name: call.function.name.clone(),
                                 arguments: call.function.arguments.clone(),
                                 status: None,
+                                namespace: None,
                             },
                         ));
                     }
@@ -363,6 +415,7 @@ fn chat_message_to_item(message: &ChatMessage) -> AdapterResult<OpenAIResponsesM
         role: role_to_wire(message.role).to_string(),
         status: None,
         content: chat_message_content_to_wire(message),
+        phase: None,
     })
 }
 
@@ -425,22 +478,68 @@ fn role_to_wire(role: Role) -> &'static str {
     }
 }
 
-fn reasoning_effort_to_openai_string(effort: &ReasoningEffort) -> String {
+fn reasoning_effort_to_openai(effort: &ReasoningEffort) -> OpenAIResponsesReasoningEffort {
     match effort {
-        ReasoningEffort::None => "none".to_string(),
-        ReasoningEffort::Minimal => "minimal".to_string(),
-        ReasoningEffort::Low => "low".to_string(),
-        ReasoningEffort::Medium => "medium".to_string(),
-        ReasoningEffort::High => "high".to_string(),
-        ReasoningEffort::XHigh | ReasoningEffort::Max => "high".to_string(),
+        ReasoningEffort::None => OpenAIResponsesReasoningEffort::None,
+        ReasoningEffort::Minimal => OpenAIResponsesReasoningEffort::Minimal,
+        ReasoningEffort::Low => OpenAIResponsesReasoningEffort::Low,
+        ReasoningEffort::Medium => OpenAIResponsesReasoningEffort::Medium,
+        ReasoningEffort::High => OpenAIResponsesReasoningEffort::High,
+        ReasoningEffort::XHigh | ReasoningEffort::Max => OpenAIResponsesReasoningEffort::High,
         ReasoningEffort::Budget(tokens) => match *tokens {
-            0 => "none".to_string(),
-            1..=256 => "minimal".to_string(),
-            257..=1024 => "low".to_string(),
-            1025..=4096 => "medium".to_string(),
-            _ => "high".to_string(),
+            0 => OpenAIResponsesReasoningEffort::None,
+            1..=256 => OpenAIResponsesReasoningEffort::Minimal,
+            257..=1024 => OpenAIResponsesReasoningEffort::Low,
+            1025..=4096 => OpenAIResponsesReasoningEffort::Medium,
+            _ => OpenAIResponsesReasoningEffort::High,
         },
     }
+}
+
+fn build_text_config(
+    response_format: Option<&ResponseFormat>,
+    verbosity: Option<&Verbosity>,
+) -> Option<OpenAIResponsesTextConfig> {
+    let format = response_format.map(|format| match format {
+        ResponseFormat::Text => OpenAIResponsesTextFormat::Text,
+        ResponseFormat::JsonObject => OpenAIResponsesTextFormat::JsonObject,
+        ResponseFormat::JsonSchema { json_schema } => OpenAIResponsesTextFormat::JsonSchema {
+            name: json_schema.name.clone(),
+            schema: json_schema.schema.clone(),
+            description: json_schema.description.clone(),
+            strict: json_schema.strict,
+        },
+    });
+    let verbosity = verbosity.map(|verbosity| match verbosity {
+        Verbosity::Low => "low".to_string(),
+        Verbosity::Medium => "medium".to_string(),
+        Verbosity::High => "high".to_string(),
+    });
+    if format.is_none() && verbosity.is_none() {
+        None
+    } else {
+        Some(OpenAIResponsesTextConfig { format, verbosity })
+    }
+}
+
+fn service_tier_to_wire(tier: &ServiceTier) -> String {
+    match tier {
+        ServiceTier::Auto => "auto",
+        ServiceTier::Default => "default",
+        ServiceTier::Flex => "flex",
+        ServiceTier::Priority => "priority",
+        ServiceTier::Scale => "scale",
+    }
+    .to_string()
+}
+
+fn take_extra_typed<T: serde::de::DeserializeOwned>(
+    extra: &mut HashMap<String, Value>,
+    key: &str,
+) -> Option<T> {
+    extra
+        .remove(key)
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn responses_response_to_chat_response(resp: OpenAIResponsesResponse) -> ChatResponse {
@@ -483,7 +582,8 @@ fn responses_response_to_chat_response(resp: OpenAIResponsesResponse) -> ChatRes
                     thought_signatures: None,
                 });
             }
-            OpenAIResponsesOutputItem::Unknown => {}
+            // 其他 output item 类型暂时忽略
+            _ => {}
         }
     }
 
@@ -512,7 +612,14 @@ fn responses_response_to_chat_response(resp: OpenAIResponsesResponse) -> ChatRes
         }],
         usage,
         system_fingerprint: None,
-        service_tier: None,
+        service_tier: resp.service_tier.as_deref().and_then(|tier| match tier {
+            "auto" => Some(ServiceTier::Auto),
+            "default" => Some(ServiceTier::Default),
+            "flex" => Some(ServiceTier::Flex),
+            "priority" => Some(ServiceTier::Priority),
+            "scale" => Some(ServiceTier::Scale),
+            _ => None,
+        }),
     }
 }
 
@@ -666,6 +773,28 @@ mod tests {
         assert_eq!(wire.payload["previous_response_id"], "resp_prev");
         assert_eq!(wire.payload["reasoning"]["summary"], "auto");
         assert_eq!(wire.payload["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn build_chat_request_maps_effective_responses_fields() {
+        let mut req = ChatRequest::new("alias-model", vec![ChatMessage::user("hello")]);
+        req.service_tier = Some(crate::types::ServiceTier::Flex);
+        req.top_logprobs = Some(4);
+        req.verbosity = Some(crate::types::Verbosity::High);
+        req.response_format = Some(crate::types::ResponseFormat::JsonObject);
+        req.extra
+            .insert("background".into(), serde_json::json!(true));
+        req.extra
+            .insert("prompt_cache_key".into(), serde_json::json!("cache-key"));
+
+        let wire =
+            OpenAIRespAdapter::build_chat_request(&target(), ServiceType::Responses, &req).unwrap();
+        assert_eq!(wire.payload["service_tier"], "flex");
+        assert_eq!(wire.payload["top_logprobs"], 4);
+        assert_eq!(wire.payload["background"], true);
+        assert_eq!(wire.payload["prompt_cache_key"], "cache-key");
+        assert_eq!(wire.payload["text"]["verbosity"], "high");
+        assert_eq!(wire.payload["text"]["format"]["type"], "json_object");
     }
 
     #[test]

@@ -43,13 +43,15 @@ use summer_ai_core::types::ingress_wire::openai_responses::{
     OpenAIResponsesFunctionTool, OpenAIResponsesInput, OpenAIResponsesInputContentPart,
     OpenAIResponsesInputItem, OpenAIResponsesMessageContent, OpenAIResponsesMessageItem,
     OpenAIResponsesOutputContentPart, OpenAIResponsesOutputFunctionCall, OpenAIResponsesOutputItem,
-    OpenAIResponsesOutputMessage, OpenAIResponsesRequest, OpenAIResponsesResponse,
-    OpenAIResponsesStreamEvent, OpenAIResponsesTool, OpenAIResponsesUsage,
+    OpenAIResponsesOutputMessage, OpenAIResponsesReasoningEffort, OpenAIResponsesReasoningSummary,
+    OpenAIResponsesRequest, OpenAIResponsesResponse, OpenAIResponsesStreamEvent,
+    OpenAIResponsesTool, OpenAIResponsesToolChoice, OpenAIResponsesUsage,
 };
 use summer_ai_core::{
     AdapterError, AdapterResult, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent,
-    ContentPart, FinishReason, ImageUrl, MessageContent, ReasoningEffort, ResponsesExtras, Role,
-    Tool, ToolCall, ToolCallDelta, ToolCallFunction, ToolChoice, ToolFunction, Usage,
+    ContentPart, FinishReason, ImageUrl, MessageContent, ReasoningEffort, ResponseFormat,
+    ResponsesExtras, Role, ServiceTier, Tool, ToolCall, ToolCallDelta, ToolCallFunction,
+    ToolChoice, ToolFunction, Usage, Verbosity,
 };
 
 use super::{
@@ -111,9 +113,23 @@ fn to_canonical_impl(req: OpenAIResponsesRequest, ctx: &IngressCtx) -> AdapterRe
         store,
         user,
         metadata,
+        background,
+        context_management,
+        conversation,
+        include,
+        prompt,
+        prompt_cache_key,
+        prompt_cache_retention,
+        safety_identifier,
+        service_tier,
+        text,
+        top_logprobs,
+        truncation,
+        stream_options,
+        max_tool_calls,
         extra,
     } = req;
-    let extra: serde_json::Map<String, serde_json::Value> = extra.into_iter().collect();
+    let mut extra: serde_json::Map<String, serde_json::Value> = extra.into_iter().collect();
 
     let mut messages: Vec<ChatMessage> = Vec::new();
     let instructions = instructions.filter(|value| !value.is_empty());
@@ -146,19 +162,33 @@ fn to_canonical_impl(req: OpenAIResponsesRequest, ctx: &IngressCtx) -> AdapterRe
         })
         .collect();
 
-    let tool_choice: Option<ToolChoice> =
-        tool_choice.and_then(|v| serde_json::from_value::<ToolChoice>(v).ok());
+    let tool_choice: Option<ToolChoice> = tool_choice.and_then(tool_choice_to_canonical);
 
     let (reasoning_effort, reasoning_summary) = match reasoning {
         Some(reasoning) => (
             reasoning
                 .effort
-                .as_deref()
-                .and_then(ReasoningEffort::from_keyword),
-            reasoning.summary,
+                .as_ref()
+                .and_then(reasoning_effort_to_canonical),
+            reasoning.summary.as_ref().map(reasoning_summary_to_keyword),
         ),
         None => (None, None),
     };
+
+    let (response_format, verbosity) = text.as_ref().map(parse_text_config).unwrap_or((None, None));
+    let service_tier = service_tier.as_deref().and_then(parse_service_tier);
+
+    extend_extra_option(&mut extra, "background", background);
+    extend_extra_non_empty_vec(&mut extra, "context_management", context_management);
+    extend_extra_option(&mut extra, "conversation", conversation);
+    extend_extra_non_empty_vec(&mut extra, "include", include);
+    extend_extra_option(&mut extra, "prompt", prompt);
+    extend_extra_option(&mut extra, "prompt_cache_key", prompt_cache_key);
+    extend_extra_option(&mut extra, "prompt_cache_retention", prompt_cache_retention);
+    extend_extra_option(&mut extra, "safety_identifier", safety_identifier);
+    extend_extra_option(&mut extra, "truncation", truncation);
+    extend_extra_option(&mut extra, "stream_options", stream_options);
+    extend_extra_option(&mut extra, "max_tool_calls", max_tool_calls);
 
     let responses_extras = if previous_response_id.is_some()
         || reasoning_summary.is_some()
@@ -179,13 +209,17 @@ fn to_canonical_impl(req: OpenAIResponsesRequest, ctx: &IngressCtx) -> AdapterRe
         temperature,
         top_p,
         max_completion_tokens: max_output_tokens,
+        top_logprobs,
         parallel_tool_calls,
         reasoning_effort,
+        verbosity,
+        service_tier,
         user,
         metadata,
         store,
         tools: if tools.is_empty() { None } else { Some(tools) },
         tool_choice,
+        response_format,
         responses_extras,
         extra,
         // stream 位由 handler 根据路径（`POST /v1/responses` 非流 vs 设 stream=true）覆盖
@@ -207,6 +241,7 @@ fn input_item_to_chat_message(
             tracing::warn!("responses ingress: unsupported input item type, dropped");
             None
         }
+        _ => None,
     })
 }
 
@@ -273,6 +308,7 @@ fn content_part_to_canonical(part: OpenAIResponsesInputContentPart) -> Option<Co
             file_id,
             filename,
             file_data: _,
+            ..
         } => {
             // canonical 暂无 file part；降级成文本占位
             let placeholder = match (file_id.as_deref(), filename.as_deref()) {
@@ -321,7 +357,145 @@ fn function_call_item_to_chat_message(fc: OpenAIResponsesFunctionCallItem) -> Ch
 }
 
 fn function_call_output_to_chat_message(fco: OpenAIResponsesFunctionCallOutputItem) -> ChatMessage {
-    ChatMessage::tool_response(fco.call_id, fco.output)
+    ChatMessage::tool_response(fco.call_id, render_function_call_output(fco.output))
+}
+
+fn tool_choice_to_canonical(choice: OpenAIResponsesToolChoice) -> Option<ToolChoice> {
+    match choice {
+        OpenAIResponsesToolChoice::Simple(mode) => Some(ToolChoice::Mode(mode)),
+        other => serde_json::to_value(other).ok().map(ToolChoice::Named),
+    }
+}
+
+fn reasoning_effort_to_canonical(
+    effort: &OpenAIResponsesReasoningEffort,
+) -> Option<ReasoningEffort> {
+    Some(match effort {
+        OpenAIResponsesReasoningEffort::None => ReasoningEffort::None,
+        OpenAIResponsesReasoningEffort::Minimal => ReasoningEffort::Minimal,
+        OpenAIResponsesReasoningEffort::Low => ReasoningEffort::Low,
+        OpenAIResponsesReasoningEffort::Medium => ReasoningEffort::Medium,
+        OpenAIResponsesReasoningEffort::High => ReasoningEffort::High,
+        OpenAIResponsesReasoningEffort::Xhigh => ReasoningEffort::XHigh,
+    })
+}
+
+fn reasoning_summary_to_keyword(summary: &OpenAIResponsesReasoningSummary) -> String {
+    match summary {
+        OpenAIResponsesReasoningSummary::Auto => "auto",
+        OpenAIResponsesReasoningSummary::Concise => "concise",
+        OpenAIResponsesReasoningSummary::Detailed => "detailed",
+    }
+    .to_string()
+}
+
+fn render_function_call_output(
+    output: summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesFunctionCallOutput,
+) -> String {
+    match output {
+        summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesFunctionCallOutput::Text(
+            text,
+        ) => text,
+        summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesFunctionCallOutput::Parts(
+            parts,
+        ) => {
+            let text = parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    OpenAIResponsesInputContentPart::InputText { text }
+                    | OpenAIResponsesInputContentPart::OutputText { text, .. } => Some(text),
+                    OpenAIResponsesInputContentPart::InputFile { filename, file_id, .. } => {
+                        Some(match (filename, file_id) {
+                            (Some(name), Some(id)) => format!("[file {name} id={id}]"),
+                            (Some(name), None) => format!("[file {name}]"),
+                            (None, Some(id)) => format!("[file id={id}]"),
+                            (None, None) => "[file]".to_string(),
+                        })
+                    }
+                    OpenAIResponsesInputContentPart::InputImage { image_url, file_id, .. } => {
+                        Some(match (image_url, file_id) {
+                            (Some(url), _) => format!("[image {url}]"),
+                            (None, Some(id)) => format!("[image id={id}]"),
+                            (None, None) => "[image]".to_string(),
+                        })
+                    }
+                    OpenAIResponsesInputContentPart::Unknown => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() {
+                "[]".to_string()
+            } else {
+                text
+            }
+        }
+    }
+}
+
+fn parse_text_config(
+    config: &summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesTextConfig,
+) -> (Option<ResponseFormat>, Option<Verbosity>) {
+    let response_format = config.format.as_ref().and_then(|format| match format {
+        summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesTextFormat::Text => {
+            Some(ResponseFormat::Text)
+        }
+        summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesTextFormat::JsonObject => {
+            Some(ResponseFormat::JsonObject)
+        }
+        summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesTextFormat::JsonSchema {
+            name,
+            schema,
+            description,
+            strict,
+        } => Some(ResponseFormat::JsonSchema {
+            json_schema: summer_ai_core::types::openai::chat::JsonSchemaFormat {
+                name: name.clone(),
+                description: description.clone(),
+                schema: schema.clone(),
+                strict: *strict,
+            },
+        }),
+    });
+    let verbosity = config.verbosity.as_deref().and_then(|value| match value {
+        "low" => Some(Verbosity::Low),
+        "medium" => Some(Verbosity::Medium),
+        "high" => Some(Verbosity::High),
+        _ => None,
+    });
+    (response_format, verbosity)
+}
+
+fn parse_service_tier(value: &str) -> Option<ServiceTier> {
+    match value {
+        "auto" => Some(ServiceTier::Auto),
+        "default" => Some(ServiceTier::Default),
+        "flex" => Some(ServiceTier::Flex),
+        "priority" => Some(ServiceTier::Priority),
+        "scale" => Some(ServiceTier::Scale),
+        _ => None,
+    }
+}
+
+fn extend_extra_option<T: serde::Serialize>(
+    extra: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<T>,
+) {
+    if let Some(value) = value.and_then(|v| serde_json::to_value(v).ok()) {
+        extra.insert(key.to_string(), value);
+    }
+}
+
+fn extend_extra_non_empty_vec<T: serde::Serialize>(
+    extra: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Vec<T>,
+) {
+    if !value.is_empty() {
+        if let Ok(value) = serde_json::to_value(value) {
+            extra.insert(key.to_string(), value);
+        }
+    }
 }
 
 // =========================================================================
@@ -356,6 +530,7 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
                         name: tc.function.name,
                         arguments: tc.function.arguments,
                         status: Some("completed".into()),
+                        namespace: None,
                     },
                 ));
             }
@@ -372,6 +547,7 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
                     content_parts.push(OpenAIResponsesOutputContentPart::OutputText {
                         text: t,
                         annotations: Vec::new(),
+                        logprobs: None,
                     });
                 }
                 MessageContent::Parts(parts) => {
@@ -381,6 +557,7 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
                             content_parts.push(OpenAIResponsesOutputContentPart::OutputText {
                                 text,
                                 annotations: Vec::new(),
+                                logprobs: None,
                             });
                         }
                     }
@@ -395,6 +572,7 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
                     status: "completed".into(),
                     role: "assistant".into(),
                     content: content_parts,
+                    phase: None,
                 },
             ));
         }
@@ -404,6 +582,7 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
         id: resp.id,
         object: "response".into(),
         created_at: resp.created,
+        completed_at: None,
         model: ctx.actual_model.clone(),
         status,
         output,
@@ -432,6 +611,12 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
         user: None,
         metadata: None,
         error: None,
+        service_tier: None,
+        store: None,
+        text: None,
+        truncation: None,
+        top_logprobs: None,
+        prompt: None,
     }
 }
 
@@ -590,6 +775,7 @@ fn open_new_message(out: &mut Vec<OpenAIResponsesStreamEvent>, state: &mut Respo
         status: "in_progress".into(),
         role: "assistant".into(),
         content: Vec::new(),
+        phase: None,
     });
     out.push(OpenAIResponsesStreamEvent::OutputItemAdded {
         output_index,
@@ -600,6 +786,7 @@ fn open_new_message(out: &mut Vec<OpenAIResponsesStreamEvent>, state: &mut Respo
     let part = OpenAIResponsesOutputContentPart::OutputText {
         text: String::new(),
         annotations: Vec::new(),
+        logprobs: None,
     };
     out.push(OpenAIResponsesStreamEvent::ContentPartAdded {
         item_id: item_id.clone(),
@@ -635,6 +822,7 @@ fn close_open_message(out: &mut Vec<OpenAIResponsesStreamEvent>, state: &mut Res
     let final_part = OpenAIResponsesOutputContentPart::OutputText {
         text: final_text.clone(),
         annotations: Vec::new(),
+        logprobs: None,
     };
     out.push(OpenAIResponsesStreamEvent::ContentPartDone {
         item_id: msg.item_id.clone(),
@@ -649,6 +837,7 @@ fn close_open_message(out: &mut Vec<OpenAIResponsesStreamEvent>, state: &mut Res
         status: "completed".into(),
         role: "assistant".into(),
         content: vec![final_part],
+        phase: None,
     });
     out.push(OpenAIResponsesStreamEvent::OutputItemDone {
         output_index: msg.output_index,
@@ -773,6 +962,7 @@ fn flush_pending_tool_call(
         name,
         arguments: String::new(),
         status: Some("in_progress".into()),
+        namespace: None,
     });
     out.push(OpenAIResponsesStreamEvent::OutputItemAdded {
         output_index,
@@ -840,6 +1030,7 @@ fn close_all_tool_calls(
                 name: tc.name.clone(),
                 arguments: String::new(),
                 status: Some("in_progress".into()),
+                namespace: None,
             });
             out.push(OpenAIResponsesStreamEvent::OutputItemAdded {
                 output_index: tc.output_index,
@@ -870,6 +1061,7 @@ fn close_all_tool_calls(
                 name: tc.name,
                 arguments: tc.arguments,
                 status: Some("completed".into()),
+                namespace: None,
             });
         out.push(OpenAIResponsesStreamEvent::OutputItemDone {
             output_index: tc.output_index,
@@ -901,6 +1093,7 @@ fn build_response_snapshot(state: &ResponsesStreamState) -> OpenAIResponsesRespo
         id: state.response_id.clone(),
         object: "response".into(),
         created_at: state.created_at,
+        completed_at: None,
         model: state.model.clone(),
         status: state.final_status.clone(),
         output,
@@ -919,6 +1112,12 @@ fn build_response_snapshot(state: &ResponsesStreamState) -> OpenAIResponsesRespo
         user: None,
         metadata: None,
         error: None,
+        service_tier: None,
+        store: None,
+        text: None,
+        truncation: None,
+        top_logprobs: None,
+        prompt: None,
     }
 }
 
@@ -1157,6 +1356,38 @@ mod tests {
         .unwrap();
         let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
         assert_eq!(c.max_completion_tokens, Some(256));
+    }
+
+    #[test]
+    fn to_canonical_maps_effective_responses_fields() {
+        let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5",
+            "input": "hi",
+            "service_tier": "flex",
+            "top_logprobs": 3,
+            "background": true,
+            "prompt_cache_key": "cache-key",
+            "text": {
+                "verbosity": "high",
+                "format": {
+                    "type": "json_object"
+                }
+            }
+        }))
+        .unwrap();
+        let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
+        assert_eq!(c.top_logprobs, Some(3));
+        assert_eq!(c.service_tier, Some(summer_ai_core::ServiceTier::Flex));
+        assert_eq!(c.verbosity, Some(summer_ai_core::Verbosity::High));
+        assert!(matches!(
+            c.response_format,
+            Some(summer_ai_core::ResponseFormat::JsonObject)
+        ));
+        assert_eq!(c.extra.get("background"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            c.extra.get("prompt_cache_key"),
+            Some(&serde_json::json!("cache-key"))
+        );
     }
 
     // -------- from_canonical --------
