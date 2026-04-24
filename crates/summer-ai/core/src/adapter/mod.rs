@@ -36,7 +36,7 @@ use crate::types::{ChatRequest, ChatResponse, ChatStreamEvent};
 
 pub use dispatcher::AdapterDispatcher;
 pub use endpoint_scope::{EndpointScope, UnknownEndpointScope, parse_json_scopes};
-pub use kind::{AdapterKind, InvalidAdapterKind};
+pub use kind::{AdapterDescriptor, AdapterKind, FlavorKind, ProtocolKind};
 
 // ---------------------------------------------------------------------------
 // Capabilities —— 协议能力声明

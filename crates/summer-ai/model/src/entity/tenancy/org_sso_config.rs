@@ -1,6 +1,3 @@
-//! AI 组织 SSO 配置表
-//! 对应 sql/ai/org_sso_config.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

@@ -7,7 +7,7 @@
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use summer::plugin::Service;
 use summer_ai_core::ModelInfo;
-use summer_ai_model::entity::channels::model_config;
+use summer_ai_model::entity::billing::model_config;
 use summer_sea_orm::DbConn;
 
 use crate::error::RelayError;

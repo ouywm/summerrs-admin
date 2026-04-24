@@ -1,6 +1,3 @@
-//! AI 重试记录表
-//! 对应 sql/ai/retry_attempt.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

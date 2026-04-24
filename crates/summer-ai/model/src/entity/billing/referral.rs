@@ -1,6 +1,3 @@
-//! AI 邀请返利表
-//! 对应 sql/ai/referral.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

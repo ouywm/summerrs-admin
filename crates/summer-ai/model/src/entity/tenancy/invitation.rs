@@ -1,6 +1,3 @@
-//! AI 邀请表（组织/团队/项目成员邀请）
-//! 对应 sql/ai/invitation.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

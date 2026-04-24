@@ -10,7 +10,7 @@
 
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use sha2::{Digest, Sha256};
-use summer_ai_model::entity::platform::token;
+use summer_ai_model::entity::billing::token;
 use summer_redis::Redis;
 use summer_redis::redis::AsyncCommands;
 use summer_sea_orm::DbConn;

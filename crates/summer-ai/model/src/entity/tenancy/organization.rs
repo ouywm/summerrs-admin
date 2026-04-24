@@ -1,6 +1,3 @@
-//! AI 组织表（多租户组织根实体）
-//! 对应 sql/ai/organization.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

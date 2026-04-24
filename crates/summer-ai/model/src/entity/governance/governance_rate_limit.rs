@@ -1,6 +1,3 @@
-//! AI 治理限流表
-//! 对应 sql/ai/governance_rate_limit.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

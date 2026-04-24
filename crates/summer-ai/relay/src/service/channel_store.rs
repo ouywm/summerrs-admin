@@ -27,9 +27,10 @@ use crate::service::key_picker::{KeyPicker, RandomKeyPicker};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use summer::plugin::Service;
 use summer_ai_core::{
-    AdapterError, AdapterKind, AuthData, Endpoint, EndpointScope, ServiceTarget, parse_json_scopes,
+    AdapterDescriptor, AdapterError, AdapterKind, AuthData, Endpoint, EndpointScope, FlavorKind,
+    ProtocolKind, ServiceTarget, parse_json_scopes,
 };
-use summer_ai_model::entity::channels::{channel, channel_account};
+use summer_ai_model::entity::routing::{channel, channel_account};
 use summer_redis::Redis;
 use summer_redis::redis;
 use summer_redis::redis::AsyncCommands;
@@ -42,55 +43,108 @@ const CACHE_TTL_SECS: u64 = 300;
 // Channel type (DB) → AdapterKind 映射
 // ---------------------------------------------------------------------------
 
-pub fn channel_type_to_adapter_kind(kind: channel::ChannelType) -> AdapterKind {
-    use channel::ChannelType as DbKind;
-    match kind {
-        DbKind::OpenAi => AdapterKind::OpenAI,
-        DbKind::Anthropic => AdapterKind::Claude,
-        DbKind::Azure => AdapterKind::Azure,
-        DbKind::Gemini => AdapterKind::Gemini,
-        DbKind::Ollama => AdapterKind::Ollama,
-        DbKind::Ali => AdapterKind::Aliyun,
-        // Baidu 暂没有 dedicated adapter，兜底为 OpenAICompat
-        DbKind::Baidu => AdapterKind::OpenAICompat,
-    }
-}
+fn resolve_endpoint_protocol_descriptor(
+    raw: &serde_json::Value,
+    scope: EndpointScope,
+) -> Option<AdapterDescriptor> {
+    let value = raw.get(scope.as_lower_str())?;
 
-pub fn resolve_adapter_kind(c: channel::ChannelType, e: EndpointScope) -> Option<AdapterKind> {
-    match (c, e) {
-        // ─── OpenAI ───
-        (channel::ChannelType::OpenAi, EndpointScope::Chat) => Some(AdapterKind::OpenAI),
-        (channel::ChannelType::OpenAi, EndpointScope::Responses) => Some(AdapterKind::OpenAIResp),
-
-        // ─── Azure ───
-        (channel::ChannelType::Azure, EndpointScope::Chat) => Some(AdapterKind::Azure),
-        (channel::ChannelType::Azure, EndpointScope::Responses) => None,
-
-        // ─── Anthropic ───
-        (channel::ChannelType::Anthropic, EndpointScope::Chat) => Some(AdapterKind::Claude),
-        (channel::ChannelType::Anthropic, EndpointScope::Responses) => None,
-
-        // ─── Gemini ───
-        (channel::ChannelType::Gemini, EndpointScope::Chat) => Some(AdapterKind::Gemini),
-        (channel::ChannelType::Gemini, _) => None,
-
-        // ─── Ollama ───
-        (channel::ChannelType::Ollama, EndpointScope::Chat) => Some(AdapterKind::Ollama),
-        (channel::ChannelType::Ollama, _) => None,
-
-        // ─── Ali ───
-        (channel::ChannelType::Ali, EndpointScope::Chat) => Some(AdapterKind::Aliyun),
-
-        // ─── Baidu ───
-        (channel::ChannelType::Baidu, EndpointScope::Chat) => Some(AdapterKind::OpenAICompat),
-
-        // ─── 其他未支持 ───
+    match value {
+        serde_json::Value::String(protocol) => {
+            let protocol = ProtocolKind::from_lower_str(protocol)?;
+            Some(AdapterDescriptor::new(protocol, FlavorKind::Native))
+        }
+        serde_json::Value::Object(obj) => {
+            let protocol = obj
+                .get("protocol")
+                .and_then(serde_json::Value::as_str)
+                .and_then(ProtocolKind::from_lower_str)?;
+            let flavor = obj
+                .get("flavor")
+                .and_then(serde_json::Value::as_str)
+                .and_then(FlavorKind::from_lower_str)
+                .unwrap_or(FlavorKind::Native);
+            Some(AdapterDescriptor::new(protocol, flavor))
+        }
         _ => None,
     }
 }
 
+fn resolve_legacy_adapter_descriptor(
+    c: channel::ChannelType,
+    e: EndpointScope,
+) -> Option<AdapterDescriptor> {
+    match (c, e) {
+        // ─── OpenAI ───
+        (channel::ChannelType::OpenAi, EndpointScope::Chat) => Some(AdapterDescriptor::new(
+            ProtocolKind::OpenAI,
+            FlavorKind::Native,
+        )),
+        (channel::ChannelType::OpenAi, EndpointScope::Responses) => Some(AdapterDescriptor::new(
+            ProtocolKind::OpenAIResponses,
+            FlavorKind::Native,
+        )),
+        (channel::ChannelType::OpenAi, _) => None,
+
+        // ─── Azure ───
+        (channel::ChannelType::Azure, EndpointScope::Chat) => Some(AdapterDescriptor::new(
+            ProtocolKind::OpenAI,
+            FlavorKind::Azure,
+        )),
+        (channel::ChannelType::Azure, _) => None,
+
+        // ─── Anthropic ───
+        (channel::ChannelType::Anthropic, EndpointScope::Chat) => Some(AdapterDescriptor::new(
+            ProtocolKind::Claude,
+            FlavorKind::Native,
+        )),
+        (channel::ChannelType::Anthropic, _) => None,
+
+        // ─── Gemini ───
+        (channel::ChannelType::Gemini, EndpointScope::Chat) => Some(AdapterDescriptor::new(
+            ProtocolKind::Gemini,
+            FlavorKind::Native,
+        )),
+        (channel::ChannelType::Gemini, _) => None,
+
+        // ─── Ollama ───
+        (channel::ChannelType::Ollama, EndpointScope::Chat) => Some(AdapterDescriptor::new(
+            ProtocolKind::Ollama,
+            FlavorKind::Native,
+        )),
+        (channel::ChannelType::Ollama, _) => None,
+
+        // ─── Ali ───
+        (channel::ChannelType::Ali, EndpointScope::Chat) => Some(AdapterDescriptor::new(
+            ProtocolKind::OpenAI,
+            FlavorKind::Aliyun,
+        )),
+        (channel::ChannelType::Ali, _) => None,
+
+        // ─── Baidu ───
+        (channel::ChannelType::Baidu, EndpointScope::Chat) => Some(AdapterDescriptor::new(
+            ProtocolKind::OpenAI,
+            FlavorKind::OpenAICompat,
+        )),
+        (channel::ChannelType::Baidu, _) => None,
+    }
+}
+
+pub fn resolve_adapter_kind(c: channel::ChannelType, e: EndpointScope) -> Option<AdapterKind> {
+    resolve_legacy_adapter_descriptor(c, e).and_then(|descriptor| descriptor.try_adapter_kind())
+}
+
+fn resolve_adapter_descriptor(
+    channel: &channel::Model,
+    scope: EndpointScope,
+) -> Option<AdapterDescriptor> {
+    resolve_endpoint_protocol_descriptor(&channel.endpoint_protocols, scope)
+        .or_else(|| resolve_legacy_adapter_descriptor(channel.channel_type, scope))
+}
+
 fn channel_supports_scope(channel: &channel::Model, scope: EndpointScope) -> bool {
-    parse_json_scopes(&channel.endpoint_scopes).contains(&scope)
+    resolve_endpoint_protocol_descriptor(&channel.endpoint_protocols, scope).is_some()
+        || parse_json_scopes(&channel.endpoint_scopes).contains(&scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -496,7 +550,7 @@ impl ChannelStore {
 /// - **selected_key** 由上层 `ChannelStore::pick` + `KeyPicker` 决定，本函数只认 pre-selected key
 /// - **OAuth account**（`account.is_oauth()`）本期未落地，返 `NotImplemented`
 /// - `target.model.name` 应用 `channel.model_mapping` JSONB（缺省保留 logical_model）
-/// - `target.model.kind` 由 `channel.channel_type` 映射
+/// - `target.model.kind` 优先由 `channel.endpoint_protocols` 映射，缺失时退回 `channel.channel_type`
 /// - `endpoint` 取 `channel.base_url`
 /// - `extra_headers` 从 `channel.config.extra_headers` 读（如果有）
 pub fn build_service_target(
@@ -515,12 +569,19 @@ pub fn build_service_target(
         ));
     }
 
-    let kind = resolve_adapter_kind(channel.channel_type, scope).ok_or(RelayError::Adapter(
+    let descriptor = resolve_adapter_descriptor(channel, scope).ok_or(RelayError::Adapter(
         AdapterError::Unsupported {
             adapter: "channel_store",
-            feature: "channel_type_endpoint_scope",
+            feature: "channel_endpoint_protocols",
         },
     ))?;
+    let kind =
+        descriptor
+            .try_adapter_kind()
+            .ok_or(RelayError::Adapter(AdapterError::Unsupported {
+                adapter: "channel_store",
+                feature: "adapter_descriptor_bridge",
+            }))?;
     let actual_model = channel.resolve_upstream_model(logical_model);
     let endpoint = Endpoint::from_owned(channel.base_url.clone());
     let auth = AuthData::from_single(selected_key.to_string());
@@ -622,6 +683,7 @@ mod tests {
             model_mapping: serde_json::json!({}),
             channel_group: String::new(),
             endpoint_scopes: serde_json::json!([]),
+            endpoint_protocols: serde_json::json!({}),
             capabilities: serde_json::json!([]),
             weight,
             priority,
@@ -741,6 +803,30 @@ mod tests {
     }
 
     #[test]
+    fn build_service_target_prefers_endpoint_protocols_over_channel_type() {
+        let mut channel = mk_channel(
+            1,
+            vec!["gpt-4"],
+            1,
+            100,
+            channel::ChannelType::OpenAi,
+            "https://compat.example/v1",
+        );
+        channel.endpoint_protocols = serde_json::json!({
+            "chat": {
+                "protocol": "openai",
+                "flavor": "openai_compat"
+            }
+        });
+        let account = mk_account(10, 1, "sk-a", 1, 100);
+
+        let target =
+            build_service_target(&channel, &account, "sk-a", "gpt-4", EndpointScope::Chat).unwrap();
+
+        assert_eq!(target.kind(), AdapterKind::OpenAICompat);
+    }
+
+    #[test]
     fn build_service_target_errors_on_empty_key() {
         let channel = mk_channel(
             1,
@@ -807,6 +893,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_adapter_descriptor_prefers_endpoint_protocols() {
+        let mut channel = mk_channel(
+            1,
+            vec!["gpt-5"],
+            1,
+            100,
+            channel::ChannelType::OpenAi,
+            "https://api.openai.com/v1",
+        );
+        channel.endpoint_protocols = serde_json::json!({
+            "responses": {
+                "protocol": "openai_responses",
+                "flavor": "native"
+            }
+        });
+
+        let descriptor = resolve_adapter_descriptor(&channel, EndpointScope::Responses).unwrap();
+        assert_eq!(descriptor.adapter_kind(), AdapterKind::OpenAIResp);
+    }
+
+    #[test]
     fn channel_supports_scope_checks_endpoint_scopes_json() {
         let mut channel = mk_channel(
             1,
@@ -824,6 +931,26 @@ mod tests {
         channel.endpoint_scopes = serde_json::json!(["chat", "responce", 42]);
         assert!(channel_supports_scope(&channel, EndpointScope::Chat));
         assert!(!channel_supports_scope(&channel, EndpointScope::Responses));
+    }
+
+    #[test]
+    fn channel_supports_scope_accepts_endpoint_protocols_scope() {
+        let mut channel = mk_channel(
+            1,
+            vec!["gpt-5"],
+            1,
+            100,
+            channel::ChannelType::OpenAi,
+            "https://api.openai.com/v1",
+        );
+        channel.endpoint_protocols = serde_json::json!({
+            "responses": {
+                "protocol": "openai_responses",
+                "flavor": "native"
+            }
+        });
+
+        assert!(channel_supports_scope(&channel, EndpointScope::Responses));
     }
 
     // ---------- weighted_shuffle（用 tuple stub，不依赖 channel::Model）----------

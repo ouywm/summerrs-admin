@@ -1,6 +1,3 @@
-//! AI Span 表
-//! 对应 sql/ai/trace_span.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

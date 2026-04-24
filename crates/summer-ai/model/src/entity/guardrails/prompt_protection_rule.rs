@@ -1,6 +1,3 @@
-//! AI Prompt 防护规则表
-//! 对应 sql/ai/prompt_protection_rule.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

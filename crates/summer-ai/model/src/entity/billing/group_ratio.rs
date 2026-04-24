@@ -1,6 +1,3 @@
-//! AI 分组倍率与策略表（同一分组的价格、模型权限和兜底策略）
-//! 对应 sql/ai/group_ratio.sql
-
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 

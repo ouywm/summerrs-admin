@@ -1,6 +1,3 @@
-//! AI 充值/支付流水表（钱包充值与订阅支付共用）
-//! 对应 sql/ai/topup.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

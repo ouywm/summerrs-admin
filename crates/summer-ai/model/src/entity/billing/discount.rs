@@ -1,6 +1,3 @@
-//! AI 折扣规则表
-//! 对应 sql/ai/discount.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

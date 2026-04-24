@@ -1,6 +1,3 @@
-//! AI 用户配额表（用户在 AI 网关中的额度与预算窗口）
-//! 对应 sql/ai/user_quota.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

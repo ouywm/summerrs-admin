@@ -1,19 +1,12 @@
-//! [`AdapterKind`] —— 上游协议家族枚举。
+//! Adapter 协议/风味描述与当前 dispatcher 使用的 [`AdapterKind`]。
 //!
-//! **21 连续编码**：
-//!
-//! - 1-4  OpenAI 家族（OpenAI / OpenAIResp / OpenAICompat / Azure）
-//! - 5-8  Native 协议（Claude / Gemini / Cohere / Ollama）
-//! - 9-21 OpenAI-compat 变种（OllamaCloud / Groq / DeepSeek / Xai / ...）
-//!
-//! Relay 通过 `ai.channel.channel_type: i16` 字段选 AdapterKind；
-//! 再由 [`super::AdapterDispatcher`] 静态 match 分派到具体 Adapter 实现。
+//! `AdapterKind` 仍然保留，作为当前 [`super::AdapterDispatcher`] 的静态分派键。
+//! 但数据库路由不应再直接绑定它；运行时路由应优先使用
+//! [`AdapterDescriptor`] = `ProtocolKind + FlavorKind`。
 
 use serde::{Deserialize, Serialize};
 
-/// 上游协议家族。
-///
-/// **编码值一旦上生产禁止变更**（DB 已存的 `channel_type` 列不可改语义）。
+/// 当前 dispatcher 使用的上游适配器键。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AdapterKind {
     // ─── 1-4: OpenAI 家族 ───
@@ -206,98 +199,162 @@ impl std::fmt::Display for AdapterKind {
     }
 }
 
-// ─── i16 ↔ AdapterKind（绑定 ai.channel.channel_type 列）───
-impl TryFrom<i16> for AdapterKind {
-    type Error = InvalidAdapterKind;
-    fn try_from(value: i16) -> Result<Self, Self::Error> {
-        Ok(match value {
-            1 => Self::OpenAI,
-            2 => Self::OpenAIResp,
-            3 => Self::OpenAICompat,
-            4 => Self::Azure,
-            5 => Self::Claude,
-            6 => Self::Gemini,
-            7 => Self::Cohere,
-            8 => Self::Ollama,
-            9 => Self::OllamaCloud,
-            10 => Self::Groq,
-            11 => Self::DeepSeek,
-            12 => Self::Xai,
-            13 => Self::Fireworks,
-            14 => Self::Together,
-            15 => Self::Nebius,
-            16 => Self::Mimo,
-            17 => Self::Zai,
-            18 => Self::BigModel,
-            19 => Self::Aliyun,
-            20 => Self::Vertex,
-            21 => Self::GithubCopilot,
-            other => return Err(InvalidAdapterKind(other)),
+/// 协议维度。
+///
+/// 这里只描述 wire/API 规范，不承载厂商/部署信息。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ProtocolKind {
+    OpenAI,
+    OpenAIResponses,
+    Claude,
+    Gemini,
+    Cohere,
+    Ollama,
+}
+
+impl ProtocolKind {
+    pub const fn as_lower_str(&self) -> &'static str {
+        match self {
+            Self::OpenAI => "openai",
+            Self::OpenAIResponses => "openai_responses",
+            Self::Claude => "claude",
+            Self::Gemini => "gemini",
+            Self::Cohere => "cohere",
+            Self::Ollama => "ollama",
+        }
+    }
+
+    pub fn from_lower_str(name: &str) -> Option<Self> {
+        Some(match name {
+            "openai" => Self::OpenAI,
+            "openai_responses" => Self::OpenAIResponses,
+            "claude" => Self::Claude,
+            "gemini" => Self::Gemini,
+            "cohere" => Self::Cohere,
+            "ollama" => Self::Ollama,
+            _ => return None,
         })
     }
 }
 
-impl From<AdapterKind> for i16 {
-    fn from(kind: AdapterKind) -> Self {
-        match kind {
-            AdapterKind::OpenAI => 1,
-            AdapterKind::OpenAIResp => 2,
-            AdapterKind::OpenAICompat => 3,
-            AdapterKind::Azure => 4,
-            AdapterKind::Claude => 5,
-            AdapterKind::Gemini => 6,
-            AdapterKind::Cohere => 7,
-            AdapterKind::Ollama => 8,
-            AdapterKind::OllamaCloud => 9,
-            AdapterKind::Groq => 10,
-            AdapterKind::DeepSeek => 11,
-            AdapterKind::Xai => 12,
-            AdapterKind::Fireworks => 13,
-            AdapterKind::Together => 14,
-            AdapterKind::Nebius => 15,
-            AdapterKind::Mimo => 16,
-            AdapterKind::Zai => 17,
-            AdapterKind::BigModel => 18,
-            AdapterKind::Aliyun => 19,
-            AdapterKind::Vertex => 20,
-            AdapterKind::GithubCopilot => 21,
+/// 部署/兼容层维度。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FlavorKind {
+    Native,
+    OpenAICompat,
+    Azure,
+    OllamaCloud,
+    Groq,
+    DeepSeek,
+    Xai,
+    Fireworks,
+    Together,
+    Nebius,
+    Mimo,
+    Zai,
+    BigModel,
+    Aliyun,
+    Vertex,
+    GithubCopilot,
+}
+
+impl FlavorKind {
+    pub const fn as_lower_str(&self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::OpenAICompat => "openai_compat",
+            Self::Azure => "azure",
+            Self::OllamaCloud => "ollama_cloud",
+            Self::Groq => "groq",
+            Self::DeepSeek => "deepseek",
+            Self::Xai => "xai",
+            Self::Fireworks => "fireworks",
+            Self::Together => "together",
+            Self::Nebius => "nebius",
+            Self::Mimo => "mimo",
+            Self::Zai => "zai",
+            Self::BigModel => "bigmodel",
+            Self::Aliyun => "aliyun",
+            Self::Vertex => "vertex",
+            Self::GithubCopilot => "github_copilot",
         }
     }
-}
 
-/// `TryFrom<i16>` 失败时的错误（`channel_type` 值在 1-21 范围外）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidAdapterKind(pub i16);
-
-impl std::fmt::Display for InvalidAdapterKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid channel_type i16: {}", self.0)
+    pub fn from_lower_str(name: &str) -> Option<Self> {
+        Some(match name {
+            "native" => Self::Native,
+            "openai_compat" => Self::OpenAICompat,
+            "azure" => Self::Azure,
+            "ollama_cloud" => Self::OllamaCloud,
+            "groq" => Self::Groq,
+            "deepseek" => Self::DeepSeek,
+            "xai" => Self::Xai,
+            "fireworks" => Self::Fireworks,
+            "together" => Self::Together,
+            "nebius" => Self::Nebius,
+            "mimo" => Self::Mimo,
+            "zai" => Self::Zai,
+            "bigmodel" => Self::BigModel,
+            "aliyun" => Self::Aliyun,
+            "vertex" => Self::Vertex,
+            "github_copilot" => Self::GithubCopilot,
+            _ => return None,
+        })
     }
 }
 
-impl std::error::Error for InvalidAdapterKind {}
-
+/// 运行时适配器描述：协议 + 风味。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AdapterDescriptor {
-    protocol: ProtocolKind,
-    flavor: FlavorKind,
+    pub protocol: ProtocolKind,
+    pub flavor: FlavorKind,
 }
 
-enum ProtocolKind {}
+impl AdapterDescriptor {
+    pub const fn new(protocol: ProtocolKind, flavor: FlavorKind) -> Self {
+        Self { protocol, flavor }
+    }
 
-enum FlavorKind {}
+    /// 过渡桥：把 descriptor 映射回当前 dispatcher 使用的 `AdapterKind`。
+    pub const fn try_adapter_kind(&self) -> Option<AdapterKind> {
+        Some(match (self.protocol, self.flavor) {
+            (ProtocolKind::OpenAI, FlavorKind::Native) => AdapterKind::OpenAI,
+            (ProtocolKind::OpenAIResponses, FlavorKind::Native) => AdapterKind::OpenAIResp,
+            (ProtocolKind::OpenAI, FlavorKind::OpenAICompat) => AdapterKind::OpenAICompat,
+            (ProtocolKind::OpenAI, FlavorKind::Azure) => AdapterKind::Azure,
+            (ProtocolKind::Claude, FlavorKind::Native) => AdapterKind::Claude,
+            (ProtocolKind::Gemini, FlavorKind::Native) => AdapterKind::Gemini,
+            (ProtocolKind::Cohere, FlavorKind::Native) => AdapterKind::Cohere,
+            (ProtocolKind::Ollama, FlavorKind::Native) => AdapterKind::Ollama,
+            (ProtocolKind::OpenAI, FlavorKind::OllamaCloud) => AdapterKind::OllamaCloud,
+            (ProtocolKind::OpenAI, FlavorKind::Groq) => AdapterKind::Groq,
+            (ProtocolKind::OpenAI, FlavorKind::DeepSeek) => AdapterKind::DeepSeek,
+            (ProtocolKind::OpenAI, FlavorKind::Xai) => AdapterKind::Xai,
+            (ProtocolKind::OpenAI, FlavorKind::Fireworks) => AdapterKind::Fireworks,
+            (ProtocolKind::OpenAI, FlavorKind::Together) => AdapterKind::Together,
+            (ProtocolKind::OpenAI, FlavorKind::Nebius) => AdapterKind::Nebius,
+            (ProtocolKind::OpenAI, FlavorKind::Mimo) => AdapterKind::Mimo,
+            (ProtocolKind::OpenAI, FlavorKind::Zai) => AdapterKind::Zai,
+            (ProtocolKind::OpenAI, FlavorKind::BigModel) => AdapterKind::BigModel,
+            (ProtocolKind::OpenAI, FlavorKind::Aliyun) => AdapterKind::Aliyun,
+            (ProtocolKind::Gemini, FlavorKind::Vertex)
+            | (ProtocolKind::Claude, FlavorKind::Vertex) => AdapterKind::Vertex,
+            (ProtocolKind::OpenAI, FlavorKind::GithubCopilot)
+            | (ProtocolKind::Claude, FlavorKind::GithubCopilot)
+            | (ProtocolKind::Gemini, FlavorKind::GithubCopilot) => AdapterKind::GithubCopilot,
+            _ => return None,
+        })
+    }
+
+    pub fn adapter_kind(&self) -> AdapterKind {
+        self.try_adapter_kind()
+            .expect("adapter descriptor should map to an existing adapter kind")
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn all_variants_roundtrip_via_i16() {
-        for kind in AdapterKind::ALL {
-            let n: i16 = kind.into();
-            let back = AdapterKind::try_from(n).unwrap();
-            assert_eq!(kind, back, "roundtrip failed for {kind:?} (i16={n})");
-        }
-    }
 
     #[test]
     fn all_variants_roundtrip_via_lower_str() {
@@ -309,19 +366,26 @@ mod tests {
     }
 
     #[test]
-    fn discriminants_are_1_to_21_continuous() {
-        for (i, kind) in AdapterKind::ALL.iter().enumerate() {
-            let expected = (i + 1) as i16;
-            let actual: i16 = (*kind).into();
-            assert_eq!(expected, actual, "变体 {kind:?} 编码应为 {expected}");
-        }
+    fn descriptor_maps_to_existing_adapter_kind() {
+        let descriptor = AdapterDescriptor::new(ProtocolKind::OpenAIResponses, FlavorKind::Native);
+        assert_eq!(descriptor.adapter_kind(), AdapterKind::OpenAIResp);
+
+        let compat = AdapterDescriptor::new(ProtocolKind::OpenAI, FlavorKind::OpenAICompat);
+        assert_eq!(compat.adapter_kind(), AdapterKind::OpenAICompat);
     }
 
     #[test]
-    fn try_from_i16_rejects_out_of_range() {
-        assert!(AdapterKind::try_from(0).is_err());
-        assert!(AdapterKind::try_from(22).is_err());
-        assert!(AdapterKind::try_from(-1).is_err());
+    fn protocol_and_flavor_parse_from_lower_str() {
+        assert_eq!(
+            ProtocolKind::from_lower_str("openai_responses"),
+            Some(ProtocolKind::OpenAIResponses)
+        );
+        assert_eq!(
+            FlavorKind::from_lower_str("openai_compat"),
+            Some(FlavorKind::OpenAICompat)
+        );
+        assert_eq!(ProtocolKind::from_lower_str("bogus"), None);
+        assert_eq!(FlavorKind::from_lower_str("bogus"), None);
     }
 
     #[test]

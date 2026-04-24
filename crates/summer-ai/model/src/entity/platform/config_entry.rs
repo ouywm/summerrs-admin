@@ -1,6 +1,3 @@
-//! AI 配置项表（统一承载 provider/model/plugin/system 等配置）
-//! 对应 sql/ai/config_entry.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

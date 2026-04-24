@@ -1,6 +1,3 @@
-//! AI 兑换码表（可按有效期和目标分组发放额度）
-//! 对应 sql/ai/redemption.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

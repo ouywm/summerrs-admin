@@ -1,6 +1,3 @@
-//! AI 订单表
-//! 对应 sql/ai/order.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

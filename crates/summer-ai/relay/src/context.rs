@@ -23,7 +23,7 @@ use std::time::Instant;
 use rust_decimal::Decimal;
 use serde_json::Value;
 use summer_ai_core::{AdapterKind, CostProfile};
-use summer_ai_model::entity::channels::{channel, channel_account};
+use summer_ai_model::entity::routing::{channel, channel_account};
 
 use crate::auth::AiTokenContext;
 use crate::convert::ingress::IngressFormat;

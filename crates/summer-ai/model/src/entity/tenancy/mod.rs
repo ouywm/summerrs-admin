@@ -1,13 +1,13 @@
-pub mod audit_log;
 pub mod domain_verification;
 pub mod invitation;
-pub mod managed_object;
 pub mod org_membership;
 pub mod org_scim_config;
 pub mod org_sso_config;
 pub mod organization;
 pub mod project;
 pub mod project_membership;
+pub mod rbac_policy;
+pub mod rbac_policy_version;
 pub mod scim_group_mapping;
 pub mod scim_user_mapping;
 pub mod service_account;

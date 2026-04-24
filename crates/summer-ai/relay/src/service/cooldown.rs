@@ -43,7 +43,7 @@ use sea_orm::{
 };
 use serde_json::{Value, json};
 use summer::plugin::Service;
-use summer_ai_model::entity::channels::{channel, channel_account};
+use summer_ai_model::entity::routing::{channel, channel_account};
 use summer_plugins::background_task::BackgroundTaskQueue;
 use summer_sea_orm::DbConn;
 use tracing::Instrument;

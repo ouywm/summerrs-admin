@@ -1,7 +1,9 @@
 pub mod config_entry;
+pub mod conversation;
+pub mod message;
 pub mod plugin;
 pub mod plugin_binding;
-pub mod rbac_policy;
-pub mod rbac_policy_version;
+pub mod prompt_template;
 pub mod session;
-pub mod token;
+pub mod task;
+pub mod thread;

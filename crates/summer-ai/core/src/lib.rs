@@ -15,8 +15,9 @@ pub mod resolver;
 pub mod types;
 
 pub use adapter::{
-    Adapter, AdapterDispatcher, AdapterKind, AuthStrategy, Capabilities, CostProfile,
-    EndpointScope, ServiceType, UnknownEndpointScope, WebRequestData,
+    Adapter, AdapterDescriptor, AdapterDispatcher, AdapterKind, AuthStrategy, Capabilities,
+    CostProfile, EndpointScope, FlavorKind, ProtocolKind, ServiceType, UnknownEndpointScope,
+    WebRequestData,
     adapters::{
         ClaudeAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter, OpenAIRespAdapter,
     },

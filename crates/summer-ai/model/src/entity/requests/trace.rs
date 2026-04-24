@@ -1,6 +1,3 @@
-//! AI 追踪表
-//! 对应 sql/ai/trace.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

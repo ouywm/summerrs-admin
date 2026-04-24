@@ -1,6 +1,3 @@
-//! AI 团队表（组织下的协作团队）
-//! 对应 sql/ai/team.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

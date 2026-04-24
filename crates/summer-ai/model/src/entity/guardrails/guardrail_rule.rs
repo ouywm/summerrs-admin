@@ -1,6 +1,3 @@
-//! AI Guardrail 规则表（自定义/系统内容治理规则）
-//! 对应 sql/ai/guardrail_rule.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

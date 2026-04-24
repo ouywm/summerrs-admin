@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use summer::plugin::Service;
 use summer_ai_core::Usage;
 use summer_ai_model::entity::billing::group_ratio;
-use summer_ai_model::entity::channels::channel_model_price;
+use summer_ai_model::entity::routing::channel_model_price;
 use summer_sea_orm::DbConn;
 
 /// `1 USD = 500_000 quota`（NewAPI 约定）。

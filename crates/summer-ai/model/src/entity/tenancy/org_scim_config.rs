@@ -1,6 +1,3 @@
-//! AI 组织 SCIM 配置表
-//! 对应 sql/ai/org_scim_config.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

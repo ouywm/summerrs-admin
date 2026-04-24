@@ -1,6 +1,3 @@
-//! AI Guardrail 命中记录表
-//! 对应 sql/ai/guardrail_violation.sql
-
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 

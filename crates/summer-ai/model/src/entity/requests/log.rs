@@ -1,6 +1,3 @@
-//! AI 消费日志表（单次调用的账务/审计摘要）
-//! 对应 sql/ai/log.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

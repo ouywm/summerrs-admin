@@ -1,6 +1,3 @@
-//! AI 用户订阅表（用户实际拥有的订阅实例）
-//! 对应 sql/ai/user_subscription.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

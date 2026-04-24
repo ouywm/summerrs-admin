@@ -7,7 +7,7 @@
 //! 由各自的中间件自己查。
 
 use summer_ai_core::{EndpointScope, parse_json_scopes};
-use summer_ai_model::entity::platform::token;
+use summer_ai_model::entity::billing::token;
 
 use crate::error::RelayError;
 

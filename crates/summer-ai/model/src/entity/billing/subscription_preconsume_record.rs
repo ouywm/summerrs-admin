@@ -1,6 +1,3 @@
-//! AI 订阅预扣记录表
-//! 对应 sql/ai/subscription_preconsume_record.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

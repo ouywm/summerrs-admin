@@ -1,6 +1,3 @@
-//! AI 账务流水表
-//! 对应 sql/ai/transaction.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

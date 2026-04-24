@@ -1,6 +1,3 @@
-//! AI 插件表
-//! 对应 sql/ai/plugin.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

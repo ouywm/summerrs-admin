@@ -1,6 +1,3 @@
-//! AI Guardrail 配置表（组织/项目级内容治理开关）
-//! 对应 sql/ai/guardrail_config.sql
-
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 

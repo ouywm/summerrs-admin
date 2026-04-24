@@ -1,6 +1,3 @@
-//! AI 插件绑定表
-//! 对应 sql/ai/plugin_binding.sql
-
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 

@@ -1,6 +1,3 @@
-//! AI 订阅套餐表（长期套餐定义）
-//! 对应 sql/ai/subscription_plan.sql
-
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 

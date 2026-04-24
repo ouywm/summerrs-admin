@@ -1,6 +1,3 @@
-//! AI 请求执行尝试表（一次请求的每次上游尝试）
-//! 对应 sql/ai/request_execution.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

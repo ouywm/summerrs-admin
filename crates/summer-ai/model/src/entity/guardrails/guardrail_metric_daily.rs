@@ -1,6 +1,3 @@
-//! AI Guardrail 日统计表
-//! 对应 sql/ai/guardrail_metric_daily.sql
-
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 

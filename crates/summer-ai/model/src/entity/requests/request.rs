@@ -1,6 +1,3 @@
-//! AI 请求主表（客户端视角的一次完整请求）
-//! 对应 sql/ai/request.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

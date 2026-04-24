@@ -1,6 +1,3 @@
-//! AI 项目成员表
-//! 对应 sql/ai/project_membership.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

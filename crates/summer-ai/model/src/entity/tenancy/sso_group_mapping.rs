@@ -1,6 +1,3 @@
-//! AI SSO 组映射表
-//! 对应 sql/ai/sso_group_mapping.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

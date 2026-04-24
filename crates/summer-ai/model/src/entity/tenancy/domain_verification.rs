@@ -1,6 +1,3 @@
-//! AI 域名验证表
-//! 对应 sql/ai/domain_verification.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

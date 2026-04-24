@@ -1,6 +1,3 @@
-//! AI 支付方式表
-//! 对应 sql/ai/payment_method.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

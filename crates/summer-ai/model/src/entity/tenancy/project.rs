@@ -1,6 +1,3 @@
-//! AI 项目表（组织/团队下的业务项目）
-//! 对应 sql/ai/project.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};

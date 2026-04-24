@@ -1,6 +1,3 @@
-//! AI 服务账号表（机器身份/机器人账号）
-//! 对应 sql/ai/service_account.sql
-
 use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
