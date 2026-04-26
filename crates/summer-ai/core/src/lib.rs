@@ -11,13 +11,13 @@
 
 pub mod adapter;
 pub mod error;
+pub mod oauth;
 pub mod resolver;
 pub mod types;
 
 pub use adapter::{
-    Adapter, AdapterDescriptor, AdapterDispatcher, AdapterKind, AuthStrategy, Capabilities,
-    CostProfile, EndpointScope, FlavorKind, ProtocolKind, ServiceType, UnknownEndpointScope,
-    WebRequestData,
+    Adapter, AdapterDispatcher, AdapterKind, AuthStrategy, CostProfile, EndpointScope, ServiceType,
+    UnknownEndpointScope, WebRequestData,
     adapters::{
         ClaudeAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter, OpenAIRespAdapter,
     },
