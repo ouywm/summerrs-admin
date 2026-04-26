@@ -6,7 +6,7 @@ use summer_ai_core::oauth::openai::{
 
 #[test]
 fn build_authorization_url_includes_required_openai_flags() {
-    let session_id = generate_session_id().expect("session id");
+    let session_id = generate_session_id();
     assert!(!session_id.is_empty());
 
     let code_challenge = generate_code_challenge("challenge-1");
@@ -29,15 +29,15 @@ fn build_authorization_url_includes_required_openai_flags() {
     assert!(raw.contains("codex_cli_simplified_flow=true"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn session_store_expires_openai_sessions() {
     let store = SessionStore::new(std::time::Duration::from_millis(20));
     store
         .set(
             "session-1".into(),
             OpenAiOAuthSession {
-                state: generate_state().unwrap(),
-                code_verifier: generate_code_verifier().unwrap(),
+                state: generate_state(),
+                code_verifier: generate_code_verifier(),
                 client_id: "app_test".into(),
                 redirect_uri: "http://localhost:1455/auth/callback".into(),
                 created_at: chrono::Utc::now(),
