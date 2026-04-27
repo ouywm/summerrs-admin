@@ -43,10 +43,10 @@ The system follows a plugin composition pattern. The binary entry point in `crat
 ### Database & Multi-tenancy
 - **Database Sharding** - SQL parsing, routing, and cross-shard merging
 - **Four Isolation Levels**:
-  - **Shared Row** - All tenants share tables; filter by `tenant_id` column via SQL rewriting
-  - **Separate Table** - Each tenant has own tables (e.g., `user_001`, `user_002`)
-  - **Separate Schema** - Each tenant has own PostgreSQL schema
-  - **Separate Database** - Each tenant has own physical database
+    - **Shared Row** - All tenants share tables; filter by `tenant_id` column via SQL rewriting
+    - **Separate Table** - Each tenant has own tables (e.g., `user_001`, `user_002`)
+    - **Separate Schema** - Each tenant has own PostgreSQL schema
+    - **Separate Database** - Each tenant has own physical database
 - **SQL Rewriting** - Transparent tenant context injection
 - **CDC Pipeline** - Change data capture for cross-tenant sync
 - **Encryption/Masking/Audit** - Built into sharding layer
@@ -84,57 +84,15 @@ The system follows a plugin composition pattern. The binary entry point in `crat
 ```
 summerrs-admin/
 ├── crates/
-│   ├── app/                          # Application entry (main.rs)
+│   ├── app/                          # Application entry
 │   ├── summer-system/                # Business modules: RBAC, CRUD, Socket.IO
-│   ├── summer-system/model/          # Database entity models
 │   ├── summer-auth/                  # JWT authentication & authorization
 │   ├── summer-ai/                    # AI Gateway (LLM Relay)
-│   │   ├── core/                     #   Protocol adapters (40+ providers)
-│   │   ├── relay/                    #   Request pipeline, streaming, tracking
-│   │   ├── model/                    #   Database entities (channels, accounts, billing)``
-│   │   ├── admin/                    #   Admin APIs (channel/model/quota management)
-│   │   └── billing/                  #   Three-phase billing engine
-│   ├── summer-admin-macros/          # Procedural macros (#[no_auth], #[public])
-│   ├── summer-common/                # Shared types, errors, utilities
-│   ├── summer-domain/                # Domain abstractions & interfaces
 │   ├── summer-sharding/              # Database sharding middleware
 │   ├── summer-sql-rewrite/           # SQL rewriting engine
-│   ├── summer-mcp/                   # MCP (Model Context Protocol) server
-│   └── summer-plugins/               # Plugin implementations (S3, IP, etc.)
-├── config/                           # Environment-specific TOML configs
-├── sql/                              # Database schema definitions
-│   ├── sys/                          #   System domain (users, roles, menus)
-│   ├── tenant/                       #   Multi-tenant domain
-│   └── migration/                    #   Migration scripts
-├── locales/                          # i18n translation files (zh/en)
-├── build-tools/                      # Pre-commit hooks & check scripts
-└── skills/                           # AI skill references (Rig, MCP workflows)
+│   ├── summer-mcp/                   # MCP server
+│   └── summer-plugins/               # Plugin implementations
+├── config/                           # Environment configs
+├── sql/                              # Database schemas
+└── docs/                             # Project documentation
 ```
-
-### Workspace Crates
-
-| Crate | Responsibility | Core Exports |
-|-------|---------------|--------------|
-| app | Assembly root - wires all plugins, defines main and global exception handler | Application bootstrap, routing layer |
-| summer-auth | Authentication & authorization - JWT lifecycle, session management, permission bitmaps, middleware | SummerAuthPlugin, PathAuthBuilder, LoginUser extractor |
-| summer-sharding | Database sharding engine - SQL parsing, routing algorithms, cross-shard merging, CDC pipeline | SummerShardingPlugin, sharding algorithms, encryption/masking/audit |
-| summer-sql-rewrite | SQL rewriting pipeline - tenant row-level security injection, predicate rewriting | SummerSqlRewritePlugin, rewrite registry |
-| summer-system | Business domain - all backend routes, services, Socket.IO handlers, background jobs | RBAC, user/role/menu CRUD, file management, monitoring |
-| summer-ai | AI Gateway - 40+ provider aggregation, multi-protocol ingress, three-phase billing, auto-failover | SummerAiRelayPlugin, SummerAiBillingPlugin, adapters, billing engine |
-| summer-ai/core | Protocol adapter layer - ZST adapters, Dispatcher, wire format conversion | Adapter trait, AdapterDispatcher, 40+ protocol implementations |
-| summer-ai/relay | Request pipeline - routing, auth, billing, retry, streaming, tracking | Pipeline, ChannelStore, StreamDriver, TrackingService |
-| summer-ai/model | AI data models - channels, accounts, pricing, request logs, billing records | Channel, ChannelAccount, RequestLog, QuotaTransaction |
-| summer-ai/admin | AI admin APIs - channel/model/quota/user quota management | ChannelService, ModelConfigService, UserQuotaService |
-| summer-ai/billing | Three-phase billing - Reserve → Settle → Refund atomic charging | BillingService, PriceResolver, CostBreakdown |
-| summer-mcp | MCP server - schema discovery, code generation, menu/dictionary tools, prompt workflows | McpPlugin, AdminMcpServer, table tools, generators |
-| summer-admin-macros | Procedural macros - declarative auth, operation logging, rate limiting | #[login], #[has_perm], #[log], #[rate_limit] |
-| summer-plugins | Utility plugins - S3 storage, IP geolocation, log batch collection, background tasks, entity sync | S3Plugin, Ip2RegionPlugin, BackgroundTaskPlugin |
-| summer-common | Shared infrastructure - error types, request/response helpers, rate limit engine, i18n, crypto utils | ApiResult, RateLimitEngine, file_util |
-| summer-domain | Domain primitives - menu and dictionary type definitions shared across crates | Menu tree, dictionary enums |
-| summer-system-model | Database entity models - SeaORM entities, DTOs, and VOs for system tables | Generated entity structs |
-
-## License
-
-See [LICENSE](LICENSE) for details.
-
-See [LICENSE](LICENSE) for details.
