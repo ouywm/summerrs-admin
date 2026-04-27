@@ -1,0 +1,15 @@
+[package]
+edition = "2024"
+name = "summer-ai"
+version = "0.0.1"
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+summer = { workspace = true }
+summer-ai-admin = { workspace = true }
+summer-ai-billing = { workspace = true }
+summer-ai-core = { workspace = true }
+summer-ai-model = { workspace = true }
+summer-ai-relay = { workspace = true }
+tracing = { workspace = true }

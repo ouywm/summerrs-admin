@@ -1,0 +1,22 @@
+[package]
+edition = "2024"
+name = "summer-ai-billing"
+version = "0.0.1"
+
+[dependencies]
+async-trait = { workspace = true }
+bigdecimal = { workspace = true }
+chrono = { workspace = true }
+sea-orm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+summer = { workspace = true }
+summer-ai-core = { workspace = true }
+summer-ai-model = { workspace = true }
+summer-plugins = { workspace = true }
+summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+test-support = []

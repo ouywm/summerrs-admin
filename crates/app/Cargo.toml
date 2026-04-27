@@ -23,6 +23,7 @@ summer-web = { workspace = true, features = [
     "socket_io",
 ] }
 
+summer-ai = { workspace = true }
 summer-auth = { workspace = true }
 summer-mcp = { workspace = true }
 summer-plugins = { workspace = true }

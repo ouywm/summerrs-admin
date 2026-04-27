@@ -41,6 +41,10 @@ session_ttl_seconds = 86400
 enable_logging = true
 uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin}"
 
+# [summer-ai] section 先不放——P3 walking skeleton 阶段 plugin 不读 config，
+# 上游 endpoint 和 API key 全部从 env 读（OPENAI_BASE_URL / OPENAI_API_KEY）。
+# P4 DB 化时再引入配置项（channel_refresh_secs、request_timeout_secs 等）。
+
 [summer-sharding]
 enabled = true
 

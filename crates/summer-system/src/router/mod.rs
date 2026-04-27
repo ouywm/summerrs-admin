@@ -4,6 +4,7 @@ pub mod monitor;
 pub mod online;
 pub mod operation_log;
 pub mod public_file;
+pub mod rig_chat;
 pub mod sys_config;
 pub mod sys_config_group;
 pub mod sys_dict;
@@ -31,6 +32,7 @@ pub fn admin_router() -> Router {
     let router = online::routes(router);
     let router = operation_log::routes(router);
     let router = public_file::routes(router);
+    let router = rig_chat::routes(router);
     let router = sys_config::routes(router);
     let router = sys_config_group::routes(router);
     let router = sys_dict::routes(router);

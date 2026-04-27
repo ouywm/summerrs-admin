@@ -1,6 +1,9 @@
 use axum_client_ip::ClientIpSource;
 use summer::App;
 use summer::auto_config;
+use summer_ai::{SummerAiBillingPlugin, SummerAiRelayPlugin};
+use summer_auth::plugin::SummerAuthPlugin;
+use summer_auth::{PathAuthBuilder, SummerAuthConfigurator};
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
@@ -9,17 +12,14 @@ use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlu
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
 use summer_sharding::SummerShardingPlugin;
+use summer_sql_rewrite::SummerSqlRewritePlugin;
+use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 use summer_web::LayerConfigurator;
 use summer_web::WebConfigurator;
 use summer_web::WebPlugin;
 use summer_web::axum::body::Body;
 use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
-
-use summer_auth::plugin::SummerAuthPlugin;
-use summer_auth::{PathAuthBuilder, SummerAuthConfigurator};
-use summer_sql_rewrite::SummerSqlRewritePlugin;
-use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 
 // 初始化 rust-i18n（编译期加载 `locales/` 下的翻译文件到二进制）
 rust_i18n::i18n!("../../locales", fallback = "en");
@@ -31,7 +31,10 @@ fn auth_path_config() -> PathAuthBuilder {
     // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/login")`
     // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/refresh")`
     // - `.exclude("/public/file/**")`
-    PathAuthBuilder::new().include("/**")
+    //
+    // `for_group(summer_system::system_group())` —— JWT AuthLayer 只套到 summer-system crate 下的 handler 上，
+    // relay / mcp 等其他 group 的路由不会被它拦。
+    PathAuthBuilder::for_group(summer_system::system_group()).include("/**")
 }
 
 #[auto_config(JobConfigurator, WebConfigurator)]
@@ -53,6 +56,8 @@ async fn main() {
         .add_plugin(BackgroundTaskPlugin)
         .add_plugin(LogBatchCollectorPlugin)
         .add_plugin(McpPlugin)
+        .add_plugin(SummerAiRelayPlugin)
+        .add_plugin(SummerAiBillingPlugin)
         .auth_configure(auth_path_config())
         .add_router_layer(|router| {
             router

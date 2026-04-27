@@ -67,6 +67,8 @@ impl quote::ToTokens for BusinessType {
 #[derive(Debug)]
 pub struct LogArgs {
     /// 业务模块（必填）
+    /// TODO: 当前 `module` 同时承载了类似 `ai/渠道管理` 的命名空间信息。
+    /// 后续如需更稳定地按域筛选/统计，应该新增独立 `domain` 字段，而不是继续混用在 `module` 中。
     pub module: String,
     /// 操作描述（必填）
     pub action: String,

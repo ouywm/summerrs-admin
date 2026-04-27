@@ -1,0 +1,43 @@
+[package]
+edition = "2024"
+name = "summer-ai-admin"
+version = "0.0.1"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum-client-ip = { workspace = true, features = [
+    "connect-info",
+    "serde",
+    "forwarded-header",
+] }
+base64 = { workspace = true }
+bigdecimal = { workspace = true, features = ["serde"] }
+chrono = { workspace = true, features = ["serde"] }
+futures = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+schemars = { workspace = true, features = ["derive", "chrono04"] }
+sea-orm = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+summer = { workspace = true }
+summer-admin-macros = { workspace = true }
+summer-ai-core = { workspace = true }
+summer-ai-model = { workspace = true }
+summer-auth = { workspace = true }
+summer-common = { workspace = true }
+summer-plugins = { workspace = true }
+summer-redis = { workspace = true }
+summer-sea-orm = { workspace = true, features = [
+    "postgres",
+    "rustls",
+    "with-web",
+    "with-web-openapi",
+] }
+summer-system-model = { workspace = true }
+summer-web = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+validator = { workspace = true, features = ["derive"] }

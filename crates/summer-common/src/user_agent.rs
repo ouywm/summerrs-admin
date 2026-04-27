@@ -13,13 +13,17 @@ pub struct UserAgentInfo {
 }
 
 impl UserAgentInfo {
-    /// 从 HeaderMap 提取并解析 User-Agent
-    pub fn from_headers(headers: &HeaderMap) -> Self {
-        let raw = headers
+    /// 从 HeaderMap 提取原始 User-Agent，缺失或非法时返回 None。
+    pub fn raw_optional_from_headers(headers: &HeaderMap) -> Option<String> {
+        headers
             .get("user-agent")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("Unknown")
-            .to_string();
+            .map(|v| v.to_string())
+    }
+
+    /// 从 HeaderMap 提取并解析 User-Agent
+    pub fn from_headers(headers: &HeaderMap) -> Self {
+        let raw = Self::raw_optional_from_headers(headers).unwrap_or_else(|| "Unknown".to_string());
 
         Self::parse(raw)
     }
