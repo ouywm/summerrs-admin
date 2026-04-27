@@ -1,5 +1,7 @@
 [logger]
+file = { enable = true }
 level = "debug"
+pretty_backtrace = true
 
 [web]
 connect_info = true

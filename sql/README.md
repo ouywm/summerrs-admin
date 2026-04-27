@@ -8,6 +8,7 @@
 - `sql/tenant/`：租户控制面（租户主表、租户数据源/隔离元数据、租户成员关系等）
 - `sql/biz/`：B/C 端业务账号与业务域
 - `sql/ai/`：AI relay / gateway / control-plane
+  - 已按业务域继续拆为 `routing/`、`requests/`、`billing/`、`tenancy/`、`governance/`、`guardrails/`、`storage/`、`platform/`、`operations/`
 - `sql/migration/`：一次性迁移、修复、时区调整脚本
 
 补充目录：
@@ -26,7 +27,7 @@
 1. `sql/sys/`
 2. `sql/tenant/`
 3. `sql/biz/`
-4. `sql/ai/`
+4. `sql/ai/`（先看 `sql/ai/README.md` 再进入子目录）
 5. 按需导入 `sql/sys/menu_data_all.sql`
 6. 仅在老库改造时执行 `sql/migration/`
 

@@ -32,9 +32,12 @@ pub async fn rig_chat_stream(
     Json(dto): Json<RigChatStreamRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let stream = stream! {
+        let api_key = std::env::var("RIG_OPENAI_API_KEY").unwrap_or_default();
+        let base_url = std::env::var("RIG_OPENAI_BASE_URL").unwrap_or_default();
+
         let client = match openai::CompletionsClient::builder()
-            .api_key("sk-TXFeLtWwzMTPoFJYY2JTXyTkFIAai9zFtMs1I1LzRhTwHx94")
-            .base_url("https://sin.ioll.pp.ua/v1")
+            .api_key(api_key)
+            .base_url(base_url)
             .build() {
                 Ok(client) => client,
                 Err(error) => {
