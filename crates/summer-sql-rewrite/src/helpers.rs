@@ -183,10 +183,8 @@ pub fn replace_table_qualified(
             }
         }
         Statement::Delete(delete) => rewrite_delete(delete, from_table, to_table),
-        Statement::AlterTable { name, .. } => {
-            if from_table.matches_object_name(name) {
-                *name = to_table.to_object_name();
-            }
+        Statement::AlterTable { name, .. } if from_table.matches_object_name(name) => {
+            *name = to_table.to_object_name();
         }
         Statement::Truncate { table_names, .. } => {
             for table in table_names {
@@ -338,10 +336,8 @@ fn rewrite_table_factor(
     to_table: &QualifiedTableName,
 ) {
     match factor {
-        TableFactor::Table { name, .. } => {
-            if from_table.matches_object_name(name) {
-                *name = to_table.to_object_name();
-            }
+        TableFactor::Table { name, .. } if from_table.matches_object_name(name) => {
+            *name = to_table.to_object_name();
         }
         TableFactor::Derived { subquery, .. } => rewrite_query(subquery, from_table, to_table),
         TableFactor::NestedJoin {
