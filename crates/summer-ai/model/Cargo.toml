@@ -6,6 +6,7 @@ version = "0.0.1"
 [dependencies]
 async-trait = { workspace = true }
 axum-valid = { workspace = true }
+bigdecimal = { workspace = true, features = ["serde"] }
 chrono = { workspace = true, features = ["serde"] }
 ipnetwork = { workspace = true, features = ["serde"] }
 num-traits = "0.2"
@@ -28,4 +29,5 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_repr.workspace = true
 summer-common = { workspace = true }
+summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
 validator = { workspace = true, features = ["derive"] }

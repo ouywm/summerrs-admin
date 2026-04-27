@@ -127,6 +127,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             audio: None,
+            native_content_blocks: None,
             options: None,
         }
     }
@@ -188,6 +189,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             audio: None,
+            native_content_blocks: None,
             options: None,
         };
         let req = req_with(vec![msg], Some(100));

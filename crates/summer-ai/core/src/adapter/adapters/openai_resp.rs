@@ -8,7 +8,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, Header
 use serde_json::Value;
 
 use crate::adapter::{
-    Adapter, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType, WebRequestData,
+    Adapter, AdapterKind, AuthStrategy, CostProfile, ServiceType, WebRequestData,
 };
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
@@ -33,22 +33,14 @@ use crate::types::{
 pub struct OpenAIRespAdapter;
 
 impl OpenAIRespAdapter {
-    pub const API_KEY_DEFAULT_ENV_NAME: &'static str = "OPENAI_API_KEY";
     const BASE_URL: &'static str = "https://api.openai.com/v1/";
 }
 
 impl Adapter for OpenAIRespAdapter {
     const KIND: AdapterKind = AdapterKind::OpenAIResp;
-    const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
     fn default_endpoint() -> Option<Endpoint> {
         Some(Endpoint::from_static(Self::BASE_URL))
-    }
-
-    fn capabilities() -> Capabilities {
-        let mut caps = Capabilities::openai_like();
-        caps.reasoning = true;
-        caps
     }
 
     fn auth_strategy() -> AuthStrategy {
@@ -64,8 +56,6 @@ impl Adapter for OpenAIRespAdapter {
         service: ServiceType,
         req: &ChatRequest,
     ) -> AdapterResult<WebRequestData> {
-        Self::validate_chat_request(req)?;
-
         let stream = match service {
             ServiceType::Responses => false,
             ServiceType::ResponsesStream => true,
@@ -155,6 +145,9 @@ impl Adapter for OpenAIRespAdapter {
                     kind: response.error.as_ref().and_then(|e| e.code.clone()),
                 })]
             }
+            OpenAIResponsesStreamEvent::ReasoningSummaryTextDelta { delta, .. } => {
+                vec![ChatStreamEvent::ReasoningDelta { text: delta }]
+            }
             OpenAIResponsesStreamEvent::Error { code, message, .. } => {
                 vec![ChatStreamEvent::Error(StreamError {
                     message,
@@ -166,6 +159,7 @@ impl Adapter for OpenAIRespAdapter {
             | OpenAIResponsesStreamEvent::ContentPartDone { .. }
             | OpenAIResponsesStreamEvent::OutputItemDone { .. }
             | OpenAIResponsesStreamEvent::FunctionCallArgumentsDone { .. }
+            | OpenAIResponsesStreamEvent::ReasoningSummaryTextDone { .. }
             | OpenAIResponsesStreamEvent::ResponseIncomplete { .. } => Vec::new(),
         })
     }
@@ -596,6 +590,7 @@ fn responses_response_to_chat_response(resp: OpenAIResponsesResponse) -> ChatRes
         tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
         tool_call_id: None,
         audio: None,
+        native_content_blocks: None,
         options: None,
     };
 

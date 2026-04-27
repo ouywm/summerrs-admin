@@ -18,7 +18,6 @@ CREATE TABLE ai.channel (
     model_mapping       JSONB           NOT NULL DEFAULT '{}'::jsonb,
     channel_group       VARCHAR(64)     NOT NULL DEFAULT 'default',
     endpoint_scopes     JSONB           NOT NULL DEFAULT '["chat"]'::jsonb,
-    endpoint_protocols  JSONB           NOT NULL DEFAULT '{}'::jsonb,
     capabilities        JSONB           NOT NULL DEFAULT '[]'::jsonb,
     weight              INT             NOT NULL DEFAULT 1 CHECK (weight >= 1),
     priority            INT             NOT NULL DEFAULT 0,
@@ -54,15 +53,14 @@ CREATE INDEX idx_ai_channel_deleted_at ON ai.channel (deleted_at);
 COMMENT ON TABLE ai.channel IS 'AI 渠道表（描述上游 provider 端点，不直接承载密钥）';
 COMMENT ON COLUMN ai.channel.id IS '渠道ID';
 COMMENT ON COLUMN ai.channel.name IS '渠道名称（如：OpenAI官方、DeepSeek公网代理）';
-COMMENT ON COLUMN ai.channel.channel_type IS '渠道类型：1=OpenAI 3=Anthropic 14=Azure 15=Baidu 17=Ali 24=Gemini 28=Ollama';
-COMMENT ON COLUMN ai.channel.vendor_code IS '供应商编码（对应 ai.vendor.vendor_code）';
+COMMENT ON COLUMN ai.channel.channel_type IS '渠道类型：1=OpenAI 2=Anthropic 3=Azure 4=Baidu 5=Ali 6=Gemini 7=Ollama';
+COMMENT ON COLUMN ai.channel.vendor_code IS '供应商编码（对应 ai.vendor.vendor_code)';
 COMMENT ON COLUMN ai.channel.base_url IS '上游 API 基础地址';
 COMMENT ON COLUMN ai.channel.status IS '状态：1=启用 2=手动禁用 3=自动禁用 4=归档';
 COMMENT ON COLUMN ai.channel.models IS '支持的模型列表（JSON 数组，如 ["gpt-4o","gpt-4o-mini"]）';
 COMMENT ON COLUMN ai.channel.model_mapping IS '模型名映射（JSON，如 {"gpt-4": "gpt-4-turbo"}）';
 COMMENT ON COLUMN ai.channel.channel_group IS '渠道分组（用户分组命中后按此分组做路由）';
 COMMENT ON COLUMN ai.channel.endpoint_scopes IS '该渠道支持的 endpoint 范围（JSON 数组，如 ["chat","responses","embeddings"]）';
-COMMENT ON COLUMN ai.channel.endpoint_protocols IS 'endpoint 到协议/风味的显式映射（JSON，如 {"chat":{"protocol":"openai","flavor":"native"}}）';
 COMMENT ON COLUMN ai.channel.capabilities IS '渠道能力标签（JSON 数组，如 ["vision","tool_call","reasoning"]）';
 COMMENT ON COLUMN ai.channel.weight IS '路由权重（同优先级内加权随机）';
 COMMENT ON COLUMN ai.channel.priority IS '路由优先级（越大越优先）';

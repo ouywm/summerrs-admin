@@ -11,14 +11,14 @@
 //! AuthLayer 挂在 `"summer-system"` group 上，不会拦到本 handler。
 
 use summer_ai_billing::{BillingService, PriceResolver};
-use summer_ai_core::{ChatRequest, EndpointScope};
+use summer_ai_core::ChatRequest;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::post;
 
-use crate::auth::{AiToken, ensure_endpoint_scope_allowed};
+use crate::auth::AiToken;
 use crate::convert::ingress::{IngressFormat, OpenAIIngress};
 use crate::error::OpenAIResult;
 use crate::extract::RelayRequestMeta;
@@ -42,8 +42,6 @@ pub async fn chat_completions(
     meta: RelayRequestMeta,
     Json(request): Json<ChatRequest>,
 ) -> OpenAIResult<Response> {
-    ensure_endpoint_scope_allowed(&token, EndpointScope::Chat)?;
-
     let logical_model = request.model.clone();
     let is_stream = request.stream;
     let client_req_snapshot = serde_json::to_value(&request).ok();

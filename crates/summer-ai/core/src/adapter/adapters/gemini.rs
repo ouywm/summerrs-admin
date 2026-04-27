@@ -15,7 +15,7 @@ use bytes::Bytes;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 
 use crate::adapter::{
-    Adapter, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType, WebRequestData,
+    Adapter, AdapterKind, AuthStrategy, CostProfile, ServiceType, WebRequestData,
 };
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
@@ -34,30 +34,14 @@ use crate::types::{
 pub struct GeminiAdapter;
 
 impl GeminiAdapter {
-    pub const API_KEY_DEFAULT_ENV_NAME: &'static str = "GEMINI_API_KEY";
     const BASE_URL: &'static str = "https://generativelanguage.googleapis.com/v1beta/";
 }
 
 impl Adapter for GeminiAdapter {
     const KIND: AdapterKind = AdapterKind::Gemini;
-    const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
     fn default_endpoint() -> Option<Endpoint> {
         Some(Endpoint::from_static(Self::BASE_URL))
-    }
-
-    fn capabilities() -> Capabilities {
-        Capabilities {
-            streaming: true,
-            tools: true,
-            tool_choice: true,
-            multimodal_input: true,
-            reasoning: true,
-            response_format: true,
-            multi_choice: true,
-            prompt_caching: true,
-            parallel_tool_calls: true,
-        }
     }
 
     fn auth_strategy() -> AuthStrategy {
@@ -73,8 +57,6 @@ impl Adapter for GeminiAdapter {
         _service: ServiceType,
         req: &ChatRequest,
     ) -> AdapterResult<WebRequestData> {
-        Self::validate_chat_request(req)?;
-
         let method = if req.stream {
             "streamGenerateContent"
         } else {
@@ -513,6 +495,7 @@ fn gemini_candidate_to_choice(
             },
             tool_call_id: None,
             audio: None,
+            native_content_blocks: None,
             options: None,
         },
         logprobs: None,
@@ -812,6 +795,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 audio: None,
+                native_content_blocks: None,
                 options: None,
             }],
         );
@@ -846,6 +830,7 @@ mod tests {
                     }]),
                     tool_call_id: None,
                     audio: None,
+                    native_content_blocks: None,
                     options: None,
                 },
                 ChatMessage::tool_response("call_1", r#"{"temp":"72F"}"#),
@@ -883,6 +868,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 audio: None,
+                native_content_blocks: None,
                 options: None,
             }],
         );

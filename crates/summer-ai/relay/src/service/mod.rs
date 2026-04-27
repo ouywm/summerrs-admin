@@ -11,5 +11,6 @@ pub mod chat;
 pub mod cooldown;
 pub mod key_picker;
 pub mod model_service;
+pub mod oauth;
 pub mod stream_driver;
 pub mod tracking;

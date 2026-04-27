@@ -255,7 +255,6 @@ mod tests {
             remain_quota: 1000,
             group_code_override: String::new(),
             allowed_models: Vec::new(),
-            allowed_endpoint_scopes: Vec::new(),
         }
     }
 

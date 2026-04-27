@@ -278,12 +278,16 @@ fn append_claude_message(
                 tool_call_id: None,
                 reasoning_content: None,
                 audio: None,
+                native_content_blocks: None,
                 options: None,
             });
             return Ok(());
         }
         ClaudeContent::Blocks(blocks) => blocks,
     };
+    let native_content_blocks = should_preserve_native_claude_blocks(&blocks)
+        .then(|| serde_json::to_value(&blocks).ok())
+        .flatten();
 
     // 分类收集
     let mut text_buf = String::new();
@@ -294,14 +298,7 @@ fn append_claude_message(
     for block in blocks {
         match block {
             ClaudeContentBlock::Text { text, .. } => {
-                if parts.is_empty() {
-                    if !text_buf.is_empty() {
-                        text_buf.push('\n');
-                    }
-                    text_buf.push_str(&text);
-                } else {
-                    parts.push(ContentPart::Text { text });
-                }
+                append_text_fragment(&mut text_buf, &mut parts, text);
             }
             ClaudeContentBlock::Image { source, .. } => {
                 // text_buf 里已有文本 → 提升成 Parts 混合
@@ -315,6 +312,9 @@ fn append_claude_message(
                 });
             }
             ClaudeContentBlock::ToolUse {
+                id, name, input, ..
+            }
+            | ClaudeContentBlock::ServerToolUse {
                 id, name, input, ..
             } => {
                 let arguments =
@@ -335,9 +335,18 @@ fn append_claude_message(
                 let body = claude_tool_result_to_string(content)?;
                 tool_results.push((tool_use_id, body));
             }
+            ClaudeContentBlock::SearchResult { .. }
+            | ClaudeContentBlock::WebSearchToolResult { .. }
+            | ClaudeContentBlock::WebFetchToolResult { .. }
+            | ClaudeContentBlock::CodeExecutionToolResult { .. }
+            | ClaudeContentBlock::BashCodeExecutionToolResult { .. }
+            | ClaudeContentBlock::TextEditorCodeExecutionToolResult { .. }
+            | ClaudeContentBlock::ToolSearchToolResult { .. }
+            | ClaudeContentBlock::ContainerUpload { .. } => {}
             ClaudeContentBlock::Thinking { .. }
             | ClaudeContentBlock::RedactedThinking { .. }
             | ClaudeContentBlock::Document { .. }
+            | ClaudeContentBlock::ToolReference { .. }
             | ClaudeContentBlock::Unknown => {
                 // 暂时忽略（需要 Claude 原生 adapter 配合才有意义；Unknown 是未知 block 的兜底）
             }
@@ -356,6 +365,7 @@ fn append_claude_message(
             tool_call_id: Some(tool_use_id),
             reasoning_content: None,
             audio: None,
+            native_content_blocks: None,
             options: None,
         });
     }
@@ -389,6 +399,7 @@ fn append_claude_message(
         },
         tool_call_id: None,
         audio: None,
+        native_content_blocks,
         options: None,
     });
     Ok(())
@@ -404,6 +415,17 @@ fn claude_image_source_to_url(source: ClaudeImageSource) -> ImageUrl {
     ImageUrl { url, detail: None }
 }
 
+fn append_text_fragment(text_buf: &mut String, parts: &mut Vec<ContentPart>, text: String) {
+    if parts.is_empty() {
+        if !text_buf.is_empty() {
+            text_buf.push('\n');
+        }
+        text_buf.push_str(&text);
+    } else {
+        parts.push(ContentPart::Text { text });
+    }
+}
+
 /// `tool_result.content` 的两种形态 → canonical `content` 字符串。
 fn claude_tool_result_to_string(content: Option<ClaudeToolResultContent>) -> AdapterResult<String> {
     match content {
@@ -414,6 +436,33 @@ fn claude_tool_result_to_string(content: Option<ClaudeToolResultContent>) -> Ada
             serde_json::to_string(&blocks).map_err(AdapterError::SerializeRequest)
         }
     }
+}
+
+fn should_preserve_native_claude_blocks(blocks: &[ClaudeContentBlock]) -> bool {
+    blocks.iter().any(|block| match block {
+        ClaudeContentBlock::Text { citations, .. } => {
+            citations.as_ref().is_some_and(|v| !v.is_empty())
+        }
+        ClaudeContentBlock::ToolUse { caller, .. } => caller.is_some(),
+        ClaudeContentBlock::Thinking { signature, .. } => signature.is_some(),
+        ClaudeContentBlock::ToolResult { content, .. } => {
+            matches!(content, Some(ClaudeToolResultContent::Blocks(_)))
+        }
+        ClaudeContentBlock::RedactedThinking { .. }
+        | ClaudeContentBlock::Document { .. }
+        | ClaudeContentBlock::SearchResult { .. }
+        | ClaudeContentBlock::ServerToolUse { .. }
+        | ClaudeContentBlock::WebSearchToolResult { .. }
+        | ClaudeContentBlock::WebFetchToolResult { .. }
+        | ClaudeContentBlock::CodeExecutionToolResult { .. }
+        | ClaudeContentBlock::BashCodeExecutionToolResult { .. }
+        | ClaudeContentBlock::TextEditorCodeExecutionToolResult { .. }
+        | ClaudeContentBlock::ToolSearchToolResult { .. }
+        | ClaudeContentBlock::ContainerUpload { .. } => true,
+        ClaudeContentBlock::Image { .. }
+        | ClaudeContentBlock::ToolReference { .. }
+        | ClaudeContentBlock::Unknown => false,
+    })
 }
 
 /// Claude wire `ClaudeTool` → canonical `Tool`。
@@ -508,6 +557,23 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
         }
     };
 
+    // 原始 Claude blocks 若已保留，优先直接恢复，避免 search_result /
+    // web_search_tool_result / citations 等 provider-native 语义丢失。
+    if let Some(raw) = assistant.native_content_blocks.as_ref()
+        && let Ok(content_blocks) = serde_json::from_value::<Vec<ClaudeContentBlock>>(raw.clone())
+    {
+        return Ok(ClaudeResponse {
+            id,
+            kind: "message".to_string(),
+            role: "assistant".to_string(),
+            content: content_blocks,
+            model,
+            stop_reason: Some(finish_reason_to_stop_reason(finish_reason)),
+            stop_sequence: None,
+            usage: usage_to_claude(usage),
+        });
+    }
+
     // message.content + tool_calls → Vec<ClaudeContentBlock>
     let mut content_blocks: Vec<ClaudeContentBlock> = Vec::new();
 
@@ -516,6 +582,7 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
             content_blocks.push(ClaudeContentBlock::Text {
                 text,
                 cache_control: None,
+                citations: None,
             });
         }
     }
@@ -531,6 +598,7 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
                 name: tc.function.name,
                 input,
                 cache_control: None,
+                caller: None,
             });
         }
     }
@@ -997,6 +1065,56 @@ mod tests {
     }
 
     #[test]
+    fn server_tool_use_promoted_to_tool_calls_and_native_result_blocks_preserved() {
+        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 64,
+            "messages": [
+                {"role": "assistant", "content": [
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtu_1",
+                        "name": "web_search",
+                        "input": {"query": "weather"}
+                    },
+                    {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtu_1",
+                        "content": [
+                            {
+                                "type": "web_search_result",
+                                "encrypted_content": "enc",
+                                "title": "Weather",
+                                "url": "https://example.com"
+                            }
+                        ]
+                    },
+                    {"type": "container_upload", "file_id": "f_1"}
+                ]}
+            ]
+        }))
+        .unwrap();
+        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        assert_eq!(canonical.messages.len(), 1);
+
+        let assistant = &canonical.messages[0];
+        assert_eq!(assistant.role, Role::Assistant);
+        let tcs = assistant.tool_calls.as_ref().unwrap();
+        assert_eq!(tcs[0].id, "srvtu_1");
+        assert_eq!(tcs[0].function.name, "web_search");
+        assert_eq!(tcs[0].function.arguments, r#"{"query":"weather"}"#);
+        assert!(assistant.content.is_none());
+        let native = assistant
+            .native_content_blocks
+            .as_ref()
+            .expect("native Claude blocks should be preserved");
+        let arr = native.as_array().expect("native blocks should be an array");
+        assert_eq!(arr[0]["type"], "server_tool_use");
+        assert_eq!(arr[1]["type"], "web_search_tool_result");
+        assert_eq!(arr[2]["type"], "container_upload");
+    }
+
+    #[test]
     fn tool_result_splits_into_tool_message_and_user_remainder() {
         let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
             "model": "claude-sonnet-4-5",
@@ -1204,6 +1322,7 @@ mod tests {
                     }]),
                     tool_call_id: None,
                     audio: None,
+                    native_content_blocks: None,
                     options: None,
                 },
                 logprobs: None,

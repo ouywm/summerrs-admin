@@ -104,6 +104,16 @@ pub struct ChatMessage {
     /// assistant 的音频响应（gpt-4o-audio-preview 等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioResponse>,
+    /// provider-native 原始 content blocks。
+    ///
+    /// 当 canonical `content` / `tool_calls` / `reasoning_content` 无法完整表达上游
+    /// 的原始 block 语义时（例如 Claude 的 `search_result` / `web_search_tool_result`
+    /// / `container_upload` 等），保留整段原始 blocks 供同 provider 往返恢复或后续
+    /// 业务层结构化消费。
+    ///
+    /// 这是内部字段，不进入任何 wire payload。
+    #[serde(skip)]
+    pub native_content_blocks: Option<serde_json::Value>,
     /// Provider-agnostic 的 per-message 选项（目前是 prompt cache 意图）。
     ///
     /// 不进 OpenAI wire（OpenAI 无对应字段）；Claude ingress/adapter 负责
@@ -132,6 +142,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             audio: None,
+            native_content_blocks: None,
             options: None,
         }
     }
@@ -146,6 +157,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             audio: None,
+            native_content_blocks: None,
             options: None,
         }
     }
@@ -156,6 +168,11 @@ impl ChatMessage {
     /// 最后一个 content block 上，Anthropic 推荐做法）。其他 provider 暂忽略。
     pub fn with_cache_control(mut self, cc: CacheControl) -> Self {
         self.options = Some(MessageOptions::from(cc));
+        self
+    }
+
+    pub fn with_native_content_blocks(mut self, blocks: serde_json::Value) -> Self {
+        self.native_content_blocks = Some(blocks);
         self
     }
 
@@ -269,6 +286,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             audio: None,
+            native_content_blocks: None,
             options: None,
         };
         let value = serde_json::to_value(&msg).unwrap();
@@ -324,5 +342,13 @@ mod tests {
         let msg = ChatMessage::assistant("hello");
         let value = serde_json::to_value(&msg).unwrap();
         assert!(value.get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn native_content_blocks_skipped_in_serialize() {
+        let msg = ChatMessage::assistant("hello")
+            .with_native_content_blocks(serde_json::json!([{"type":"search_result"}]));
+        let value = serde_json::to_value(&msg).unwrap();
+        assert!(value.get("native_content_blocks").is_none());
     }
 }

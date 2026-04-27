@@ -357,7 +357,6 @@ mod tests {
                 remain_quota: 100,
                 group_code_override: String::new(),
                 allowed_models: Vec::new(),
-                allowed_endpoint_scopes: Vec::new(),
             },
             "/v1/chat/completions",
             IngressFormat::OpenAI,

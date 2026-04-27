@@ -12,6 +12,6 @@ pub mod extractor;
 pub mod store;
 
 pub use api_key_strategy::ApiKeyStrategy;
-pub use context::{AiTokenContext, ensure_endpoint_scope_allowed};
+pub use context::AiTokenContext;
 pub use extractor::AiToken;
 pub use store::{AiTokenStore, sha256_hex};

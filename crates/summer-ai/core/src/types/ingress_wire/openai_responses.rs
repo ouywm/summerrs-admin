@@ -1359,6 +1359,20 @@ pub enum OpenAIResponsesStreamEvent {
         response: OpenAIResponsesResponse,
         sequence_number: u64,
     },
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ReasoningSummaryTextDelta {
+        delta: String,
+        item_id: String,
+        output_index: u32,
+        summary_index: u32,
+    },
+    #[serde(rename = "response.reasoning_summary_text.done")]
+    ReasoningSummaryTextDone {
+        item_id: String,
+        output_index: u32,
+        summary_index: u32,
+        text: String,
+    },
     #[serde(rename = "error")]
     Error {
         code: Option<String>,

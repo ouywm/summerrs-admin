@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::future::Future;
 
 use crate::adapter::{
-    Adapter, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType, WebRequestData,
+    Adapter, AdapterKind, AuthStrategy, CostProfile, ServiceType, WebRequestData,
 };
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
@@ -32,20 +32,14 @@ use crate::types::{
 pub struct OpenAIAdapter;
 
 impl OpenAIAdapter {
-    pub const API_KEY_DEFAULT_ENV_NAME: &'static str = "OPENAI_API_KEY";
     const BASE_URL: &'static str = "https://api.openai.com/v1/";
 }
 
 impl Adapter for OpenAIAdapter {
     const KIND: AdapterKind = AdapterKind::OpenAI;
-    const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
     fn default_endpoint() -> Option<Endpoint> {
         Some(Endpoint::from_static(Self::BASE_URL))
-    }
-
-    fn capabilities() -> Capabilities {
-        Capabilities::openai_like()
     }
 
     fn auth_strategy() -> AuthStrategy {
@@ -61,7 +55,6 @@ impl Adapter for OpenAIAdapter {
         service: ServiceType,
         req: &ChatRequest,
     ) -> AdapterResult<WebRequestData> {
-        Self::validate_chat_request(req)?;
         shared::build_chat_request(target, service, req)
     }
 
@@ -95,14 +88,9 @@ pub struct OpenAICompatAdapter;
 
 impl Adapter for OpenAICompatAdapter {
     const KIND: AdapterKind = AdapterKind::OpenAICompat;
-    const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = None;
 
     fn default_endpoint() -> Option<Endpoint> {
         None
-    }
-
-    fn capabilities() -> Capabilities {
-        Capabilities::openai_like()
     }
 
     fn auth_strategy() -> AuthStrategy {
@@ -119,7 +107,6 @@ impl Adapter for OpenAICompatAdapter {
         service: ServiceType,
         req: &ChatRequest,
     ) -> AdapterResult<WebRequestData> {
-        Self::validate_chat_request(req)?;
         shared::build_chat_request(target, service, req)
     }
 

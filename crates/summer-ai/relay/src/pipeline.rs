@@ -68,7 +68,7 @@ use crate::auth::AiTokenContext;
 use crate::context::RelayContext;
 use crate::convert::ingress::{IngressConverter, IngressCtx, IngressFormat};
 use crate::error::{RelayError, RelayResult, RetryKind};
-use crate::service::channel_store::{Candidate, ChannelStore, build_service_target};
+use crate::service::channel_store::{Candidate, ChannelStore};
 use crate::service::chat;
 use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::{self, StreamOutcome};
@@ -198,13 +198,17 @@ where
 
         // ─── 2. to_canonical（用第一个候选的 ingress_ctx；canonical 是中性表达）
         let first = &candidates[0];
-        let first_target = match build_service_target(
-            &first.channel,
-            &first.account,
-            &first.selected_key,
-            &logical_model,
-            scope,
-        ) {
+        let first_target = match store
+            .build_service_target(
+                &http,
+                &first.channel,
+                &first.account,
+                &first.selected_key,
+                &logical_model,
+                scope,
+            )
+            .await
+        {
             Ok(t) => t,
             Err(e) => {
                 tracking.emit_with_attempts(
@@ -286,6 +290,7 @@ where
                 ctx,
                 candidates,
                 &logical_model,
+                store,
                 service,
                 canonical_req,
                 upstream_req_snapshot,
@@ -309,6 +314,7 @@ async fn execute_non_stream_with_retry<I>(
     mut ctx: RelayContext,
     candidates: Vec<Candidate>,
     logical_model: &str,
+    store: ChannelStore,
     service: summer_ai_core::ServiceType,
     canonical_req: summer_ai_core::ChatRequest,
     upstream_req_snapshot: Option<Value>,
@@ -330,13 +336,17 @@ where
         let attempt_start = Instant::now();
         let attempt_started_at = chrono::Utc::now().fixed_offset();
 
-        let target = match build_service_target(
-            &candidate.channel,
-            &candidate.account,
-            &candidate.selected_key,
-            logical_model,
-            EndpointScope::from(ctx.format),
-        ) {
+        let target = match store
+            .build_service_target(
+                &http,
+                &candidate.channel,
+                &candidate.account,
+                &candidate.selected_key,
+                logical_model,
+                EndpointScope::from(ctx.format),
+            )
+            .await
+        {
             Ok(t) => t,
             Err(e) => {
                 // target 构建错属 Fatal（例如 OAuth 未实装 / key 为空）

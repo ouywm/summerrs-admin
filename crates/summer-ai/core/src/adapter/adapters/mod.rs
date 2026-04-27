@@ -4,6 +4,7 @@ pub mod claude;
 pub mod gemini;
 pub mod openai;
 pub mod openai_resp;
+pub mod shared;
 
 pub use claude::ClaudeAdapter;
 pub use gemini::GeminiAdapter;

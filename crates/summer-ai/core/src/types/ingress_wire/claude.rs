@@ -102,9 +102,20 @@ pub enum ClaudeContent {
 
 /// Claude content block 的全部类型。
 ///
-/// `Unknown` 变体兜住官方后续新增的 block type（`server_tool_use` /
-/// `web_search_tool_result` / `container_upload` / `code_execution_result` 等）。
-/// `#[serde(other)]` 让反序列化不因未知 type 报错；converter 端遇到 Unknown 直接忽略。
+/// 支持所有官方类型，包括：
+/// - Text: 文本块（可选 citations）
+/// - Image: 图像块
+/// - ToolUse: 工具调用（可选 caller）
+/// - ToolResult: 工具结果
+/// - Thinking: 扩展思考
+/// - RedactedThinking: 被过滤的思考
+/// - Document: PDF/文档输入
+/// - SearchResult: 搜索结果块（新增）
+/// - ServerToolUse: 服务器工具调用（新增）
+/// - WebSearchToolResult: 网络搜索工具结果（新增）
+/// - CodeExecutionResult: 代码执行结果（新增）
+/// - ContainerUpload: 容器文件上传（新增）
+/// - Unknown: 未识别的类型（兜底）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClaudeContentBlock {
@@ -112,6 +123,8 @@ pub enum ClaudeContentBlock {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<Vec<TextCitation>>,
     },
     Image {
         source: ClaudeImageSource,
@@ -124,6 +137,8 @@ pub enum ClaudeContentBlock {
         input: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
     },
     ToolResult {
         tool_use_id: String,
@@ -147,6 +162,98 @@ pub enum ClaudeContentBlock {
         source: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<DocumentCitationsConfig>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    /// 搜索结果块（新增）。
+    SearchResult {
+        content: Vec<ClaudeContentBlock>,
+        source: String,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<Vec<TextCitation>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+    },
+    /// 服务器工具调用（新增）。
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
+    },
+    /// 网络搜索工具结果（新增）。
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: WebSearchToolResultContent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
+    },
+    /// 网络抓取工具结果（新增）。
+    WebFetchToolResult {
+        tool_use_id: String,
+        content: WebFetchToolResultContent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
+    },
+    /// 代码执行工具结果（新增）。
+    #[serde(rename = "code_execution_tool_result")]
+    CodeExecutionToolResult {
+        tool_use_id: String,
+        content: CodeExecutionToolResultContent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
+    },
+    /// Bash 代码执行工具结果（新增）。
+    #[serde(rename = "bash_code_execution_tool_result")]
+    BashCodeExecutionToolResult {
+        tool_use_id: String,
+        content: BashCodeExecutionToolResultContent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    /// 文本编辑器代码执行工具结果（新增）。
+    #[serde(rename = "text_editor_code_execution_tool_result")]
+    TextEditorCodeExecutionToolResult {
+        tool_use_id: String,
+        content: TextEditorCodeExecutionToolResultContent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    /// 工具搜索工具结果（新增）。
+    #[serde(rename = "tool_search_tool_result")]
+    ToolSearchToolResult {
+        tool_use_id: String,
+        content: ToolSearchToolResultContent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    /// 容器文件上传（新增）。
+    ContainerUpload {
+        file_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    /// 工具引用（通常嵌在 tool_search_tool_result.content.tool_references 里）。
+    ToolReference {
+        tool_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     /// 未识别的 block type（反序列化兜底）。
     ///
@@ -163,6 +270,198 @@ pub enum ClaudeContentBlock {
 pub enum ClaudeImageSource {
     Base64 { media_type: String, data: String },
     Url { url: String },
+}
+
+/// 文本引用（用于 citations）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TextCitation {
+    CharLocation {
+        cited_text: String,
+        document_index: u32,
+        document_title: String,
+        start_char_index: u32,
+        end_char_index: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_id: Option<String>,
+    },
+    PageLocation {
+        cited_text: String,
+        document_index: u32,
+        document_title: String,
+        start_page_number: u32,
+        end_page_number: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_id: Option<String>,
+    },
+    ContentBlockLocation {
+        cited_text: String,
+        document_index: u32,
+        document_title: String,
+        start_block_index: u32,
+        end_block_index: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_id: Option<String>,
+    },
+    WebSearchResultLocation {
+        cited_text: String,
+        encrypted_index: String,
+        title: String,
+        url: String,
+    },
+    SearchResultLocation {
+        cited_text: String,
+        end_block_index: u32,
+        search_result_index: u32,
+        source: String,
+        start_block_index: u32,
+        title: String,
+    },
+}
+
+/// 工具调用者（用于 ToolUse.caller）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolCaller {
+    Direct,
+    CodeExecution20250825 { tool_id: String },
+    CodeExecution20260120 { tool_id: String },
+}
+
+/// 网络搜索工具结果内容。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WebSearchToolResultContent {
+    WebSearchResult(Vec<WebSearchResultItem>),
+    Error(WebSearchToolResultError),
+}
+
+/// 文档引用配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentCitationsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// 网络搜索工具结果错误。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchToolResultError {
+    pub error_code: WebSearchToolErrorCode,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// 网络搜索结果项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchResultItem {
+    pub encrypted_content: String,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub kind: String, // "web_search_result"
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_age: Option<String>,
+}
+
+/// 网络搜索工具错误码。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchToolErrorCode {
+    InvalidToolInput,
+    Unavailable,
+    MaxUsesExceeded,
+    TooManyRequests,
+    QueryTooLong,
+    RequestTooLarge,
+}
+
+/// 网络抓取工具结果内容。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WebFetchToolResultContent {
+    Result(WebFetchResultBlock),
+    Error(WebFetchToolResultError),
+}
+
+/// 网络抓取工具结果错误。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebFetchToolResultError {
+    pub error_code: WebFetchToolErrorCode,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// 网络抓取结果块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebFetchResultBlock {
+    pub content: serde_json::Value,
+    pub retrieved_at: String,
+    #[serde(rename = "type")]
+    pub kind: String, // "web_fetch_result"
+    pub url: String,
+}
+
+/// 网络抓取工具错误码。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebFetchToolErrorCode {
+    InvalidToolInput,
+    UrlTooLong,
+    UrlNotAllowed,
+    UrlNotAccessible,
+    UnsupportedContentType,
+    TooManyRequests,
+    MaxUsesExceeded,
+    Unavailable,
+}
+
+/// 代码执行工具结果内容。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CodeExecutionToolResultContent {
+    Result(CodeExecutionResultBlock),
+    EncryptedResult(EncryptedCodeExecutionResultBlock),
+    Error(CodeExecutionToolResultError),
+}
+
+/// 代码执行工具结果错误。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeExecutionToolResultError {
+    pub error_code: CodeExecutionToolResultErrorCode,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// 代码执行结果块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeExecutionResultBlock {
+    pub content: Vec<CodeExecutionOutput>,
+    pub return_code: i32,
+    pub stderr: String,
+    pub stdout: String,
+    #[serde(rename = "type")]
+    pub kind: String, // "code_execution_result"
+}
+
+/// 加密代码执行结果块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncryptedCodeExecutionResultBlock {
+    pub content: Vec<CodeExecutionOutput>,
+    pub encrypted_stdout: String,
+    pub return_code: i32,
+    pub stderr: String,
+    #[serde(rename = "type")]
+    pub kind: String, // "encrypted_code_execution_result"
+}
+
+/// 代码执行工具结果错误码。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeExecutionToolResultErrorCode {
+    InvalidToolInput,
+    Unavailable,
+    TooManyRequests,
+    ExecutionTimeExceeded,
 }
 
 /// tool_result 的 content：字符串或多块。
@@ -219,6 +518,177 @@ pub struct ClaudeTool {
     /// custom tool 留空；built-in 平铺承载，wire 上与 `name` 同层。
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// 代码执行输出。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeExecutionOutput {
+    pub file_id: String,
+    #[serde(rename = "type")]
+    pub kind: String, // "code_execution_output"
+}
+
+/// Bash 代码执行工具结果内容。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BashCodeExecutionToolResultContent {
+    Result(BashCodeExecutionResultBlock),
+    Error(BashCodeExecutionToolResultError),
+}
+
+/// Bash 代码执行结果块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BashCodeExecutionResultBlock {
+    pub content: Vec<BashCodeExecutionOutput>,
+    pub return_code: i32,
+    pub stderr: String,
+    pub stdout: String,
+    #[serde(rename = "type")]
+    pub kind: String, // "bash_code_execution_result"
+}
+
+/// Bash 代码执行工具结果错误。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BashCodeExecutionToolResultError {
+    pub error_code: BashCodeExecutionToolResultErrorCode,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// Bash 代码执行输出。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BashCodeExecutionOutput {
+    pub file_id: String,
+    #[serde(rename = "type")]
+    pub kind: String, // "bash_code_execution_output"
+}
+
+/// Bash 代码执行工具结果错误码。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BashCodeExecutionToolResultErrorCode {
+    InvalidToolInput,
+    Unavailable,
+    TooManyRequests,
+    ExecutionTimeExceeded,
+    OutputFileTooLarge,
+}
+
+/// 文本编辑器代码执行工具结果内容。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TextEditorCodeExecutionToolResultContent {
+    ViewResult(TextEditorCodeExecutionViewResultBlock),
+    CreateResult(TextEditorCodeExecutionCreateResultBlock),
+    StrReplaceResult(TextEditorCodeExecutionStrReplaceResultBlock),
+    Error(TextEditorCodeExecutionToolResultError),
+}
+
+/// 文本编辑器代码执行工具结果错误。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextEditorCodeExecutionToolResultError {
+    pub error_code: TextEditorCodeExecutionToolResultErrorCode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// 文本编辑器 view 结果块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextEditorCodeExecutionViewResultBlock {
+    pub content: String,
+    pub file_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_lines: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_lines: Option<u32>,
+    #[serde(rename = "type")]
+    pub kind: String, // "text_editor_code_execution_view_result"
+}
+
+/// 文本编辑器 create 结果块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextEditorCodeExecutionCreateResultBlock {
+    pub is_file_update: bool,
+    #[serde(rename = "type")]
+    pub kind: String, // "text_editor_code_execution_create_result"
+}
+
+/// 文本编辑器 str_replace 结果块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextEditorCodeExecutionStrReplaceResultBlock {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_lines: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_lines: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_start: Option<u32>,
+    #[serde(rename = "type")]
+    pub kind: String, // "text_editor_code_execution_str_replace_result"
+}
+
+/// 文本编辑器代码执行工具错误码。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextEditorCodeExecutionToolResultErrorCode {
+    InvalidToolInput,
+    Unavailable,
+    TooManyRequests,
+    ExecutionTimeExceeded,
+    FileNotFound,
+}
+
+/// 工具搜索工具结果内容。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolSearchToolResultContent {
+    SearchResult(ToolSearchToolSearchResultBlock),
+    Error(ToolSearchToolResultError),
+}
+
+/// 工具搜索工具结果错误。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSearchToolResultError {
+    pub error_code: ToolSearchToolResultErrorCode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// 工具搜索结果块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSearchToolSearchResultBlock {
+    pub tool_references: Vec<ToolReferenceBlock>,
+    #[serde(rename = "type")]
+    pub kind: String, // "tool_search_tool_search_result"
+}
+
+/// 工具引用块。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolReferenceBlock {
+    pub tool_name: String,
+    #[serde(rename = "type")]
+    pub kind: String, // "tool_reference"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+/// 工具搜索工具错误码。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSearchToolResultErrorCode {
+    InvalidToolInput,
+    Unavailable,
+    TooManyRequests,
+    ExecutionTimeExceeded,
 }
 
 /// `tool_choice` 字段。
@@ -458,6 +928,7 @@ fn skip_if_false(v: &bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn minimal_request_roundtrip() {
@@ -653,10 +1124,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_content_block_type_falls_through_to_unknown_variant() {
-        // 官方新增的 block type（server_tool_use / web_search_tool_result /
-        // container_upload / code_execution_result 等）在本地 enum 未列出时，
-        // 反序列化应落到 `Unknown`，而不是报错。
+    fn new_content_block_types_deserialize_to_concrete_variants() {
+        // 这些新增 block 已经进入本地 enum：反序列化必须拿到具体 variant，
+        // 后续 adapter / ingress 才能按业务语义处理，而不是退回 Unknown。
         let b: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
             "type": "server_tool_use",
             "id": "srvtu_1",
@@ -664,7 +1134,7 @@ mod tests {
             "input": {"query": "weather"}
         }))
         .unwrap();
-        assert!(matches!(b, ClaudeContentBlock::Unknown));
+        assert!(matches!(b, ClaudeContentBlock::ServerToolUse { .. }));
 
         // 嵌在消息数组里也能正常跟其他 block 共存
         let blocks: Vec<ClaudeContentBlock> = serde_json::from_value(serde_json::json!([
@@ -675,7 +1145,301 @@ mod tests {
         .unwrap();
         assert_eq!(blocks.len(), 3);
         assert!(matches!(blocks[0], ClaudeContentBlock::Text { .. }));
-        assert!(matches!(blocks[1], ClaudeContentBlock::Unknown));
+        assert!(matches!(
+            blocks[1],
+            ClaudeContentBlock::ContainerUpload { .. }
+        ));
         assert!(matches!(blocks[2], ClaudeContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn docs_defined_tool_result_blocks_do_not_fall_back_to_unknown() {
+        let code_exec: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "code_execution_tool_result",
+            "tool_use_id": "srvtu_code",
+            "content": {
+                "type": "code_execution_result",
+                "content": [
+                    {"type": "code_execution_output", "file_id": "file_1"}
+                ],
+                "stdout": "ok",
+                "stderr": "",
+                "return_code": 0
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            code_exec,
+            ClaudeContentBlock::CodeExecutionToolResult { .. }
+        ));
+        let code_exec_json = serde_json::to_value(&code_exec).unwrap();
+        assert_eq!(code_exec_json["type"], "code_execution_tool_result");
+        assert_eq!(code_exec_json["content"]["type"], "code_execution_result");
+
+        let bash_exec: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "bash_code_execution_tool_result",
+            "tool_use_id": "srvtu_bash",
+            "content": {
+                "type": "bash_code_execution_result",
+                "content": [
+                    {"type": "bash_code_execution_output", "file_id": "file_2"}
+                ],
+                "stdout": "ls",
+                "stderr": "",
+                "return_code": 0
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            bash_exec,
+            ClaudeContentBlock::BashCodeExecutionToolResult { .. }
+        ));
+        let bash_exec_json = serde_json::to_value(&bash_exec).unwrap();
+        assert_eq!(bash_exec_json["type"], "bash_code_execution_tool_result");
+        assert_eq!(
+            bash_exec_json["content"]["type"],
+            "bash_code_execution_result"
+        );
+
+        let text_editor: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "text_editor_code_execution_tool_result",
+            "tool_use_id": "srvtu_edit",
+            "content": {
+                "type": "text_editor_code_execution_view_result",
+                "content": "fn main() {}",
+                "file_type": "text",
+                "start_line": 1,
+                "num_lines": 1,
+                "total_lines": 1
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            text_editor,
+            ClaudeContentBlock::TextEditorCodeExecutionToolResult { .. }
+        ));
+        let text_editor_json = serde_json::to_value(&text_editor).unwrap();
+        assert_eq!(
+            text_editor_json["type"],
+            "text_editor_code_execution_tool_result"
+        );
+        assert_eq!(
+            text_editor_json["content"]["type"],
+            "text_editor_code_execution_view_result"
+        );
+
+        let tool_search: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_search_tool_result",
+            "tool_use_id": "srvtu_search",
+            "content": {
+                "type": "tool_search_tool_search_result",
+                "tool_references": [
+                    {"type": "tool_reference", "tool_name": "web_search"}
+                ]
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            tool_search,
+            ClaudeContentBlock::ToolSearchToolResult { .. }
+        ));
+        let tool_search_json = serde_json::to_value(&tool_search).unwrap();
+        assert_eq!(tool_search_json["type"], "tool_search_tool_result");
+        assert_eq!(
+            tool_search_json["content"]["type"],
+            "tool_search_tool_search_result"
+        );
+
+        let web_fetch: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "srvtu_fetch",
+            "content": {
+                "type": "web_fetch_result",
+                "url": "https://example.com/doc",
+                "retrieved_at": "2026-04-26T12:00:00Z",
+                "content": {
+                    "type": "document",
+                    "title": "Example",
+                    "source": {
+                        "type": "text",
+                        "media_type": "text/plain",
+                        "data": "hello"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            web_fetch,
+            ClaudeContentBlock::WebFetchToolResult { .. }
+        ));
+        let web_fetch_json = serde_json::to_value(&web_fetch).unwrap();
+        assert_eq!(web_fetch_json["type"], "web_fetch_tool_result");
+        assert_eq!(web_fetch_json["content"]["type"], "web_fetch_result");
+    }
+
+    #[test]
+    fn document_and_text_citation_fields_roundtrip_from_docs() {
+        let document: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "document",
+            "title": "Example Doc",
+            "context": "snippet",
+            "citations": {"enabled": true},
+            "source": {
+                "type": "text",
+                "media_type": "text/plain",
+                "data": "hello"
+            }
+        }))
+        .unwrap();
+        let document_json = serde_json::to_value(&document).unwrap();
+        assert_eq!(document_json["title"], "Example Doc");
+        assert_eq!(document_json["context"], "snippet");
+        assert_eq!(document_json["citations"]["enabled"], true);
+
+        let text: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "text",
+            "text": "answer",
+            "citations": [{
+                "type": "char_location",
+                "cited_text": "answer",
+                "document_index": 0,
+                "document_title": "Example Doc",
+                "start_char_index": 0,
+                "end_char_index": 6,
+                "file_id": "file_123"
+            }]
+        }))
+        .unwrap();
+        let text_json = serde_json::to_value(&text).unwrap();
+        assert_eq!(text_json["citations"][0]["file_id"], "file_123");
+    }
+
+    #[test]
+    fn request_side_optional_tool_result_fields_from_docs_deserialize() {
+        let text_editor: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "text_editor_code_execution_tool_result",
+            "tool_use_id": "srvtu_edit",
+            "cache_control": {"type": "ephemeral"},
+            "content": {
+                "type": "text_editor_code_execution_view_result",
+                "content": "fn main() {}",
+                "file_type": "text"
+            }
+        }))
+        .unwrap();
+        let text_editor_json = serde_json::to_value(&text_editor).unwrap();
+        assert_eq!(text_editor_json["cache_control"]["type"], "ephemeral");
+        assert!(text_editor_json["content"].get("num_lines").is_none());
+
+        let tool_search: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_search_tool_result",
+            "tool_use_id": "srvtu_search",
+            "cache_control": {"type": "ephemeral"},
+            "content": {
+                "type": "tool_search_tool_search_result",
+                "tool_references": [{
+                    "type": "tool_reference",
+                    "tool_name": "web_search",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"}
+                }]
+            }
+        }))
+        .unwrap();
+        let tool_search_json = serde_json::to_value(&tool_search).unwrap();
+        assert_eq!(tool_search_json["cache_control"]["type"], "ephemeral");
+        assert_eq!(
+            tool_search_json["content"]["tool_references"][0]["cache_control"]["ttl"],
+            "1h"
+        );
+
+        let tool_search_error: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_search_tool_result",
+            "tool_use_id": "srvtu_search",
+            "content": {
+                "type": "tool_search_tool_result_error",
+                "error_code": "unavailable"
+            }
+        }))
+        .unwrap();
+        let tool_search_error_json = serde_json::to_value(&tool_search_error).unwrap();
+        assert_eq!(
+            tool_search_error_json["content"]["type"],
+            "tool_search_tool_result_error"
+        );
+
+        let web_search: ClaudeContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtu_web",
+            "cache_control": {"type": "ephemeral"},
+            "caller": {"type": "direct"},
+            "content": [{
+                "type": "web_search_result",
+                "encrypted_content": "enc",
+                "title": "Weather",
+                "url": "https://example.com"
+            }]
+        }))
+        .unwrap();
+        let web_search_json = serde_json::to_value(&web_search).unwrap();
+        assert_eq!(web_search_json["cache_control"]["type"], "ephemeral");
+        assert_eq!(web_search_json["caller"]["type"], "direct");
+    }
+    #[tokio::test]
+    async fn send_claude_with_tools_and_thinking() -> Result<(), Box<dyn std::error::Error>> {
+        let client = reqwest::Client::new();
+
+        // 构造一个带工具和 thinking 的请求
+        let request = ClaudeMessagesRequest {
+            model: "GLM-5.1".to_string(),
+            messages: vec![ClaudeMessage {
+                role: "user".to_string(),
+                content: ClaudeContent::Text("Get the weather in Tokyo and Paris".to_string()),
+            }],
+            max_tokens: 2000,
+            system: None,
+            temperature: Some(0.5),
+            top_p: None,
+            top_k: None,
+            stop_sequences: vec![],
+            stream: false,
+            tools: vec![ClaudeTool {
+                kind: None, // custom tool 没有 type
+                name: "get_weather".to_string(),
+                description: Some("Get current weather for a location".to_string()),
+                input_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "location": { "type": "string" }
+                    },
+                    "required": ["location"]
+                })),
+                cache_control: None,
+                extra: serde_json::Map::new(),
+            }],
+            tool_choice: Some(ClaudeToolChoice::Auto {
+                disable_parallel_tool_use: Some(false),
+            }),
+            thinking: Some(ThinkingConfig::Enabled {
+                budget_tokens: 2048,
+            }),
+            metadata: Some(ClaudeMetadata {
+                user_id: Some("test_user".to_string()),
+            }),
+            extra: serde_json::Map::new(),
+        };
+
+        let response = client
+            .post("http://localhost:8080/api/v1/messages")
+            .bearer_auth("sk-test")
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+        println!("Claude (with tools) Status: {}", status);
+        println!("Response: {}", body);
+        Ok(())
     }
 }

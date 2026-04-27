@@ -1,12 +1,11 @@
-//! Adapter 协议/风味描述与当前 dispatcher 使用的 [`AdapterKind`]。
+//! [`AdapterKind`] —— `super::AdapterDispatcher` 的静态分派键。
 //!
-//! `AdapterKind` 仍然保留，作为当前 [`super::AdapterDispatcher`] 的静态分派键。
-//! 但数据库路由不应再直接绑定它；运行时路由应优先使用
-//! [`AdapterDescriptor`] = `ProtocolKind + FlavorKind`。
+//! 渠道运行时的 `AdapterKind` 由 `vendor.api_style + scope` 推导得出，
+//! 详见 `summer_ai_model::entity::routing::vendor::ApiStyle::adapter_kind`。
 
 use serde::{Deserialize, Serialize};
 
-/// 当前 dispatcher 使用的上游适配器键。
+/// `AdapterDispatcher` 静态分派使用的协议适配器键。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AdapterKind {
     // ─── 1-4: OpenAI 家族 ───
@@ -138,32 +137,6 @@ impl AdapterKind {
         }
     }
 
-    /// 协议默认的 API Key 环境变量名（dev 环境 fallback）。
-    pub const fn default_api_key_env_name(&self) -> Option<&'static str> {
-        match self {
-            Self::OpenAI | Self::OpenAIResp => Some("OPENAI_API_KEY"),
-            Self::Azure => Some("AZURE_OPENAI_API_KEY"),
-            Self::Claude => Some("ANTHROPIC_API_KEY"),
-            Self::Gemini => Some("GEMINI_API_KEY"),
-            Self::Cohere => Some("COHERE_API_KEY"),
-            Self::Groq => Some("GROQ_API_KEY"),
-            Self::DeepSeek => Some("DEEPSEEK_API_KEY"),
-            Self::Xai => Some("XAI_API_KEY"),
-            Self::Fireworks => Some("FIREWORKS_API_KEY"),
-            Self::Together => Some("TOGETHER_API_KEY"),
-            Self::Nebius => Some("NEBIUS_API_KEY"),
-            Self::Mimo => Some("MIMO_API_KEY"),
-            Self::Zai => Some("ZAI_API_KEY"),
-            Self::BigModel => Some("BIGMODEL_API_KEY"),
-            Self::Aliyun => Some("DASHSCOPE_API_KEY"),
-            Self::OllamaCloud => Some("OLLAMA_API_KEY"),
-            Self::GithubCopilot => Some("GITHUB_TOKEN"),
-            Self::Vertex => Some("GOOGLE_APPLICATION_CREDENTIALS"),
-            // OpenAICompat 和 Ollama（本地）没有事实默认 env
-            Self::OpenAICompat | Self::Ollama => None,
-        }
-    }
-
     /// 从小写字符串解析（配置 / 兼容性）。
     pub fn from_lower_str(name: &str) -> Option<Self> {
         Some(match name {
@@ -199,159 +172,6 @@ impl std::fmt::Display for AdapterKind {
     }
 }
 
-/// 协议维度。
-///
-/// 这里只描述 wire/API 规范，不承载厂商/部署信息。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ProtocolKind {
-    OpenAI,
-    OpenAIResponses,
-    Claude,
-    Gemini,
-    Cohere,
-    Ollama,
-}
-
-impl ProtocolKind {
-    pub const fn as_lower_str(&self) -> &'static str {
-        match self {
-            Self::OpenAI => "openai",
-            Self::OpenAIResponses => "openai_responses",
-            Self::Claude => "claude",
-            Self::Gemini => "gemini",
-            Self::Cohere => "cohere",
-            Self::Ollama => "ollama",
-        }
-    }
-
-    pub fn from_lower_str(name: &str) -> Option<Self> {
-        Some(match name {
-            "openai" => Self::OpenAI,
-            "openai_responses" => Self::OpenAIResponses,
-            "claude" => Self::Claude,
-            "gemini" => Self::Gemini,
-            "cohere" => Self::Cohere,
-            "ollama" => Self::Ollama,
-            _ => return None,
-        })
-    }
-}
-
-/// 部署/兼容层维度。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum FlavorKind {
-    Native,
-    OpenAICompat,
-    Azure,
-    OllamaCloud,
-    Groq,
-    DeepSeek,
-    Xai,
-    Fireworks,
-    Together,
-    Nebius,
-    Mimo,
-    Zai,
-    BigModel,
-    Aliyun,
-    Vertex,
-    GithubCopilot,
-}
-
-impl FlavorKind {
-    pub const fn as_lower_str(&self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::OpenAICompat => "openai_compat",
-            Self::Azure => "azure",
-            Self::OllamaCloud => "ollama_cloud",
-            Self::Groq => "groq",
-            Self::DeepSeek => "deepseek",
-            Self::Xai => "xai",
-            Self::Fireworks => "fireworks",
-            Self::Together => "together",
-            Self::Nebius => "nebius",
-            Self::Mimo => "mimo",
-            Self::Zai => "zai",
-            Self::BigModel => "bigmodel",
-            Self::Aliyun => "aliyun",
-            Self::Vertex => "vertex",
-            Self::GithubCopilot => "github_copilot",
-        }
-    }
-
-    pub fn from_lower_str(name: &str) -> Option<Self> {
-        Some(match name {
-            "native" => Self::Native,
-            "openai_compat" => Self::OpenAICompat,
-            "azure" => Self::Azure,
-            "ollama_cloud" => Self::OllamaCloud,
-            "groq" => Self::Groq,
-            "deepseek" => Self::DeepSeek,
-            "xai" => Self::Xai,
-            "fireworks" => Self::Fireworks,
-            "together" => Self::Together,
-            "nebius" => Self::Nebius,
-            "mimo" => Self::Mimo,
-            "zai" => Self::Zai,
-            "bigmodel" => Self::BigModel,
-            "aliyun" => Self::Aliyun,
-            "vertex" => Self::Vertex,
-            "github_copilot" => Self::GithubCopilot,
-            _ => return None,
-        })
-    }
-}
-
-/// 运行时适配器描述：协议 + 风味。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AdapterDescriptor {
-    pub protocol: ProtocolKind,
-    pub flavor: FlavorKind,
-}
-
-impl AdapterDescriptor {
-    pub const fn new(protocol: ProtocolKind, flavor: FlavorKind) -> Self {
-        Self { protocol, flavor }
-    }
-
-    /// 过渡桥：把 descriptor 映射回当前 dispatcher 使用的 `AdapterKind`。
-    pub const fn try_adapter_kind(&self) -> Option<AdapterKind> {
-        Some(match (self.protocol, self.flavor) {
-            (ProtocolKind::OpenAI, FlavorKind::Native) => AdapterKind::OpenAI,
-            (ProtocolKind::OpenAIResponses, FlavorKind::Native) => AdapterKind::OpenAIResp,
-            (ProtocolKind::OpenAI, FlavorKind::OpenAICompat) => AdapterKind::OpenAICompat,
-            (ProtocolKind::OpenAI, FlavorKind::Azure) => AdapterKind::Azure,
-            (ProtocolKind::Claude, FlavorKind::Native) => AdapterKind::Claude,
-            (ProtocolKind::Gemini, FlavorKind::Native) => AdapterKind::Gemini,
-            (ProtocolKind::Cohere, FlavorKind::Native) => AdapterKind::Cohere,
-            (ProtocolKind::Ollama, FlavorKind::Native) => AdapterKind::Ollama,
-            (ProtocolKind::OpenAI, FlavorKind::OllamaCloud) => AdapterKind::OllamaCloud,
-            (ProtocolKind::OpenAI, FlavorKind::Groq) => AdapterKind::Groq,
-            (ProtocolKind::OpenAI, FlavorKind::DeepSeek) => AdapterKind::DeepSeek,
-            (ProtocolKind::OpenAI, FlavorKind::Xai) => AdapterKind::Xai,
-            (ProtocolKind::OpenAI, FlavorKind::Fireworks) => AdapterKind::Fireworks,
-            (ProtocolKind::OpenAI, FlavorKind::Together) => AdapterKind::Together,
-            (ProtocolKind::OpenAI, FlavorKind::Nebius) => AdapterKind::Nebius,
-            (ProtocolKind::OpenAI, FlavorKind::Mimo) => AdapterKind::Mimo,
-            (ProtocolKind::OpenAI, FlavorKind::Zai) => AdapterKind::Zai,
-            (ProtocolKind::OpenAI, FlavorKind::BigModel) => AdapterKind::BigModel,
-            (ProtocolKind::OpenAI, FlavorKind::Aliyun) => AdapterKind::Aliyun,
-            (ProtocolKind::Gemini, FlavorKind::Vertex)
-            | (ProtocolKind::Claude, FlavorKind::Vertex) => AdapterKind::Vertex,
-            (ProtocolKind::OpenAI, FlavorKind::GithubCopilot)
-            | (ProtocolKind::Claude, FlavorKind::GithubCopilot)
-            | (ProtocolKind::Gemini, FlavorKind::GithubCopilot) => AdapterKind::GithubCopilot,
-            _ => return None,
-        })
-    }
-
-    pub fn adapter_kind(&self) -> AdapterKind {
-        self.try_adapter_kind()
-            .expect("adapter descriptor should map to an existing adapter kind")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,41 +183,5 @@ mod tests {
             let back = AdapterKind::from_lower_str(s).unwrap();
             assert_eq!(kind, back, "lower_str roundtrip failed for {kind:?} ({s})");
         }
-    }
-
-    #[test]
-    fn descriptor_maps_to_existing_adapter_kind() {
-        let descriptor = AdapterDescriptor::new(ProtocolKind::OpenAIResponses, FlavorKind::Native);
-        assert_eq!(descriptor.adapter_kind(), AdapterKind::OpenAIResp);
-
-        let compat = AdapterDescriptor::new(ProtocolKind::OpenAI, FlavorKind::OpenAICompat);
-        assert_eq!(compat.adapter_kind(), AdapterKind::OpenAICompat);
-    }
-
-    #[test]
-    fn protocol_and_flavor_parse_from_lower_str() {
-        assert_eq!(
-            ProtocolKind::from_lower_str("openai_responses"),
-            Some(ProtocolKind::OpenAIResponses)
-        );
-        assert_eq!(
-            FlavorKind::from_lower_str("openai_compat"),
-            Some(FlavorKind::OpenAICompat)
-        );
-        assert_eq!(ProtocolKind::from_lower_str("bogus"), None);
-        assert_eq!(FlavorKind::from_lower_str("bogus"), None);
-    }
-
-    #[test]
-    fn default_env_names_sanity() {
-        assert_eq!(
-            AdapterKind::OpenAI.default_api_key_env_name(),
-            Some("OPENAI_API_KEY")
-        );
-        assert!(
-            AdapterKind::OpenAICompat
-                .default_api_key_env_name()
-                .is_none()
-        );
     }
 }

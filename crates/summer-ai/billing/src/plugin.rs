@@ -52,7 +52,6 @@ impl Plugin for SummerAiBillingPlugin {
     }
 
     fn dependencies(&self) -> Vec<&str> {
-        // SeaOrmPlugin 提供 DbConn（spawn_typed_collector 依赖）。
         vec!["summer_sea_orm::SeaOrmPlugin"]
     }
 }

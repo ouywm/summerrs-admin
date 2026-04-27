@@ -1,4 +1,6 @@
+pub mod dto;
 pub mod entity;
+pub mod vo;
 
 use sea_orm::{DatabaseConnection, DbErr};
 

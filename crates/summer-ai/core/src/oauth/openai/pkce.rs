@@ -5,6 +5,7 @@ use url::Url;
 use uuid::Uuid;
 
 const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
+const OPENAI_AUTHORIZE_SCOPE: &str = "openid profile email offline_access";
 const OPENAI_HOSTED_ACCOUNT_ORGANIZATIONS: &str = "true";
 const OPENAI_HOSTED_ACCOUNT_SIMPLIFIED_FLOW: &str = "true";
 
@@ -44,6 +45,7 @@ pub fn build_authorization_url(
         .append_pair("response_type", "code")
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect_uri)
+        .append_pair("scope", OPENAI_AUTHORIZE_SCOPE)
         .append_pair("state", state)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256")

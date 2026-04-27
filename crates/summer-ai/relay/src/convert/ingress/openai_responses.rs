@@ -267,6 +267,7 @@ fn message_item_to_chat_message(m: OpenAIResponsesMessageItem) -> AdapterResult<
         tool_call_id: None,
         reasoning_content: None,
         audio: None,
+        native_content_blocks: None,
         options: None,
     })
 }
@@ -352,6 +353,7 @@ fn function_call_item_to_chat_message(fc: OpenAIResponsesFunctionCallItem) -> Ch
         }]),
         tool_call_id: None,
         audio: None,
+        native_content_blocks: None,
         options: None,
     }
 }
@@ -1558,6 +1560,7 @@ mod tests {
             | OpenAIResponsesStreamEvent::Error {
                 sequence_number, ..
             } => *sequence_number,
+            _ => 0,
         }
     }
 

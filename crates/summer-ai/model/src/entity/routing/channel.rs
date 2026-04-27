@@ -4,7 +4,7 @@ use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-/// 渠道类型：1=OpenAI 3=Anthropic 14=Azure 15=Baidu 17=Ali 24=Gemini 28=Ollama
+/// 渠道类型（admin 分组用）：1=OpenAI 2=Anthropic 3=Azure 4=Baidu 5=Ali 6=Gemini 7=Ollama
 #[derive(
     Debug,
     Clone,
@@ -24,23 +24,23 @@ pub enum ChannelType {
     #[sea_orm(num_value = 1)]
     OpenAi = 1,
     /// Anthropic
-    #[sea_orm(num_value = 3)]
-    Anthropic = 3,
+    #[sea_orm(num_value = 2)]
+    Anthropic = 2,
     /// Azure
-    #[sea_orm(num_value = 14)]
-    Azure = 14,
+    #[sea_orm(num_value = 3)]
+    Azure = 3,
     /// Baidu
-    #[sea_orm(num_value = 15)]
-    Baidu = 15,
+    #[sea_orm(num_value = 4)]
+    Baidu = 4,
     /// Ali
-    #[sea_orm(num_value = 17)]
-    Ali = 17,
+    #[sea_orm(num_value = 5)]
+    Ali = 5,
     /// Gemini
-    #[sea_orm(num_value = 24)]
-    Gemini = 24,
+    #[sea_orm(num_value = 6)]
+    Gemini = 6,
     /// Ollama
-    #[sea_orm(num_value = 28)]
-    Ollama = 28,
+    #[sea_orm(num_value = 7)]
+    Ollama = 7,
 }
 
 /// 状态：1=启用 2=手动禁用 3=自动禁用 4=归档
@@ -131,9 +131,6 @@ pub struct Model {
     /// 该渠道支持的 endpoint 范围（JSON 数组，如 ["chat","responses","embeddings"]）
     #[sea_orm(column_type = "JsonBinary")]
     pub endpoint_scopes: serde_json::Value,
-    /// endpoint 到协议/风味的显式映射（JSON，如 {"chat":{"protocol":"openai","flavor":"native"}}）
-    #[sea_orm(column_type = "JsonBinary")]
-    pub endpoint_protocols: serde_json::Value,
     /// 渠道能力标签（JSON 数组，如 ["vision","tool_call","reasoning"]）
     #[sea_orm(column_type = "JsonBinary")]
     pub capabilities: serde_json::Value,

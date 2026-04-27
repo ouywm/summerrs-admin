@@ -1,5 +1,40 @@
+use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+
+/// 上游 API 风格 —— `ai.vendor.api_style` 列。决定运行时走哪个 adapter（dispatch 维度）。
+///
+/// 存储为 VARCHAR(64) 字符串值；新增 vendor 时若 `api_style` 命中已知变体则零代码。
+/// 协议路由逻辑（ApiStyle + EndpointScope → AdapterKind）由 relay 层负责，详见
+/// `relay::service::channel_store::resolve_adapter_kind`。
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    EnumIter,
+    DeriveActiveEnum,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::N(64))")]
+pub enum ApiStyle {
+    /// OpenAI 兼容（OpenAI 官方 / Azure / DeepSeek / Groq / 阿里 / 百度 / Mistral / ...）
+    #[sea_orm(string_value = "openai-compatible")]
+    OpenAiCompatible,
+    /// Anthropic 原生 `/v1/messages`
+    #[sea_orm(string_value = "anthropic-native")]
+    AnthropicNative,
+    /// Google Gemini `:generateContent`
+    #[sea_orm(string_value = "gemini-native")]
+    GeminiNative,
+    /// Ollama 本地原生（兼容 OpenAI wire）
+    #[sea_orm(string_value = "ollama-native")]
+    OllamaNative,
+}
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize)]
@@ -12,8 +47,8 @@ pub struct Model {
     pub vendor_code: String,
     /// 供应商名称
     pub vendor_name: String,
-    /// API 风格（如 openai-compatible / anthropic-native / gemini-native）
-    pub api_style: String,
+    /// API 风格（决定运行时走哪个 adapter）
+    pub api_style: ApiStyle,
     /// 图标 URL 或 SVG
     pub icon: String,
     /// 供应商简介

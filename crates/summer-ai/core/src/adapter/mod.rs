@@ -36,70 +36,7 @@ use crate::types::{ChatRequest, ChatResponse, ChatStreamEvent};
 
 pub use dispatcher::AdapterDispatcher;
 pub use endpoint_scope::{EndpointScope, UnknownEndpointScope, parse_json_scopes};
-pub use kind::{AdapterDescriptor, AdapterKind, FlavorKind, ProtocolKind};
-
-// ---------------------------------------------------------------------------
-// Capabilities —— 协议能力声明
-// ---------------------------------------------------------------------------
-
-/// 协议能力声明。
-///
-/// Adapter 用 [`Adapter::capabilities()`] 暴露协议默认能力；
-/// Channel 可通过 `ai.channel.capabilities` JSONB + [`ServiceTarget::capabilities_override`]
-/// **收窄**（例如 DeepSeek 走 OpenAI 协议但暂不支持 `vision`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Capabilities {
-    /// 支持 SSE 流式
-    pub streaming: bool,
-    /// 支持 function/tool calling
-    pub tools: bool,
-    /// 支持 `tool_choice` 字段
-    pub tool_choice: bool,
-    /// 支持多模态输入（image/audio/file content parts）
-    pub multimodal_input: bool,
-    /// 支持 reasoning（含 `reasoning_effort` 或 `thinking.budget_tokens`）
-    pub reasoning: bool,
-    /// 支持 `response_format` （json_object / json_schema）
-    pub response_format: bool,
-    /// 支持 `n > 1`
-    pub multi_choice: bool,
-    /// 支持 prompt caching（Claude cache_control / OpenAI 自动 cache）
-    pub prompt_caching: bool,
-    /// 支持 parallel_tool_calls
-    pub parallel_tool_calls: bool,
-}
-
-impl Capabilities {
-    /// 主流 OpenAI-compat 的默认能力集合（兜底给没特别声明的 adapter）。
-    pub const fn openai_like() -> Self {
-        Self {
-            streaming: true,
-            tools: true,
-            tool_choice: true,
-            multimodal_input: true,
-            reasoning: false,
-            response_format: true,
-            multi_choice: true,
-            prompt_caching: true,
-            parallel_tool_calls: true,
-        }
-    }
-
-    /// Ollama 风格（保守：无 tool_choice / 无多模态 / 无 reasoning）。
-    pub const fn ollama_like() -> Self {
-        Self {
-            streaming: true,
-            tools: true,
-            tool_choice: false,
-            multimodal_input: false,
-            reasoning: false,
-            response_format: true,
-            multi_choice: false,
-            prompt_caching: false,
-            parallel_tool_calls: false,
-        }
-    }
-}
+pub use kind::AdapterKind;
 
 // ---------------------------------------------------------------------------
 // CostProfile —— 协议级计费系数
@@ -217,41 +154,25 @@ pub struct WebRequestData {
 // Adapter trait
 // ---------------------------------------------------------------------------
 
-/// 一家上游协议的 **协议转换器**。
-///
-/// # 设计约束
-///
-/// - 实现类型必须是 **ZST**（零大小 struct），调用方永不实例化
-/// - 所有方法都是 associated fn（无 `&self`），通过 [`AdapterDispatcher`] 静态分派
-/// - 使用 Rust 2024 edition 的 `async fn in trait`（不需要 `async_trait` macro）
+/// 一家上游协议的 **协议转换器**
 pub trait Adapter {
     // ─────────────── 协议元数据（const） ───────────────
 
     /// 对应的 [`AdapterKind`] 枚举变体。
     const KIND: AdapterKind;
 
-    /// 默认的 API Key 环境变量名。生产从 DB 读，这是 dev 环境 fallback。
-    const DEFAULT_API_KEY_ENV_NAME: Option<&'static str>;
-
     // ─────────────── 元数据（可覆盖） ───────────────
 
-    /// 协议默认鉴权方式。
-    ///
-    /// 默认：有 `DEFAULT_API_KEY_ENV_NAME` → `AuthData::from_env(env)`；否则 `AuthData::None`。
+    /// 协议默认鉴权方式。生产链路从 `channel_account.credentials` 拿 key 注入；
+    /// 这里仅给单元测试或独立调用 Adapter 时一个 fallback。
     fn default_auth() -> AuthData {
-        match Self::DEFAULT_API_KEY_ENV_NAME {
-            Some(env) => AuthData::from_env(env),
-            None => AuthData::None,
-        }
+        AuthData::None
     }
 
     /// 协议默认端点。返 `None` 表示无事实标准（如 OpenAICompat / Azure / 自建 Ollama）。
     fn default_endpoint() -> Option<Endpoint> {
         None
     }
-
-    /// 协议能力声明。
-    fn capabilities() -> Capabilities;
 
     /// 协议鉴权策略（给 relay 层构造 headers 用）。
     fn auth_strategy() -> AuthStrategy;
@@ -261,18 +182,6 @@ pub trait Adapter {
     /// 默认：`CostProfile::default()`（不支持 prompt cache，两个倍率都是 1.0）。
     fn cost_profile() -> CostProfile {
         CostProfile::default()
-    }
-
-    // ─────────────── 请求验证（前置能力校验） ───────────────
-
-    /// 请求进 Adapter 前的能力校验。
-    ///
-    /// 基于 [`Self::capabilities()`] 检查请求是否含有协议不支持的字段，
-    /// 不支持则返 [`AdapterError::Unsupported`]——给客户端清晰错误，避免调上游才失败。
-    ///
-    /// 默认实现：通用规则（见 [`validate_with_capabilities`]）。特殊协议可覆盖。
-    fn validate_chat_request(req: &ChatRequest) -> AdapterResult<()> {
-        validate_with_capabilities(Self::KIND.as_str(), &Self::capabilities(), req)
     }
 
     // ─────────────── Chat 核心三件事 ───────────────
@@ -325,58 +234,4 @@ pub trait Adapter {
             message: String::from_utf8_lossy(body).to_string(),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// validate_with_capabilities —— 基于 Capabilities 的请求预校验
-// ---------------------------------------------------------------------------
-
-/// 按 [`Capabilities`] 规则校验 [`ChatRequest`]。
-///
-/// Adapter 默认 [`Adapter::validate_chat_request`] 调用此函数。检查项：
-///
-/// - `tool_choice` 字段与 `tool_choice` 能力
-/// - `n > 1` 与 `multi_choice` 能力
-/// - 多模态 content parts 与 `multimodal_input` 能力
-/// - `response_format` 与 `response_format` 能力
-/// - `reasoning_effort` 与 `reasoning` 能力
-/// - `parallel_tool_calls` 与 `parallel_tool_calls` 能力
-pub fn validate_with_capabilities(
-    adapter: &'static str,
-    caps: &Capabilities,
-    req: &ChatRequest,
-) -> AdapterResult<()> {
-    if req.tool_choice.is_some() && !caps.tool_choice {
-        return Err(AdapterError::Unsupported {
-            adapter,
-            feature: "tool_choice",
-        });
-    }
-    if matches!(req.n, Some(n) if n > 1) && !caps.multi_choice {
-        return Err(AdapterError::Unsupported {
-            adapter,
-            feature: "n>1",
-        });
-    }
-    if req.response_format.is_some() && !caps.response_format {
-        return Err(AdapterError::Unsupported {
-            adapter,
-            feature: "response_format",
-        });
-    }
-    if req.parallel_tool_calls.is_some() && !caps.parallel_tool_calls {
-        return Err(AdapterError::Unsupported {
-            adapter,
-            feature: "parallel_tool_calls",
-        });
-    }
-    if req.reasoning_effort.is_some() && !caps.reasoning {
-        return Err(AdapterError::Unsupported {
-            adapter,
-            feature: "reasoning_effort",
-        });
-    }
-    // 多模态 content parts 的检查留给 adapter 按需实现
-    // （canonical 扁平 ChatRequest 的 content 是 MessageContent::{Text, Parts}）
-    Ok(())
 }

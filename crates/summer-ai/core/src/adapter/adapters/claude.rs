@@ -20,7 +20,7 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use std::future::Future;
 
 use crate::adapter::{
-    Adapter, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType, WebRequestData,
+    Adapter, AdapterKind, AuthStrategy, CostProfile, ServiceType, WebRequestData,
 };
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
@@ -41,31 +41,15 @@ use crate::types::{
 pub struct ClaudeAdapter;
 
 impl ClaudeAdapter {
-    pub const API_KEY_DEFAULT_ENV_NAME: &'static str = "ANTHROPIC_API_KEY";
     const BASE_URL: &'static str = "https://api.anthropic.com/v1/";
     const API_VERSION: &'static str = "2023-06-01";
 }
 
 impl Adapter for ClaudeAdapter {
     const KIND: AdapterKind = AdapterKind::Claude;
-    const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
     fn default_endpoint() -> Option<Endpoint> {
         Some(Endpoint::from_static(Self::BASE_URL))
-    }
-
-    fn capabilities() -> Capabilities {
-        Capabilities {
-            streaming: true,
-            tools: true,
-            tool_choice: true,
-            multimodal_input: true,
-            reasoning: true, // extended thinking
-            response_format: false,
-            multi_choice: false, // n>1 不支持
-            prompt_caching: true,
-            parallel_tool_calls: true,
-        }
     }
 
     fn auth_strategy() -> AuthStrategy {
@@ -81,8 +65,6 @@ impl Adapter for ClaudeAdapter {
         _service: ServiceType,
         req: &ChatRequest,
     ) -> AdapterResult<WebRequestData> {
-        Self::validate_chat_request(req)?;
-
         let url = build_messages_url(target.endpoint.trimmed());
         let wire = canonical_to_claude_request(target, req)?;
         let payload = serde_json::to_value(&wire).map_err(AdapterError::SerializeRequest)?;
@@ -274,6 +256,7 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                             blocks.push(ClaudeContentBlock::Text {
                                 text,
                                 cache_control: None,
+                                citations: None,
                             });
                         }
                         let mut claude_msg = ClaudeMessage {
@@ -303,6 +286,18 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                         content: ClaudeContent::Blocks(blocks),
                     });
                 }
+                if let Some(raw) = msg.native_content_blocks.as_ref()
+                    && let Ok(blocks) =
+                        serde_json::from_value::<Vec<ClaudeContentBlock>>(raw.clone())
+                {
+                    let mut claude_msg = ClaudeMessage {
+                        role: "assistant".to_string(),
+                        content: ClaudeContent::Blocks(blocks),
+                    };
+                    apply_msg_cache_control(&mut claude_msg.content, msg_cc);
+                    out.push(claude_msg);
+                    continue;
+                }
                 // assistant：text + tool_calls → blocks
                 let mut blocks: Vec<ClaudeContentBlock> = Vec::new();
                 if let Some(text) = message_text(msg) {
@@ -310,6 +305,7 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                         blocks.push(ClaudeContentBlock::Text {
                             text,
                             cache_control: None,
+                            citations: None,
                         });
                     }
                 }
@@ -325,6 +321,7 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                             name: tc.function.name.clone(),
                             input,
                             cache_control: None,
+                            caller: None,
                         });
                     }
                 }
@@ -397,6 +394,7 @@ fn apply_msg_cache_control(content: &mut ClaudeContent, cc: Option<&CacheControl
             *content = ClaudeContent::Blocks(vec![ClaudeContentBlock::Text {
                 text,
                 cache_control: Some(wire_cc),
+                citations: None,
             }]);
         }
         ClaudeContent::Blocks(blocks) => {
@@ -416,11 +414,30 @@ fn set_block_cache_control(block: &mut ClaudeContentBlock, cc: Option<ClaudeCach
         ClaudeContentBlock::ToolUse { cache_control, .. } => *cache_control = cc,
         ClaudeContentBlock::ToolResult { cache_control, .. } => *cache_control = cc,
         ClaudeContentBlock::Document { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::SearchResult { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::ServerToolUse { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::WebSearchToolResult { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::WebFetchToolResult { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::CodeExecutionToolResult { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::BashCodeExecutionToolResult { cache_control, .. } => {
+            *cache_control = cc
+        }
+        ClaudeContentBlock::TextEditorCodeExecutionToolResult { cache_control, .. } => {
+            *cache_control = cc
+        }
+        ClaudeContentBlock::ToolSearchToolResult { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::ContainerUpload { cache_control, .. } => *cache_control = cc,
+        ClaudeContentBlock::ToolReference { cache_control, .. } => *cache_control = cc,
         _ => {} // Thinking / RedactedThinking / Unknown 无 cache_control 字段
     }
 }
 
 fn canonical_message_to_claude_content(msg: &ChatMessage) -> ClaudeContent {
+    if let Some(raw) = msg.native_content_blocks.as_ref()
+        && let Ok(blocks) = serde_json::from_value::<Vec<ClaudeContentBlock>>(raw.clone())
+    {
+        return ClaudeContent::Blocks(blocks);
+    }
     let Some(content) = msg.content.as_ref() else {
         return ClaudeContent::Text(String::new());
     };
@@ -433,6 +450,7 @@ fn canonical_message_to_claude_content(msg: &ChatMessage) -> ClaudeContent {
                     ContentPart::Text { text } => blocks.push(ClaudeContentBlock::Text {
                         text: text.clone(),
                         cache_control: None,
+                        citations: None,
                     }),
                     ContentPart::ImageUrl { image_url } => {
                         let source = parse_image_url(&image_url.url);
@@ -563,6 +581,62 @@ fn message_text(msg: &ChatMessage) -> Option<String> {
     }
 }
 
+fn append_text_line(buf: &mut String, text: &str) {
+    if !buf.is_empty() {
+        buf.push('\n');
+    }
+    buf.push_str(text);
+}
+
+fn push_claude_tool_call(
+    tool_calls: &mut Vec<ToolCall>,
+    id: String,
+    name: String,
+    input: serde_json::Value,
+) {
+    // input=null 时 serde_json::to_string 会产出 "null" —— 客户端 `JSON.parse("null")`
+    // 合法但 `arguments.x` 全部 undefined。按 Anthropic 协议 tool_use.input 必是
+    // object，null 视作空对象。
+    let arguments = if input.is_null() {
+        "{}".to_string()
+    } else {
+        serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string())
+    };
+    tool_calls.push(ToolCall {
+        id,
+        kind: "function".to_string(),
+        function: ToolCallFunction { name, arguments },
+        thought_signatures: None,
+    });
+}
+
+fn should_preserve_native_claude_blocks(blocks: &[ClaudeContentBlock]) -> bool {
+    blocks.iter().any(|block| match block {
+        ClaudeContentBlock::Text { citations, .. } => {
+            citations.as_ref().is_some_and(|v| !v.is_empty())
+        }
+        ClaudeContentBlock::ToolUse { caller, .. } => caller.is_some(),
+        ClaudeContentBlock::Thinking { signature, .. } => signature.is_some(),
+        ClaudeContentBlock::ToolResult { content, .. } => {
+            matches!(content, Some(ClaudeToolResultContent::Blocks(_)))
+        }
+        ClaudeContentBlock::RedactedThinking { .. }
+        | ClaudeContentBlock::Document { .. }
+        | ClaudeContentBlock::SearchResult { .. }
+        | ClaudeContentBlock::ServerToolUse { .. }
+        | ClaudeContentBlock::WebSearchToolResult { .. }
+        | ClaudeContentBlock::WebFetchToolResult { .. }
+        | ClaudeContentBlock::CodeExecutionToolResult { .. }
+        | ClaudeContentBlock::BashCodeExecutionToolResult { .. }
+        | ClaudeContentBlock::TextEditorCodeExecutionToolResult { .. }
+        | ClaudeContentBlock::ToolSearchToolResult { .. }
+        | ClaudeContentBlock::ContainerUpload { .. } => true,
+        ClaudeContentBlock::Image { .. }
+        | ClaudeContentBlock::ToolReference { .. }
+        | ClaudeContentBlock::Unknown => false,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Claude wire → canonical (response)
 // ---------------------------------------------------------------------------
@@ -580,6 +654,9 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
     let mut text_buf = String::new();
     let mut reasoning_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let native_content_blocks = should_preserve_native_claude_blocks(&content)
+        .then(|| serde_json::to_value(&content).ok())
+        .flatten();
     // Claude extended thinking 的 signature 是 multi-turn 续接凭证 —— 下一轮
     // 客户端得在 assistant 消息里把它附回上游。非流式下这些 signature 挂在
     // `Thinking { thinking, signature }` 的 signature 字段上，必须收拢到
@@ -590,29 +667,14 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
     for block in content {
         match block {
             ClaudeContentBlock::Text { text, .. } => {
-                if !text_buf.is_empty() {
-                    text_buf.push('\n');
-                }
-                text_buf.push_str(&text);
+                append_text_line(&mut text_buf, &text);
             }
             ClaudeContentBlock::ToolUse {
                 id, name, input, ..
-            } => {
-                // input=null 时 serde_json::to_string 会产出 "null" —— 客户端
-                // `JSON.parse("null")` 合法但 `arguments.x` 全部 undefined。
-                // 按 Anthropic 协议 tool_use.input 必是 object,null 视作空对象。
-                let arguments = if input.is_null() {
-                    "{}".to_string()
-                } else {
-                    serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string())
-                };
-                tool_calls.push(ToolCall {
-                    id,
-                    kind: "function".to_string(),
-                    function: ToolCallFunction { name, arguments },
-                    thought_signatures: None,
-                });
             }
+            | ClaudeContentBlock::ServerToolUse {
+                id, name, input, ..
+            } => push_claude_tool_call(&mut tool_calls, id, name, input),
             // extended thinking 的文本进 reasoning_content，让客户端能看到思考链；
             // signature 收到 thought_signatures 队列备用（下方挂到首个 tool_call）；
             // redacted_thinking 只有加密 data 没有明文，忽略（multi-turn 续接在流式
@@ -633,6 +695,15 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
             | ClaudeContentBlock::Image { .. }
             | ClaudeContentBlock::ToolResult { .. }
             | ClaudeContentBlock::Document { .. }
+            | ClaudeContentBlock::SearchResult { .. }
+            | ClaudeContentBlock::WebSearchToolResult { .. }
+            | ClaudeContentBlock::WebFetchToolResult { .. }
+            | ClaudeContentBlock::CodeExecutionToolResult { .. }
+            | ClaudeContentBlock::BashCodeExecutionToolResult { .. }
+            | ClaudeContentBlock::TextEditorCodeExecutionToolResult { .. }
+            | ClaudeContentBlock::ToolSearchToolResult { .. }
+            | ClaudeContentBlock::ContainerUpload { .. }
+            | ClaudeContentBlock::ToolReference { .. }
             | ClaudeContentBlock::Unknown => {}
         }
     }
@@ -667,6 +738,7 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
         },
         tool_call_id: None,
         audio: None,
+        native_content_blocks,
         options: None,
     };
 
@@ -970,6 +1042,27 @@ mod tests {
     }
 
     #[test]
+    fn cache_control_applies_to_native_claude_blocks_too() {
+        let t = target();
+        let req = ChatRequest::new(
+            "x",
+            vec![
+                ChatMessage::user("")
+                    .with_native_content_blocks(serde_json::json!([
+                        {"type":"text","text":"hi"},
+                        {"type":"web_search_tool_result","tool_use_id":"srvtu_1","content":[]}
+                    ]))
+                    .with_cache_control(CacheControl::Ephemeral1h),
+            ],
+        );
+        let wire = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        let content = wire.payload["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[1]["type"], "web_search_tool_result");
+        assert_eq!(content[1]["cache_control"]["type"], "ephemeral");
+        assert_eq!(content[1]["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
     fn tool_message_merges_into_next_user() {
         let t = target();
         let mut req = ChatRequest::new(
@@ -993,6 +1086,7 @@ mod tests {
                     }]),
                     tool_call_id: None,
                     audio: None,
+                    native_content_blocks: None,
                     options: None,
                 },
                 ChatMessage::tool_response("tu_1", "72F"),
@@ -1034,6 +1128,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 audio: None,
+                native_content_blocks: None,
                 options: None,
             }],
         );
@@ -1166,6 +1261,65 @@ mod tests {
         let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
         let tcs = resp.choices[0].message.tool_calls.as_ref().unwrap();
         assert_eq!(tcs[0].function.arguments, "{}");
+    }
+
+    #[test]
+    fn parse_response_server_tool_use_keeps_native_blocks_structured() {
+        // Claude server tool block 语义上等价于上游托管的 tool_use：
+        // canonical 层至少要把调用提升成 tool_calls，后续结果块也不能静默丢弃，
+        // 否则客户端既看不到 tool 调用，也拿不到 web/code/bash 结果载荷。
+        let t = target();
+        let body = br#"{
+            "id":"msg_srv","type":"message","role":"assistant",
+            "content":[
+                {
+                    "type":"server_tool_use",
+                    "id":"srvtu_1",
+                    "name":"web_search",
+                    "input":{"query":"weather"}
+                },
+                {
+                    "type":"web_search_tool_result",
+                    "tool_use_id":"srvtu_1",
+                    "content":[
+                        {
+                            "type":"web_search_result",
+                            "encrypted_content":"enc",
+                            "title":"Weather",
+                            "url":"https://example.com"
+                        }
+                    ]
+                },
+                {"type":"container_upload","file_id":"file_1"}
+            ],
+            "model":"claude-sonnet-4-5",
+            "stop_reason":"end_turn",
+            "usage":{"input_tokens":1,"output_tokens":1}
+        }"#;
+        let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+
+        let tcs = msg
+            .tool_calls
+            .as_ref()
+            .expect("tool_calls should be preserved");
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(tcs[0].id, "srvtu_1");
+        assert_eq!(tcs[0].function.name, "web_search");
+        assert_eq!(tcs[0].function.arguments, r#"{"query":"weather"}"#);
+
+        assert!(
+            msg.content.is_none(),
+            "native blocks should not be forged into text"
+        );
+        let native = msg
+            .native_content_blocks
+            .as_ref()
+            .expect("native Claude blocks should be preserved");
+        let arr = native.as_array().expect("native blocks should be an array");
+        assert_eq!(arr[0]["type"], "server_tool_use");
+        assert_eq!(arr[1]["type"], "web_search_tool_result");
+        assert_eq!(arr[2]["type"], "container_upload");
     }
 
     #[test]

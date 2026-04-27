@@ -288,6 +288,7 @@ fn append_gemini_content(
             tool_call_id: Some(call_id),
             reasoning_content: None,
             audio: None,
+            native_content_blocks: None,
             options: None,
         });
     }
@@ -319,6 +320,7 @@ fn append_gemini_content(
         },
         tool_call_id: None,
         audio: None,
+        native_content_blocks: None,
         options: None,
     });
 
@@ -985,6 +987,7 @@ mod tests {
                     }]),
                     tool_call_id: None,
                     audio: None,
+                    native_content_blocks: None,
                     options: None,
                 },
                 logprobs: None,

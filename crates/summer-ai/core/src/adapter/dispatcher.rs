@@ -12,9 +12,7 @@ use bytes::Bytes;
 use super::adapters::{
     ClaudeAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatAdapter, OpenAIRespAdapter,
 };
-use super::{
-    Adapter, AdapterKind, AuthStrategy, Capabilities, CostProfile, ServiceType, WebRequestData,
-};
+use super::{Adapter, AdapterKind, AuthStrategy, CostProfile, ServiceType, WebRequestData};
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{AuthData, Endpoint, ServiceTarget};
 use crate::types::{ChatRequest, ChatResponse, ChatStreamEvent};
@@ -43,21 +41,7 @@ impl AdapterDispatcher {
             AdapterKind::OpenAICompat => OpenAICompatAdapter::default_auth(),
             AdapterKind::Claude => ClaudeAdapter::default_auth(),
             AdapterKind::Gemini => GeminiAdapter::default_auth(),
-            _ => match kind.default_api_key_env_name() {
-                Some(env) => AuthData::from_env(env),
-                None => AuthData::None,
-            },
-        }
-    }
-
-    pub fn capabilities(kind: AdapterKind) -> Capabilities {
-        match kind {
-            AdapterKind::OpenAI => OpenAIAdapter::capabilities(),
-            AdapterKind::OpenAICompat => OpenAICompatAdapter::capabilities(),
-            AdapterKind::OpenAIResp => OpenAIRespAdapter::capabilities(),
-            AdapterKind::Claude => ClaudeAdapter::capabilities(),
-            AdapterKind::Gemini => GeminiAdapter::capabilities(),
-            _ => Capabilities::default(),
+            _ => AuthData::None,
         }
     }
 
