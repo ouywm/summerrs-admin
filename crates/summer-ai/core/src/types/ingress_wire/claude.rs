@@ -1386,6 +1386,7 @@ mod tests {
         assert_eq!(web_search_json["caller"]["type"], "direct");
     }
     #[tokio::test]
+    #[ignore = "requires a local relay service listening on http://localhost:8080"]
     async fn send_claude_with_tools_and_thinking() -> Result<(), Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
 

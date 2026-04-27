@@ -85,6 +85,27 @@ impl AccountSnapshot {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ClientRequestMeta {
+    pub client_ip: String,
+    pub user_agent: String,
+    pub client_headers: Value,
+}
+
+impl ClientRequestMeta {
+    pub fn new(
+        client_ip: impl Into<String>,
+        user_agent: impl Into<String>,
+        client_headers: Value,
+    ) -> Self {
+        Self {
+            client_ip: client_ip.into(),
+            user_agent: user_agent.into(),
+            client_headers,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RelayContext —— 主对象
 // ---------------------------------------------------------------------------
@@ -93,7 +114,7 @@ impl AccountSnapshot {
 ///
 /// **构造流程**：
 ///
-/// 1. `RelayContext::begin(token, endpoint, format, logical_model, is_stream, client_ip, user_agent)`
+/// 1. `RelayContext::begin(token, endpoint, format, logical_model, is_stream, client)`
 ///    在 handler 最开头调用——生成 `request_id` 并记录起始时间。
 /// 2. `attach_channel(&channel, &account, adapter_kind, cost_profile, actual_model)`
 ///    在 `ChannelStore::pick` 之后调用——填入选路结果。
@@ -135,9 +156,7 @@ impl RelayContext {
         format: IngressFormat,
         logical_model: impl Into<String>,
         is_stream: bool,
-        client_ip: impl Into<String>,
-        user_agent: impl Into<String>,
-        client_headers: Value,
+        client: ClientRequestMeta,
     ) -> Self {
         Self {
             request_id: new_request_id(),
@@ -146,9 +165,9 @@ impl RelayContext {
             format,
             logical_model: logical_model.into(),
             is_stream,
-            client_ip: client_ip.into(),
-            user_agent: user_agent.into(),
-            client_headers,
+            client_ip: client.client_ip,
+            user_agent: client.user_agent,
+            client_headers: client.client_headers,
             started_at: Instant::now(),
             channel: None,
             account: None,
@@ -281,9 +300,7 @@ mod tests {
             IngressFormat::OpenAI,
             "gpt-4o-mini",
             false,
-            "127.0.0.1",
-            "curl/8.0",
-            Value::Object(Default::default()),
+            ClientRequestMeta::new("127.0.0.1", "curl/8.0", Value::Object(Default::default())),
         );
         assert_eq!(ctx.endpoint, "/v1/chat/completions");
         assert_eq!(ctx.format, IngressFormat::OpenAI);
@@ -304,9 +321,7 @@ mod tests {
             IngressFormat::Claude,
             "claude-3-5-sonnet",
             true,
-            "",
-            "",
-            Value::Object(Default::default()),
+            ClientRequestMeta::new("", "", Value::Object(Default::default())),
         );
         ctx.mark_first_byte();
         let first = ctx.first_byte_at;

@@ -212,18 +212,14 @@ where
                             error: Some(format!("upstream: {e}")),
                         });
                     }
-                    yield Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("upstream: {e}"),
-                    ));
+                    yield Err(std::io::Error::other(format!("upstream: {e}")));
                     return;
                 }
             };
             buffer.extend_from_slice(&chunk);
 
             // 循环切 SSE event（用 \n\n 分隔）
-            loop {
-                let Some(end) = find_event_boundary(&buffer) else { break };
+            while let Some(end) = find_event_boundary(&buffer) {
                 let event_bytes: Vec<u8> = buffer.drain(..end).collect();
 
                 // 尝试 UTF-8 解码（允许失败时跳过单个 event）

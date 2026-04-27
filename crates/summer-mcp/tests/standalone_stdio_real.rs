@@ -338,7 +338,7 @@ async fn standalone_binary_serves_real_runtime_table_tools()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let transport = smoke_transport(smoke_database_url())?;
 
-    let client = DummyClient::default().serve(transport).await?;
+    let client = DummyClient.serve(transport).await?;
 
     let tools = client.list_all_tools().await?;
     assert!(
@@ -568,7 +568,7 @@ async fn standalone_binary_generates_real_frontend_bundle_to_temp_dir()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let transport = smoke_transport(smoke_database_url())?;
 
-    let client = DummyClient::default().serve(transport).await?;
+    let client = DummyClient.serve(transport).await?;
 
     let output_dir = std::env::temp_dir().join("summer-mcp-frontend-bundle-real");
     let _ = tokio::fs::remove_dir_all(&output_dir).await;
@@ -744,7 +744,7 @@ async fn standalone_binary_generates_real_frontend_bundle_to_temp_dir()
 async fn standalone_binary_serves_real_menu_and_dict_config_actions()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let transport = smoke_transport(smoke_database_url())?;
-    let client = DummyClient::default().serve(transport).await?;
+    let client = DummyClient.serve(transport).await?;
 
     let dict_type = "__mcp_smoke_status";
     let root_path = "__mcp_smoke";
@@ -1095,7 +1095,7 @@ async fn standalone_binary_serves_real_menu_and_dict_config_actions()
 async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let transport = smoke_transport(smoke_database_url())?;
-    let client = DummyClient::default().serve(transport).await?;
+    let client = DummyClient.serve(transport).await?;
     let test_entity_file = prepare_showcase_profile_test_entity()?;
 
     let admin_output_dir = std::env::temp_dir().join("summer-mcp-showcase-admin-real");
@@ -1376,7 +1376,7 @@ async fn standalone_binary_generates_showcase_bundle_with_art_design_pro_layout(
 async fn standalone_binary_rolls_out_generated_menu_and_dict_drafts()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let transport = smoke_transport(smoke_database_url())?;
-    let client = DummyClient::default().serve(transport).await?;
+    let client = DummyClient.serve(transport).await?;
     let test_entity_file = prepare_showcase_profile_test_entity()?;
 
     let frontend_output_dir = std::env::temp_dir().join("summer-mcp-showcase-rollout-preview");
@@ -1575,7 +1575,7 @@ $cleanup$
 async fn standalone_binary_typechecks_showcase_bundle_against_real_art_design_pro_project()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let transport = smoke_transport(smoke_database_url())?;
-    let client = DummyClient::default().serve(transport).await?;
+    let client = DummyClient.serve(transport).await?;
     let test_entity_file = prepare_showcase_profile_test_entity()?;
 
     let preview_root = std::env::temp_dir().join("summer-mcp-showcase-art-design-pro-preview");

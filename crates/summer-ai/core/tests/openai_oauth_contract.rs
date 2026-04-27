@@ -138,7 +138,7 @@ fn build_exchange_form_matches_openai_authorization_code_shape() {
         "http://localhost:1455/callback"
     );
     assert_eq!(form.get("client_id").unwrap(), "app_test");
-    assert!(form.get("scope").is_none());
+    assert!(!form.contains_key("scope"));
 }
 
 #[test]

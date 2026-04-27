@@ -60,12 +60,11 @@ pub struct OpenAiOAuthAccountPayload {
 
 enum ExchangeTarget {
     Create {
-        channel: channel::Model,
+        channel: Box<channel::Model>,
         name: String,
     },
     Update {
-        channel: channel::Model,
-        account: channel_account::Model,
+        account: Box<channel_account::Model>,
         name: String,
     },
 }
@@ -169,11 +168,8 @@ impl OpenAiOAuthService {
                     stored.subscription_expires_at.map(|ts| ts.fixed_offset()),
                 )
             }
-            ExchangeTarget::Update {
-                channel,
-                account,
-                name,
-            } => {
+            ExchangeTarget::Update { account, name } => {
+                let account = *account;
                 let existing = decode_account_credentials(&account)?;
                 credentials.extra = existing.extra.clone();
                 credentials.token_version = Some(next_token_version(existing.token_version));
@@ -186,7 +182,6 @@ impl OpenAiOAuthService {
                 .await;
                 let account = self
                     .update_openai_account(
-                        &channel,
                         account,
                         &name,
                         &dto,
@@ -272,7 +267,10 @@ impl OpenAiOAuthService {
             let name = required_trimmed(dto.name.as_deref(), "账号名称")?;
             self.ensure_account_name_available(channel.id, &name, None)
                 .await?;
-            return Ok(ExchangeTarget::Create { channel, name });
+            return Ok(ExchangeTarget::Create {
+                channel: Box::new(channel),
+                name,
+            });
         }
 
         let account_id = dto
@@ -297,8 +295,7 @@ impl OpenAiOAuthService {
             .await?;
 
         Ok(ExchangeTarget::Update {
-            channel,
-            account,
+            account: Box::new(account),
             name,
         })
     }
@@ -365,7 +362,6 @@ impl OpenAiOAuthService {
 
     async fn update_openai_account(
         &self,
-        _channel: &channel::Model,
         account: channel_account::Model,
         name: &str,
         dto: &ExchangeOpenAiOAuthCodeDto,

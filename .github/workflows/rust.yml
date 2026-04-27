@@ -19,6 +19,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   rustfmt:
@@ -29,8 +30,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: chmod +x build-tools/rustfmt.sh
-      - run: ./build-tools/rustfmt.sh --check
+      - uses: Swatinem/rust-cache@v2
+      - name: Run rustfmt
+        run: cargo fmt --all --check
 
   taplo:
     name: Taplo
@@ -40,37 +42,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install --locked taplo-cli
-      - run: chmod +x build-tools/taplofmt.sh
-      - run: ./build-tools/taplofmt.sh --check
-
-  check:
-    name: Cargo Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: chmod +x build-tools/rustcheck.sh
-      - run: ./build-tools/rustcheck.sh check
+      - name: Run taplo
+        shell: bash
+        run: |
+          files=(Cargo.toml .taplo.toml)
+          while IFS= read -r file; do
+            files+=("$file")
+          done < <(find config -type f -name '*.toml' | sort)
+          while IFS= read -r file; do
+            files+=("$file")
+          done < <(find crates -type f -name 'Cargo.toml' | sort)
+          taplo format --config .taplo.toml --check "${files[@]}"
 
   clippy:
-    name: Clippy (Core Crates)
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: chmod +x build-tools/rustcheck.sh
-      - run: ./build-tools/rustcheck.sh clippy
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings
 
-  test-compile:
-    name: Test Compile
+  test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: chmod +x build-tools/rustcheck.sh
-      - run: ./build-tools/rustcheck.sh test-compile
+      - name: Run tests
+        run: cargo test --workspace --verbose

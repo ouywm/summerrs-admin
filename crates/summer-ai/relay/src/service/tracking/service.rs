@@ -339,7 +339,7 @@ async fn persist(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::RelayContext;
+    use crate::context::{ClientRequestMeta, RelayContext};
     use crate::convert::ingress::IngressFormat;
     use summer_ai_core::Usage;
 
@@ -362,9 +362,7 @@ mod tests {
             IngressFormat::OpenAI,
             "gpt-4o-mini",
             false,
-            "127.0.0.1",
-            "curl/8",
-            Value::Object(Default::default()),
+            ClientRequestMeta::new("127.0.0.1", "curl/8", Value::Object(Default::default())),
         )
     }
 

@@ -119,15 +119,15 @@ pub fn parse_chatgpt_account_info(
 ) -> Option<OpenAiChatGptAccountInfo> {
     let accounts = value.get("accounts")?.as_object()?;
 
-    if let Some(org_id) = organization_id.and_then(non_empty_ref) {
-        if let Some(account) = accounts.get(org_id).and_then(|value| value.as_object()) {
-            let info = extract_chatgpt_account_info(account);
-            if info.plan_type.is_some()
-                || info.subscription_expires_at.is_some()
-                || info.email.is_some()
-            {
-                return Some(info);
-            }
+    if let Some(org_id) = organization_id.and_then(non_empty_ref)
+        && let Some(account) = accounts.get(org_id).and_then(|value| value.as_object())
+    {
+        let info = extract_chatgpt_account_info(account);
+        if info.plan_type.is_some()
+            || info.subscription_expires_at.is_some()
+            || info.email.is_some()
+        {
+            return Some(info);
         }
     }
 

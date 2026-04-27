@@ -88,73 +88,6 @@ impl GhostTablePlanner {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::ddl::GhostTablePlanner;
-
-    #[test]
-    fn ghost_planner_generates_swap_sequence() {
-        let planner = GhostTablePlanner;
-        let steps = planner.plan("ai.log", "ALTER TABLE ai.log ADD COLUMN extra text", 1000);
-        assert_eq!(steps.len(), 13);
-        assert!(steps[0].contains("ai.log__ghost"));
-        assert!(steps[2].contains("batch_size=1000"));
-    }
-
-    #[test]
-    fn ghost_planner_generates_staged_plan() {
-        let planner = GhostTablePlanner;
-        let plan = planner.plan_staged("ai.log", "ALTER TABLE ai.log ADD COLUMN extra text", 1000);
-        assert_eq!(plan.snapshot_statements.len(), 3);
-        assert_eq!(plan.catch_up_statements.len(), 4);
-        assert_eq!(plan.cutover_statements.len(), 3);
-        assert_eq!(plan.cleanup_statements.len(), 3);
-    }
-
-    #[test]
-    fn ghost_planner_generates_replication_setup_statements() {
-        let planner = GhostTablePlanner;
-        let plan = planner.plan_staged("ai.log", "ALTER TABLE ai.log ADD COLUMN extra text", 1000);
-
-        assert!(
-            plan.catch_up_statements
-                .iter()
-                .any(|statement| statement.contains("pg_create_logical_replication_slot"))
-        );
-        assert!(
-            plan.catch_up_statements
-                .iter()
-                .any(|statement| statement.contains("CREATE PUBLICATION"))
-        );
-        assert!(
-            plan.catch_up_statements
-                .iter()
-                .all(|statement| !statement.contains("-- logical replication apply"))
-        );
-    }
-
-    #[test]
-    fn ghost_planner_generates_unique_names_for_distinct_runs() {
-        let planner = GhostTablePlanner;
-        let plan_a = planner.plan_staged_with_run_suffix(
-            "ai.log",
-            "ALTER TABLE ai.log ADD COLUMN extra text",
-            1000,
-            Some("task1"),
-        );
-        let plan_b = planner.plan_staged_with_run_suffix(
-            "ai.log",
-            "ALTER TABLE ai.log ADD COLUMN extra text",
-            1000,
-            Some("task2"),
-        );
-
-        assert_ne!(plan_a.snapshot_statements[0], plan_b.snapshot_statements[0]);
-        assert_ne!(plan_a.cutover_statements[1], plan_b.cutover_statements[1]);
-        assert_ne!(plan_a.catch_up_statements[1], plan_b.catch_up_statements[1]);
-    }
-}
-
 fn split_qualified_table_name(table: &str) -> (Option<String>, String) {
     match table.rsplit_once('.') {
         Some((schema, table_name)) => (Some(schema.to_string()), table_name.to_string()),
@@ -221,4 +154,71 @@ fn sanitize_identifier(value: String) -> String {
         sanitized.insert(0, '_');
     }
     sanitized
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ddl::GhostTablePlanner;
+
+    #[test]
+    fn ghost_planner_generates_swap_sequence() {
+        let planner = GhostTablePlanner;
+        let steps = planner.plan("ai.log", "ALTER TABLE ai.log ADD COLUMN extra text", 1000);
+        assert_eq!(steps.len(), 13);
+        assert!(steps[0].contains("ai.log__ghost"));
+        assert!(steps[2].contains("batch_size=1000"));
+    }
+
+    #[test]
+    fn ghost_planner_generates_staged_plan() {
+        let planner = GhostTablePlanner;
+        let plan = planner.plan_staged("ai.log", "ALTER TABLE ai.log ADD COLUMN extra text", 1000);
+        assert_eq!(plan.snapshot_statements.len(), 3);
+        assert_eq!(plan.catch_up_statements.len(), 4);
+        assert_eq!(plan.cutover_statements.len(), 3);
+        assert_eq!(plan.cleanup_statements.len(), 3);
+    }
+
+    #[test]
+    fn ghost_planner_generates_replication_setup_statements() {
+        let planner = GhostTablePlanner;
+        let plan = planner.plan_staged("ai.log", "ALTER TABLE ai.log ADD COLUMN extra text", 1000);
+
+        assert!(
+            plan.catch_up_statements
+                .iter()
+                .any(|statement| statement.contains("pg_create_logical_replication_slot"))
+        );
+        assert!(
+            plan.catch_up_statements
+                .iter()
+                .any(|statement| statement.contains("CREATE PUBLICATION"))
+        );
+        assert!(
+            plan.catch_up_statements
+                .iter()
+                .all(|statement| !statement.contains("-- logical replication apply"))
+        );
+    }
+
+    #[test]
+    fn ghost_planner_generates_unique_names_for_distinct_runs() {
+        let planner = GhostTablePlanner;
+        let plan_a = planner.plan_staged_with_run_suffix(
+            "ai.log",
+            "ALTER TABLE ai.log ADD COLUMN extra text",
+            1000,
+            Some("task1"),
+        );
+        let plan_b = planner.plan_staged_with_run_suffix(
+            "ai.log",
+            "ALTER TABLE ai.log ADD COLUMN extra text",
+            1000,
+            Some("task2"),
+        );
+
+        assert_ne!(plan_a.snapshot_statements[0], plan_b.snapshot_statements[0]);
+        assert_ne!(plan_a.cutover_statements[1], plan_b.cutover_statements[1]);
+        assert_ne!(plan_a.catch_up_statements[1], plan_b.catch_up_statements[1]);
+    }
 }

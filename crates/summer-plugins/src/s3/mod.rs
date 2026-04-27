@@ -144,6 +144,7 @@ mod tests {
     // ─── 连通性测试 ──────────────────────────────────────────────────────────
 
     #[tokio::test]
+    #[ignore = "requires S3_ACCESS_KEY, S3_SECRET_KEY, and a local S3-compatible service"]
     async fn test_s3_list_buckets() {
         let (s3, _) = s3().await;
         let resp = s3
@@ -160,6 +161,7 @@ mod tests {
     // ─── 单文件 Put / Head / Get / Delete ────────────────────────────────────
 
     #[tokio::test]
+    #[ignore = "requires S3_ACCESS_KEY, S3_SECRET_KEY, and a local S3-compatible service"]
     async fn test_put_head_get_delete() {
         let (s3, config) = s3().await;
         let bucket = &config.bucket;
@@ -213,6 +215,7 @@ mod tests {
     // ─── 分片上传 (Multipart Upload) ─────────────────────────────────────────
 
     #[tokio::test]
+    #[ignore = "requires S3_ACCESS_KEY, S3_SECRET_KEY, and a local S3-compatible service"]
     async fn test_multipart_upload() {
         let (s3, config) = s3().await;
         let bucket = &config.bucket;
@@ -298,6 +301,7 @@ mod tests {
     // ─── Presigned URL 生成 + 验证 ───────────────────────────────────────────
 
     #[tokio::test]
+    #[ignore = "requires S3_ACCESS_KEY, S3_SECRET_KEY, and a local S3-compatible service"]
     async fn test_presigned_put_and_get() {
         let (s3, config) = s3().await;
         let bucket = &config.bucket;
@@ -368,6 +372,7 @@ mod tests {
     // ─── 覆盖上传 ───────────────────────────────────────────────────────────
 
     #[tokio::test]
+    #[ignore = "requires S3_ACCESS_KEY, S3_SECRET_KEY, and a local S3-compatible service"]
     async fn test_overwrite_object() {
         let (s3, config) = s3().await;
         let bucket = &config.bucket;
@@ -414,6 +419,7 @@ mod tests {
     // ─── S3 删除幂等性 ──────────────────────────────────────────────────────
 
     #[tokio::test]
+    #[ignore = "requires S3_ACCESS_KEY, S3_SECRET_KEY, and a local S3-compatible service"]
     async fn test_delete_nonexistent_is_idempotent() {
         let (s3, config) = s3().await;
         let bucket = &config.bucket;
@@ -426,6 +432,7 @@ mod tests {
     // ─── 上传本地文件（不删除，用于面板验证） ──────────────────────────────
 
     #[tokio::test]
+    #[ignore = "requires S3_ACCESS_KEY, S3_SECRET_KEY, and a local S3-compatible service"]
     async fn test_upload_main_rs_no_cleanup() {
         let (s3, config) = s3().await;
         let bucket = &config.bucket;

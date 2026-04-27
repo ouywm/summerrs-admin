@@ -58,13 +58,15 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("database connected");
 
     // 构建 MCP 配置
-    let mut config = McpConfig::default();
-    config.transport = cli.transport;
-    config.http_mode = McpHttpMode::Standalone;
-    config.port = cli.port;
-    config.binding = cli.host.parse()?;
-    config.path = cli.path.clone();
-    config.default_database_url = Some(cli.database_url.clone());
+    let config = McpConfig {
+        transport: cli.transport,
+        http_mode: McpHttpMode::Standalone,
+        port: cli.port,
+        binding: cli.host.parse()?,
+        path: cli.path.clone(),
+        default_database_url: Some(cli.database_url.clone()),
+        ..Default::default()
+    };
 
     let run_result = run_server_with_shutdown(config, db.clone(), async {
         tokio::signal::ctrl_c().await.ok();

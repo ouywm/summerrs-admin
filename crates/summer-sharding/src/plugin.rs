@@ -71,7 +71,7 @@ impl Plugin for SummerShardingPlugin {
                 tracing::warn!(
                     "TenantMetadataLoader not found; using built-in SysTenantDatasourceMetadataLoader"
                 );
-                Arc::new(SysTenantDatasourceMetadataLoader::default())
+                Arc::new(SysTenantDatasourceMetadataLoader)
             });
 
         connection.set_metadata_loader(metadata_loader.clone());

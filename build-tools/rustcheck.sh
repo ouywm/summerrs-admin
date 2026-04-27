@@ -11,26 +11,11 @@ run_check() {
 }
 
 run_clippy() {
-  local packages=(
-    app
-    summer-admin-macros
-    summer-common
-    summer-auth
-    summer-system-model
-    summer-domain
-    summer-system
-  )
-
-  local args=()
-  for package in "${packages[@]}"; do
-    args+=(-p "$package")
-  done
-
-  cargo clippy "${args[@]}" --all-targets --no-deps -- -D warnings
+  cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings
 }
 
 run_clippy_workspace() {
-  cargo clippy --workspace --all-targets
+  cargo clippy --workspace --all-targets --all-features
 }
 
 run_test_compile() {

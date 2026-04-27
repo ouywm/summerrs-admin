@@ -54,7 +54,7 @@ fn validate_decimal(field: &str, value: &str) -> Result<(), String> {
     let decimal = normalized
         .parse::<bigdecimal::BigDecimal>()
         .map_err(|_| format!("{field} 必须是合法小数"))?;
-    if decimal < bigdecimal::BigDecimal::from(0) {
+    if decimal < 0 {
         return Err(format!("{field} 不能为负数"));
     }
     Ok(())

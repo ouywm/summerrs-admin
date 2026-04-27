@@ -20,7 +20,7 @@ fn create_vendor_defaults_optional_fields() {
 
     let active = dto.into_active_model("operator");
     assert_eq!(active.vendor_code.unwrap(), "openai");
-    assert_eq!(active.enabled.unwrap(), true);
+    assert!(active.enabled.unwrap());
     assert_eq!(active.vendor_sort.unwrap(), 0);
     assert_eq!(active.metadata.unwrap(), serde_json::json!({}));
 }
@@ -66,7 +66,7 @@ fn update_vendor_only_applies_supplied_fields() {
     assert_eq!(active.icon.unwrap(), "icon");
     assert_eq!(active.doc_url.unwrap(), "https://platform.openai.com/docs");
     assert_eq!(active.vendor_sort.unwrap(), 10);
-    assert_eq!(active.enabled.unwrap(), false);
+    assert!(!active.enabled.unwrap());
 }
 
 #[test]

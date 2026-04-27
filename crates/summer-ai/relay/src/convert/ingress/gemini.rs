@@ -434,10 +434,7 @@ fn tool_config_to_choice(config: GeminiToolConfig) -> Option<ToolChoice> {
     }
 }
 
-/// GenerationConfig 字段拆分到 canonical 各处。
-fn split_generation_config(
-    config: Option<GeminiGenerationConfig>,
-) -> (
+type SplitGenerationConfig = (
     Option<f64>,
     Option<f64>,
     Option<i64>,
@@ -446,7 +443,10 @@ fn split_generation_config(
     Option<serde_json::Value>,
     Option<summer_ai_core::ReasoningEffort>,
     serde_json::Map<String, serde_json::Value>,
-) {
+);
+
+/// GenerationConfig 字段拆分到 canonical 各处。
+fn split_generation_config(config: Option<GeminiGenerationConfig>) -> SplitGenerationConfig {
     let Some(cfg) = config else {
         return (
             None,
@@ -557,10 +557,10 @@ fn canonical_choice_to_gemini_candidate(choice: ChatChoice) -> AdapterResult<Gem
 
     let mut parts: Vec<GeminiPart> = Vec::new();
 
-    if let Some(text) = message_text(&message) {
-        if !text.is_empty() {
-            parts.push(GeminiPart::plain_text(text));
-        }
+    if let Some(text) = message_text(&message)
+        && !text.is_empty()
+    {
+        parts.push(GeminiPart::plain_text(text));
     }
 
     if let Some(tool_calls) = message.tool_calls {
@@ -835,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_functionDeclarations_flattened() {
+    fn tools_function_declarations_flattened() {
         let req: GeminiGenerateContentRequest = serde_json::from_value(serde_json::json!({
             "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
             "tools": [{

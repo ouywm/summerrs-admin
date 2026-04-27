@@ -577,14 +577,14 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
     // message.content + tool_calls → Vec<ClaudeContentBlock>
     let mut content_blocks: Vec<ClaudeContentBlock> = Vec::new();
 
-    if let Some(text) = message_text(&assistant) {
-        if !text.is_empty() {
-            content_blocks.push(ClaudeContentBlock::Text {
-                text,
-                cache_control: None,
-                citations: None,
-            });
-        }
+    if let Some(text) = message_text(&assistant)
+        && !text.is_empty()
+    {
+        content_blocks.push(ClaudeContentBlock::Text {
+            text,
+            cache_control: None,
+            citations: None,
+        });
     }
 
     if let Some(tool_calls) = assistant.tool_calls {
@@ -741,13 +741,13 @@ fn from_canonical_stream_event_impl(
                 out.push(content_block_start_tool_use(block_index, id, name));
             }
             // arguments 增量（可能与 name 同一次到达）
-            if let Some(args) = delta.arguments_delta {
-                if !args.is_empty() {
-                    out.push(content_block_delta(
-                        block_index,
-                        ClaudeStreamDelta::InputJsonDelta { partial_json: args },
-                    ));
-                }
+            if let Some(args) = delta.arguments_delta
+                && !args.is_empty()
+            {
+                out.push(content_block_delta(
+                    block_index,
+                    ClaudeStreamDelta::InputJsonDelta { partial_json: args },
+                ));
             }
         }
         ChatStreamEvent::End(end) => {

@@ -123,7 +123,7 @@ mod tests {
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct CapturedContext {
-        tenant_id: Option<String>,
+        user_id: Option<i64>,
         marker: Option<&'static str>,
     }
 
@@ -154,8 +154,9 @@ mod tests {
                 .cloned()
                 .expect("rewrite connection should be injected");
             let marker = conn.extensions().get::<RequestMarker>().cloned();
+            let session = conn.extensions().get::<UserSession>().cloned();
             *self.captured.lock().expect("capture lock") = Some(CapturedContext {
-                tenant_id: None,
+                user_id: session.map(|value| value.login_id.user_id),
                 marker: marker.map(|value| value.0),
             });
 
@@ -254,7 +255,7 @@ mod tests {
         assert_eq!(
             *captured.lock().expect("capture lock"),
             Some(CapturedContext {
-                tenant_id: Some("T-WEB-001".to_string()),
+                user_id: Some(7),
                 marker: Some("marker-1"),
             })
         );

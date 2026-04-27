@@ -353,10 +353,12 @@ mod tests {
             model: "m".into(),
             role_emitted: true,
         });
-        let mut usage = Usage::default();
-        usage.prompt_tokens = 10;
-        usage.completion_tokens = 5;
-        usage.total_tokens = 15;
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            ..Default::default()
+        };
         let evt = ChatStreamEvent::End(StreamEnd {
             finish_reason: Some(FinishReason::Stop),
             usage: Some(usage),

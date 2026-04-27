@@ -467,13 +467,12 @@ async fn wait_until_database_ready(database_url: &str) -> Result<()> {
 async fn wait_until_clickhouse_ready(http_url: &str) -> Result<()> {
     let client = Client::new();
     for _ in 0..60 {
-        if let Ok(response) = client.get(format!("{http_url}/ping")).send().await {
-            if response.status().is_success() {
-                let body = response.text().await.unwrap_or_default();
-                if body.trim().eq_ignore_ascii_case("Ok.") || body.trim().eq_ignore_ascii_case("Ok")
-                {
-                    return Ok(());
-                }
+        if let Ok(response) = client.get(format!("{http_url}/ping")).send().await
+            && response.status().is_success()
+        {
+            let body = response.text().await.unwrap_or_default();
+            if body.trim().eq_ignore_ascii_case("Ok.") || body.trim().eq_ignore_ascii_case("Ok") {
+                return Ok(());
             }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;

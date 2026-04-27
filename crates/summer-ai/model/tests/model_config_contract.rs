@@ -27,7 +27,7 @@ fn create_model_config_defaults_optional_fields() {
     let active = dto.into_active_model("operator").expect("valid dto");
     assert_eq!(active.model_name.unwrap(), "gpt-4o-mini");
     assert_eq!(active.currency.unwrap(), "USD");
-    assert_eq!(active.enabled.unwrap(), true);
+    assert!(active.enabled.unwrap());
     assert_eq!(active.input_ratio.unwrap(), BigDecimal::from(1));
     assert_eq!(active.output_ratio.unwrap(), BigDecimal::from(1));
     assert_eq!(active.cached_input_ratio.unwrap(), BigDecimal::from(0));
@@ -101,7 +101,7 @@ fn update_model_config_only_applies_supplied_fields() {
     );
     assert_eq!(active.max_context.unwrap(), 256000);
     assert_eq!(active.currency.unwrap(), "USD");
-    assert_eq!(active.enabled.unwrap(), false);
+    assert!(!active.enabled.unwrap());
     assert_eq!(active.remark.unwrap(), "official");
 }
 

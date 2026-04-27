@@ -70,16 +70,18 @@ impl UserQuotaService {
                     if quota != 0 {
                         insert_adjust_transaction(
                             txn,
-                            model.user_id,
-                            0,
-                            quota,
-                            quota,
-                            &reference_no,
-                            "初始化用户额度",
-                            json!({
-                                "channelGroup": group,
-                                "remark": remark,
-                            }),
+                            AdjustTransactionInput {
+                                user_id: model.user_id,
+                                balance_before: 0,
+                                balance_after: quota,
+                                quota_delta: quota,
+                                reference_no: &reference_no,
+                                reason: "初始化用户额度",
+                                metadata: json!({
+                                    "channelGroup": group,
+                                    "remark": remark,
+                                }),
+                            },
                         )
                         .await?;
                     }
@@ -119,17 +121,19 @@ impl UserQuotaService {
                     if quota_delta != 0 {
                         insert_adjust_transaction(
                             txn,
-                            updated.user_id,
-                            model.quota - model.used_quota,
-                            updated.quota - updated.used_quota,
-                            quota_delta,
-                            &reference_no,
-                            "后台更新用户额度",
-                            json!({
-                                "oldQuota": model.quota,
-                                "newQuota": updated.quota,
-                                "usedQuota": updated.used_quota,
-                            }),
+                            AdjustTransactionInput {
+                                user_id: updated.user_id,
+                                balance_before: model.quota - model.used_quota,
+                                balance_after: updated.quota - updated.used_quota,
+                                quota_delta,
+                                reference_no: &reference_no,
+                                reason: "后台更新用户额度",
+                                metadata: json!({
+                                    "oldQuota": model.quota,
+                                    "newQuota": updated.quota,
+                                    "usedQuota": updated.used_quota,
+                                }),
+                            },
                         )
                         .await?;
                     }
@@ -178,17 +182,19 @@ impl UserQuotaService {
 
                     insert_adjust_transaction(
                         txn,
-                        model.user_id,
-                        model.quota - model.used_quota,
-                        new_quota - model.used_quota,
-                        dto.quota_delta,
-                        &reference_no,
-                        &reason,
-                        json!({
-                            "oldQuota": model.quota,
-                            "newQuota": new_quota,
-                            "usedQuota": model.used_quota,
-                        }),
+                        AdjustTransactionInput {
+                            user_id: model.user_id,
+                            balance_before: model.quota - model.used_quota,
+                            balance_after: new_quota - model.used_quota,
+                            quota_delta: dto.quota_delta,
+                            reference_no: &reference_no,
+                            reason: &reason,
+                            metadata: json!({
+                                "oldQuota": model.quota,
+                                "newQuota": new_quota,
+                                "usedQuota": model.used_quota,
+                            }),
+                        },
                     )
                     .await?;
 
@@ -261,36 +267,40 @@ fn new_reference_no() -> String {
     format!("uq_{}", Uuid::new_v4().simple())
 }
 
-async fn insert_adjust_transaction(
-    txn: &sea_orm::DatabaseTransaction,
+struct AdjustTransactionInput<'a> {
     user_id: i64,
     balance_before: i64,
     balance_after: i64,
     quota_delta: i64,
-    reference_no: &str,
-    reason: &str,
+    reference_no: &'a str,
+    reason: &'a str,
     metadata: serde_json::Value,
+}
+
+async fn insert_adjust_transaction(
+    txn: &sea_orm::DatabaseTransaction,
+    input: AdjustTransactionInput<'_>,
 ) -> ApiResult<()> {
-    let mut payload = metadata;
+    let mut payload = input.metadata;
     if let Some(obj) = payload.as_object_mut() {
-        obj.insert("reason".to_string(), serde_json::json!(reason));
+        obj.insert("reason".to_string(), serde_json::json!(input.reason));
     }
 
     transaction::ActiveModel {
         organization_id: Set(0),
-        user_id: Set(user_id),
+        user_id: Set(input.user_id),
         project_id: Set(0),
         order_id: Set(0),
         payment_method_id: Set(0),
         account_type: Set("quota".to_string()),
-        direction: Set(transaction_direction(quota_delta).to_string()),
+        direction: Set(transaction_direction(input.quota_delta).to_string()),
         trade_type: Set(transaction_trade_type().to_string()),
         amount: Set(BigDecimal::from(0)),
         currency: Set("USD".to_string()),
-        quota_delta: Set(quota_delta),
-        balance_before: Set(BigDecimal::from(balance_before)),
-        balance_after: Set(BigDecimal::from(balance_after)),
-        reference_no: Set(reference_no.to_string()),
+        quota_delta: Set(input.quota_delta),
+        balance_before: Set(BigDecimal::from(input.balance_before)),
+        balance_after: Set(BigDecimal::from(input.balance_after)),
+        reference_no: Set(input.reference_no.to_string()),
         status: Set(transaction::TransactionStatus::Succeeded),
         metadata: Set(payload),
         ..Default::default()

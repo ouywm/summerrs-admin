@@ -65,7 +65,7 @@ use summer_ai_billing::{
 use summer_ai_core::{AdapterDispatcher, EndpointScope};
 
 use crate::auth::AiTokenContext;
-use crate::context::RelayContext;
+use crate::context::{ClientRequestMeta, RelayContext};
 use crate::convert::ingress::{IngressConverter, IngressCtx, IngressFormat};
 use crate::error::{RelayError, RelayResult, RetryKind};
 use crate::service::channel_store::{Candidate, ChannelStore};
@@ -163,9 +163,7 @@ where
             format,
             &logical_model,
             is_stream,
-            client_ip,
-            user_agent,
-            client_headers,
+            ClientRequestMeta::new(client_ip, user_agent, client_headers),
         );
         let scope = EndpointScope::from(format);
         let service = chat::service_type_for(scope, is_stream);

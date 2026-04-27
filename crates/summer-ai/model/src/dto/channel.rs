@@ -131,10 +131,10 @@ impl UpdateChannelDto {
         if let Some(base_url) = self.base_url {
             active.base_url = Set(base_url);
         }
-        if let Some(models) = self.models {
-            if let Ok(v) = serde_json::to_value(models) {
-                active.models = Set(v);
-            }
+        if let Some(models) = self.models
+            && let Ok(v) = serde_json::to_value(models)
+        {
+            active.models = Set(v);
         }
         if let Some(model_mapping) = self.model_mapping {
             active.model_mapping = Set(serde_json::Value::Object(model_mapping));
@@ -142,15 +142,15 @@ impl UpdateChannelDto {
         if let Some(channel_group) = self.channel_group {
             active.channel_group = Set(channel_group);
         }
-        if let Some(endpoint_scopes) = self.endpoint_scopes {
-            if let Ok(v) = serde_json::to_value(endpoint_scopes) {
-                active.endpoint_scopes = Set(v);
-            }
+        if let Some(endpoint_scopes) = self.endpoint_scopes
+            && let Ok(v) = serde_json::to_value(endpoint_scopes)
+        {
+            active.endpoint_scopes = Set(v);
         }
-        if let Some(capabilities) = self.capabilities {
-            if let Ok(v) = serde_json::to_value(capabilities) {
-                active.capabilities = Set(v);
-            }
+        if let Some(capabilities) = self.capabilities
+            && let Ok(v) = serde_json::to_value(capabilities)
+        {
+            active.capabilities = Set(v);
         }
         if let Some(weight) = self.weight {
             active.weight = Set(weight);

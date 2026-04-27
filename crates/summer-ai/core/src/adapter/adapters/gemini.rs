@@ -125,10 +125,10 @@ fn canonical_to_gemini_request(req: &ChatRequest) -> AdapterResult<GeminiGenerat
     for msg in &req.messages {
         match msg.role {
             Role::System | Role::Developer => {
-                if let Some(text) = message_text(msg) {
-                    if !text.is_empty() {
-                        system_texts.push(text);
-                    }
+                if let Some(text) = message_text(msg)
+                    && !text.is_empty()
+                {
+                    system_texts.push(text);
                 }
             }
             Role::User => {
@@ -329,16 +329,16 @@ fn canonical_content_to_gemini_parts(msg: &ChatMessage) -> Vec<GeminiPart> {
 }
 
 fn canonical_image_to_gemini(image_url: &ImageUrl) -> GeminiPart {
-    if let Some(stripped) = image_url.url.strip_prefix("data:") {
-        if let Some((meta, data)) = stripped.split_once(",") {
-            let mime_type = meta.split(';').next().unwrap_or("image/png").to_string();
-            return GeminiPart::InlineData {
-                inline_data: GeminiInlineData {
-                    mime_type,
-                    data: data.to_string(),
-                },
-            };
-        }
+    if let Some(stripped) = image_url.url.strip_prefix("data:")
+        && let Some((meta, data)) = stripped.split_once(",")
+    {
+        let mime_type = meta.split(';').next().unwrap_or("image/png").to_string();
+        return GeminiPart::InlineData {
+            inline_data: GeminiInlineData {
+                mime_type,
+                data: data.to_string(),
+            },
+        };
     }
     GeminiPart::FileData {
         file_data: GeminiFileData {

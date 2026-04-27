@@ -437,26 +437,26 @@ fn render_function_call_output(
 fn parse_text_config(
     config: &summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesTextConfig,
 ) -> (Option<ResponseFormat>, Option<Verbosity>) {
-    let response_format = config.format.as_ref().and_then(|format| match format {
+    let response_format = config.format.as_ref().map(|format| match format {
         summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesTextFormat::Text => {
-            Some(ResponseFormat::Text)
+            ResponseFormat::Text
         }
         summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesTextFormat::JsonObject => {
-            Some(ResponseFormat::JsonObject)
+            ResponseFormat::JsonObject
         }
         summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesTextFormat::JsonSchema {
             name,
             schema,
             description,
             strict,
-        } => Some(ResponseFormat::JsonSchema {
+        } => ResponseFormat::JsonSchema {
             json_schema: summer_ai_core::types::openai::chat::JsonSchemaFormat {
                 name: name.clone(),
                 description: description.clone(),
                 schema: schema.clone(),
                 strict: *strict,
             },
-        }),
+        },
     });
     let verbosity = config.verbosity.as_deref().and_then(|value| match value {
         "low" => Some(Verbosity::Low),
@@ -493,10 +493,10 @@ fn extend_extra_non_empty_vec<T: serde::Serialize>(
     key: &str,
     value: Vec<T>,
 ) {
-    if !value.is_empty() {
-        if let Ok(value) = serde_json::to_value(value) {
-            extra.insert(key.to_string(), value);
-        }
+    if !value.is_empty()
+        && let Ok(value) = serde_json::to_value(value)
+    {
+        extra.insert(key.to_string(), value);
     }
 }
 
@@ -1836,10 +1836,10 @@ mod tests {
         let added = all
             .iter()
             .find_map(|ev| match ev {
-                OpenAIResponsesStreamEvent::OutputItemAdded { item, .. } => match item {
-                    OpenAIResponsesOutputItem::FunctionCall(f) => Some(f),
-                    _ => None,
-                },
+                OpenAIResponsesStreamEvent::OutputItemAdded {
+                    item: OpenAIResponsesOutputItem::FunctionCall(f),
+                    ..
+                } => Some(f),
                 _ => None,
             })
             .expect("expected OutputItemAdded after name arrived");
@@ -1902,10 +1902,10 @@ mod tests {
         let fc = tail
             .iter()
             .find_map(|ev| match ev {
-                OpenAIResponsesStreamEvent::OutputItemDone { item, .. } => match item {
-                    OpenAIResponsesOutputItem::FunctionCall(f) => Some(f),
-                    _ => None,
-                },
+                OpenAIResponsesStreamEvent::OutputItemDone {
+                    item: OpenAIResponsesOutputItem::FunctionCall(f),
+                    ..
+                } => Some(f),
                 _ => None,
             })
             .unwrap();
@@ -1932,10 +1932,10 @@ mod tests {
         let fc = tail
             .iter()
             .find_map(|ev| match ev {
-                OpenAIResponsesStreamEvent::OutputItemDone { item, .. } => match item {
-                    OpenAIResponsesOutputItem::FunctionCall(f) => Some(f),
-                    _ => None,
-                },
+                OpenAIResponsesStreamEvent::OutputItemDone {
+                    item: OpenAIResponsesOutputItem::FunctionCall(f),
+                    ..
+                } => Some(f),
                 _ => None,
             })
             .expect("expected OutputItemDone fallback");

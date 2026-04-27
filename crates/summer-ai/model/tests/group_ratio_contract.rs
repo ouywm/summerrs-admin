@@ -19,7 +19,7 @@ fn create_group_ratio_defaults_json_fields() {
 
     let active = dto.into_active_model("operator");
     assert_eq!(active.group_code.unwrap(), "vip");
-    assert_eq!(active.enabled.unwrap(), true);
+    assert!(active.enabled.unwrap());
     assert_eq!(
         active.model_whitelist.unwrap(),
         serde_json::json!(["gpt-4o"])
@@ -67,7 +67,7 @@ fn update_group_ratio_only_touches_supplied_fields() {
     .apply_to(&mut active, "operator");
 
     assert_eq!(active.group_name.unwrap(), "VIP");
-    assert_eq!(active.enabled.unwrap(), false);
+    assert!(!active.enabled.unwrap());
     assert_eq!(
         active.model_whitelist.unwrap(),
         serde_json::json!(["gpt-4o"])

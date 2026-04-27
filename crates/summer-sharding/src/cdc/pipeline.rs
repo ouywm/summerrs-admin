@@ -595,7 +595,7 @@ mod tests {
         assert!((2..=3).contains(&report.snapshot_written));
         assert_eq!(report.catch_up_written, 1);
         assert!(report.last_position.is_some());
-        assert_eq!(report.cutover_complete, false);
+        assert!(!report.cutover_complete);
         assert_eq!(report.phases, vec![CdcPhase::Snapshot, CdcPhase::CatchUp]);
         assert_eq!(sink.rows().len(), 3);
     }

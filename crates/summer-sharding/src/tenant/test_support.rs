@@ -514,7 +514,7 @@ fn database_name(database_url: &str) -> Result<String> {
         ShardingError::Config(format!("invalid database url `{database_url}`: {error}"))
     })?;
     url.path_segments()
-        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
         .map(|segment| segment.to_string())
         .ok_or_else(|| {
             ShardingError::Config(format!(

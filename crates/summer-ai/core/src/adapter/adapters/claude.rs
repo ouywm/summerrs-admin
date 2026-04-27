@@ -17,7 +17,6 @@
 
 use bytes::Bytes;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
-use std::future::Future;
 
 use crate::adapter::{
     Adapter, AdapterKind, AuthStrategy, CostProfile, ServiceType, WebRequestData,
@@ -96,17 +95,15 @@ impl Adapter for ClaudeAdapter {
         Ok(claude_stream_event_to_canonical(event))
     }
 
-    fn fetch_model_names(
+    async fn fetch_model_names(
         _target: &ServiceTarget,
         _http: &reqwest::Client,
-    ) -> impl Future<Output = AdapterResult<Vec<String>>> + Send {
-        async {
-            // Claude `/v1/models` 最近才出现且权限要求较高；后续按需启用。
-            Err(AdapterError::Unsupported {
-                adapter: Self::KIND.as_str(),
-                feature: "fetch_model_names",
-            })
-        }
+    ) -> AdapterResult<Vec<String>> {
+        // Claude `/v1/models` 最近才出现且权限要求较高；后续按需启用。
+        Err(AdapterError::Unsupported {
+            adapter: Self::KIND.as_str(),
+            feature: "fetch_model_names",
+        })
     }
 }
 
@@ -131,10 +128,10 @@ fn canonical_to_claude_request(
     for msg in &req.messages {
         match msg.role {
             Role::System | Role::Developer => {
-                if let Some(text) = message_text(msg) {
-                    if !text.is_empty() {
-                        system_text_parts.push(text);
-                    }
+                if let Some(text) = message_text(msg)
+                    && !text.is_empty()
+                {
+                    system_text_parts.push(text);
                 }
             }
             _ => non_system_messages.push(msg),
@@ -300,14 +297,14 @@ fn merge_tool_messages(msgs: &[&ChatMessage]) -> AdapterResult<Vec<ClaudeMessage
                 }
                 // assistant：text + tool_calls → blocks
                 let mut blocks: Vec<ClaudeContentBlock> = Vec::new();
-                if let Some(text) = message_text(msg) {
-                    if !text.is_empty() {
-                        blocks.push(ClaudeContentBlock::Text {
-                            text,
-                            cache_control: None,
-                            citations: None,
-                        });
-                    }
+                if let Some(text) = message_text(msg)
+                    && !text.is_empty()
+                {
+                    blocks.push(ClaudeContentBlock::Text {
+                        text,
+                        cache_control: None,
+                        citations: None,
+                    });
                 }
                 if let Some(tool_calls) = &msg.tool_calls {
                     for tc in tool_calls {
@@ -471,14 +468,14 @@ fn canonical_message_to_claude_content(msg: &ChatMessage) -> ClaudeContent {
 
 fn parse_image_url(url: &str) -> ClaudeImageSource {
     // data:image/png;base64,XYZ
-    if let Some(stripped) = url.strip_prefix("data:") {
-        if let Some((meta, data)) = stripped.split_once(",") {
-            let media_type = meta.split(';').next().unwrap_or("image/png").to_string();
-            return ClaudeImageSource::Base64 {
-                media_type,
-                data: data.to_string(),
-            };
-        }
+    if let Some(stripped) = url.strip_prefix("data:")
+        && let Some((meta, data)) = stripped.split_once(",")
+    {
+        let media_type = meta.split(';').next().unwrap_or("image/png").to_string();
+        return ClaudeImageSource::Base64 {
+            media_type,
+            data: data.to_string(),
+        };
     }
     ClaudeImageSource::Url {
         url: url.to_string(),
