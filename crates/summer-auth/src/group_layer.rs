@@ -4,20 +4,18 @@
 //!
 //! ```ignore
 //! let group = "summer-system";
-//! let strategy = JwtStrategy::new(manager, path_config, group);
+//! let strategy = JwtStrategy::new(path_config, group);
 //! app.add_group_layer(group, move |router| {
 //!     router.layer(GroupAuthLayer::new(strategy.clone()))
 //! });
 //! ```
 //!
 //! 运行期一次请求的处理：
-//! 1. 永远调 `strategy.authenticate(req)`，由 strategy 自决是否需要鉴权、
-//!    是否注入上下文、是否短路返错；
-//! 2. `Ok(())` → 透传到下游 handler；
-//! 3. `Err(resp)` → layer 直接把这个 Response 作为最终响应返给客户端。
+//! 1. Strategy 通过 `RequestPartsExt::get_component()` 从 AppState 获取依赖
+//! 2. 调用 `strategy.authenticate(req)`
+//! 3. `Ok(())` → 透传到下游 handler；`Err(resp)` → 直接返回错误响应
 //!
-//! 刻意不做前置 `path_config` 过滤——strategy 内部可自行调 `path_config().requires_auth()`
-//! 来区分强鉴权 / 软鉴权路径（如 JWT 的"无 token 且非鉴权路径放行"语义）。
+//! Strategy 无状态设计，所有依赖从 request 动态获取。
 
 use std::sync::Arc;
 
@@ -99,8 +97,6 @@ where
 
     fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         let strategy = self.strategy.clone();
-        // Clone 一份干净的 inner 交给异步块，避免 `call` 复用过程中出现
-        // "still in use" 的借用问题（`tower::buffer::Buffer` / `ServiceExt::ready` 惯例）。
         let mut inner = self.inner.clone();
         std::mem::swap(&mut inner, &mut self.inner);
 

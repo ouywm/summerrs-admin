@@ -68,7 +68,7 @@ impl Plugin for SummerAuthPlugin {
             group = self.group,
             "Registering GroupAuthLayer for JWT strategy"
         );
-        let strategy = JwtStrategy::new(manager, Some(cfg), self.group);
+        let strategy = JwtStrategy::new(Some(cfg), self.group);
         app.add_group_layer(self.group, move |router| {
             router.layer(GroupAuthLayer::new(strategy.clone()))
         });

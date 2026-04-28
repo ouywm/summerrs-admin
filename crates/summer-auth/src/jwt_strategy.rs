@@ -16,6 +16,7 @@ use summer_web::axum::extract::Request;
 use summer_web::axum::http;
 use summer_web::axum::response::IntoResponse;
 use summer_web::axum::response::Response;
+use summer_web::extractor::RequestPartsExt;
 use summer_web::problem_details::ProblemDetails;
 
 use crate::config::AuthConfig;
@@ -28,22 +29,13 @@ use crate::strategy::GroupAuthStrategy;
 /// admin JWT 鉴权策略。挂到 `env!("CARGO_PKG_NAME")` 对应的 group 上。
 #[derive(Clone)]
 pub struct JwtStrategy {
-    manager: SessionManager,
     path_config: Option<PathAuthConfig>,
     group: &'static str,
 }
 
 impl JwtStrategy {
-    pub fn new(
-        manager: SessionManager,
-        path_config: Option<PathAuthConfig>,
-        group: &'static str,
-    ) -> Self {
-        Self {
-            manager,
-            path_config,
-            group,
-        }
+    pub fn new(path_config: Option<PathAuthConfig>, group: &'static str) -> Self {
+        Self { path_config, group }
     }
 }
 
@@ -60,7 +52,15 @@ impl GroupAuthStrategy for JwtStrategy {
     async fn authenticate(&self, req: &mut Request<Body>) -> Result<(), Response<Body>> {
         let method = req.method().clone();
         let path = req.uri().path().to_string();
-        let config = self.manager.config();
+
+        // 从 AppState 获取 SessionManager
+        let (parts, body) = std::mem::take(req).into_parts();
+        let manager = parts
+            .get_component::<SessionManager>()
+            .expect("SessionManager not found in AppState");
+        *req = Request::from_parts(parts, body);
+
+        let config = manager.config();
 
         let requires_auth = self
             .path_config
@@ -78,7 +78,7 @@ impl GroupAuthStrategy for JwtStrategy {
             };
         };
 
-        match self.manager.validate_token(&token).await {
+        match manager.validate_token(&token).await {
             Ok(validated) => {
                 let session = UserSession {
                     login_id: validated.login_id,
@@ -91,7 +91,6 @@ impl GroupAuthStrategy for JwtStrategy {
             Err(AuthError::AccountBanned) if requires_auth => Err(banned_response()),
             Err(AuthError::RefreshRequired) if requires_auth => Err(refresh_required_response()),
             Err(_) if requires_auth => Err(unauthorized_response()),
-            // token 无效但路径豁免 —— 与旧 AuthLayer 保持一致：继续放行，不注入 session
             Err(_) => Ok(()),
         }
     }

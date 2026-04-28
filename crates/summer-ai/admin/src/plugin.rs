@@ -24,7 +24,7 @@ pub struct SummerAiAdminPlugin;
 #[async_trait]
 impl Plugin for SummerAiAdminPlugin {
     async fn build(&self, app: &mut AppBuilder) {
-        let manager = app
+        let _manager = app
             .get_component::<SessionManager>()
             .expect("summer-ai-admin requires SessionManager (SummerAuthPlugin)");
 
@@ -49,7 +49,7 @@ impl Plugin for SummerAiAdminPlugin {
         cfg.rebuild_param_route_cache();
 
         tracing::info!(group = group, "Registering GroupAuthLayer for JWT strategy");
-        let strategy = JwtStrategy::new(manager, Some(cfg), group);
+        let strategy = JwtStrategy::new(Some(cfg), group);
         app.add_group_layer(group, move |router| {
             router.layer(GroupAuthLayer::new(strategy.clone()))
         });
