@@ -1,7 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use summer::app::AppBuilder;
-use summer::plugin::MutableComponentRegistry;
 use summer_web::axum::http;
 
 use crate::public_routes::MethodTag;
@@ -287,39 +285,6 @@ impl PathAuthBuilder {
     /// 获取所有 group 名称
     pub fn groups(&self) -> impl Iterator<Item = &&'static str> {
         self.inner.keys()
-    }
-}
-
-/// 认证配置 trait
-pub trait AuthConfigurator: Send + Sync + 'static {
-    fn configure_path_auth(&self) -> PathAuthBuilder;
-}
-
-impl AuthConfigurator for PathAuthBuilder {
-    fn configure_path_auth(&self) -> PathAuthBuilder {
-        self.clone()
-    }
-}
-
-/// 扩展 `AppBuilder` 的 trait
-pub trait SummerAuthConfigurator {
-    fn auth_configure<C>(&mut self, configurator: C) -> &mut Self
-    where
-        C: AuthConfigurator;
-}
-
-impl SummerAuthConfigurator for AppBuilder {
-    fn auth_configure<C>(&mut self, configurator: C) -> &mut Self
-    where
-        C: AuthConfigurator,
-    {
-        let builder = configurator.configure_path_auth();
-        if builder.is_empty() {
-            return self;
-        }
-
-        let configs = PathAuthConfigs::new(builder.build());
-        self.add_component(configs)
     }
 }
 

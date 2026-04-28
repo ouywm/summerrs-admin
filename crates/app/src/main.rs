@@ -2,8 +2,9 @@ use axum_client_ip::ClientIpSource;
 use summer::App;
 use summer::auto_config;
 use summer_ai::{SummerAiAdminPlugin, SummerAiBillingPlugin, SummerAiRelayPlugin};
-use summer_auth::plugin::SummerAuthPlugin;
-use summer_auth::{PathAuthBuilder, SummerAuthConfigurator};
+use summer_auth::GroupAuthLayer;
+use summer_auth::PathAuthBuilder;
+use summer_auth::jwt_strategy::JwtStrategy;
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
@@ -37,6 +38,8 @@ fn auth_path_config() -> PathAuthBuilder {
 #[auto_config(JobConfigurator, WebConfigurator)]
 #[tokio::main]
 async fn main() {
+    let auth_configs = auth_path_config().build();
+
     App::new()
         .add_plugin(WebPlugin)
         .add_plugin(SeaOrmPlugin)
@@ -45,7 +48,6 @@ async fn main() {
         .add_plugin(SummerSqlRewritePlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
-        .add_plugin(SummerAuthPlugin::new(summer_system::system_group()))
         .add_plugin(PermBitmapPlugin)
         .add_plugin(SocketGatewayPlugin)
         .add_plugin(Ip2RegionPlugin)
@@ -56,7 +58,24 @@ async fn main() {
         .add_plugin(SummerAiRelayPlugin)
         .add_plugin(SummerAiAdminPlugin)
         .add_plugin(SummerAiBillingPlugin)
-        .auth_configure(auth_path_config())
+        .add_group_layer(summer_system::system_group(), {
+            let configs = auth_configs.clone();
+            move |router| {
+                let cfg = configs.get(summer_system::system_group()).cloned();
+                let strategy = JwtStrategy::new(cfg, summer_system::system_group());
+                router.layer(GroupAuthLayer::new(strategy))
+            }
+        })
+        .add_group_layer(summer_ai::SummerAiAdminPlugin::admin_group(), {
+            let configs = auth_configs.clone();
+            move |router| {
+                let cfg = configs
+                    .get(summer_ai::SummerAiAdminPlugin::admin_group())
+                    .cloned();
+                let strategy = JwtStrategy::new(cfg, summer_ai::SummerAiAdminPlugin::admin_group());
+                router.layer(GroupAuthLayer::new(strategy))
+            }
+        })
         .add_router_layer(|router| {
             router
                 .layer(ClientIpSource::ConnectInfo.into_extension())
