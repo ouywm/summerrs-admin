@@ -1,7 +1,7 @@
 use axum_client_ip::ClientIpSource;
 use summer::App;
 use summer::auto_config;
-use summer_ai::{SummerAiBillingPlugin, SummerAiRelayPlugin};
+use summer_ai::{SummerAiAdminPlugin, SummerAiBillingPlugin, SummerAiRelayPlugin};
 use summer_auth::plugin::SummerAuthPlugin;
 use summer_auth::{PathAuthBuilder, SummerAuthConfigurator};
 use summer_job::JobConfigurator;
@@ -57,6 +57,7 @@ async fn main() {
         .add_plugin(LogBatchCollectorPlugin)
         .add_plugin(McpPlugin)
         .add_plugin(SummerAiRelayPlugin)
+        .add_plugin(SummerAiAdminPlugin)
         .add_plugin(SummerAiBillingPlugin)
         .auth_configure(auth_path_config())
         .add_router_layer(|router| {

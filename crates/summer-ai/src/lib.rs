@@ -33,7 +33,7 @@
 //! - [`summer_ai_admin`] — 后台（/admin/ai/* CRUD）
 //! - [`summer_ai_billing`] — 计费引擎
 
-pub use summer_ai_admin;
+pub use summer_ai_admin::SummerAiAdminPlugin;
 pub use summer_ai_billing::SummerAiBillingPlugin;
 pub use summer_ai_core;
 pub use summer_ai_model;
