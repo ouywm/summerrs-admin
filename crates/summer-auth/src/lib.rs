@@ -7,6 +7,7 @@ pub mod jwt_strategy;
 pub mod middleware;
 pub mod online;
 pub mod path_auth;
+pub mod plugin;
 pub mod public_routes;
 pub mod qrcode;
 pub mod session;
@@ -25,6 +26,7 @@ pub use jwt_strategy::JwtStrategy;
 pub use middleware::AuthLayer;
 pub use online::{OnlineUserItem, OnlineUserPage, OnlineUserQuery};
 pub use path_auth::PathAuthBuilder;
+pub use plugin::SummerAuthPlugin;
 pub use qrcode::QrCodeState;
 pub use session::{
     DeviceInfo, DeviceSession, LoginParams, SessionManager, UserProfile, UserSession,

@@ -4,6 +4,7 @@ use summer::auto_config;
 use summer_ai::{SummerAiAdminPlugin, SummerAiBillingPlugin, SummerAiRelayPlugin};
 use summer_auth::GroupAuthLayer;
 use summer_auth::PathAuthBuilder;
+use summer_auth::SummerAuthPlugin;
 use summer_auth::jwt_strategy::JwtStrategy;
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
@@ -48,6 +49,7 @@ async fn main() {
         .add_plugin(SummerSqlRewritePlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
+        .add_plugin(SummerAuthPlugin)
         .add_plugin(PermBitmapPlugin)
         .add_plugin(SocketGatewayPlugin)
         .add_plugin(Ip2RegionPlugin)
