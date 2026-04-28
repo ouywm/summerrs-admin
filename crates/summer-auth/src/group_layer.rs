@@ -3,8 +3,9 @@
 //! 使用流程：
 //!
 //! ```ignore
-//! let strategy = JwtStrategy::new(manager, path_config);
-//! app.add_group_layer("summer-system", move |router| {
+//! let group = "summer-system";
+//! let strategy = JwtStrategy::new(manager, path_config, group);
+//! app.add_group_layer(group, move |router| {
 //!     router.layer(GroupAuthLayer::new(strategy.clone()))
 //! });
 //! ```

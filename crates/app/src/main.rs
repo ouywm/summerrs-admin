@@ -21,20 +21,17 @@ use summer_web::axum::body::Body;
 use summer_web::axum::http;
 use tower_http::catch_panic::CatchPanicLayer;
 
-// 初始化 rust-i18n（编译期加载 `locales/` 下的翻译文件到二进制）
 rust_i18n::i18n!("../../locales", fallback = "en");
 
 fn auth_path_config() -> PathAuthBuilder {
-    // 接口不需要授权：已由宏接管 `#[no_auth]` / `#[public]`
-    //
-    // 如需手动排除，可参考：
-    // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/login")`
-    // - `.exclude_method(summer_auth::public_routes::MethodTag::Post, "/auth/refresh")`
-    // - `.exclude("/public/file/**")`
-    //
-    // `for_group(summer_system::system_group())` —— JWT AuthLayer 只套到 summer-system crate 下的 handler 上，
-    // relay / mcp 等其他 group 的路由不会被它拦。
-    PathAuthBuilder::for_group(summer_system::system_group()).include("/**")
+    PathAuthBuilder::new()
+        .add_group(PathAuthBuilder::group(summer_system::system_group()).include("/**"))
+        .add_group(
+            PathAuthBuilder::group(summer_ai::SummerAiAdminPlugin::admin_group()).include("/**"),
+        )
+        .add_group(
+            PathAuthBuilder::group(summer_ai::SummerAiRelayPlugin::relay_group()).include("/**"),
+        )
 }
 
 #[auto_config(JobConfigurator, WebConfigurator)]
@@ -48,7 +45,7 @@ async fn main() {
         .add_plugin(SummerSqlRewritePlugin)
         .add_plugin(JobPlugin)
         .add_plugin(MailPlugin)
-        .add_plugin(SummerAuthPlugin)
+        .add_plugin(SummerAuthPlugin::new(summer_system::system_group()))
         .add_plugin(PermBitmapPlugin)
         .add_plugin(SocketGatewayPlugin)
         .add_plugin(Ip2RegionPlugin)

@@ -41,31 +41,37 @@ impl RouteRule {
     }
 }
 
+/// 多 group 路径认证配置集合
+#[derive(Debug, Clone, Default)]
+pub struct PathAuthConfigs {
+    inner: HashMap<&'static str, PathAuthConfig>,
+}
+
+impl PathAuthConfigs {
+    pub fn new(inner: HashMap<&'static str, PathAuthConfig>) -> Self {
+        Self { inner }
+    }
+
+    pub fn get(&self, group: &str) -> Option<&PathAuthConfig> {
+        self.inner.get(group)
+    }
+
+    pub fn get_mut(&mut self, group: &str) -> Option<&mut PathAuthConfig> {
+        self.inner.get_mut(group)
+    }
+}
+
 /// 路径认证配置
 #[derive(Debug, Clone)]
 pub struct PathAuthConfig {
-    /// 所属 group（与 `TypedHandlerRegistrar::group()` 一致，建议用 `env!("CARGO_PKG_NAME")`）。
-    ///
-    /// - `Some(name)` → summer-auth plugin 走 `add_group_layer(name, ...)`，只套在该 group 的路由上
-    /// - `None` → 兼容旧行为：plugin 走 `add_router_layer(...)`，全局挂载
-    pub group: Option<&'static str>,
     pub include: Vec<RouteRule>,
     pub exclude: Vec<RouteRule>,
     param_route_cache: ParamRouteCache,
 }
 
 impl PathAuthConfig {
-    pub(crate) fn new(include: Vec<RouteRule>, exclude: Vec<RouteRule>) -> Self {
-        Self::with_group(None, include, exclude)
-    }
-
-    pub(crate) fn with_group(
-        group: Option<&'static str>,
-        include: Vec<RouteRule>,
-        exclude: Vec<RouteRule>,
-    ) -> Self {
+    pub fn new(include: Vec<RouteRule>, exclude: Vec<RouteRule>) -> Self {
         Self {
-            group,
             param_route_cache: ParamRouteCache {
                 routers: Arc::new(Self::build_param_routers(&include, &exclude)),
             },
@@ -74,7 +80,7 @@ impl PathAuthConfig {
         }
     }
 
-    pub(crate) fn rebuild_param_route_cache(&mut self) {
+    pub fn rebuild_param_route_cache(&mut self) {
         self.param_route_cache = ParamRouteCache {
             routers: Arc::new(Self::build_param_routers(&self.include, &self.exclude)),
         };
@@ -174,14 +180,56 @@ impl PathAuthConfig {
 
 /// `PathAuthBuilder` — 流式 API 构建路径认证规则
 ///
-/// `group` 字段用于多鉴权域场景：不同 crate 的鉴权各自一份 builder，通过
-/// [`Self::for_group`] 标记所属 group，后续由 plugin 侧按 group 挂 layer。
-/// 旧调用 [`Self::new`] 保持向后兼容，`group == None` 走旧的全局挂载路径。
+/// 多 crate 场景：每个 crate 通过 [`Self::group`] 标记所属 group，
+/// 最终由 plugin 按 group 挂载不同的 auth layer。
 #[derive(Debug, Clone, Default)]
-pub struct PathAuthBuilder {
-    pub group: Option<&'static str>,
+pub struct PathAuthBuilderInner {
     pub include: Vec<RouteRule>,
     pub exclude: Vec<RouteRule>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PathAuthBuilder {
+    inner: HashMap<&'static str, PathAuthBuilderInner>,
+}
+
+/// 为单个 group 构建认证规则的流式 API
+pub struct GroupAuthBuilder {
+    group: &'static str,
+    include: Vec<RouteRule>,
+    exclude: Vec<RouteRule>,
+}
+impl GroupAuthBuilder {
+    /// 添加需要认证的路径模式
+    pub fn include(mut self, pattern: impl Into<String>) -> Self {
+        self.include.push(RouteRule::any(pattern));
+        self
+    }
+
+    /// 添加豁免认证的路径模式
+    pub fn exclude(mut self, pattern: impl Into<String>) -> Self {
+        self.exclude.push(RouteRule::any(pattern));
+        self
+    }
+
+    /// 添加需要认证的路径（指定方法）
+    pub fn include_method(mut self, method: MethodTag, pattern: impl Into<String>) -> Self {
+        self.include.push(RouteRule::new(method, pattern));
+        self
+    }
+
+    /// 添加豁免认证的路径（指定方法）
+    pub fn exclude_method(mut self, method: MethodTag, pattern: impl Into<String>) -> Self {
+        self.exclude.push(RouteRule::new(method, pattern));
+        self
+    }
+
+    /// 完成构建，返回 PathAuthBuilder
+    pub fn build(self) -> PathAuthBuilder {
+        let mut builder = PathAuthBuilder::new();
+        builder = builder.add_group(self);
+        builder
+    }
 }
 
 impl PathAuthBuilder {
@@ -189,78 +237,67 @@ impl PathAuthBuilder {
         Self::default()
     }
 
-    /// 创建归属指定 group 的 builder。`name` 建议与 handler 的
-    /// `TypedHandlerRegistrar::group()` 保持一致（默认即 `env!("CARGO_PKG_NAME")`）。
-    pub fn for_group(name: &'static str) -> Self {
-        Self {
-            group: Some(name),
+    /// 为指定 group 添加认证规则
+    pub fn group(name: &'static str) -> GroupAuthBuilder {
+        GroupAuthBuilder {
+            group: name,
             include: Vec::new(),
             exclude: Vec::new(),
         }
     }
-
-    pub fn include(mut self, pattern: impl Into<String>) -> Self {
-        self.include.push(RouteRule::any(pattern));
+    /// 添加一个 group 的配置（使用 builder 模式）
+    pub fn add_group(mut self, builder: GroupAuthBuilder) -> Self {
+        self.inner.insert(
+            builder.group,
+            PathAuthBuilderInner {
+                include: builder.include,
+                exclude: builder.exclude,
+            },
+        );
+        self
+    }
+    /// 添加一个 group 的配置（直接指定规则）
+    pub fn with_group(
+        mut self,
+        name: &'static str,
+        include: Vec<RouteRule>,
+        exclude: Vec<RouteRule>,
+    ) -> Self {
+        self.inner
+            .insert(name, PathAuthBuilderInner { include, exclude });
         self
     }
 
-    pub fn include_all(mut self, patterns: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.include
-            .extend(patterns.into_iter().map(|p| RouteRule::any(p)));
-        self
+    /// 获取所有配置
+    pub fn build(self) -> HashMap<&'static str, PathAuthConfig> {
+        self.inner
+            .into_iter()
+            .map(|(name, inner)| {
+                let config = PathAuthConfig::new(inner.include.clone(), inner.exclude.clone());
+                (name, config)
+            })
+            .collect()
     }
 
-    pub fn exclude(mut self, pattern: impl Into<String>) -> Self {
-        self.exclude.push(RouteRule::any(pattern));
-        self
+    /// 检查是否为空
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 
-    pub fn exclude_all(mut self, patterns: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.exclude
-            .extend(patterns.into_iter().map(|p| RouteRule::any(p)));
-        self
-    }
-
-    pub fn include_method(mut self, method: MethodTag, pattern: impl Into<String>) -> Self {
-        self.include.push(RouteRule::new(method, pattern));
-        self
-    }
-
-    pub fn exclude_method(mut self, method: MethodTag, pattern: impl Into<String>) -> Self {
-        self.exclude.push(RouteRule::new(method, pattern));
-        self
-    }
-
-    /// 是否已配置 include 规则
-    pub fn is_configured(&self) -> bool {
-        !self.include.is_empty() || !self.exclude.is_empty()
-    }
-
-    /// 构建最终配置
-    pub fn build(self) -> PathAuthConfig {
-        PathAuthConfig::with_group(self.group, self.include, self.exclude)
-    }
-
-    /// 合并两份路径认证配置
-    pub fn merge(mut self, other: PathAuthBuilder) -> Self {
-        // group：自身优先，否则取 other 的（自身显式，就尊重自身；None 才继承）。
-        if self.group.is_none() {
-            self.group = other.group;
-        }
-        self.include.extend(other.include);
-        self.exclude.extend(other.exclude);
-        self
+    /// 获取所有 group 名称
+    pub fn groups(&self) -> impl Iterator<Item = &&'static str> {
+        self.inner.keys()
     }
 }
 
 /// 认证配置 trait
 pub trait AuthConfigurator: Send + Sync + 'static {
-    fn configure_path_auth(&self, auth: PathAuthBuilder) -> PathAuthBuilder;
+    fn configure_path_auth(&self) -> PathAuthBuilder;
 }
 
 impl AuthConfigurator for PathAuthBuilder {
-    fn configure_path_auth(&self, auth: PathAuthBuilder) -> PathAuthBuilder {
-        auth.merge(self.clone())
+    fn configure_path_auth(&self) -> PathAuthBuilder {
+        self.clone()
     }
 }
 
@@ -276,17 +313,13 @@ impl SummerAuthConfigurator for AppBuilder {
     where
         C: AuthConfigurator,
     {
-        let mut builder = configurator.configure_path_auth(PathAuthBuilder::new());
-        if !builder.is_configured() {
+        let builder = configurator.configure_path_auth();
+        if builder.is_empty() {
             return self;
         }
 
-        // secure-by-default: 只配置了 exclude 时，默认认为“其他都需要鉴权”
-        if builder.include.is_empty() && !builder.exclude.is_empty() {
-            builder.include.push(RouteRule::any("/**"));
-        }
-
-        self.add_component(builder.build())
+        let configs = PathAuthConfigs::new(builder.build());
+        self.add_component(configs)
     }
 }
 
@@ -377,22 +410,6 @@ mod tests {
     fn empty_include_means_disabled() {
         let c = config(&[], &[(MethodTag::Any, "/**")]);
         assert!(!c.requires_auth(&http::Method::GET, "/any/path"));
-    }
-
-    #[test]
-    fn builder_merge_keeps_include_and_exclude() {
-        let a = PathAuthBuilder::new()
-            .include("/admin/**")
-            .exclude("/auth/login");
-        let b = PathAuthBuilder::new()
-            .include("/tenant/**")
-            .exclude("/public/**");
-        let config = a.merge(b).build();
-
-        assert!(config.requires_auth(&http::Method::GET, "/admin/dashboard"));
-        assert!(config.requires_auth(&http::Method::GET, "/tenant/list"));
-        assert!(!config.requires_auth(&http::Method::GET, "/auth/login"));
-        assert!(!config.requires_auth(&http::Method::GET, "/public/health"));
     }
 
     #[test]

@@ -17,7 +17,9 @@ fn merge_public_into(mut cfg: PathAuthConfig) -> PathAuthConfig {
 
 #[test]
 fn inventory_public_routes_are_merged_as_method_specific_excludes() {
-    let cfg = PathAuthBuilder::new().include("/**").build();
+    let builder = PathAuthBuilder::new().add_group(PathAuthBuilder::group("test").include("/**"));
+    let configs = builder.build();
+    let cfg = configs.get("test").unwrap().clone();
     let cfg = merge_public_into(cfg);
 
     // method-specific exclude
