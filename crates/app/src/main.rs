@@ -6,6 +6,8 @@ use summer_auth::GroupAuthLayer;
 use summer_auth::PathAuthBuilder;
 use summer_auth::SummerAuthPlugin;
 use summer_auth::jwt_strategy::JwtStrategy;
+use summer_auth::path_auth::RouteRule;
+use summer_auth::public_routes::public_routes_in_group;
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
@@ -63,18 +65,36 @@ async fn main() {
         .add_group_layer(summer_system::system_group(), {
             let configs = auth_configs.clone();
             move |router| {
-                let cfg = configs.get(summer_system::system_group()).cloned();
-                let strategy = JwtStrategy::new(cfg, summer_system::system_group());
+                let mut cfg = configs.get(summer_system::system_group()).cloned().unwrap();
+                // 合并公开路由
+                for r in public_routes_in_group(summer_system::system_group()) {
+                    let rule = RouteRule::new(r.method, r.pattern.to_string());
+                    if !cfg.exclude.contains(&rule) {
+                        cfg.exclude.push(rule);
+                    }
+                }
+                cfg.rebuild_param_route_cache();
+                let strategy = JwtStrategy::new(Some(cfg), summer_system::system_group());
                 router.layer(GroupAuthLayer::new(strategy))
             }
         })
         .add_group_layer(summer_ai::SummerAiAdminPlugin::admin_group(), {
             let configs = auth_configs.clone();
             move |router| {
-                let cfg = configs
+                let mut cfg = configs
                     .get(summer_ai::SummerAiAdminPlugin::admin_group())
-                    .cloned();
-                let strategy = JwtStrategy::new(cfg, summer_ai::SummerAiAdminPlugin::admin_group());
+                    .cloned()
+                    .unwrap();
+                // 合并公开路由
+                for r in public_routes_in_group(summer_ai::SummerAiAdminPlugin::admin_group()) {
+                    let rule = RouteRule::new(r.method, r.pattern.to_string());
+                    if !cfg.exclude.contains(&rule) {
+                        cfg.exclude.push(rule);
+                    }
+                }
+                cfg.rebuild_param_route_cache();
+                let strategy =
+                    JwtStrategy::new(Some(cfg), summer_ai::SummerAiAdminPlugin::admin_group());
                 router.layer(GroupAuthLayer::new(strategy))
             }
         })
