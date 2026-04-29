@@ -5,7 +5,6 @@ pretty_backtrace = true
 
 [web]
 connect_info = true
-global_prefix = "/api"
 graceful = true
 port = 8080
 
