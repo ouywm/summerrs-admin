@@ -20,8 +20,9 @@
 //!    方言转换后续再做（通过 `ctx.channel_kind` 分派）。
 //! 3. **`Image` 只支持 base64 `data:` URI**：Claude URL 图像 source 映射时直接用 URL，
 //!    canonical `ImageUrl.url` 接受任一。
-//! 4. **`Document` / `RedactedThinking` / `Thinking` blocks** 在 `to_canonical` 时忽略
-//!    （只在 Claude 原生上游有意义）。
+//! 4. `Document` / `RedactedThinking` / `Thinking` 等 provider-native blocks 不会
+//!    全部展开到 canonical 通用字段，但会保留到 `native_content_blocks`，保证
+//!    Claude↔Claude 往返不丢语义。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -96,7 +97,7 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
         tool_choice,
         thinking,
         metadata,
-        extra: _, // 未覆盖字段先丢弃
+        extra,
     } = req;
 
     // ---- messages ----
@@ -131,7 +132,10 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
 
     // ---- tool_choice ----
 
-    let canonical_tool_choice = tool_choice.map(claude_tool_choice_to_canonical);
+    let (canonical_tool_choice, parallel_tool_calls) = tool_choice
+        .map(claude_tool_choice_to_canonical)
+        .map(|(choice, parallel)| (Some(choice), parallel))
+        .unwrap_or((None, None));
 
     // ---- stop_sequences → stop ----
 
@@ -154,7 +158,7 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
 
     // ---- 透传 top_k / thinking 到 extra（canonical 没这两个字段）----
 
-    let mut extra = serde_json::Map::new();
+    let mut extra = extra;
     if let Some(k) = top_k {
         extra.insert(
             "top_k".to_string(),
@@ -196,7 +200,7 @@ fn to_canonical_impl(req: ClaudeMessagesRequest, ctx: &IngressCtx) -> AdapterRes
         prediction: None,
         tools: canonical_tools,
         tool_choice: canonical_tool_choice,
-        parallel_tool_calls: None,
+        parallel_tool_calls,
         stream,
         stream_options: None,
         reasoning_effort: None,
@@ -353,6 +357,7 @@ fn append_claude_message(
         }
     }
 
+    let has_tool_results = !tool_results.is_empty();
     // 先发 tool_results（拆成独立 role:"tool" 消息）——**必须在当前消息之前**
     for (tool_use_id, body) in tool_results {
         let name = tool_use_name_map.get(&tool_use_id).cloned();
@@ -380,6 +385,10 @@ fn append_claude_message(
         Some(MessageContent::Text(text_buf))
     } else if !tool_calls.is_empty() {
         // 有 tool_calls 但无文本 → content 留空（OpenAI 允许）
+        None
+    } else if native_content_blocks.is_some() && !(role_enum == Role::User && has_tool_results) {
+        // provider-native 块无法投影到 canonical 通用字段时，至少保留消息骨架和
+        // native_content_blocks，保证 Claude↔Claude 往返不丢语义。
         None
     } else {
         // 全是 tool_result 没剩余 → 不再 push 一条空消息
@@ -461,7 +470,7 @@ fn should_preserve_native_claude_blocks(blocks: &[ClaudeContentBlock]) -> bool {
         | ClaudeContentBlock::ContainerUpload { .. } => true,
         ClaudeContentBlock::Image { .. }
         | ClaudeContentBlock::ToolReference { .. }
-        | ClaudeContentBlock::Unknown => false,
+        | ClaudeContentBlock::Unknown => true,
     })
 }
 
@@ -515,15 +524,31 @@ fn claude_tool_to_canonical(tool: ClaudeTool) -> Tool {
     }
 }
 
-fn claude_tool_choice_to_canonical(choice: ClaudeToolChoice) -> ToolChoice {
+fn claude_tool_choice_to_canonical(choice: ClaudeToolChoice) -> (ToolChoice, Option<bool>) {
     match choice {
-        ClaudeToolChoice::Auto { .. } => ToolChoice::Mode("auto".to_string()),
-        ClaudeToolChoice::Any { .. } => ToolChoice::Mode("required".to_string()),
-        ClaudeToolChoice::None => ToolChoice::Mode("none".to_string()),
-        ClaudeToolChoice::Tool { name, .. } => ToolChoice::Named(serde_json::json!({
-            "type": "function",
-            "function": { "name": name }
-        })),
+        ClaudeToolChoice::Auto {
+            disable_parallel_tool_use,
+        } => (
+            ToolChoice::Mode("auto".to_string()),
+            disable_parallel_tool_use.map(|v| !v),
+        ),
+        ClaudeToolChoice::Any {
+            disable_parallel_tool_use,
+        } => (
+            ToolChoice::Mode("required".to_string()),
+            disable_parallel_tool_use.map(|v| !v),
+        ),
+        ClaudeToolChoice::None => (ToolChoice::Mode("none".to_string()), None),
+        ClaudeToolChoice::Tool {
+            name,
+            disable_parallel_tool_use,
+        } => (
+            ToolChoice::Named(serde_json::json!({
+                "type": "function",
+                "function": { "name": name }
+            })),
+            disable_parallel_tool_use.map(|v| !v),
+        ),
     }
 }
 
@@ -557,6 +582,19 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
         }
     };
 
+    let (stop_reason, stop_sequence) = assistant
+        .options
+        .as_ref()
+        .map(|o| {
+            let reason = o
+                .claude_stop_reason
+                .as_deref()
+                .and_then(parse_claude_stop_reason);
+            (reason, o.claude_stop_sequence.clone())
+        })
+        .unwrap_or((None, None));
+    let stop_reason = stop_reason.or_else(|| Some(finish_reason_to_stop_reason(finish_reason)));
+
     // 原始 Claude blocks 若已保留，优先直接恢复，避免 search_result /
     // web_search_tool_result / citations 等 provider-native 语义丢失。
     if let Some(raw) = assistant.native_content_blocks.as_ref()
@@ -568,8 +606,8 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
             role: "assistant".to_string(),
             content: content_blocks,
             model,
-            stop_reason: Some(finish_reason_to_stop_reason(finish_reason)),
-            stop_sequence: None,
+            stop_reason,
+            stop_sequence,
             usage: usage_to_claude(usage),
         });
     }
@@ -609,8 +647,8 @@ fn from_canonical_impl(resp: ChatResponse, _ctx: &IngressCtx) -> AdapterResult<C
         role: "assistant".to_string(),
         content: content_blocks,
         model,
-        stop_reason: Some(finish_reason_to_stop_reason(finish_reason)),
-        stop_sequence: None,
+        stop_reason,
+        stop_sequence,
         usage: usage_to_claude(usage),
     })
 }
@@ -645,6 +683,18 @@ fn finish_reason_to_stop_reason(reason: Option<FinishReason>) -> ClaudeStopReaso
         }
         Some(FinishReason::ContentFilter) => ClaudeStopReason::StopSequence,
         None => ClaudeStopReason::EndTurn, // Claude 要非空
+    }
+}
+
+fn parse_claude_stop_reason(raw: &str) -> Option<ClaudeStopReason> {
+    match raw {
+        "end_turn" => Some(ClaudeStopReason::EndTurn),
+        "max_tokens" => Some(ClaudeStopReason::MaxTokens),
+        "stop_sequence" => Some(ClaudeStopReason::StopSequence),
+        "tool_use" => Some(ClaudeStopReason::ToolUse),
+        "refusal" => Some(ClaudeStopReason::Refusal),
+        "pause_turn" => Some(ClaudeStopReason::PauseTurn),
+        _ => None,
     }
 }
 
@@ -1227,6 +1277,48 @@ mod tests {
             }
             _ => panic!(),
         }
+        assert_eq!(
+            make(serde_json::json!({"type": "auto", "disable_parallel_tool_use": true}))
+                .parallel_tool_calls,
+            Some(false)
+        );
+        assert_eq!(
+            make(serde_json::json!({"type": "tool", "name": "weather", "disable_parallel_tool_use": false}))
+                .parallel_tool_calls,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn request_extra_fields_are_preserved() {
+        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+            "x_client_trace": "trace-123"
+        }))
+        .unwrap();
+        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        assert_eq!(canonical.extra["x_client_trace"], "trace-123");
+    }
+
+    #[test]
+    fn unknown_only_message_is_kept_via_native_content_blocks() {
+        let req: ClaudeMessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 64,
+            "messages": [
+                {"role": "assistant", "content": [{"type": "future_block"}]}
+            ]
+        }))
+        .unwrap();
+        let canonical = ClaudeIngress::to_canonical(req, &ctx()).unwrap();
+        assert_eq!(canonical.messages.len(), 1);
+        assert!(canonical.messages[0].content.is_none());
+        assert!(
+            canonical.messages[0].native_content_blocks.is_some(),
+            "native_content_blocks should preserve unknown blocks"
+        );
     }
 
     #[test]
@@ -1354,6 +1446,43 @@ mod tests {
             _ => panic!("expected ToolUse"),
         }
         assert_eq!(claude.stop_reason, Some(ClaudeStopReason::ToolUse));
+    }
+
+    #[test]
+    fn response_prefers_claude_stop_metadata_from_message_options() {
+        let resp = ChatResponse {
+            id: "chatcmpl-stop".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "claude-sonnet-4-5".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: Role::Assistant,
+                    content: Some(MessageContent::Text("done".to_string())),
+                    reasoning_content: None,
+                    refusal: None,
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    audio: None,
+                    native_content_blocks: None,
+                    options: Some(summer_ai_core::MessageOptions {
+                        cache_control: None,
+                        claude_stop_reason: Some("pause_turn".to_string()),
+                        claude_stop_sequence: Some("###END###".to_string()),
+                    }),
+                },
+                logprobs: None,
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage::default(),
+            system_fingerprint: None,
+            service_tier: None,
+        };
+        let claude = ClaudeIngress::from_canonical(resp, &ctx()).unwrap();
+        assert_eq!(claude.stop_reason, Some(ClaudeStopReason::PauseTurn));
+        assert_eq!(claude.stop_sequence.as_deref(), Some("###END###"));
     }
 
     #[test]

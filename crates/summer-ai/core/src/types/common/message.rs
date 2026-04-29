@@ -58,6 +58,12 @@ pub struct MessageOptions {
     /// Per-message prompt cache 意图。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
+    /// Claude 原生 stop_reason（仅内部透传，不进入 wire）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_stop_reason: Option<String>,
+    /// Claude 原生 stop_sequence（仅内部透传，不进入 wire）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_stop_sequence: Option<String>,
 }
 
 impl MessageOptions {
@@ -71,6 +77,8 @@ impl From<CacheControl> for MessageOptions {
     fn from(cc: CacheControl) -> Self {
         Self {
             cache_control: Some(cc),
+            claude_stop_reason: None,
+            claude_stop_sequence: None,
         }
     }
 }
@@ -167,7 +175,9 @@ impl ChatMessage {
     /// Claude adapter 会把它映射到 wire 的 `cache_control` 字段（挂在该 message
     /// 最后一个 content block 上，Anthropic 推荐做法）。其他 provider 暂忽略。
     pub fn with_cache_control(mut self, cc: CacheControl) -> Self {
-        self.options = Some(MessageOptions::from(cc));
+        let mut options = self.options.unwrap_or_default();
+        options.cache_control = Some(cc);
+        self.options = Some(options);
         self
     }
 

@@ -32,8 +32,8 @@ use crate::types::ingress_wire::claude::{
 };
 use crate::types::{
     CacheControl, ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart,
-    FinishReason, MessageContent, PromptTokensDetails, Role, StreamEnd, StreamError, ToolCall,
-    ToolCallDelta, ToolCallFunction, Usage,
+    FinishReason, MessageContent, MessageOptions, PromptTokensDetails, Role, StreamEnd,
+    StreamError, ToolCall, ToolCallDelta, ToolCallFunction, Usage,
 };
 
 /// Claude Messages API 协议（`api.anthropic.com/v1/messages`）。
@@ -170,10 +170,8 @@ fn canonical_to_claude_request(
         .unwrap_or_default();
 
     // tool_choice
-    let tool_choice = req
-        .tool_choice
-        .as_ref()
-        .and_then(canonical_tool_choice_to_claude);
+    let tool_choice =
+        canonical_tool_choice_to_claude(req.tool_choice.as_ref(), req.parallel_tool_calls);
 
     // stop_sequences
     let stop_sequences = match &req.stop {
@@ -186,17 +184,18 @@ fn canonical_to_claude_request(
     };
 
     // thinking：从 canonical extra 里取（ClaudeIngress 可能已透传）
-    let thinking = req
-        .extra
+    let mut wire_extra = req.extra.clone();
+    let thinking = wire_extra
         .get("thinking")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     // top_k 从 extra 取
-    let top_k = req
-        .extra
+    let top_k = wire_extra
         .get("top_k")
         .and_then(|v| v.as_u64())
         .and_then(|v| u32::try_from(v).ok());
+    wire_extra.remove("thinking");
+    wire_extra.remove("top_k");
 
     Ok(ClaudeMessagesRequest {
         model: target.actual_model().to_string(),
@@ -215,7 +214,7 @@ fn canonical_to_claude_request(
             .user
             .clone()
             .map(|uid| crate::types::ingress_wire::claude::ClaudeMetadata { user_id: Some(uid) }),
-        extra: serde_json::Map::new(),
+        extra: wire_extra,
     })
 }
 
@@ -534,15 +533,20 @@ fn canonical_tool_to_claude(t: &crate::types::Tool) -> ClaudeTool {
     }
 }
 
-fn canonical_tool_choice_to_claude(tc: &crate::types::ToolChoice) -> Option<ClaudeToolChoice> {
+fn canonical_tool_choice_to_claude(
+    tc: Option<&crate::types::ToolChoice>,
+    parallel_tool_calls: Option<bool>,
+) -> Option<ClaudeToolChoice> {
+    let disable_parallel_tool_use = parallel_tool_calls.map(|v| !v);
+    let tc = tc?;
     match tc {
         crate::types::ToolChoice::Mode(s) => match s.as_str() {
             "auto" => Some(ClaudeToolChoice::Auto {
-                disable_parallel_tool_use: None,
+                disable_parallel_tool_use,
             }),
             "none" => Some(ClaudeToolChoice::None),
             "required" => Some(ClaudeToolChoice::Any {
-                disable_parallel_tool_use: None,
+                disable_parallel_tool_use,
             }),
             _ => None,
         },
@@ -553,7 +557,7 @@ fn canonical_tool_choice_to_claude(tc: &crate::types::ToolChoice) -> Option<Clau
                 .and_then(|n| n.as_str())?;
             Some(ClaudeToolChoice::Tool {
                 name: name.to_string(),
-                disable_parallel_tool_use: None,
+                disable_parallel_tool_use,
             })
         }
     }
@@ -630,7 +634,7 @@ fn should_preserve_native_claude_blocks(blocks: &[ClaudeContentBlock]) -> bool {
         | ClaudeContentBlock::ContainerUpload { .. } => true,
         ClaudeContentBlock::Image { .. }
         | ClaudeContentBlock::ToolReference { .. }
-        | ClaudeContentBlock::Unknown => false,
+        | ClaudeContentBlock::Unknown => true,
     })
 }
 
@@ -644,6 +648,7 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
         content,
         model,
         stop_reason,
+        stop_sequence,
         usage,
         ..
     } = resp;
@@ -736,7 +741,7 @@ fn claude_response_to_canonical(resp: ClaudeResponse, _target: &ServiceTarget) -
         tool_call_id: None,
         audio: None,
         native_content_blocks,
-        options: None,
+        options: claude_stop_options(stop_reason, stop_sequence),
     };
 
     let finish_reason = stop_reason.map(stop_reason_to_finish_reason);
@@ -768,6 +773,33 @@ fn stop_reason_to_finish_reason(reason: ClaudeStopReason) -> FinishReason {
         ClaudeStopReason::StopSequence => FinishReason::Stop,
         ClaudeStopReason::ToolUse => FinishReason::ToolCalls,
     }
+}
+
+fn claude_stop_options(
+    stop_reason: Option<ClaudeStopReason>,
+    stop_sequence: Option<String>,
+) -> Option<MessageOptions> {
+    let stop_reason = stop_reason.map(claude_stop_reason_to_string);
+    if stop_reason.is_none() && stop_sequence.is_none() {
+        return None;
+    }
+    Some(MessageOptions {
+        cache_control: None,
+        claude_stop_reason: stop_reason,
+        claude_stop_sequence: stop_sequence,
+    })
+}
+
+fn claude_stop_reason_to_string(reason: ClaudeStopReason) -> String {
+    match reason {
+        ClaudeStopReason::EndTurn => "end_turn",
+        ClaudeStopReason::MaxTokens => "max_tokens",
+        ClaudeStopReason::StopSequence => "stop_sequence",
+        ClaudeStopReason::ToolUse => "tool_use",
+        ClaudeStopReason::Refusal => "refusal",
+        ClaudeStopReason::PauseTurn => "pause_turn",
+    }
+    .to_string()
 }
 
 fn claude_usage_to_canonical(usage: ClaudeUsage) -> Usage {
@@ -1140,6 +1172,24 @@ mod tests {
     }
 
     #[test]
+    fn request_maps_disable_parallel_and_preserves_extra_fields() {
+        let t = target();
+        let mut req = ChatRequest::new("x", vec![ChatMessage::user("hi")]);
+        req.tool_choice = Some(crate::types::ToolChoice::Mode("auto".to_string()));
+        req.parallel_tool_calls = Some(false);
+        req.extra
+            .insert("anthropic-beta".to_string(), serde_json::json!("code-2026"));
+        req.max_tokens = Some(128);
+
+        let data = ClaudeAdapter::build_chat_request(&t, ServiceType::Chat, &req).unwrap();
+        assert_eq!(
+            data.payload["tool_choice"]["disable_parallel_tool_use"],
+            serde_json::json!(true)
+        );
+        assert_eq!(data.payload["anthropic-beta"], "code-2026");
+    }
+
+    #[test]
     fn headers_contain_api_key_and_version() {
         let t = target();
         let req = ChatRequest::new("x", vec![ChatMessage::user("hi")]);
@@ -1209,6 +1259,24 @@ mod tests {
         let details = resp.usage.prompt_tokens_details.as_ref().unwrap();
         assert_eq!(details.cached_tokens, Some(80));
         assert_eq!(details.cache_creation_tokens, Some(200));
+    }
+
+    #[test]
+    fn parse_response_preserves_claude_stop_reason_and_sequence() {
+        let t = target();
+        let body = br#"{
+            "id":"msg_stop","type":"message","role":"assistant",
+            "content":[{"type":"text","text":"done"}],
+            "model":"claude-sonnet-4-5",
+            "stop_reason":"stop_sequence",
+            "stop_sequence":"END_MARK",
+            "usage":{"input_tokens":1,"output_tokens":1}
+        }"#;
+        let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        let opts = msg.options.as_ref().expect("stop metadata should be set");
+        assert_eq!(opts.claude_stop_reason.as_deref(), Some("stop_sequence"));
+        assert_eq!(opts.claude_stop_sequence.as_deref(), Some("END_MARK"));
     }
 
     #[test]
@@ -1317,6 +1385,31 @@ mod tests {
         assert_eq!(arr[0]["type"], "server_tool_use");
         assert_eq!(arr[1]["type"], "web_search_tool_result");
         assert_eq!(arr[2]["type"], "container_upload");
+    }
+
+    #[test]
+    fn parse_response_image_block_is_preserved_in_native_content_blocks() {
+        let t = target();
+        let body = br#"{
+            "id":"msg_img","type":"message","role":"assistant",
+            "content":[
+                {"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}
+            ],
+            "model":"claude-sonnet-4-5",
+            "stop_reason":"end_turn",
+            "usage":{"input_tokens":1,"output_tokens":1}
+        }"#;
+        let resp = ClaudeAdapter::parse_chat_response(&t, Bytes::from_static(body)).unwrap();
+        let msg = &resp.choices[0].message;
+        assert!(
+            msg.content.is_none(),
+            "image-only block should not be forged to text"
+        );
+        let native = msg
+            .native_content_blocks
+            .as_ref()
+            .expect("image block should be preserved");
+        assert_eq!(native[0]["type"], "image");
     }
 
     #[test]
