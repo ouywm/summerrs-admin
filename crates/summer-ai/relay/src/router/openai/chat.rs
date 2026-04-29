@@ -46,6 +46,7 @@ pub async fn chat_completions(
     let client_req_snapshot = serde_json::to_value(&request).ok();
 
     let call = PipelineCall::<OpenAIIngress> {
+        request_id: meta.request_id,
         endpoint: meta.endpoint,
         format: IngressFormat::OpenAI,
         token,

@@ -42,6 +42,7 @@ pub async fn messages(
     let client_req_snapshot = serde_json::to_value(&claude_req).ok();
 
     let call = PipelineCall::<ClaudeIngress> {
+        request_id: meta.request_id,
         endpoint: meta.endpoint,
         format: IngressFormat::Claude,
         token,

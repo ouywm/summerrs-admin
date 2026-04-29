@@ -13,15 +13,18 @@ use summer_web::axum::extract::{FromRequestParts, MatchedPath};
 use summer_web::axum::http::HeaderMap;
 use summer_web::axum::http::header::USER_AGENT;
 use summer_web::axum::http::request::Parts;
+use summer_web::middleware::request_id::RequestId;
 
 /// 一次 relay 请求的元数据快照 —— tracking / billing 都要填的底料。
 ///
+/// - `request_id`：来自 request extensions 里的 `RequestId`（根路由中间件统一注入）
 /// - `endpoint`：**路由模板**（如 `/v1beta/models/{target}`），不是实际 URL。
 /// - `client_ip`：经 `axum_client_ip::ClientIpSource::ConnectInfo` 解析后的真实 IP 字符串
 /// - `user_agent`：原始 UA 字符串，v1 不做 browser/os 解析（AI 客户端大多是 SDK）
 /// - `client_headers`：入站 headers 快照（脱敏后），落 `ai.request.request_headers` JSONB
 #[derive(Debug, Clone)]
 pub struct RelayRequestMeta {
+    pub request_id: String,
     pub endpoint: String,
     pub client_ip: String,
     pub user_agent: String,
@@ -53,14 +56,26 @@ where
             .to_string();
 
         let client_headers = sanitize_headers(&parts.headers);
+        let request_id = parts
+            .extensions
+            .get::<RequestId>()
+            .and_then(|id| id.header_value().to_str().ok())
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(fallback_request_id);
 
         Ok(Self {
+            request_id,
             endpoint,
             client_ip,
             user_agent,
             client_headers,
         })
     }
+}
+
+fn fallback_request_id() -> String {
+    format!("req_{}", uuid::Uuid::new_v4().simple())
 }
 
 fn fmt_ip(ip: IpAddr) -> String {

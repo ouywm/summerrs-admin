@@ -79,6 +79,7 @@ pub async fn generate_content(
     let client_req_snapshot = serde_json::to_value(&gemini_req).ok();
 
     let call = PipelineCall::<GeminiIngress> {
+        request_id: meta.request_id,
         endpoint: meta.endpoint,
         format: IngressFormat::Gemini,
         token,

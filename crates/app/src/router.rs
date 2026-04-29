@@ -8,6 +8,7 @@ use summer_web::axum::body;
 use summer_web::axum::extract::Request;
 use summer_web::axum::middleware::{self, Next};
 use summer_web::axum::response::{IntoResponse, Response};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 
 fn summer_ai_relay_group() -> &'static str {
     summer_ai::summer_ai_relay::relay_group()
@@ -30,7 +31,7 @@ fn auth_path_config() -> PathAuthBuilder {
 }
 
 pub fn router() -> Router {
-    // 先按 group 生成各自的路径鉴权配置，再分别挂载到对应路由树。
+    // 先按 group 生成鉴权配置，再挂载到对应路由树。
     let mut path_auth_configs = auth_path_config().build();
 
     let relay_router = {
@@ -39,23 +40,27 @@ pub fn router() -> Router {
             .expect("path auth config for summer-ai-relay not found");
         ai_relay_router(relay_cfg)
     };
-    let ai_admin_group_router = {
+    let ai_admin_router = {
         let ai_admin_cfg = path_auth_configs
             .get_mut(summer_ai_admin_group())
             .expect("path auth config for summer-ai-admin not found");
-        ai_admin_router(ai_admin_cfg).layer(middleware::from_fn(problem_middleware))
+        ai_admin_router(ai_admin_cfg)
     };
-    let system_group_router = {
+
+    let system_router = {
         let system_cfg = path_auth_configs
             .get_mut(summer_system_group())
             .expect("path auth config for summer-system not found");
-        system_router(system_cfg).layer(middleware::from_fn(problem_middleware))
+        system_router(system_cfg)
     };
 
+    let api_router = system_router
+        .merge(ai_admin_router)
+        .layer(middleware::from_fn(problem_middleware));
+
     Router::new()
+        .nest("/api", api_router)
         .merge(relay_router)
-        .merge(ai_admin_group_router)
-        .merge(system_group_router)
         .layer(ClientIpSource::ConnectInfo.into_extension())
 }
 
@@ -64,7 +69,10 @@ pub fn ai_relay_router(path_auth_config: &mut PathAuthConfig) -> Router {
     merge_public_router(summer_ai_relay_group(), path_auth_config);
 
     let api_key_strategy = ApiKeyStrategy::new(path_auth_config.clone(), summer_ai_relay_group());
-    summer_ai::summer_ai_relay::router::router().layer(GroupAuthLayer::new(api_key_strategy))
+    summer_ai::summer_ai_relay::router::router()
+        .layer(GroupAuthLayer::new(api_key_strategy))
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
 }
 
 pub fn ai_admin_router(path_auth_config: &mut PathAuthConfig) -> Router {

@@ -3,7 +3,7 @@
 //! handler 在入口构造 [`RelayContext`]，沿调用链**边走边填**字段：
 //!
 //! ```text
-//!   begin()           — HTTP 解包后，生成 request_id、记录 endpoint/token/IP
+//!   begin()           — HTTP 解包后，接收 request_id、记录 endpoint/token/IP
 //!   attach_channel()  — ChannelStore::pick 之后，填 channel/account 快照
 //!   attach_upstream() — invoke_* 之前可选，填 URL/headers 摘要
 //!   finalize()        — 成功/失败结束，打上 upstream_status/error/first_byte_at
@@ -114,8 +114,8 @@ impl ClientRequestMeta {
 ///
 /// **构造流程**：
 ///
-/// 1. `RelayContext::begin(token, endpoint, format, logical_model, is_stream, client)`
-///    在 handler 最开头调用——生成 `request_id` 并记录起始时间。
+/// 1. `RelayContext::begin(request_id, token, endpoint, format, logical_model, is_stream, client)`
+///    在 handler 最开头调用——接收根路由 request-id 中间件注入的 `request_id` 并记录起始时间。
 /// 2. `attach_channel(&channel, &account, adapter_kind, cost_profile, actual_model)`
 ///    在 `ChannelStore::pick` 之后调用——填入选路结果。
 /// 3. `mark_first_byte()` / `set_upstream(...)` / `finalize_*()` 按需调用。
@@ -151,6 +151,7 @@ pub struct RelayContext {
 
 impl RelayContext {
     pub fn begin(
+        request_id: impl Into<String>,
         token: AiTokenContext,
         endpoint: impl Into<String>,
         format: IngressFormat,
@@ -159,7 +160,7 @@ impl RelayContext {
         client: ClientRequestMeta,
     ) -> Self {
         Self {
-            request_id: new_request_id(),
+            request_id: request_id.into(),
             token,
             endpoint: endpoint.into(),
             format,
@@ -243,21 +244,6 @@ impl RelayContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// request_id 生成
-// ---------------------------------------------------------------------------
-
-/// 生成一个请求级唯一 id。用 `chrono` 毫秒时间戳 + 16 位随机后缀。
-///
-/// 没用 uuid crate：workspace 不强制引，这里只要**有序 + 足够唯一**。时间前缀
-/// 让 DB 按 request_id 排序近似按时间排，对审计有帮助。
-fn new_request_id() -> String {
-    use rand::RngExt;
-    let ts = chrono::Utc::now().timestamp_millis();
-    let rnd: u64 = rand::rng().random();
-    format!("req_{ts:013x}{rnd:016x}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,23 +264,9 @@ mod tests {
     }
 
     #[test]
-    fn request_id_prefix_and_length() {
-        let id = new_request_id();
-        assert!(id.starts_with("req_"));
-        // "req_" + 13 hex (ts) + 16 hex (rnd) = 33 chars
-        assert_eq!(id.len(), 4 + 13 + 16);
-    }
-
-    #[test]
-    fn two_request_ids_are_distinct() {
-        let a = new_request_id();
-        let b = new_request_id();
-        assert_ne!(a, b);
-    }
-
-    #[test]
     fn begin_sets_initial_state() {
         let ctx = RelayContext::begin(
+            "req_test_123",
             mk_token(),
             "/v1/chat/completions",
             IngressFormat::OpenAI,
@@ -302,6 +274,7 @@ mod tests {
             false,
             ClientRequestMeta::new("127.0.0.1", "curl/8.0", Value::Object(Default::default())),
         );
+        assert_eq!(ctx.request_id, "req_test_123");
         assert_eq!(ctx.endpoint, "/v1/chat/completions");
         assert_eq!(ctx.format, IngressFormat::OpenAI);
         assert_eq!(ctx.logical_model, "gpt-4o-mini");
@@ -316,6 +289,7 @@ mod tests {
     #[test]
     fn mark_first_byte_is_idempotent() {
         let mut ctx = RelayContext::begin(
+            "req_test_456",
             mk_token(),
             "/v1/messages",
             IngressFormat::Claude,

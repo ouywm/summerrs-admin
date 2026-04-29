@@ -39,6 +39,7 @@ pub async fn responses(
     let client_req_snapshot = serde_json::to_value(&req).ok();
 
     let call = PipelineCall::<OpenAIResponsesIngress> {
+        request_id: meta.request_id,
         endpoint: meta.endpoint,
         format: IngressFormat::OpenAIResponses,
         token,

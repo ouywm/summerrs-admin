@@ -31,7 +31,7 @@ summer-system = { workspace = true }
 
 axum-client-ip = { workspace = true, features = ["connect-info"] }
 tokio = { workspace = true, features = ["full"] }
-tower-http = { workspace = true }
+tower-http = { workspace = true, features = ["request-id"] }
 tracing = { workspace = true }
 
 regex = { workspace = true }

@@ -346,6 +346,7 @@ mod tests {
     fn mk_ctx() -> RelayContext {
         use crate::auth::AiTokenContext;
         RelayContext::begin(
+            "req_test_tracking",
             AiTokenContext {
                 token_id: 1,
                 user_id: 2,

@@ -86,6 +86,8 @@ struct BillingGuard {
 
 /// 一次入口请求的所有上下文参数。
 pub struct PipelineCall<I: IngressConverter> {
+    /// 请求 ID（由根路由 request-id 中间件注入），用于 tracking / billing 关联。
+    pub request_id: String,
     /// HTTP 路径（路由模板，如 `"/v1/chat/completions"`），用于 tracking `ai.request.endpoint`。
     pub endpoint: String,
     /// 入口协议标识，用于 tracking `ai.request.request_format`。
@@ -139,6 +141,7 @@ where
     /// 遇可重试错（`CrossChannel` / `SameChannel`）切下一个候选；遇 `Fatal` 立即终止。
     pub async fn execute(self) -> RelayResult<EngineOutcome<I>> {
         let Self {
+            request_id,
             endpoint,
             format,
             token,
@@ -158,6 +161,7 @@ where
         } = self;
 
         let ctx = RelayContext::begin(
+            request_id,
             token,
             endpoint,
             format,

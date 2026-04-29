@@ -34,3 +34,4 @@ tokio = { workspace = true }
 tower-layer = { workspace = true }
 tower-service = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
