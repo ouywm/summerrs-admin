@@ -1,6 +1,6 @@
 use crate::entity::platform::config_entry::{self, ConfigEntryStatus};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -30,6 +30,7 @@ impl CreateConfigEntryDto {
     pub fn into_active_model(self, operator: &str) -> Result<config_entry::ActiveModel, String> {
         self.validate_business_rules()?;
         Ok(config_entry::ActiveModel {
+            id: NotSet,
             scope_type: Set(normalize_scope_type(&self.scope_type)?),
             scope_id: Set(self.scope_id),
             category: Set(self.category),
@@ -40,8 +41,9 @@ impl CreateConfigEntryDto {
             version_no: Set(1),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
-            ..Default::default()
+            update_time: NotSet,
         })
     }
 }

@@ -1,6 +1,6 @@
 use crate::entity::billing::group_ratio::{self};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -26,9 +26,12 @@ pub struct CreateGroupRatioDto {
 impl CreateGroupRatioDto {
     pub fn into_active_model(self, operator: &str) -> group_ratio::ActiveModel {
         group_ratio::ActiveModel {
+            id: NotSet,
             group_code: Set(self.group_code),
             group_name: Set(self.group_name),
-            ratio: Set(bigdecimal::BigDecimal::try_from(self.ratio).unwrap_or_default()),
+            ratio: Set(
+                decimal_from_f64(self.ratio).unwrap_or_else(|| bigdecimal::BigDecimal::from(0))
+            ),
             enabled: Set(self.enabled.unwrap_or(true)),
             model_whitelist: Set(string_list_json(self.model_whitelist)),
             model_blacklist: Set(string_list_json(self.model_blacklist)),
@@ -37,8 +40,9 @@ impl CreateGroupRatioDto {
             policy: Set(self.policy.unwrap_or_else(|| serde_json::json!({}))),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 
@@ -70,8 +74,8 @@ impl UpdateGroupRatioDto {
         if let Some(v) = self.group_name {
             active.group_name = Set(v);
         }
-        if let Some(v) = self.ratio {
-            active.ratio = Set(bigdecimal::BigDecimal::try_from(v).unwrap_or_default());
+        if let Some(v) = self.ratio.and_then(decimal_from_f64) {
+            active.ratio = Set(v);
         }
         if let Some(v) = self.enabled {
             active.enabled = Set(v);
@@ -154,4 +158,11 @@ fn string_list_json(values: Option<Vec<String>>) -> serde_json::Value {
             })
             .collect(),
     )
+}
+
+fn decimal_from_f64(value: f64) -> Option<bigdecimal::BigDecimal> {
+    if !value.is_finite() {
+        return None;
+    }
+    bigdecimal::BigDecimal::try_from(value).ok()
 }

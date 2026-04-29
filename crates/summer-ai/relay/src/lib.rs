@@ -24,3 +24,7 @@ pub use error::{
 };
 pub use extract::RelayRequestMeta;
 pub use plugin::SummerAiRelayPlugin;
+
+pub fn relay_group() -> &'static str {
+    env!("CARGO_PKG_NAME")
+}

@@ -1,7 +1,7 @@
 //! 系统参数分组 DTO
 
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -24,13 +24,17 @@ pub struct CreateConfigGroupDto {
 impl From<CreateConfigGroupDto> for sys_config_group::ActiveModel {
     fn from(dto: CreateConfigGroupDto) -> Self {
         Self {
+            id: NotSet,
             group_name: Set(dto.group_name),
             group_code: Set(dto.group_code),
             group_sort: Set(dto.group_sort.unwrap_or(0)),
             enabled: Set(dto.enabled.unwrap_or(true)),
             is_system: Set(dto.is_system.unwrap_or(false)),
             remark: Set(dto.remark.unwrap_or_default()),
-            ..Default::default()
+            create_by: NotSet,
+            create_time: NotSet,
+            update_by: NotSet,
+            update_time: NotSet,
         }
     }
 }

@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use sea_orm::prelude::IpNetwork;
 use sea_orm::sea_query::{Alias, Expr};
-use sea_orm::{ColumnTrait, Condition, ExprTrait, Set};
+use sea_orm::{ColumnTrait, Condition, ExprTrait, NotSet, Set};
 use serde::Deserialize;
 use std::net::IpAddr;
 
@@ -112,6 +112,7 @@ impl CreateOperationLogDto {
         ip_location: String,
     ) -> sys_operation_log::ActiveModel {
         sys_operation_log::ActiveModel {
+            id: NotSet,
             user_id: Set(if self.user_id > 0 {
                 Some(self.user_id)
             } else {
@@ -133,7 +134,6 @@ impl CreateOperationLogDto {
             error_msg: Set(self.error_msg),
             duration: Set(self.duration),
             create_time: Set(chrono::Local::now().naive_local()),
-            ..Default::default()
         }
     }
 }

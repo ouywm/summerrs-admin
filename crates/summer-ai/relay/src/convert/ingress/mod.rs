@@ -209,8 +209,14 @@ pub struct ClaudeStreamState {
     pub index: i32,
     /// tool_use 并发时的起点 index。
     pub tool_call_base_index: i32,
-    /// tool_use 并发时的最大 offset。
+    /// tool_use 并发时已分配的最大 offset（首次分配为 0；无分配时为 -1）。
     pub tool_call_max_index_offset: i32,
+    /// tool delta 的上游 index → 本地连续 offset 映射。
+    ///
+    /// OpenAI 风格 index 通常从 0 开始；Claude 原生 index 是 content block 的绝对序号
+    /// （常见首个 tool_use 为 1）。这里统一映射成 0..N 的连续 offset，避免重组后出现
+    /// “start 在 2，stop 在 1/2” 之类的错位。
+    pub tool_call_index_offsets: std::collections::BTreeMap<i32, i32>,
     /// 上游 finish_reason（停止时写入）。
     pub finish_reason: String,
     /// 累积的 usage。

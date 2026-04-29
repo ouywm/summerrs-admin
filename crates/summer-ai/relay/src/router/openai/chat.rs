@@ -10,14 +10,6 @@
 //! 鉴权由 `ApiKeyStrategy` 挂在 `"summer-ai-relay"` group layer 上完成；admin JWT
 //! AuthLayer 挂在 `"summer-system"` group 上，不会拦到本 handler。
 
-use summer_ai_billing::{BillingService, PriceResolver};
-use summer_ai_core::ChatRequest;
-use summer_web::axum::Json;
-use summer_web::axum::body::Body;
-use summer_web::axum::response::{IntoResponse, Response};
-use summer_web::extractor::Component;
-use summer_web::post;
-
 use crate::auth::AiToken;
 use crate::convert::ingress::{IngressFormat, OpenAIIngress};
 use crate::error::OpenAIResult;
@@ -27,6 +19,13 @@ use crate::service::channel_store::ChannelStore;
 use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::sse_response;
 use crate::service::tracking::TrackingService;
+use summer_ai_billing::{BillingService, PriceResolver};
+use summer_ai_core::ChatRequest;
+use summer_web::axum::Json;
+use summer_web::axum::body::Body;
+use summer_web::axum::response::{IntoResponse, Response};
+use summer_web::extractor::Component;
+use summer_web::post;
 
 /// `POST /v1/chat/completions`
 #[post("/v1/chat/completions")]

@@ -1,6 +1,6 @@
 use crate::entity::routing::ability;
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -28,6 +28,7 @@ impl CreateAbilityDto {
     pub fn into_active_model(self) -> Result<ability::ActiveModel, String> {
         self.validate_business_rules()?;
         Ok(ability::ActiveModel {
+            id: NotSet,
             channel_group: Set(self.channel_group),
             endpoint_scope: Set(self.endpoint_scope),
             model: Set(self.model),
@@ -36,7 +37,8 @@ impl CreateAbilityDto {
             priority: Set(self.priority.unwrap_or(0)),
             weight: Set(self.weight.unwrap_or(100)),
             route_config: Set(self.route_config.unwrap_or_else(|| serde_json::json!({}))),
-            ..Default::default()
+            create_time: NotSet,
+            update_time: NotSet,
         })
     }
 }

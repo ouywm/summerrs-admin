@@ -1,6 +1,6 @@
 use chrono::NaiveDate;
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -21,11 +21,13 @@ pub struct CreateRoleDto {
 impl From<CreateRoleDto> for sys_role::ActiveModel {
     fn from(dto: CreateRoleDto) -> Self {
         Self {
+            id: NotSet,
             role_name: Set(dto.role_name),
             role_code: Set(dto.role_code),
             description: Set(dto.description.unwrap_or_default()),
             enabled: Set(dto.enabled.unwrap_or(true)),
-            ..Default::default()
+            create_time: NotSet,
+            update_time: NotSet,
         }
     }
 }

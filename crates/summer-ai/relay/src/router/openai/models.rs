@@ -7,12 +7,11 @@
 //! 后续（P7 Admin CRUD / token 化）可能按 token 的 `allowed_models` 做过滤，
 //! 当前阶段不做。
 
+use summer_ai_core::ModelList;
 use summer_web::axum::Json;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::get;
-
-use summer_ai_core::ModelList;
 
 use crate::error::OpenAIResult;
 use crate::service::model_service::ModelService;

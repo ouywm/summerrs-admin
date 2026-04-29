@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -24,14 +24,16 @@ pub struct CreateDictTypeDto {
 impl CreateDictTypeDto {
     pub fn into_active_model(self, operator: String) -> sys_dict_type::ActiveModel {
         sys_dict_type::ActiveModel {
+            id: NotSet,
             dict_name: Set(self.dict_name),
             dict_type: Set(self.dict_type),
             status: Set(self.status.unwrap_or(sys_dict_type::DictStatus::Enabled)),
             is_system: Set(false),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.clone()),
+            create_time: NotSet,
             update_by: Set(operator),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 }
@@ -112,6 +114,7 @@ pub struct CreateDictDataDto {
 impl CreateDictDataDto {
     pub fn into_active_model(self, operator: String) -> sys_dict_data::ActiveModel {
         sys_dict_data::ActiveModel {
+            id: NotSet,
             dict_type: Set(self.dict_type),
             dict_label: Set(self.dict_label),
             dict_value: Set(self.dict_value),
@@ -123,8 +126,9 @@ impl CreateDictDataDto {
             is_system: Set(false),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.clone()),
+            create_time: NotSet,
             update_by: Set(operator),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 }

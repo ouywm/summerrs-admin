@@ -3,14 +3,6 @@
 //! Handler 只做参数解包 + 调 [`PipelineCall::execute`] + 包装响应。
 //! 鉴权 / 选路 / 翻译（Responses ↔ canonical）/ 发上游 / tracking 都在 engine 内。
 
-use summer_ai_billing::{BillingService, PriceResolver};
-use summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesRequest;
-use summer_web::axum::Json;
-use summer_web::axum::body::Body;
-use summer_web::axum::response::{IntoResponse, Response};
-use summer_web::extractor::Component;
-use summer_web::post;
-
 use crate::auth::AiToken;
 use crate::convert::ingress::{IngressFormat, OpenAIResponsesIngress};
 use crate::error::OpenAIResult;
@@ -20,6 +12,13 @@ use crate::service::channel_store::ChannelStore;
 use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::sse_response;
 use crate::service::tracking::TrackingService;
+use summer_ai_billing::{BillingService, PriceResolver};
+use summer_ai_core::types::ingress_wire::openai_responses::OpenAIResponsesRequest;
+use summer_web::axum::Json;
+use summer_web::axum::body::Body;
+use summer_web::axum::response::{IntoResponse, Response};
+use summer_web::extractor::Component;
+use summer_web::post;
 
 /// `POST /v1/responses`
 #[post("/v1/responses")]

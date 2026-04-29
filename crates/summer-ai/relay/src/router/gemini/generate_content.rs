@@ -14,6 +14,15 @@
 //!
 //! google-genai SDK 默认带 `alt=sse`，所以 SDK 用户透明；裸 HTTP 用户取决于是否带参数。
 
+use crate::auth::AiToken;
+use crate::convert::ingress::{GeminiIngress, IngressFormat};
+use crate::error::{GeminiResult, RelayError};
+use crate::extract::RelayRequestMeta;
+use crate::pipeline::{EngineOutcome, PipelineCall};
+use crate::service::channel_store::ChannelStore;
+use crate::service::cooldown::CooldownService;
+use crate::service::stream_driver::{collect_sse_to_json_array, sse_response};
+use crate::service::tracking::TrackingService;
 use serde::Deserialize;
 use summer_ai_billing::{BillingService, PriceResolver};
 use summer_ai_core::AdapterError;
@@ -24,16 +33,6 @@ use summer_web::axum::extract::{Path, Query};
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::Component;
 use summer_web::post;
-
-use crate::auth::AiToken;
-use crate::convert::ingress::{GeminiIngress, IngressFormat};
-use crate::error::{GeminiResult, RelayError};
-use crate::extract::RelayRequestMeta;
-use crate::pipeline::{EngineOutcome, PipelineCall};
-use crate::service::channel_store::ChannelStore;
-use crate::service::cooldown::CooldownService;
-use crate::service::stream_driver::{collect_sse_to_json_array, sse_response};
-use crate::service::tracking::TrackingService;
 
 /// `?alt=sse` 的 query 参数。
 #[derive(Debug, Default, Deserialize)]

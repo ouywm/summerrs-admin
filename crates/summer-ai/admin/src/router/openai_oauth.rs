@@ -9,9 +9,7 @@ use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::ValidatedJson;
 use summer_common::response::Json;
-use summer_web::Router;
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
 use summer_web::post_api;
 
 use crate::service::openai_oauth_service::OpenAiOAuthService;
@@ -61,11 +59,4 @@ pub async fn refresh_token(
 ) -> ApiResult<Json<OpenAiOAuthRefreshVo>> {
     let vo = svc.refresh_token(dto, &profile.nick_name).await?;
     Ok(Json(vo))
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(generate_auth_url)
-        .typed_route(exchange_code)
-        .typed_route(refresh_token)
 }

@@ -2,7 +2,7 @@ use crate::entity::routing::channel_model_price::{
     self, ChannelModelPriceBillingMode, ChannelModelPriceStatus,
 };
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -115,6 +115,7 @@ impl CreateChannelModelPriceDto {
         reference_id: String,
     ) -> channel_model_price::ActiveModel {
         channel_model_price::ActiveModel {
+            id: NotSet,
             channel_id: Set(self.channel_id),
             model_name: Set(self.model_name),
             billing_mode: Set(self.billing_mode),
@@ -124,8 +125,9 @@ impl CreateChannelModelPriceDto {
             status: Set(self.status.unwrap_or(ChannelModelPriceStatus::Enabled)),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 }

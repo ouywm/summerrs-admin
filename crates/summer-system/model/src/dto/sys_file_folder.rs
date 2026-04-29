@@ -1,7 +1,7 @@
 //! 文件夹 DTO（文件中心）
 
 use schemars::JsonSchema;
-use sea_orm::Set;
+use sea_orm::{NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -28,12 +28,14 @@ pub struct CreateFileFolderDto {
 impl From<CreateFileFolderDto> for sys_file_folder::ActiveModel {
     fn from(dto: CreateFileFolderDto) -> Self {
         Self {
+            id: NotSet,
             parent_id: Set(dto.parent_id.unwrap_or(0)),
             name: Set(dto.name),
             slug: Set(dto.slug),
             visibility: Set(dto.visibility.unwrap_or_else(|| "PRIVATE".to_string())),
             sort: Set(dto.sort.unwrap_or(0)),
-            ..Default::default()
+            create_time: NotSet,
+            update_time: NotSet,
         }
     }
 }

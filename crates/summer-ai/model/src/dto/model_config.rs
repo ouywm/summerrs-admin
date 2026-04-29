@@ -1,6 +1,6 @@
 use crate::entity::billing::model_config::{self, ModelConfigType};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -44,6 +44,7 @@ impl CreateModelConfigDto {
 
     pub fn into_active_model(self, operator: &str) -> Result<model_config::ActiveModel, String> {
         Ok(model_config::ActiveModel {
+            id: NotSet,
             model_name: Set(self.model_name),
             display_name: Set(self.display_name),
             model_type: Set(self.model_type),
@@ -64,8 +65,9 @@ impl CreateModelConfigDto {
             enabled: Set(self.enabled.unwrap_or(true)),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
-            ..Default::default()
+            update_time: NotSet,
         })
     }
 }

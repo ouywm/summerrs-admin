@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -27,6 +27,7 @@ pub struct CreateNoticeDto {
 impl CreateNoticeDto {
     pub fn into_active_model(self, operator: String) -> sys_notice::ActiveModel {
         sys_notice::ActiveModel {
+            id: NotSet,
             notice_title: Set(self.notice_title),
             notice_content: Set(self.notice_content),
             notice_level: Set(self.notice_level.unwrap_or(sys_notice::NoticeLevel::Normal)),
@@ -42,8 +43,9 @@ impl CreateNoticeDto {
             expire_time: Set(self.expire_time),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.clone()),
+            create_time: NotSet,
             update_by: Set(operator),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 }

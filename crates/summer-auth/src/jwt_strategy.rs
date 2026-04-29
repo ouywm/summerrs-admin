@@ -29,12 +29,12 @@ use crate::strategy::GroupAuthStrategy;
 /// admin JWT 鉴权策略。挂到 `env!("CARGO_PKG_NAME")` 对应的 group 上。
 #[derive(Clone)]
 pub struct JwtStrategy {
-    path_config: Option<PathAuthConfig>,
+    path_config: PathAuthConfig,
     group: &'static str,
 }
 
 impl JwtStrategy {
-    pub fn new(path_config: Option<PathAuthConfig>, group: &'static str) -> Self {
+    pub fn new(path_config: PathAuthConfig, group: &'static str) -> Self {
         Self { path_config, group }
     }
 }
@@ -45,8 +45,8 @@ impl GroupAuthStrategy for JwtStrategy {
         self.group
     }
 
-    fn path_config(&self) -> Option<&PathAuthConfig> {
-        self.path_config.as_ref()
+    fn path_config(&self) -> &PathAuthConfig {
+        &self.path_config
     }
 
     async fn authenticate(&self, req: &mut Request<Body>) -> Result<(), Response<Body>> {
@@ -62,11 +62,7 @@ impl GroupAuthStrategy for JwtStrategy {
 
         let config = manager.config();
 
-        let requires_auth = self
-            .path_config
-            .as_ref()
-            .map(|c| c.requires_auth(&method, &path))
-            .unwrap_or(true);
+        let requires_auth = self.path_config.requires_auth(&method, &path);
 
         let token = extract_token(req, config);
 

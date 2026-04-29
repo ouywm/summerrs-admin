@@ -1,6 +1,6 @@
 use crate::entity::routing::routing_target::{self, RoutingTargetStatus};
 use schemars::JsonSchema;
-use sea_orm::{ActiveValue, ColumnTrait, Condition, Set};
+use sea_orm::{ActiveValue, ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -54,6 +54,7 @@ impl CreateRoutingTargetDto {
     pub fn into_active_model(self) -> Result<routing_target::ActiveModel, String> {
         let binding = self.normalized_binding()?;
         Ok(routing_target::ActiveModel {
+            id: NotSet,
             routing_rule_id: Set(self.routing_rule_id),
             target_type: Set(binding.target_type),
             channel_id: Set(binding.channel_id),
@@ -65,7 +66,8 @@ impl CreateRoutingTargetDto {
             cooldown_seconds: Set(self.cooldown_seconds.unwrap_or(0)),
             config: Set(self.config.unwrap_or_else(|| serde_json::json!({}))),
             status: Set(self.status.unwrap_or(RoutingTargetStatus::Enabled)),
-            ..Default::default()
+            create_time: NotSet,
+            update_time: NotSet,
         })
     }
 }

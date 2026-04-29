@@ -1,6 +1,6 @@
 use crate::entity::routing::channel::{self, ChannelLastHealthStatus, ChannelStatus, ChannelType};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -37,10 +37,12 @@ pub struct CreateChannelDto {
 impl CreateChannelDto {
     pub fn into_active_model(self, operator: &str) -> channel::ActiveModel {
         channel::ActiveModel {
+            id: NotSet,
             name: Set(self.name),
             channel_type: Set(self.channel_type),
             vendor_code: Set(self.vendor_code),
             base_url: Set(self.base_url),
+            status: Set(self.status.unwrap_or(ChannelStatus::Enabled)),
             models: Set(self
                 .models
                 .map(|v| serde_json::to_value(v).unwrap())
@@ -67,10 +69,10 @@ impl CreateChannelDto {
             auto_ban: Set(self.auto_ban.unwrap_or(true)),
             test_model: Set(self.test_model.unwrap_or_default()),
             used_quota: Set(0),
-            balance: Set(Default::default()),
+            balance: Set(bigdecimal::BigDecimal::from(0)),
             balance_updated_at: Set(None),
             response_time: Set(0),
-            success_rate: Set(Default::default()),
+            success_rate: Set(bigdecimal::BigDecimal::from(0)),
             failure_streak: Set(0),
             last_used_at: Set(None),
             last_error_at: Set(None),
@@ -80,8 +82,9 @@ impl CreateChannelDto {
             deleted_at: Set(None),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 }

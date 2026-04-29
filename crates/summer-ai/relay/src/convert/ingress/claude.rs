@@ -726,13 +726,18 @@ fn from_canonical_stream_event_impl(
             if state.last_message_type != ClaudeLastMessageType::Tools {
                 stop_and_advance(&mut out, state);
                 state.tool_call_base_index = state.index;
-                state.tool_call_max_index_offset = 0;
+                state.tool_call_max_index_offset = -1;
+                state.tool_call_index_offsets.clear();
                 state.last_message_type = ClaudeLastMessageType::Tools;
             }
-            let offset = delta.index;
-            if offset > state.tool_call_max_index_offset {
-                state.tool_call_max_index_offset = offset;
-            }
+            let offset = if let Some(existing) = state.tool_call_index_offsets.get(&delta.index) {
+                *existing
+            } else {
+                let next = state.tool_call_max_index_offset + 1;
+                state.tool_call_max_index_offset = next;
+                state.tool_call_index_offsets.insert(delta.index, next);
+                next
+            };
             let block_index = (state.tool_call_base_index + offset) as u32;
 
             // 首次见到 name → content_block_start
@@ -1676,6 +1681,65 @@ mod tests {
             })
             .collect();
         assert_eq!(stops, vec![0, 1]);
+    }
+
+    #[test]
+    fn stream_absolute_tool_index_from_claude_stays_consistent() {
+        let ctx = stream_ctx();
+        let mut state = init_state();
+
+        // 先有文本 block（index=0）
+        run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::TextDelta {
+                text: "准备调用工具".to_string(),
+            },
+        );
+
+        // Claude 原生上游常见：tool_use 的 index 是内容块绝对序号（这里是 1）
+        let out = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::ToolCallDelta(summer_ai_core::ToolCallDelta {
+                index: 1,
+                id: Some("tu_1".to_string()),
+                name: Some("context7".to_string()),
+                arguments_delta: None,
+            }),
+        );
+
+        // 必须是 stop(text:0) + start(tool:1)，不能错位成 start(tool:2)
+        assert_eq!(out.len(), 2);
+        match &out[0] {
+            ClaudeStreamEvent::ContentBlockStop { index } => assert_eq!(*index, 0),
+            _ => panic!(),
+        }
+        match &out[1] {
+            ClaudeStreamEvent::ContentBlockStart {
+                index,
+                content_block: ClaudeStreamContentBlock::ToolUse { .. },
+            } => assert_eq!(*index, 1),
+            _ => panic!(),
+        }
+
+        // End 时只应停止实际打开的 tool block（1），不能多发不存在的 stop(2)
+        let out2 = run(
+            &mut state,
+            &ctx,
+            ChatStreamEvent::End(summer_ai_core::StreamEnd {
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+            }),
+        );
+        let stops: Vec<_> = out2
+            .iter()
+            .filter_map(|e| match e {
+                ClaudeStreamEvent::ContentBlockStop { index } => Some(*index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stops, vec![1]);
     }
 
     #[test]

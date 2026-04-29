@@ -1,6 +1,6 @@
 use crate::entity::billing::user_quota::{self, UserQuotaStatus};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -21,6 +21,7 @@ pub struct CreateUserQuotaDto {
 impl CreateUserQuotaDto {
     pub fn into_active_model(self, operator: &str) -> user_quota::ActiveModel {
         user_quota::ActiveModel {
+            id: NotSet,
             user_id: Set(self.user_id),
             channel_group: Set(self.channel_group.unwrap_or_else(|| "default".to_string())),
             status: Set(self.status.unwrap_or(UserQuotaStatus::Normal)),
@@ -36,8 +37,9 @@ impl CreateUserQuotaDto {
             last_request_time: Set(None),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 

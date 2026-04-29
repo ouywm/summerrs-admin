@@ -1,6 +1,6 @@
 use crate::entity::routing::channel_account::{self, ChannelAccountStatus};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -30,6 +30,7 @@ pub struct CreateChannelAccountDto {
 impl CreateChannelAccountDto {
     pub fn into_active_model(self, operator: &str) -> channel_account::ActiveModel {
         channel_account::ActiveModel {
+            id: NotSet,
             channel_id: Set(self.channel_id),
             name: Set(self.name),
             credential_type: Set(self.credential_type),
@@ -41,15 +42,15 @@ impl CreateChannelAccountDto {
             weight: Set(self.weight.unwrap_or(1)),
             rate_multiplier: Set(self
                 .rate_multiplier
-                .map(|v| bigdecimal::BigDecimal::try_from(v).unwrap_or_default())
+                .and_then(decimal_from_f64)
                 .unwrap_or_else(|| bigdecimal::BigDecimal::from(1))),
             concurrency_limit: Set(self.concurrency_limit.unwrap_or(0)),
             quota_limit: Set(self
                 .quota_limit
-                .map(|v| bigdecimal::BigDecimal::try_from(v).unwrap_or_default())
-                .unwrap_or_default()),
-            quota_used: Set(Default::default()),
-            balance: Set(Default::default()),
+                .and_then(decimal_from_f64)
+                .unwrap_or_else(|| bigdecimal::BigDecimal::from(0))),
+            quota_used: Set(bigdecimal::BigDecimal::from(0)),
+            balance: Set(bigdecimal::BigDecimal::from(0)),
             balance_updated_at: Set(None),
             response_time: Set(0),
             failure_streak: Set(0),
@@ -66,9 +67,10 @@ impl CreateChannelAccountDto {
             deleted_at: Set(None),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
+            update_time: NotSet,
             disabled_api_keys: Set(serde_json::json!([])),
-            ..Default::default()
         }
     }
 }
@@ -122,14 +124,14 @@ impl UpdateChannelAccountDto {
         if let Some(v) = self.weight {
             active.weight = Set(v);
         }
-        if let Some(v) = self.rate_multiplier {
-            active.rate_multiplier = Set(bigdecimal::BigDecimal::try_from(v).unwrap_or_default());
+        if let Some(v) = self.rate_multiplier.and_then(decimal_from_f64) {
+            active.rate_multiplier = Set(v);
         }
         if let Some(v) = self.concurrency_limit {
             active.concurrency_limit = Set(v);
         }
-        if let Some(v) = self.quota_limit {
-            active.quota_limit = Set(bigdecimal::BigDecimal::try_from(v).unwrap_or_default());
+        if let Some(v) = self.quota_limit.and_then(decimal_from_f64) {
+            active.quota_limit = Set(v);
         }
         if let Some(v) = self.test_model {
             active.test_model = Set(v);
@@ -173,4 +175,11 @@ impl From<ChannelAccountQueryDto> for Condition {
         }
         cond
     }
+}
+
+fn decimal_from_f64(value: f64) -> Option<bigdecimal::BigDecimal> {
+    if !value.is_finite() {
+        return None;
+    }
+    bigdecimal::BigDecimal::try_from(value).ok()
 }

@@ -6,10 +6,8 @@ use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query};
 use summer_common::response::Json;
 use summer_sea_orm::pagination::{Page, Pagination};
-use summer_web::Router;
 use summer_web::extractor::Component;
 use summer_web::get_api;
-use summer_web::handler::TypeRouter;
 
 #[log(
     module = "ai/请求日志",
@@ -70,12 +68,4 @@ pub async fn request_detail_by_request_id(
 ) -> ApiResult<Json<RequestDetailVo>> {
     let vo = svc.request_detail_by_request_id(request_id).await?;
     Ok(Json(vo))
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(list)
-        .typed_route(log_detail)
-        .typed_route(request_detail)
-        .typed_route(request_detail_by_request_id)
 }

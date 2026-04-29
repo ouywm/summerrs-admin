@@ -1,6 +1,6 @@
 use crate::entity::routing::routing_rule::{self, RoutingRuleStatus};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -39,6 +39,7 @@ impl CreateRoutingRuleDto {
     pub fn into_active_model(self, operator: &str) -> Result<routing_rule::ActiveModel, String> {
         let (start_time, end_time) = parse_schedule_window(self.start_time, self.end_time)?;
         Ok(routing_rule::ActiveModel {
+            id: NotSet,
             organization_id: Set(self.organization_id),
             project_id: Set(self.project_id),
             rule_code: Set(self.rule_code),
@@ -56,8 +57,9 @@ impl CreateRoutingRuleDto {
             metadata: Set(self.metadata.unwrap_or_else(|| serde_json::json!({}))),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
-            ..Default::default()
+            update_time: NotSet,
         })
     }
 }

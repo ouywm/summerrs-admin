@@ -10,8 +10,7 @@ use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
 use summer_sea_orm::pagination::{Page, Pagination};
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
-use summer_web::{Router, delete_api, get_api, post_api, put_api};
+use summer_web::{delete_api, get_api, post_api, put_api};
 
 #[log(module = "ai/配置项管理", action = "查询配置项列表", biz_type = Query)]
 #[get_api("/config-entry/list")]
@@ -65,13 +64,4 @@ pub async fn delete(
 ) -> ApiResult<()> {
     svc.delete(id).await?;
     Ok(())
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(list)
-        .typed_route(detail)
-        .typed_route(create)
-        .typed_route(update)
-        .typed_route(delete)
 }

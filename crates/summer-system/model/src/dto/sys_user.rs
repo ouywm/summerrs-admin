@@ -1,6 +1,6 @@
 use crate::entity::sys_user::{self, Gender, UserStatus};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -30,6 +30,7 @@ impl CreateUserDto {
         operator: String,
     ) -> sys_user::ActiveModel {
         sys_user::ActiveModel {
+            id: NotSet,
             user_name: Set(self.user_name),
             password: Set(hashed_password),
             nick_name: Set(self.nick_name),
@@ -39,8 +40,9 @@ impl CreateUserDto {
             avatar: Set(self.avatar.unwrap_or_default()),
             status: Set(self.status.unwrap_or(UserStatus::Enabled)),
             create_by: Set(operator.clone()),
+            create_time: NotSet,
             update_by: Set(operator),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 }

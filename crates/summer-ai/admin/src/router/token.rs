@@ -9,9 +9,7 @@ use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
 use summer_sea_orm::pagination::{Page, Pagination};
-use summer_web::Router;
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 #[log(module = "ai/令牌管理", action = "查询令牌列表", biz_type = Query)]
@@ -115,16 +113,4 @@ pub async fn batch_delete(
 ) -> ApiResult<Json<serde_json::Value>> {
     let count = svc.batch_delete(dto.ids).await?;
     Ok(Json(serde_json::json!({ "deleted": count })))
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(list)
-        .typed_route(detail)
-        .typed_route(create)
-        .typed_route(update)
-        .typed_route(update_status)
-        .typed_route(rotate_key)
-        .typed_route(delete)
-        .typed_route(batch_delete)
 }

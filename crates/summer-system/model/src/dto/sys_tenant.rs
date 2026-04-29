@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use validator::Validate;
@@ -32,6 +32,7 @@ pub struct CreateTenantDto {
 impl CreateTenantDto {
     pub fn into_active_model(self, operator: String) -> sys_tenant::ActiveModel {
         sys_tenant::ActiveModel {
+            id: NotSet,
             tenant_id: Set(self.tenant_id),
             tenant_name: Set(self.tenant_name),
             default_isolation_level: Set(self
@@ -46,8 +47,9 @@ impl CreateTenantDto {
             metadata: Set(self.metadata.unwrap_or_else(|| serde_json::json!({}))),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.clone()),
+            create_time: NotSet,
             update_by: Set(operator),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 }
@@ -183,6 +185,7 @@ impl SaveTenantDatasourceDto {
         operator: String,
     ) -> sys_tenant_datasource::ActiveModel {
         sys_tenant_datasource::ActiveModel {
+            id: NotSet,
             tenant_id: Set(tenant_id),
             isolation_level: Set(self.isolation_level),
             status: Set(self
@@ -202,10 +205,12 @@ impl SaveTenantDatasourceDto {
                 .readonly_config
                 .unwrap_or_else(|| serde_json::json!({}))),
             extra_config: Set(self.extra_config.unwrap_or_else(|| serde_json::json!({}))),
+            last_sync_time: Set(None),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.clone()),
+            create_time: NotSet,
             update_by: Set(operator),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 
@@ -289,6 +294,7 @@ impl SaveTenantMembershipDto {
         operator: String,
     ) -> sys_tenant_membership::ActiveModel {
         sys_tenant_membership::ActiveModel {
+            id: NotSet,
             tenant_id: Set(tenant_id),
             user_id: Set(self.user_id),
             role_code: Set(self.role_code.unwrap_or_default()),
@@ -299,10 +305,13 @@ impl SaveTenantMembershipDto {
             source: Set(self
                 .source
                 .unwrap_or(sys_tenant_membership::TenantMembershipSource::Manual)),
+            joined_time: NotSet,
+            last_access_time: Set(None),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.clone()),
+            create_time: NotSet,
             update_by: Set(operator),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 

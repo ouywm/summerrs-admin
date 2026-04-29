@@ -1,4 +1,4 @@
-use summer_auth::path_auth::{PathAuthBuilder, PathAuthConfigs};
+use summer_auth::path_auth::PathAuthBuilder;
 use summer_auth::public_routes::MethodTag;
 use summer_web::axum::http;
 
@@ -17,8 +17,7 @@ fn test_multi_group_configs() {
                 .exclude("/api/health"),
         );
 
-    let configs_map = builder.build();
-    let configs = PathAuthConfigs::new(configs_map);
+    let configs = builder.build();
 
     // 测试 group-a
     let cfg_a = configs.get("group-a").expect("group-a not found");
@@ -39,8 +38,7 @@ fn test_group_isolation() {
         .add_group(PathAuthBuilder::group("group-a").include("/admin/**"))
         .add_group(PathAuthBuilder::group("group-b").include("/api/**"));
 
-    let configs_map = builder.build();
-    let configs = PathAuthConfigs::new(configs_map);
+    let configs = builder.build();
 
     let cfg_a = configs.get("group-a").unwrap();
     let cfg_b = configs.get("group-b").unwrap();
@@ -62,8 +60,7 @@ fn test_method_specific_rules() {
             .exclude_method(MethodTag::Post, "/auth/login"),
     );
 
-    let configs_map = builder.build();
-    let configs = PathAuthConfigs::new(configs_map);
+    let configs = builder.build();
     let cfg = configs.get("test").unwrap();
 
     // POST /auth/login 不需要鉴权
@@ -80,8 +77,7 @@ fn test_param_routes() {
             .exclude("/users/{id}/public"),
     );
 
-    let configs_map = builder.build();
-    let configs = PathAuthConfigs::new(configs_map);
+    let configs = builder.build();
     let cfg = configs.get("test").unwrap();
 
     // 参数路由应该被排除

@@ -11,7 +11,7 @@ pub struct SummerAiAdminPlugin;
 impl Plugin for SummerAiAdminPlugin {
     async fn build(&self, _app: &mut AppBuilder) {
         tracing::info!(
-            group = Self::admin_group(),
+            group = crate::admin_group(),
             "summer-ai-admin plugin initialized"
         );
     }
@@ -22,11 +22,5 @@ impl Plugin for SummerAiAdminPlugin {
 
     fn dependencies(&self) -> Vec<&str> {
         vec![]
-    }
-}
-
-impl SummerAiAdminPlugin {
-    pub fn admin_group() -> &'static str {
-        env!("CARGO_PKG_NAME")
     }
 }

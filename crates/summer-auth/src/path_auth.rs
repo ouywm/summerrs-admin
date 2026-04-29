@@ -46,10 +46,6 @@ pub struct PathAuthConfigs {
 }
 
 impl PathAuthConfigs {
-    pub fn new(inner: HashMap<&'static str, PathAuthConfig>) -> Self {
-        Self { inner }
-    }
-
     pub fn get(&self, group: &str) -> Option<&PathAuthConfig> {
         self.inner.get(group)
     }
@@ -221,13 +217,6 @@ impl GroupAuthBuilder {
         self.exclude.push(RouteRule::new(method, pattern));
         self
     }
-
-    /// 完成构建，返回 PathAuthBuilder
-    pub fn build(self) -> PathAuthBuilder {
-        let mut builder = PathAuthBuilder::new();
-        builder = builder.add_group(self);
-        builder
-    }
 }
 
 impl PathAuthBuilder {
@@ -254,37 +243,23 @@ impl PathAuthBuilder {
         );
         self
     }
-    /// 添加一个 group 的配置（直接指定规则）
-    pub fn with_group(
-        mut self,
-        name: &'static str,
-        include: Vec<RouteRule>,
-        exclude: Vec<RouteRule>,
-    ) -> Self {
-        self.inner
-            .insert(name, PathAuthBuilderInner { include, exclude });
-        self
-    }
 
-    /// 获取所有配置
-    pub fn build(self) -> HashMap<&'static str, PathAuthConfig> {
-        self.inner
+    /// 构建所有配置
+    pub fn build(self) -> PathAuthConfigs {
+        let inner = self
+            .inner
             .into_iter()
             .map(|(name, inner)| {
                 let config = PathAuthConfig::new(inner.include.clone(), inner.exclude.clone());
                 (name, config)
             })
-            .collect()
+            .collect();
+        PathAuthConfigs { inner }
     }
 
     /// 检查是否为空
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
-    }
-
-    /// 获取所有 group 名称
-    pub fn groups(&self) -> impl Iterator<Item = &&'static str> {
-        self.inner.keys()
     }
 }
 

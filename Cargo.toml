@@ -125,6 +125,6 @@ woothee = "0.13"
 
 [patch.crates-io]
 sea-orm = { git = "https://github.com/ouywm/sea-orm.git", rev = "829259d70091bd46a999f436151d66ccc7553585" }
-summer = { git = "https://github.com/ouywm/spring-rs.git", rev = "d1b2c25" }
-summer-macros = { git = "https://github.com/ouywm/spring-rs.git", rev = "d1b2c25" }
-summer-web = { git = "https://github.com/ouywm/spring-rs.git", rev = "d1b2c25" }
+summer = { git = "https://github.com/ouywm/spring-rs.git", rev = "e8e60826" }
+summer-macros = { git = "https://github.com/ouywm/spring-rs.git", rev = "e8e60826" }
+summer-web = { git = "https://github.com/ouywm/spring-rs.git", rev = "e8e60826" }

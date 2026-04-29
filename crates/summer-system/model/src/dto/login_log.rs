@@ -2,7 +2,7 @@ use chrono::NaiveDateTime;
 use schemars::JsonSchema;
 use sea_orm::prelude::IpNetwork;
 use sea_orm::sea_query::{Alias, Expr};
-use sea_orm::{ColumnTrait, Condition, ExprTrait, Set};
+use sea_orm::{ColumnTrait, Condition, ExprTrait, NotSet, Set};
 use serde::Deserialize;
 use std::net::IpAddr;
 use summer_common::user_agent::UserAgentInfo;
@@ -65,8 +65,10 @@ pub struct CreateLoginLogDto {
 impl From<CreateLoginLogDto> for sys_login_log::ActiveModel {
     fn from(dto: CreateLoginLogDto) -> Self {
         Self {
+            id: NotSet,
             user_id: Set(dto.user_id),
             user_name: Set(dto.user_name),
+            login_time: NotSet,
             login_ip: Set(IpNetwork::from(dto.client_ip)),
             login_location: Set(dto.login_location),
             user_agent: Set(dto.ua_info.raw),
@@ -77,7 +79,7 @@ impl From<CreateLoginLogDto> for sys_login_log::ActiveModel {
             device: Set(dto.ua_info.device),
             status: Set(dto.status),
             fail_reason: Set(dto.fail_reason.unwrap_or_default()),
-            ..Default::default()
+            create_time: NotSet,
         }
     }
 }

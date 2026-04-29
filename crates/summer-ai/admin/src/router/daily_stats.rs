@@ -6,10 +6,8 @@ use summer_common::error::ApiResult;
 use summer_common::extractor::Query;
 use summer_common::response::Json;
 use summer_sea_orm::pagination::{Page, Pagination};
-use summer_web::Router;
 use summer_web::extractor::Component;
 use summer_web::get_api;
-use summer_web::handler::TypeRouter;
 
 #[log(module = "ai/每日统计", action = "查询每日统计列表", biz_type = Query)]
 #[get_api("/daily-stats/list")]
@@ -40,11 +38,4 @@ pub async fn dashboard(
 ) -> ApiResult<Json<DashboardOverviewVo>> {
     let vo = svc.dashboard(query).await?;
     Ok(Json(vo))
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(list)
-        .typed_route(summary)
-        .typed_route(dashboard)
 }

@@ -1,7 +1,7 @@
 //! 系统参数配置 DTO
 
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -31,6 +31,7 @@ pub struct CreateConfigDto {
 impl From<CreateConfigDto> for sys_config::ActiveModel {
     fn from(dto: CreateConfigDto) -> Self {
         Self {
+            id: NotSet,
             config_name: Set(dto.config_name),
             config_key: Set(dto.config_key),
             config_value: Set(dto.config_value.unwrap_or_default()),
@@ -42,7 +43,10 @@ impl From<CreateConfigDto> for sys_config::ActiveModel {
             enabled: Set(dto.enabled.unwrap_or(true)),
             is_system: Set(dto.is_system.unwrap_or(false)),
             remark: Set(dto.remark.unwrap_or_default()),
-            ..Default::default()
+            create_by: NotSet,
+            create_time: NotSet,
+            update_by: NotSet,
+            update_time: NotSet,
         }
     }
 }

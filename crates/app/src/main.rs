@@ -1,13 +1,9 @@
-use axum_client_ip::ClientIpSource;
+mod router;
+
 use summer::App;
-use summer::auto_config;
-use summer_ai::{SummerAiAdminPlugin, SummerAiBillingPlugin, SummerAiRelayPlugin};
-use summer_auth::GroupAuthLayer;
-use summer_auth::PathAuthBuilder;
+use summer_ai::summer_ai_billing::SummerAiBillingPlugin;
+use summer_ai::summer_ai_relay::SummerAiRelayPlugin;
 use summer_auth::SummerAuthPlugin;
-use summer_auth::jwt_strategy::JwtStrategy;
-use summer_auth::path_auth::RouteRule;
-use summer_auth::public_routes::public_routes_in_group;
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
@@ -18,31 +14,12 @@ use summer_sea_orm::SeaOrmPlugin;
 use summer_sharding::SummerShardingPlugin;
 use summer_sql_rewrite::SummerSqlRewritePlugin;
 use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
-use summer_web::LayerConfigurator;
-use summer_web::WebConfigurator;
-use summer_web::WebPlugin;
-use summer_web::axum::body::Body;
-use summer_web::axum::http;
-use tower_http::catch_panic::CatchPanicLayer;
+use summer_web::{WebConfigurator, WebPlugin};
 
 rust_i18n::i18n!("../../locales", fallback = "en");
 
-fn auth_path_config() -> PathAuthBuilder {
-    PathAuthBuilder::new()
-        .add_group(PathAuthBuilder::group(summer_system::system_group()).include("/**"))
-        .add_group(
-            PathAuthBuilder::group(summer_ai::SummerAiAdminPlugin::admin_group()).include("/**"),
-        )
-        .add_group(
-            PathAuthBuilder::group(summer_ai::SummerAiRelayPlugin::relay_group()).include("/**"),
-        )
-}
-
-#[auto_config(JobConfigurator, WebConfigurator)]
 #[tokio::main]
 async fn main() {
-    let auth_configs = auth_path_config().build();
-
     App::new()
         .add_plugin(WebPlugin)
         .add_plugin(SeaOrmPlugin)
@@ -60,68 +37,9 @@ async fn main() {
         .add_plugin(LogBatchCollectorPlugin)
         .add_plugin(McpPlugin)
         .add_plugin(SummerAiRelayPlugin)
-        .add_plugin(SummerAiAdminPlugin)
         .add_plugin(SummerAiBillingPlugin)
-        .add_group_layer(summer_system::system_group(), {
-            let configs = auth_configs.clone();
-            move |router| {
-                let mut cfg = configs.get(summer_system::system_group()).cloned().unwrap();
-                // 合并公开路由
-                for r in public_routes_in_group(summer_system::system_group()) {
-                    let rule = RouteRule::new(r.method, r.pattern.to_string());
-                    if !cfg.exclude.contains(&rule) {
-                        cfg.exclude.push(rule);
-                    }
-                }
-                cfg.rebuild_param_route_cache();
-                let strategy = JwtStrategy::new(Some(cfg), summer_system::system_group());
-                router.layer(GroupAuthLayer::new(strategy))
-            }
-        })
-        .add_group_layer(summer_ai::SummerAiAdminPlugin::admin_group(), {
-            let configs = auth_configs.clone();
-            move |router| {
-                let mut cfg = configs
-                    .get(summer_ai::SummerAiAdminPlugin::admin_group())
-                    .cloned()
-                    .unwrap();
-                // 合并公开路由
-                for r in public_routes_in_group(summer_ai::SummerAiAdminPlugin::admin_group()) {
-                    let rule = RouteRule::new(r.method, r.pattern.to_string());
-                    if !cfg.exclude.contains(&rule) {
-                        cfg.exclude.push(rule);
-                    }
-                }
-                cfg.rebuild_param_route_cache();
-                let strategy =
-                    JwtStrategy::new(Some(cfg), summer_ai::SummerAiAdminPlugin::admin_group());
-                router.layer(GroupAuthLayer::new(strategy))
-            }
-        })
-        .add_router_layer(|router| {
-            router
-                .layer(ClientIpSource::ConnectInfo.into_extension())
-                .layer(CatchPanicLayer::custom(handle_panic))
-        })
+        .add_jobs(summer_job::handler::auto_jobs())
+        .add_router(router::router())
         .run()
         .await;
-}
-
-/// 全局 panic 处理：将 panic 转为 ProblemDetails (RFC 7807) 格式响应
-fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> http::Response<Body> {
-    use summer_web::axum::response::IntoResponse;
-
-    let detail = if let Some(s) = err.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = err.downcast_ref::<&str>() {
-        s.to_string()
-    } else {
-        "Unknown internal error".to_string()
-    };
-
-    tracing::error!("Service panicked: {detail}");
-
-    summer_web::problem_details::ProblemDetails::new("internal-error", "Internal Server Error", 500)
-        .with_detail(detail)
-        .into_response()
 }

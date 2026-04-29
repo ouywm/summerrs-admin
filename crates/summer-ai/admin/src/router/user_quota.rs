@@ -9,9 +9,7 @@ use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
 use summer_sea_orm::pagination::{Page, Pagination};
-use summer_web::Router;
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
 use summer_web::{get_api, post_api, put_api};
 
 #[log(module = "ai/用户额度管理", action = "查询用户额度列表", biz_type = Query)]
@@ -68,13 +66,4 @@ pub async fn adjust(
 ) -> ApiResult<()> {
     svc.adjust(id, dto, &profile.nick_name).await?;
     Ok(())
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(list)
-        .typed_route(detail)
-        .typed_route(create)
-        .typed_route(update)
-        .typed_route(adjust)
 }

@@ -1,6 +1,6 @@
 use crate::entity::sys_menu::{self, MenuType};
 use schemars::JsonSchema;
-use sea_orm::Set;
+use sea_orm::{NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -42,6 +42,7 @@ pub struct CreateMenuDto {
 impl From<CreateMenuDto> for sys_menu::ActiveModel {
     fn from(dto: CreateMenuDto) -> Self {
         Self {
+            id: NotSet,
             parent_id: Set(dto.parent_id.unwrap_or(0)),
             menu_type: Set(MenuType::Menu),
             name: Set(dto.name),
@@ -63,9 +64,11 @@ impl From<CreateMenuDto> for sys_menu::ActiveModel {
             active_path: Set(dto.active_path.unwrap_or_default()),
             auth_name: Set(String::new()),
             auth_mark: Set(String::new()),
+            bit_position: Set(None),
             sort: Set(dto.sort.unwrap_or(0)),
             enabled: Set(dto.enabled.unwrap_or(true)),
-            ..Default::default()
+            create_time: NotSet,
+            update_time: NotSet,
         }
     }
 }
@@ -87,6 +90,7 @@ pub struct CreateButtonDto {
 impl From<CreateButtonDto> for sys_menu::ActiveModel {
     fn from(dto: CreateButtonDto) -> Self {
         Self {
+            id: NotSet,
             parent_id: Set(dto.parent_id),
             menu_type: Set(MenuType::Button),
             name: Set(String::new()),
@@ -108,9 +112,11 @@ impl From<CreateButtonDto> for sys_menu::ActiveModel {
             active_path: Set(String::new()),
             auth_name: Set(dto.auth_name),
             auth_mark: Set(dto.auth_mark),
+            bit_position: Set(None),
             sort: Set(dto.sort.unwrap_or(0)),
             enabled: Set(dto.enabled.unwrap_or(true)),
-            ..Default::default()
+            create_time: NotSet,
+            update_time: NotSet,
         }
     }
 }

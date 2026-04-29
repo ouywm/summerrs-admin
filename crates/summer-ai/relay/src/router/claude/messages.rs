@@ -6,14 +6,6 @@
 //! 错误用 [`ClaudeError`](crate::error::ClaudeError) newtype 包一层——`?` 自动转，
 //! `IntoResponse` 时输出 Anthropic 官方格式 `{"type":"error","error":{...}}`。
 
-use summer_ai_billing::{BillingService, PriceResolver};
-use summer_ai_core::types::ingress_wire::claude::ClaudeMessagesRequest;
-use summer_web::axum::Json;
-use summer_web::axum::body::Body;
-use summer_web::axum::response::{IntoResponse, Response};
-use summer_web::extractor::Component;
-use summer_web::post;
-
 use crate::auth::AiToken;
 use crate::convert::ingress::{ClaudeIngress, IngressFormat};
 use crate::error::ClaudeResult;
@@ -23,6 +15,13 @@ use crate::service::channel_store::ChannelStore;
 use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::sse_response;
 use crate::service::tracking::TrackingService;
+use summer_ai_billing::{BillingService, PriceResolver};
+use summer_ai_core::types::ingress_wire::claude::ClaudeMessagesRequest;
+use summer_common::response::Json;
+use summer_web::axum::body::Body;
+use summer_web::axum::response::{IntoResponse, Response};
+use summer_web::extractor::Component;
+use summer_web::post;
 
 /// `POST /v1/messages`
 #[post("/v1/messages")]

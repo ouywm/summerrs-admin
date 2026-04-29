@@ -1,6 +1,6 @@
 use crate::entity::billing::token::{self, TokenStatus};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, Condition, Set};
+use sea_orm::{ColumnTrait, Condition, NotSet, Set};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -40,6 +40,7 @@ impl CreateTokenDto {
         key_prefix: &str,
     ) -> token::ActiveModel {
         token::ActiveModel {
+            id: NotSet,
             user_id: Set(self.user_id),
             service_account_id: Set(self.service_account_id.unwrap_or(0)),
             project_id: Set(self.project_id.unwrap_or(0)),
@@ -70,8 +71,9 @@ impl CreateTokenDto {
             last_user_agent: Set(String::new()),
             remark: Set(self.remark.unwrap_or_default()),
             create_by: Set(operator.to_string()),
+            create_time: NotSet,
             update_by: Set(operator.to_string()),
-            ..Default::default()
+            update_time: NotSet,
         }
     }
 

@@ -9,28 +9,27 @@
 //!
 //! 同时把推断的 `ErrorFlavor` 塞进 extensions，下游 handler / extractor 复用同一份。
 
-use axum_extra::headers::authorization::Bearer;
-use axum_extra::headers::{Authorization, HeaderMapExt};
-use summer_auth::GroupAuthStrategy;
-use summer_web::axum::body::Body;
-use summer_web::axum::extract::Request;
-use summer_web::axum::response::Response;
-
 use super::context::AiTokenContext;
 use super::store::AiTokenStore;
 use crate::error::{ErrorFlavor, RelayError};
+use axum_extra::headers::authorization::Bearer;
+use axum_extra::headers::{Authorization, HeaderMapExt};
+use summer_auth::GroupAuthStrategy;
+use summer_auth::path_auth::PathAuthConfig;
+use summer_web::axum::body::Body;
+use summer_web::axum::extract::Request;
+use summer_web::axum::response::Response;
+use summer_web::extractor::RequestPartsExt;
 
-/// relay 域鉴权策略。由 [`super::layer::AiAuthLayer`] 之外的统一抽象
-/// [`summer_auth::GroupAuthLayer`] 承载，挂到 `"summer-ai-relay"` 组。
 #[derive(Clone)]
 pub struct ApiKeyStrategy {
-    store: AiTokenStore,
     group: &'static str,
+    path_config: PathAuthConfig,
 }
 
 impl ApiKeyStrategy {
-    pub fn new(store: AiTokenStore, group: &'static str) -> Self {
-        Self { store, group }
+    pub fn new(path_config: PathAuthConfig, group: &'static str) -> Self {
+        Self { group, path_config }
     }
 }
 
@@ -40,9 +39,29 @@ impl GroupAuthStrategy for ApiKeyStrategy {
         self.group
     }
 
+    fn path_config(&self) -> &PathAuthConfig {
+        &self.path_config
+    }
+
     async fn authenticate(&self, req: &mut Request<Body>) -> Result<(), Response<Body>> {
+        let method = req.method().clone();
+        let path = req.uri().path().to_string();
+
+        let requires_auth = self.path_config.requires_auth(&method, &path);
+
+        if !requires_auth {
+            return Ok(());
+        }
+
         let flavor = ErrorFlavor::from_path(req.uri().path());
         req.extensions_mut().insert(flavor);
+
+        // 从 AppState 获取 AiTokenStore
+        let (parts, body) = std::mem::take(req).into_parts();
+        let store = parts
+            .get_component::<AiTokenStore>()
+            .expect("AiTokenStore not found in AppState");
+        *req = Request::from_parts(parts, body);
 
         let Some(raw_token) = extract_bearer(req) else {
             return Err(RelayError::Unauthenticated(
@@ -51,7 +70,7 @@ impl GroupAuthStrategy for ApiKeyStrategy {
             .into_response_with(flavor));
         };
 
-        match self.store.lookup(&raw_token).await {
+        match store.lookup(&raw_token).await {
             Ok(Some(model)) => {
                 let ctx = AiTokenContext::from_model(&model);
                 tracing::debug!(

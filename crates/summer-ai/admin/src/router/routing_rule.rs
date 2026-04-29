@@ -9,9 +9,7 @@ use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
 use summer_sea_orm::pagination::{Page, Pagination};
-use summer_web::Router;
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 #[log(module = "ai/路由规则管理", action = "查询路由规则列表", biz_type = Query)]
@@ -66,13 +64,4 @@ pub async fn delete(
 ) -> ApiResult<()> {
     svc.delete(id).await?;
     Ok(())
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(list)
-        .typed_route(detail)
-        .typed_route(create)
-        .typed_route(update)
-        .typed_route(delete)
 }
