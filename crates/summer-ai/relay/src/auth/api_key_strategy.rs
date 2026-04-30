@@ -31,6 +31,18 @@ impl ApiKeyStrategy {
     pub fn new(path_config: PathAuthConfig, group: &'static str) -> Self {
         Self { group, path_config }
     }
+
+    /// 默认配置：`include = "/**"`，`exclude` 取自该 group 下 `#[public]` / `#[no_auth]`
+    /// 编译期注册的公共路由。
+    pub fn for_group(group: &'static str) -> Self {
+        Self::for_group_with(group, PathAuthConfig::new().include("/**"))
+    }
+
+    /// 在调用方提供的 [`PathAuthConfig`] 之上，自动并入该 group 下 inventory 注册的
+    /// public routes，再绑定到指定 group。
+    pub fn for_group_with(group: &'static str, cfg: PathAuthConfig) -> Self {
+        Self::new(cfg.extend_excludes_from_public_routes(group), group)
+    }
 }
 
 #[async_trait::async_trait]

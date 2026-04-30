@@ -25,7 +25,7 @@ pub use inventory;
 pub use jwt_strategy::JwtStrategy;
 pub use middleware::AuthLayer;
 pub use online::{OnlineUserItem, OnlineUserPage, OnlineUserQuery};
-pub use path_auth::PathAuthBuilder;
+pub use path_auth::PathAuthConfig;
 pub use plugin::SummerAuthPlugin;
 pub use qrcode::QrCodeState;
 pub use session::{

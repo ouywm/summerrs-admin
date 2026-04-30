@@ -1,26 +1,15 @@
-use summer_auth::path_auth::{PathAuthBuilder, PathAuthConfig, RouteRule};
-use summer_auth::public_routes::{MethodTag, iter_public_routes};
+use summer_auth::path_auth::PathAuthConfig;
+use summer_auth::public_routes::MethodTag;
 use summer_web::axum::http;
 
-summer_auth::register_public_route!(MethodTag::Post, "/auth/login");
-summer_auth::register_public_route!(MethodTag::Any, "/public/file/**");
-
-fn merge_public_into(mut cfg: PathAuthConfig) -> PathAuthConfig {
-    for r in iter_public_routes() {
-        let rule = RouteRule::new(r.method, r.pattern.to_string());
-        if !cfg.exclude.contains(&rule) {
-            cfg.exclude.push(rule);
-        }
-    }
-    cfg
-}
+summer_auth::register_public_route!("test", MethodTag::Post, "/auth/login");
+summer_auth::register_public_route!("test", MethodTag::Any, "/public/file/**");
 
 #[test]
-fn inventory_public_routes_are_merged_as_method_specific_excludes() {
-    let builder = PathAuthBuilder::new().add_group(PathAuthBuilder::group("test").include("/**"));
-    let configs = builder.build();
-    let cfg = configs.get("test").unwrap().clone();
-    let cfg = merge_public_into(cfg);
+fn extend_excludes_from_public_routes_merges_inventory() {
+    let cfg = PathAuthConfig::new()
+        .include("/**")
+        .extend_excludes_from_public_routes("test");
 
     // method-specific exclude
     assert!(cfg.requires_auth(&http::Method::GET, "/auth/login"));

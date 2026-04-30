@@ -4,7 +4,7 @@
 //!
 //! ```ignore
 //! let group = "summer-system";
-//! let strategy = JwtStrategy::new(path_config, group);
+//! let strategy = JwtStrategy::for_group(group);
 //! app.add_group_layer(group, move |router| {
 //!     router.layer(GroupAuthLayer::new(strategy.clone()))
 //! });

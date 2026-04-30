@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use axum_client_ip::ClientIpSource;
-use summer_ai::summer_ai_relay::ApiKeyStrategy;
-use summer_auth::path_auth::{PathAuthConfig, PathAuthConfigs, RouteRule};
-use summer_auth::public_routes::public_routes_in_group;
-use summer_auth::{GroupAuthLayer, JwtStrategy, PathAuthBuilder};
+use summer_ai::summer_ai_admin::admin_group;
+use summer_ai::summer_ai_relay::{ApiKeyStrategy, relay_group};
+use summer_auth::{GroupAuthLayer, JwtStrategy};
+use summer_system::system_group;
 use summer_web::Router;
 use summer_web::axum::body;
 use summer_web::axum::extract::Request;
@@ -11,99 +13,46 @@ use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::handler::auto_grouped_routers;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 
-fn summer_ai_relay_group() -> &'static str {
-    summer_ai::summer_ai_relay::relay_group()
-}
-
-fn summer_ai_admin_group() -> &'static str {
-    summer_ai::summer_ai_admin::admin_group()
-}
-
-fn summer_system_group() -> &'static str {
-    summer_system::system_group()
-}
-
-/// 构建三类鉴权域（system / ai-admin / ai-relay）的基础 include 规则。
-fn auth_path_config() -> PathAuthBuilder {
-    PathAuthBuilder::new()
-        .add_group(PathAuthBuilder::group(summer_system_group()).include("/**"))
-        .add_group(PathAuthBuilder::group(summer_ai_admin_group()).include("/**"))
-        .add_group(PathAuthBuilder::group(summer_ai_relay_group()).include("/**"))
-}
-
 pub fn router() -> Router {
-    // 按 group 生成鉴权配置，再将自动收集的分组路由分发到统一入口。
-    let mut path_auth_configs = auth_path_config().build();
     let grouped = auto_grouped_routers();
-    let default_router = grouped.default;
-    let mut grouped_routers = grouped.by_group;
+    let mut by_group = grouped.by_group;
 
-    let relay_router = grouped_routers
-        .remove(summer_ai_relay_group())
-        .map(|router| build_relay_router(&mut path_auth_configs, router))
-        .unwrap_or_default();
-    let ai_admin_router = grouped_routers
-        .remove(summer_ai_admin_group())
-        .map(|router| build_jwt_router(&mut path_auth_configs, summer_ai_admin_group(), router))
-        .unwrap_or_default();
-    let system_router = grouped_routers
-        .remove(summer_system_group())
-        .map(|router| build_jwt_router(&mut path_auth_configs, summer_system_group(), router))
-        .unwrap_or_default();
+    // 取出 group 名下注册的路由；缺失则返回空 Router（使该 group 完全无 handler 时不致崩）。
+    let take = |g: &'static str, m: &mut HashMap<String, Router>| -> Router {
+        m.remove(g).unwrap_or_default()
+    };
 
-    if !grouped_routers.is_empty() {
-        let mut unknown_groups: Vec<String> = grouped_routers.keys().cloned().collect();
-        unknown_groups.sort();
-        panic!("unsupported auth groups: {}", unknown_groups.join(", "));
+    // 各域当前都用默认路径策略（`/**` + inventory public exclude）。
+    // 未来若要为某个 group 自定义白名单/黑名单，把这里换成
+    // `JwtStrategy::for_group_with(group, PathAuthConfig::new().include(..).exclude(..))`。
+    let relay_router = take(relay_group(), &mut by_group)
+        .layer(GroupAuthLayer::new(
+            ApiKeyStrategy::for_group(relay_group()),
+        ))
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
+
+    let system_router = take(system_group(), &mut by_group)
+        .layer(GroupAuthLayer::new(JwtStrategy::for_group(system_group())));
+
+    let admin_router = take(admin_group(), &mut by_group)
+        .layer(GroupAuthLayer::new(JwtStrategy::for_group(admin_group())));
+
+    let api_router = system_router
+        .merge(admin_router)
+        .layer(middleware::from_fn(problem_middleware));
+
+    if !by_group.is_empty() {
+        let mut unknown: Vec<String> = by_group.keys().cloned().collect();
+        unknown.sort();
+        panic!("unsupported auth groups: {}", unknown.join(", "));
     }
-    let api_router = system_router.merge(ai_admin_router);
 
     Router::new()
-        .nest(
-            "/api",
-            api_router.layer(middleware::from_fn(problem_middleware)),
-        )
+        .nest("/api", api_router)
         .merge(relay_router)
-        .merge(default_router)
+        .merge(grouped.default)
         .layer(ClientIpSource::ConnectInfo.into_extension())
-}
-
-fn build_relay_router(path_auth_configs: &mut PathAuthConfigs, group_router: Router) -> Router {
-    let relay_cfg = path_auth_configs
-        .get_mut(summer_ai_relay_group())
-        .expect("path auth config for summer-ai-relay not found");
-    merge_public_router(summer_ai_relay_group(), relay_cfg);
-
-    let api_key_strategy = ApiKeyStrategy::new(relay_cfg.clone(), summer_ai_relay_group());
-    group_router
-        .layer(GroupAuthLayer::new(api_key_strategy))
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-}
-
-fn build_jwt_router(
-    path_auth_configs: &mut PathAuthConfigs,
-    group: &'static str,
-    group_router: Router,
-) -> Router {
-    let cfg = path_auth_configs
-        .get_mut(group)
-        .unwrap_or_else(|| panic!("path auth config for {group} not found"));
-    merge_public_router(group, cfg);
-
-    let strategy = JwtStrategy::new(cfg.clone(), group);
-    group_router.layer(GroupAuthLayer::new(strategy))
-}
-
-/// 根据 group 合并公开路由到 path_config
-pub fn merge_public_router(group: &str, path_auth_config: &mut PathAuthConfig) {
-    for r in public_routes_in_group(group) {
-        let rule = RouteRule::new(r.method, r.pattern.to_string());
-        if !path_auth_config.exclude.contains(&rule) {
-            path_auth_config.exclude.push(rule);
-        }
-    }
-    path_auth_config.rebuild_param_route_cache()
 }
 
 async fn problem_middleware(request: Request, next: Next) -> Response {
