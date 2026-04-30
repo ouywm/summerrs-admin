@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashMap;
 
 use axum_client_ip::ClientIpSource;
@@ -6,11 +7,9 @@ use summer_ai::summer_ai_relay::{ApiKeyStrategy, relay_group};
 use summer_auth::{GroupAuthLayer, JwtStrategy};
 use summer_system::system_group;
 use summer_web::Router;
-use summer_web::axum::body;
-use summer_web::axum::extract::Request;
-use summer_web::axum::middleware::{self, Next};
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::handler::auto_grouped_routers;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 
 pub fn router() -> Router {
@@ -38,9 +37,7 @@ pub fn router() -> Router {
     let admin_router = take(admin_group(), &mut by_group)
         .layer(GroupAuthLayer::new(JwtStrategy::for_group(admin_group())));
 
-    let api_router = system_router
-        .merge(admin_router)
-        .layer(middleware::from_fn(problem_middleware));
+    let api_router = system_router.merge(admin_router);
 
     if !by_group.is_empty() {
         let mut unknown: Vec<String> = by_group.keys().cloned().collect();
@@ -48,32 +45,31 @@ pub fn router() -> Router {
         panic!("unsupported auth groups: {}", unknown.join(", "));
     }
 
+    // CatchPanicLayer 仅覆盖 admin / system / default —— relay 域的 5xx 必须保持上游协议风格
+    // （OpenAI / Claude / Gemini 各自的 error JSON 由 RelayError 自己构造），不能被这里转成
+    // RFC 7807。relay 真发生 panic 时让 hyper 自然返空 500，连接行为与上游 500 一致。
     Router::new()
         .nest("/api", api_router)
-        .merge(relay_router)
         .merge(grouped.default)
+        .layer(CatchPanicLayer::custom(handle_panic))
+        .merge(relay_router)
         .layer(ClientIpSource::ConnectInfo.into_extension())
 }
 
-async fn problem_middleware(request: Request, next: Next) -> Response {
-    let uri = request.uri().path().to_string();
-    let response = next.run(request).await;
-    let status = response.status();
-
-    if status.is_client_error() || status.is_server_error() {
-        let body = response.into_body();
-        let body = body::to_bytes(body, usize::MAX)
-            .await
-            .expect("server body read failed");
-        let detail = String::from_utf8(body.to_vec())
-            .unwrap_or_else(|_| "read body to string failed".to_string());
-        let title = status.canonical_reason().unwrap_or("error");
-
-        summer_web::problem_details::ProblemDetails::new("http-error", title, status.as_u16())
-            .with_instance(uri)
-            .with_detail(detail)
-            .into_response()
+/// 全局 panic 兜底（仅 admin / system / default 域）：把 panic 转成 RFC 7807 ProblemDetails 500 响应，
+/// 避免连接被直接中断或返 axum 默认的 plain text。
+fn handle_panic(err: Box<dyn Any + Send + 'static>) -> Response {
+    let detail = if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = err.downcast_ref::<&str>() {
+        s.to_string()
     } else {
-        response
-    }
+        "Unknown internal error".to_string()
+    };
+
+    tracing::error!("Service panicked: {detail}");
+
+    summer_web::problem_details::ProblemDetails::new("internal-error", "Internal Server Error", 500)
+        .with_detail(detail)
+        .into_response()
 }
