@@ -1,4 +1,4 @@
-use summer_admin_macros::{log, public};
+use summer_admin_macros::log;
 use summer_ai_model::dto::channel::{ChannelQueryDto, CreateChannelDto, UpdateChannelDto};
 use summer_ai_model::vo::channel::{ChannelDetailVo, ChannelStatusCountsVo, ChannelVo};
 use summer_auth::LoginUser;
@@ -12,7 +12,6 @@ use summer_web::{delete_api, get_api, post_api, put_api};
 use crate::service::channel_service::ChannelService;
 
 /// 分页查询渠道列表
-#[public]
 #[log(module = "ai/渠道管理", action = "查询渠道列表", biz_type = Query)]
 #[get_api("/channel/list")]
 pub async fn list(
