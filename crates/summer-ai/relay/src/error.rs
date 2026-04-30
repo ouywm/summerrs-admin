@@ -8,8 +8,10 @@
 //! - [`RelayError::MissingConfig`] —— 运行时必要环境变量缺失（P3 walking skeleton 用）
 //!
 //! 错误返回支持三家官方格式：OpenAI / Claude / Gemini，由 [`ErrorFlavor`] 决定。
-//! 统一入口 [`RelayError::into_response_with`]；handler 外层包一层 `unwrap_or_else` 指定
-//! flavor，`AiAuthLayer` 则用 [`ErrorFlavor::from_path`] 根据路径推断。
+//! 统一入口 [`RelayError::into_response_with`]；handler 端通过 [`OpenAIError`] /
+//! [`ClaudeError`] / [`GeminiError`] 三个 newtype 用 typed `Result` 自动绑 flavor，
+//! 鉴权 / panic 中间件由路由结构静态绑定 flavor（见 `auth::ApiKeyStrategy` 与
+//! `panic_guard`）。
 //!
 //! `impl IntoResponse for RelayError` 默认走 OpenAI flavor，给没显式指定 flavor 的 handler
 //! 兜底。
@@ -47,23 +49,6 @@ pub enum ErrorFlavor {
     /// Gemini GenerateContent:
     /// `{"error":{"code","message","status"}}`
     Gemini,
-}
-
-impl ErrorFlavor {
-    /// 根据请求路径推断风格。
-    ///
-    /// - `/v1beta/*`        → Gemini
-    /// - `/v1/messages*`    → Claude
-    /// - 其他（含 `/v1/chat/completions`、`/v1/responses`、`/v1/models`）→ OpenAI
-    pub fn from_path(path: &str) -> Self {
-        if path.starts_with("/v1beta/") {
-            Self::Gemini
-        } else if path.starts_with("/v1/messages") {
-            Self::Claude
-        } else {
-            Self::OpenAI
-        }
-    }
 }
 
 /// relay 运行时错误。
@@ -109,6 +94,11 @@ pub enum RelayError {
     /// 用于 JSON-array 模式收敛上游 SSE 时出现的格式异常。
     #[error("stream processing: {0}")]
     StreamProcessing(String),
+
+    /// relay 域内部 bug（典型来源：`panic_guard` middleware 抓到的 panic）。
+    /// 携带原始 panic 信息便于 tracing 日志，但 `public_message` 会脱敏后再返客户端。
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 pub type RelayResult<T> = Result<T, RelayError>;
@@ -147,6 +137,7 @@ impl RelayError {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::StreamProcessing(_) => StatusCode::BAD_GATEWAY,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -184,7 +175,8 @@ impl RelayError {
             | Self::QuotaExhausted
             | Self::Forbidden(_)
             | Self::NotImplemented(_)
-            | Self::StreamProcessing(_) => RetryKind::Fatal,
+            | Self::StreamProcessing(_)
+            | Self::Internal(_) => RetryKind::Fatal,
         }
     }
 
@@ -210,6 +202,7 @@ impl RelayError {
             Self::QuotaExhausted => "insufficient_quota",
             Self::NotImplemented(_) => "not_implemented",
             Self::StreamProcessing(_) => "stream_processing_error",
+            Self::Internal(_) => "internal_error",
         }
     }
 
@@ -247,6 +240,14 @@ impl RelayError {
                 format!("The model `{model}` is currently unavailable. Please try again later.")
             }
             Self::NotImplemented(what) => format!("Not implemented: {what}"),
+            // 内部 bug / panic：脱敏文案，原始详情仅写入 tracing 日志（`internal = %self`）。
+            Self::Internal(_) => match flavor {
+                ErrorFlavor::OpenAI => "The server had an error while processing your request. \
+                    Sorry about that!"
+                    .to_string(),
+                ErrorFlavor::Claude => "internal server error".to_string(),
+                ErrorFlavor::Gemini => "Internal error encountered.".to_string(),
+            },
             // 其余按调试信息返回——`Display` impl 由 thiserror 生成
             _ => self.to_string(),
         }
@@ -351,6 +352,7 @@ impl RelayError {
             | Self::Redis(_)
             | Self::Adapter(AdapterError::InvalidHeader(_)) => "api_error",
             Self::StreamProcessing(_) => "api_error",
+            Self::Internal(_) => "api_error",
             Self::UpstreamStatus { .. } | Self::Http(_) | Self::Adapter(_) => "api_error",
         }
     }
@@ -379,6 +381,7 @@ impl RelayError {
             Self::NotImplemented(_) => "UNIMPLEMENTED",
             Self::MissingConfig(_) | Self::Database(_) | Self::Redis(_) => "INTERNAL",
             Self::StreamProcessing(_) => "INTERNAL",
+            Self::Internal(_) => "INTERNAL",
             Self::Http(_) | Self::Adapter(AdapterError::Network(_)) => "UNAVAILABLE",
             Self::UpstreamStatus { .. } | Self::Adapter(_) => "INTERNAL",
         }
@@ -499,25 +502,6 @@ impl IntoResponse for GeminiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn flavor_from_path_routes_correctly() {
-        assert_eq!(
-            ErrorFlavor::from_path("/v1beta/models/gemini-2.5:generateContent"),
-            ErrorFlavor::Gemini
-        );
-        assert_eq!(ErrorFlavor::from_path("/v1/messages"), ErrorFlavor::Claude);
-        assert_eq!(
-            ErrorFlavor::from_path("/v1/chat/completions"),
-            ErrorFlavor::OpenAI
-        );
-        assert_eq!(ErrorFlavor::from_path("/v1/responses"), ErrorFlavor::OpenAI);
-        assert_eq!(ErrorFlavor::from_path("/v1/models"), ErrorFlavor::OpenAI);
-        assert_eq!(
-            ErrorFlavor::from_path("/anything-else"),
-            ErrorFlavor::OpenAI
-        );
-    }
 
     #[test]
     fn unauthenticated_openai_body_has_openai_shape() {

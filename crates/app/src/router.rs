@@ -1,62 +1,42 @@
 use std::any::Any;
-use std::collections::HashMap;
 
 use axum_client_ip::ClientIpSource;
-use summer_ai::summer_ai_admin::admin_group;
-use summer_ai::summer_ai_relay::{ApiKeyStrategy, relay_group};
-use summer_auth::{GroupAuthLayer, JwtStrategy};
-use summer_system::system_group;
+use summer_ai::summer_ai_admin;
+use summer_ai::summer_ai_relay;
 use summer_web::Router;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::handler::auto_grouped_routers;
 use tower_http::catch_panic::CatchPanicLayer;
-use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 
+/// 拼装最终 axum [`Router`]。
+///
+/// 每个 crate 自己负责"路由 + 自家中间件"打包(`router_with_layers`),app crate
+/// 只做拼装:
+///
+/// - `summer-ai-relay::router_with_layers()` —— 内部按入口协议分子路由,各自挂
+///   `ApiKeyStrategy`(flavor 硬绑) + `panic_guard`(flavor 硬绑) + 共享 `RequestId`
+/// - `summer-ai-admin::router_with_layers()` —— 挂 JWT
+/// - `summer-system::router_with_layers()` —— 挂 JWT
+/// - `auto_grouped_routers().default` —— 没显式 group 的 handler
+///
+/// 全局 [`CatchPanicLayer`] 仅覆盖 admin / system / default 域,它们的 panic 转 RFC 7807。
+/// relay 域的 panic 由各家自己的 `*_panic_guard` 在 `CatchPanicLayer` 之前抓走,输出
+/// OpenAI / Claude / Gemini 风格的错误 JSON。
 pub fn router() -> Router {
-    let grouped = auto_grouped_routers();
-    let mut by_group = grouped.by_group;
+    let api_router =
+        summer_system::router_with_layers().merge(summer_ai_admin::router_with_layers());
 
-    // 取出 group 名下注册的路由；缺失则返回空 Router（使该 group 完全无 handler 时不致崩）。
-    let take = |g: &'static str, m: &mut HashMap<String, Router>| -> Router {
-        m.remove(g).unwrap_or_default()
-    };
+    let default_router = auto_grouped_routers().default;
 
-    // 各域当前都用默认路径策略（`/**` + inventory public exclude）。
-    // 未来若要为某个 group 自定义白名单/黑名单，把这里换成
-    // `JwtStrategy::for_group_with(group, PathAuthConfig::new().include(..).exclude(..))`。
-    let relay_router = take(relay_group(), &mut by_group)
-        .layer(GroupAuthLayer::new(
-            ApiKeyStrategy::for_group(relay_group()),
-        ))
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
-
-    let system_router = take(system_group(), &mut by_group)
-        .layer(GroupAuthLayer::new(JwtStrategy::for_group(system_group())));
-
-    let admin_router = take(admin_group(), &mut by_group)
-        .layer(GroupAuthLayer::new(JwtStrategy::for_group(admin_group())));
-
-    let api_router = system_router.merge(admin_router);
-
-    if !by_group.is_empty() {
-        let mut unknown: Vec<String> = by_group.keys().cloned().collect();
-        unknown.sort();
-        panic!("unsupported auth groups: {}", unknown.join(", "));
-    }
-
-    // CatchPanicLayer 仅覆盖 admin / system / default —— relay 域的 5xx 必须保持上游协议风格
-    // （OpenAI / Claude / Gemini 各自的 error JSON 由 RelayError 自己构造），不能被这里转成
-    // RFC 7807。relay 真发生 panic 时让 hyper 自然返空 500，连接行为与上游 500 一致。
     Router::new()
         .nest("/api", api_router)
-        .merge(grouped.default)
+        .merge(default_router)
         .layer(CatchPanicLayer::custom(handle_panic))
-        .merge(relay_router)
+        .merge(summer_ai_relay::router_with_layers())
         .layer(ClientIpSource::ConnectInfo.into_extension())
 }
 
-/// 全局 panic 兜底（仅 admin / system / default 域）：把 panic 转成 RFC 7807 ProblemDetails 500 响应，
+/// 全局 panic 兜底(仅 admin / system / default 域):把 panic 转成 RFC 7807 ProblemDetails 500 响应,
 /// 避免连接被直接中断或返 axum 默认的 plain text。
 fn handle_panic(err: Box<dyn Any + Send + 'static>) -> Response {
     let detail = if let Some(s) = err.downcast_ref::<String>() {

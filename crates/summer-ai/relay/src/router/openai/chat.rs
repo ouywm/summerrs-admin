@@ -28,7 +28,7 @@ use summer_web::extractor::Component;
 use summer_web::post;
 
 /// `POST /v1/chat/completions`
-#[post("/v1/chat/completions")]
+#[post("/v1/chat/completions", group = "summer-ai-relay::openai")]
 #[allow(clippy::too_many_arguments)]
 pub async fn chat_completions(
     AiToken(token): AiToken,

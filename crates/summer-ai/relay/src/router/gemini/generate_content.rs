@@ -49,7 +49,7 @@ impl GeminiQueryParams {
 }
 
 /// `POST /v1beta/models/{target}` 其中 `target = {model}:{method}`。
-#[post("/v1beta/models/{target}")]
+#[post("/v1beta/models/{target}", group = "summer-ai-relay::gemini")]
 #[allow(clippy::too_many_arguments)]
 pub async fn generate_content(
     AiToken(token): AiToken,

@@ -24,7 +24,7 @@ use summer_web::extractor::Component;
 use summer_web::post;
 
 /// `POST /v1/messages`
-#[post("/v1/messages")]
+#[post("/v1/messages", group = "summer-ai-relay::claude")]
 #[allow(clippy::too_many_arguments)]
 pub async fn messages(
     AiToken(token): AiToken,

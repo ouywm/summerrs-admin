@@ -31,6 +31,7 @@ summer-sea-orm = { workspace = true, features = ["postgres", "rustls"] }
 summer-web = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tower-http = { workspace = true, features = ["request-id"] }
 tower-layer = { workspace = true }
 tower-service = { workspace = true }
 tracing = { workspace = true }

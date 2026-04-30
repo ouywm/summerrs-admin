@@ -17,7 +17,7 @@ use crate::error::OpenAIResult;
 use crate::service::model_service::ModelService;
 
 /// `GET /v1/models`
-#[get("/v1/models")]
+#[get("/v1/models", group = "summer-ai-relay::openai")]
 pub async fn list_models(Component(svc): Component<ModelService>) -> OpenAIResult<Response> {
     let data = svc.list_enabled().await?;
     Ok(Json(ModelList::new(data)).into_response())
