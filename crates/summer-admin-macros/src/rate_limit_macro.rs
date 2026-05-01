@@ -1,7 +1,8 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, ItemFn, LitInt, LitStr, Token, parse_macro_input};
+use syn::spanned::Spanned;
+use syn::{FnArg, Ident, ItemFn, LitInt, LitStr, Token, parse_macro_input};
 
 pub struct RateLimitArgs {
     pub rate: u64,
@@ -13,6 +14,7 @@ pub struct RateLimitArgs {
     pub algorithm: String,
     pub failure_policy: String,
     pub message: String,
+    pub mode: String,
 }
 
 impl Parse for RateLimitArgs {
@@ -26,6 +28,7 @@ impl Parse for RateLimitArgs {
         let mut algorithm = None;
         let mut failure_policy = None;
         let mut message = None;
+        let mut mode = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -68,7 +71,20 @@ impl Parse for RateLimitArgs {
                     let value: LitStr = input.parse()?;
                     message = Some(value.value());
                 }
-                _ => return Err(syn::Error::new(ident.span(), "unknown rate_limit argument")),
+                "mode" => {
+                    let value: LitStr = input.parse()?;
+                    mode = Some(value.value());
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!(
+                            "unknown rate_limit argument `{other}`; expected one of: \
+                             rate, per, burst, max_wait_ms, key, backend, algorithm, \
+                             failure_policy, message, mode"
+                        ),
+                    ));
+                }
             }
 
             if !input.is_empty() {
@@ -77,8 +93,8 @@ impl Parse for RateLimitArgs {
         }
 
         Ok(Self {
-            rate: rate.ok_or_else(|| input.error("missing `rate`"))?,
-            per: per.ok_or_else(|| input.error("missing `per`"))?,
+            rate: rate.ok_or_else(|| input.error("missing required `rate`"))?,
+            per: per.ok_or_else(|| input.error("missing required `per`"))?,
             burst,
             max_wait_ms,
             key: key.unwrap_or_else(|| "global".to_string()),
@@ -86,30 +102,41 @@ impl Parse for RateLimitArgs {
             algorithm: algorithm.unwrap_or_else(|| "token_bucket".to_string()),
             failure_policy: failure_policy.unwrap_or_else(|| "fail_open".to_string()),
             message: message.unwrap_or_else(|| "请求过于频繁".to_string()),
+            mode: mode.unwrap_or_else(|| "enforce".to_string()),
         })
     }
 }
 
 fn validate_args(args: &RateLimitArgs) -> syn::Result<()> {
+    if args.rate == 0 {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`rate` must be greater than 0",
+        ));
+    }
+
     match args.algorithm.as_str() {
-        "token_bucket" if args.max_wait_ms.is_some() => {
+        "token_bucket" | "gcra" if args.max_wait_ms.is_some() => {
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "`max_wait_ms` is only supported for throttle_queue",
+                "`max_wait_ms` is only supported for `throttle_queue`",
             ));
         }
-        "token_bucket" => {}
+        "token_bucket" | "gcra" => {}
         "fixed_window" | "sliding_window" | "leaky_bucket" => {
             if args.burst.is_some() {
                 return Err(syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    "`burst` is only supported for token_bucket",
+                    format!(
+                        "`burst` is not supported for `{}`; only `token_bucket`/`gcra` accept burst",
+                        args.algorithm
+                    ),
                 ));
             }
             if args.max_wait_ms.is_some() {
                 return Err(syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    "`max_wait_ms` is only supported for throttle_queue",
+                    "`max_wait_ms` is only supported for `throttle_queue`",
                 ));
             }
         }
@@ -117,7 +144,7 @@ fn validate_args(args: &RateLimitArgs) -> syn::Result<()> {
             if args.burst.is_some() {
                 return Err(syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    "`burst` is not supported for throttle_queue",
+                    "`burst` is not supported for `throttle_queue`",
                 ));
             }
             match args.max_wait_ms {
@@ -125,12 +152,31 @@ fn validate_args(args: &RateLimitArgs) -> syn::Result<()> {
                 _ => {
                     return Err(syn::Error::new(
                         proc_macro2::Span::call_site(),
-                        "`max_wait_ms` must be provided and greater than 0 for throttle_queue",
+                        "`max_wait_ms` must be provided and greater than 0 for `throttle_queue`",
                     ));
                 }
             }
         }
         _ => {}
+    }
+
+    if let Some(header_name) = args.key.strip_prefix("header:")
+        && header_name.is_empty()
+    {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`key = \"header:\"` is missing a header name; expected `\"header:<name>\"`",
+        ));
+    }
+
+    if !matches!(args.mode.as_str(), "enforce" | "shadow") {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "invalid `mode = \"{}\"`; expected one of: enforce, shadow",
+                args.mode
+            ),
+        ));
     }
 
     Ok(())
@@ -152,15 +198,28 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
         .into();
     }
 
+    if let Some(receiver) = item_fn.sig.inputs.iter().find_map(|arg| match arg {
+        FnArg::Receiver(r) => Some(r),
+        FnArg::Typed(_) => None,
+    }) {
+        return syn::Error::new(
+            receiver.span(),
+            "#[rate_limit] cannot be applied to methods with `self`; \
+             extract the body into a free async function and apply the macro there",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     let per_token = match rl_args.per.as_str() {
         "second" => quote! { summer_common::rate_limit::RateLimitPer::Second },
         "minute" => quote! { summer_common::rate_limit::RateLimitPer::Minute },
         "hour" => quote! { summer_common::rate_limit::RateLimitPer::Hour },
         "day" => quote! { summer_common::rate_limit::RateLimitPer::Day },
-        _ => {
+        other => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "invalid `per`, expected one of: second, minute, hour, day",
+                format!("invalid `per = \"{other}\"`; expected one of: second, minute, hour, day"),
             )
             .to_compile_error()
             .into();
@@ -175,10 +234,12 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
             let header_name = key.trim_start_matches("header:");
             quote! { summer_common::rate_limit::RateLimitKeyType::Header(#header_name) }
         }
-        _ => {
+        other => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "invalid `key`, expected one of: global, ip, user, header:<name>",
+                format!(
+                    "invalid `key = \"{other}\"`; expected one of: global, ip, user, header:<name>"
+                ),
             )
             .to_compile_error()
             .into();
@@ -188,10 +249,10 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     let backend_token = match rl_args.backend.as_str() {
         "memory" => quote! { summer_common::rate_limit::RateLimitBackend::Memory },
         "redis" => quote! { summer_common::rate_limit::RateLimitBackend::Redis },
-        _ => {
+        other => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "invalid `backend`, expected one of: memory, redis",
+                format!("invalid `backend = \"{other}\"`; expected one of: memory, redis"),
             )
             .to_compile_error()
             .into();
@@ -199,17 +260,29 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let algorithm_token = match rl_args.algorithm.as_str() {
-        "token_bucket" => quote! { summer_common::rate_limit::RateLimitAlgorithm::TokenBucket },
-        "fixed_window" => quote! { summer_common::rate_limit::RateLimitAlgorithm::FixedWindow },
-        "sliding_window" => quote! { summer_common::rate_limit::RateLimitAlgorithm::SlidingWindow },
-        "leaky_bucket" => quote! { summer_common::rate_limit::RateLimitAlgorithm::LeakyBucket },
+        "token_bucket" => {
+            quote! { summer_common::rate_limit::RateLimitAlgorithm::TokenBucket }
+        }
+        "gcra" => quote! { summer_common::rate_limit::RateLimitAlgorithm::Gcra },
+        "fixed_window" => {
+            quote! { summer_common::rate_limit::RateLimitAlgorithm::FixedWindow }
+        }
+        "sliding_window" => {
+            quote! { summer_common::rate_limit::RateLimitAlgorithm::SlidingWindow }
+        }
+        "leaky_bucket" => {
+            quote! { summer_common::rate_limit::RateLimitAlgorithm::LeakyBucket }
+        }
         "throttle_queue" | "queue" | "throttle" => {
             quote! { summer_common::rate_limit::RateLimitAlgorithm::ThrottleQueue }
         }
-        _ => {
+        other => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "invalid `algorithm`, expected one of: token_bucket, fixed_window, sliding_window, leaky_bucket, throttle_queue",
+                format!(
+                    "invalid `algorithm = \"{other}\"`; expected one of: \
+                     token_bucket, gcra, fixed_window, sliding_window, leaky_bucket, throttle_queue"
+                ),
             )
             .to_compile_error()
             .into();
@@ -217,19 +290,33 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let failure_policy_token = match rl_args.failure_policy.as_str() {
-        "fail_open" => quote! { summer_common::rate_limit::RateLimitFailurePolicy::FailOpen },
-        "fail_closed" => quote! { summer_common::rate_limit::RateLimitFailurePolicy::FailClosed },
+        "fail_open" => {
+            quote! { summer_common::rate_limit::RateLimitFailurePolicy::FailOpen }
+        }
+        "fail_closed" => {
+            quote! { summer_common::rate_limit::RateLimitFailurePolicy::FailClosed }
+        }
         "fallback_memory" => {
             quote! { summer_common::rate_limit::RateLimitFailurePolicy::FallbackMemory }
         }
-        _ => {
+        other => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "invalid `failure_policy`, expected one of: fail_open, fail_closed, fallback_memory",
+                format!(
+                    "invalid `failure_policy = \"{other}\"`; expected one of: \
+                     fail_open, fail_closed, fallback_memory"
+                ),
             )
             .to_compile_error()
             .into();
         }
+    };
+
+    let mode_token = match rl_args.mode.as_str() {
+        "enforce" => quote! { summer_common::rate_limit::RateLimitMode::Enforce },
+        "shadow" => quote! { summer_common::rate_limit::RateLimitMode::Shadow },
+        // 已被 validate 拦截，理论不可达
+        _ => quote! { summer_common::rate_limit::RateLimitMode::Enforce },
     };
 
     let attrs = &item_fn.attrs;
@@ -256,19 +343,21 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
         ) #output #where_clause {
             {
                 let __rl_key = __rate_limit_ctx.extract_key(#key_token);
-                __rate_limit_ctx.check(
-                    &__rl_key,
-                    summer_common::rate_limit::RateLimitConfig {
-                        rate: #rate as u32,
-                        per: #per_token,
-                        burst: #burst as u32,
-                        backend: #backend_token,
-                        algorithm: #algorithm_token,
-                        failure_policy: #failure_policy_token,
-                        max_wait_ms: #max_wait_ms as u64,
-                    },
-                    #message,
-                ).await?;
+                let _: summer_common::rate_limit::RateLimitMetadata =
+                    __rate_limit_ctx.check(
+                        &__rl_key,
+                        summer_common::rate_limit::RateLimitConfig {
+                            rate: #rate as u32,
+                            per: #per_token,
+                            burst: #burst as u32,
+                            backend: #backend_token,
+                            algorithm: #algorithm_token,
+                            failure_policy: #failure_policy_token,
+                            max_wait_ms: #max_wait_ms as u64,
+                            mode: #mode_token,
+                        },
+                        #message,
+                    ).await?;
             }
 
             #(#stmts)*

@@ -11,6 +11,7 @@ members = [
     "crates/summer-ai/relay",
     "crates/summer-ai/admin",
     "crates/summer-ai/billing",
+    "crates/summer-ai/agent",
     "crates/summer-sharding",
     "crates/summer-sql-rewrite",
     "crates/summer-mcp",
@@ -59,6 +60,7 @@ md-5 = "0.10"
 mime = "0.3.17"
 mime_guess = "2"
 minijinja = "2"
+moka = { version = "0.12", features = ["sync", "future"] }
 parking_lot = "0.12.5"
 password-hash = "0.5"
 pgwire-replication = "0.2.0"
@@ -87,6 +89,7 @@ summer = "0.5.0"
 summer-admin-macros = { path = "crates/summer-admin-macros" }
 summer-ai = { path = "crates/summer-ai" }
 summer-ai-admin = { path = "crates/summer-ai/admin" }
+summer-ai-agent = { path = "crates/summer-ai/agent" }
 summer-ai-billing = { path = "crates/summer-ai/billing" }
 summer-ai-core = { path = "crates/summer-ai/core" }
 summer-ai-model = { path = "crates/summer-ai/model" }

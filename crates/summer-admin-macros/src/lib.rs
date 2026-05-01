@@ -148,6 +148,11 @@ pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// - 为 handler **自动注入** `summer_common::rate_limit::RateLimitContext` extractor
 /// - 在业务逻辑执行前调用 `RateLimitContext::check(...)` 进行限流
+/// - 限流命中时返回 `429 Too Many Requests`，后端不可用且策略为 `fail_closed` 时返回 `503`
+///
+/// 内核基于 **GCRA** (Generic Cell Rate Algorithm)，业界限流标准（Cloudflare /
+/// Stripe / Envoy / governor 内核都用它）；计数类（fixed/sliding window）独立实现。
+/// 内存桶用 `moka::sync::Cache` 管理，自动 GC，无内存膨胀。
 ///
 /// # 前置条件
 ///
@@ -164,21 +169,33 @@ pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// # 参数
 ///
-/// - `rate` (**required**): 每个窗口允许的请求数
+/// - `rate` (**required**): 每个窗口允许的请求数，必须 > 0
 /// - `per` (**required**): 窗口大小，支持 `"second" | "minute" | "hour" | "day"`
 /// - `key` (*optional*): 限流 key 类型，默认 `"global"`
 ///   - `"global"`：全局（所有请求共享）
-///   - `"ip"`：按客户端 IP
-///   - `"user"`：按用户（未登录时回退到 IP）
-///   - `"header:<name>"`：按某个 Header 值（缺失时用 `"unknown"`）
+///   - `"ip"`：按客户端 IP（key 形如 `ip:1.2.3.4`）
+///   - `"user"`：按用户（未登录时回退到 `ip:` 前缀，**不会与 `"ip"` 串号**）
+///   - `"header:<name>"`：按某个 Header 值（`<name>` 不能为空，缺失时用 `unknown`）
 /// - `backend` (*optional*): `"memory" | "redis"`，默认 `"memory"`
 /// - `algorithm` (*optional*): 默认 `"token_bucket"`
-///   - `"token_bucket" | "fixed_window" | "sliding_window" | "leaky_bucket" | "throttle_queue"`
+///   - `"token_bucket"`：GCRA 内核，burst 默认 = rate（兼容选项）
+///   - `"gcra"`：显式 GCRA，自定 burst（推荐用于精确突发控制）
+///   - `"leaky_bucket"`：严格按 1/rate 间隔放行，多了直接拒
+///   - `"throttle_queue"`：leaky bucket 排队变体（在 `max_wait_ms` 内排队等待）
+///   - `"fixed_window"`：按自然时间窗口对齐计数（修复了之前 redis 端窗口不对齐 bug）
+///   - `"sliding_window"`：时间戳日志，最精确但占内存
 /// - `failure_policy` (*optional*): 默认 `"fail_open"`
-///   - `"fail_open" | "fail_closed" | "fallback_memory"`
-/// - `burst` (*optional*): 仅 `token_bucket` 支持；默认等于 `rate`
-/// - `max_wait_ms` (*optional*): 仅 `throttle_queue` 支持且必须提供；最大排队等待时间（毫秒）
+///   - `"fail_open"`：Redis 失败时放行（仅记录 stats，**不再走 fallback**）
+///   - `"fail_closed"`：Redis 失败时返回 503
+///   - `"fallback_memory"`：跌到内存桶（多实例下语义降级，仅当前进程隔离）
+/// - `burst` (*optional*): 仅 `token_bucket` / `gcra` 支持；默认等于 `rate`
+/// - `max_wait_ms` (*optional*): 仅 `throttle_queue` 支持且必须 > 0
 /// - `message` (*optional*): 被限流时返回的提示文案（默认 `"请求过于频繁"`）
+///
+/// # 限制
+///
+/// - 只能用于 **async free function**，不支持带 `self` 的方法
+/// - 必须放在路由宏（`#[get_api]` 等）之外
 ///
 /// # 示例
 ///
@@ -194,10 +211,20 @@ pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     Ok(())
 /// }
 ///
-/// // 对登录用户隔离（未登录回退到 IP）
-/// #[rate_limit(rate = 1, per = "second", key = "user")]
-/// #[get_api("/user-limited")]
-/// async fn user_limited_handler() -> ApiResult<()> {
+/// // GCRA + burst：突发允许 10 个，长期速率每秒 1 个
+/// #[rate_limit(rate = 1, per = "second", burst = 10, algorithm = "gcra", key = "ip")]
+/// #[get_api("/api")]
+/// async fn api_handler() -> ApiResult<()> {
+///     Ok(())
+/// }
+///
+/// // 排队限流：最多排 1.5 秒
+/// #[rate_limit(
+///     rate = 5, per = "second", key = "user",
+///     algorithm = "throttle_queue", max_wait_ms = 1500,
+/// )]
+/// #[get_api("/queue")]
+/// async fn queue_handler() -> ApiResult<()> {
 ///     Ok(())
 /// }
 /// ```
