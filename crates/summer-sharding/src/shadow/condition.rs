@@ -178,13 +178,11 @@ fn expr_has_matching_in_list(expr: &Expr, column: &str, expected: Option<&str>) 
             .iter()
             .filter_map(expr_literal_string)
             .any(|actual| matches_expected(actual.as_str(), expected)),
-        Expr::BinaryOp { left, op, right } => {
-            if *op == BinaryOperator::And || *op == BinaryOperator::Or {
-                expr_has_matching_in_list(left, column, expected)
-                    || expr_has_matching_in_list(right, column, expected)
-            } else {
-                false
-            }
+        Expr::BinaryOp { left, op, right }
+            if *op == BinaryOperator::And || *op == BinaryOperator::Or =>
+        {
+            expr_has_matching_in_list(left, column, expected)
+                || expr_has_matching_in_list(right, column, expected)
         }
         Expr::Nested(expr)
         | Expr::UnaryOp { expr, .. }

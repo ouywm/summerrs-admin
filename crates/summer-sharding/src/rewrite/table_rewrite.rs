@@ -33,10 +33,8 @@ pub fn rewrite_table_names(
             }
         }
         Statement::Delete(delete) => rewrite_delete(delete, logic_table, actual_table),
-        Statement::AlterTable { name, .. } => {
-            if logic_table.matches_object_name(name) {
-                *name = actual_table.to_object_name();
-            }
+        Statement::AlterTable { name, .. } if logic_table.matches_object_name(name) => {
+            *name = actual_table.to_object_name();
         }
         Statement::Truncate { table_names, .. } => {
             for table in table_names {
@@ -249,15 +247,13 @@ fn rewrite_table_factor(
     actual_table: &QualifiedTableName,
 ) {
     match factor {
-        TableFactor::Table { name, alias, .. } => {
-            if logic_table.matches_object_name(name) {
-                *name = actual_table.to_object_name();
-                if alias.is_none() && actual_table.table != logic_table.table {
-                    *alias = Some(TableAlias {
-                        name: Ident::new(logic_table.table.as_str()),
-                        columns: vec![],
-                    });
-                }
+        TableFactor::Table { name, alias, .. } if logic_table.matches_object_name(name) => {
+            *name = actual_table.to_object_name();
+            if alias.is_none() && actual_table.table != logic_table.table {
+                *alias = Some(TableAlias {
+                    name: Ident::new(logic_table.table.as_str()),
+                    columns: vec![],
+                });
             }
         }
         TableFactor::Derived { subquery, .. } => rewrite_query(subquery, logic_table, actual_table),

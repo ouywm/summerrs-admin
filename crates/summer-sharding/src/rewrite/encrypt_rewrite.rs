@@ -121,7 +121,7 @@ fn rewrite_insert(
     }
 
     insert.columns.extend(extra_columns);
-    for (row, extras) in values.rows.iter_mut().zip(extra_values.into_iter()) {
+    for (row, extras) in values.rows.iter_mut().zip(extra_values) {
         row.extend(extras);
     }
     Ok(())
