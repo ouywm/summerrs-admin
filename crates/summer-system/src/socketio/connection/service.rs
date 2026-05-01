@@ -130,7 +130,7 @@ impl SocketGatewayService {
         let mut stale_socket_ids = Vec::new();
         let mut cleanup_sessions = Vec::new();
 
-        for (socket_id, session) in socket_ids.into_iter().zip(sessions.into_iter()) {
+        for (socket_id, session) in socket_ids.into_iter().zip(sessions) {
             let Some(session) = session else {
                 stale_socket_ids.push(socket_id);
                 continue;

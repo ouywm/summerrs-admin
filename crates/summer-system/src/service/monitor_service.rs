@@ -262,7 +262,7 @@ impl CacheMonitorService {
             .filter(|(name, _)| name != "none")
             .map(|(name, value)| KeyTypeCount { name, value })
             .collect();
-        result.sort_by(|a, b| b.value.cmp(&a.value));
+        result.sort_by_key(|item| std::cmp::Reverse(item.value));
         result
     }
 
