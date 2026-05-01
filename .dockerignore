@@ -1,0 +1,50 @@
+# ── Rust 构建产物 ────────────────────────────────────────────────────
+target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# ── Git / IDE ────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+*.iml
+rust-project.json
+.DS_Store
+
+# ── 工作树 / 备份 / 临时 ─────────────────────────────────────────────
+.worktrees/
+**/.worktrees/
+*.swp
+*.swo
+*.bak
+
+# ── 性能分析 / 日志 ──────────────────────────────────────────────────
+perf*
+flamegraph.svg
+cargo-flamegraph.trace/
+logs/
+*.log
+
+# ── 文档(运行时不需要) ────────────────────────────────────────────
+docs/
+README*.md
+LICENSE
+**/CLAUDE.md
+**/AGENTS.md
+
+Dockerfile
+docker-compose*.yml
+docker/
+.dockerignore
+
+.env
+.env.*
+!.env.example
+data/*.pem
+
+contrib-plugins/
+build-tools/sync-relay.py
+

@@ -59,7 +59,7 @@ CREATE TABLE sys.config (
 );
 
 CREATE UNIQUE INDEX uk_sys_config_config_key ON sys.config (config_key);
-CREATE INDEX idx_sys_config_group_sort ON sys.config (config_group_id, config_sort);
+CREATE INDEX idx_sys_config_group_id_sort ON sys.config (config_group_id, config_sort);
 CREATE INDEX idx_sys_config_enabled ON sys.config (enabled);
 
 COMMENT ON TABLE sys.config IS '系统参数配置表';

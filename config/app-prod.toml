@@ -1,9 +1,9 @@
 [logger]
-level = "debug"
+file = { enable = true }
+level = "info"
 
 [web]
 connect_info = true
-global_prefix = "/api"
 graceful = true
 port = 8080
 
@@ -59,7 +59,7 @@ max_page_size = 2000
 one_indexed = true
 
 [redis]
-uri = "redis://127.0.0.1/"
+uri = "${REDIS_URL:redis://127.0.0.1/}"
 
 [ip2region]
 ipv4_db_path = "./data/ip2region_v4.xdb"
@@ -92,9 +92,9 @@ test_connection = false
 
 [s3]
 access_key = "${S3_ACCESS_KEY}"
-bucket = "summer-admin"
-endpoint = "http://localhost:9000"
-region = "us-east-1"
+bucket = "${S3_BUCKET:summer-admin}"
+endpoint = "${S3_ENDPOINT:http://localhost:9000}"
+region = "${S3_REGION:us-east-1}"
 secret_key = "${S3_SECRET_KEY}"
 
 # ── 传输层（全部可选，不写则用 SDK 默认值） ──
