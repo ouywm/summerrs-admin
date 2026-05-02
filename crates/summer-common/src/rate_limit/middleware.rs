@@ -58,6 +58,13 @@ pub async fn rate_limit_headers_middleware(mut req: Request, next: Next) -> Resp
         return response;
     };
 
+    // unlimited（allowlist 命中、未限流场景）的 metadata 是 u32::MAX 占位值，
+    // 写出 `RateLimit-Limit: 4294967295` 没有意义反而会让客户端 SDK 误解析；
+    // 这种情况直接跳过。
+    if meta.is_unlimited() {
+        return response;
+    }
+
     let headers = response.headers_mut();
 
     if let Ok(value) = HeaderValue::try_from(meta.limit.to_string()) {

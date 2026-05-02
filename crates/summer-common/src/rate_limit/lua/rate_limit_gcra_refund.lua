@@ -5,6 +5,10 @@
 --
 -- 注意：refund 后 TAT 不会低于 now_ms（防止"未来桶"的诡异状态）。
 --
+-- **要求 Redis ≥ 6.0**（依赖 SET ... KEEPTTL 选项）。
+-- 在更老的 Redis 上脚本会报 syntax error，调用方走 backend_failures 计数 +
+-- failure_policy 兜底。生产部署前请确认 Redis 版本（`INFO server`）。
+--
 -- KEYS[1]:  state key
 -- ARGV[1]:  now_ms
 -- ARGV[2]:  emission_interval_ms

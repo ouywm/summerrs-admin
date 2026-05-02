@@ -44,14 +44,14 @@
 //!
 //! - **TTL** (`time_to_idle`)：闲置自动回收。
 //! - **容量上限** (`max_capacity`)：恶意 IP 注入时仍有界。
-//! - **无锁热路径**：GCRA 与 ScheduledSlot 使用 [`AtomicI64`] CAS 实现。
+//! - **无锁热路径**：GCRA 与 ScheduledSlot 使用 [`std::sync::atomic::AtomicI64`] CAS 实现。
 //!
 //! ## 决策与可观测性
 //!
 //! [`RateLimitDecision`] 区分四种结果，每种都带 [`RateLimitMetadata`]
 //! （limit / remaining / reset_after / retry_after），可用于：
 //!
-//! - 设置 HTTP `RateLimit-*` / `Retry-After` 头（见 [`headers_layer`]）
+//! - 设置 HTTP `RateLimit-*` / `Retry-After` 头（见 [`middleware`] 模块）
 //! - 监控 / 告警（见 [`RateLimitEngine::stats`]）
 //!
 //! ## 名单（Allowlist / Blocklist）
@@ -72,1321 +72,59 @@
 //! - `FailOpen`：放行（不再无谓地跑 fallback），仅记 stats。
 //! - `FailClosed`：返回 503。
 //! - `FallbackMemory`：跌到内存桶（多实例下语义降级）。
+//!
+//! ## Redis 版本要求
+//!
+//! - **最低 Redis 6.0**：`Reservation::commit/release` 走的 GCRA refund 脚本依赖
+//!   `SET ... KEEPTTL` 选项（6.0 引入）。如果你的 Redis < 6.0 请避免使用 reservation API。
+//! - **Redis Cluster 兼容**：所有 user key 段会被自动包裹 hash tag（`{user-key}`），
+//!   保证 Lua 脚本里动态拼接的派生 key（如 fixed_window 的 `:{window_id}` 后缀）
+//!   落在同一 hash slot，避免 `CROSSSLOT` 错误。
+//!
+//! ## 模块组织
+//!
+//! - [`config`]：配置类型（算法 / per / key 类型 / failure policy / mode / RateLimitConfig）
+//! - [`decision`]：决策、metadata、统计计数器
+//! - [`context`]：HTTP handler 用的 [`RateLimitContext`] + axum extractor
+//! - [`reservation`]：[`Reservation`] RAII 凭证
+//! - [`engine`]：[`RateLimitEngine`] 主类型
+//! - [`algorithms`]：各算法的 memory + redis 实现（在 engine 上做 inherent impl 拓展）
+//! - [`middleware`]：HTTP `RateLimit-*` 响应头注入
 
-use std::collections::VecDeque;
-use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use ipnetwork::IpNetwork;
-use moka::sync::Cache;
-use parking_lot::Mutex;
-use summer_web::axum::extract::FromRequestParts;
-use summer_web::axum::http::HeaderMap;
-use summer_web::axum::http::request::Parts;
-use summer_web::extractor::RequestPartsExt;
-
-use crate::error::{ApiErrors, ApiResult};
-
+pub mod algorithms;
+pub mod config;
+pub mod context;
+pub mod decision;
+pub mod engine;
 pub mod middleware;
+pub mod reservation;
 
-const REDIS_GCRA_SCRIPT: &str = include_str!("lua/rate_limit_gcra.lua");
-const REDIS_GCRA_REFUND_SCRIPT: &str = include_str!("lua/rate_limit_gcra_refund.lua");
-const REDIS_FIXED_WINDOW_SCRIPT: &str = include_str!("lua/rate_limit_fixed_window.lua");
-const REDIS_SLIDING_WINDOW_SCRIPT: &str = include_str!("lua/rate_limit_sliding_window.lua");
-const REDIS_SCHEDULED_SLOT_SCRIPT: &str = include_str!("lua/rate_limit_scheduled_slot.lua");
-
-/// 内存 cache 默认容量（防恶意 IP 注入爆内存）
-pub const DEFAULT_MEMORY_CAPACITY: u64 = 100_000;
-/// 内存 cache 默认空闲过期时间
-pub const DEFAULT_MEMORY_IDLE_SECS: u64 = 3600;
-
-// =============================================================================
-// 1. 配置类型
-// =============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimitPer {
-    Second,
-    Minute,
-    Hour,
-    Day,
-}
-
-impl RateLimitPer {
-    pub fn window_seconds(self) -> u64 {
-        match self {
-            Self::Second => 1,
-            Self::Minute => 60,
-            Self::Hour => 3600,
-            Self::Day => 86400,
-        }
-    }
-
-    pub fn window_millis(self) -> i64 {
-        (self.window_seconds() * 1000) as i64
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum RateLimitKeyType {
-    Global,
-    Ip,
-    User,
-    Header(&'static str),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimitBackend {
-    Memory,
-    Redis,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimitAlgorithm {
-    /// 兼容选项；内核同 GCRA，burst 默认 = rate。
-    TokenBucket,
-    /// 显式 GCRA。
-    Gcra,
-    /// 内核 ScheduledSlot(max_wait=0)。
-    LeakyBucket,
-    /// 内核 ScheduledSlot(max_wait>0)。
-    ThrottleQueue,
-    /// 计数器按自然窗口边界滚动。
-    FixedWindow,
-    /// 时间戳日志。
-    SlidingWindow,
-}
-
-impl RateLimitAlgorithm {
-    pub fn as_key_segment(self) -> &'static str {
-        match self {
-            Self::TokenBucket => "token_bucket",
-            Self::Gcra => "gcra",
-            Self::LeakyBucket => "leaky_bucket",
-            Self::ThrottleQueue => "throttle_queue",
-            Self::FixedWindow => "fixed_window",
-            Self::SlidingWindow => "sliding_window",
-        }
-    }
-
-    fn uses_gcra(self) -> bool {
-        matches!(self, Self::TokenBucket | Self::Gcra)
-    }
-
-    fn uses_scheduled_slot(self) -> bool {
-        matches!(self, Self::LeakyBucket | Self::ThrottleQueue)
-    }
-
-    /// 该算法是否支持 cost-based 限流。
-    pub fn supports_cost(self) -> bool {
-        self.uses_gcra()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimitFailurePolicy {
-    /// Redis 失败时直接放行（仅记录 stats / log）。
-    FailOpen,
-    /// Redis 失败时返回 503。
-    FailClosed,
-    /// Redis 失败时跌到内存桶（多实例下语义降级，仅当前进程隔离）。
-    FallbackMemory,
-}
-
-impl RateLimitFailurePolicy {
-    fn as_key_segment(self) -> &'static str {
-        match self {
-            Self::FailOpen => "fail_open",
-            Self::FailClosed => "fail_closed",
-            Self::FallbackMemory => "fallback_memory",
-        }
-    }
-}
-
-/// 限流执行模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RateLimitMode {
-    /// 命中即拒绝（标准模式）
-    #[default]
-    Enforce,
-    /// 命中只记日志，不真的拒绝（灰度评估、上线安全网）
-    Shadow,
-}
-
-#[derive(Debug, Clone)]
-pub struct RateLimitConfig {
-    pub rate: u32,
-    pub per: RateLimitPer,
-    pub burst: u32,
-    pub backend: RateLimitBackend,
-    pub algorithm: RateLimitAlgorithm,
-    pub failure_policy: RateLimitFailurePolicy,
-    pub max_wait_ms: u64,
-    pub mode: RateLimitMode,
-}
-
-impl RateLimitConfig {
-    /// GCRA / ScheduledSlot 的"每单位理论间隔"，整数毫秒，向上取整防 0。
-    pub fn emission_interval_millis(&self) -> i64 {
-        let window_ms = self.per.window_millis().max(1);
-        let rate = self.rate.max(1) as i64;
-        (window_ms + rate - 1) / rate
-    }
-
-    pub fn window_seconds(&self) -> u64 {
-        self.per.window_seconds()
-    }
-
-    pub fn window_millis(&self) -> i64 {
-        self.per.window_millis()
-    }
-
-    pub fn window_limit(&self) -> u32 {
-        self.rate.max(1)
-    }
-
-    /// LeakyBucket 强制 burst=1；其它走 GCRA 的算法用配置 burst（默认 = rate）。
-    pub fn effective_burst(&self) -> u32 {
-        match self.algorithm {
-            RateLimitAlgorithm::LeakyBucket => 1,
-            _ => self.burst.max(1),
-        }
-    }
-
-    /// Redis key 的 TTL（秒）。
-    pub fn redis_expire_seconds(&self) -> u64 {
-        match self.algorithm {
-            RateLimitAlgorithm::TokenBucket | RateLimitAlgorithm::Gcra => {
-                let burst = self.effective_burst().max(1) as u64;
-                let interval = self.emission_interval_millis().max(1) as u64;
-                (burst.saturating_mul(interval).div_ceil(1000)).max(2) * 2
-            }
-            RateLimitAlgorithm::FixedWindow | RateLimitAlgorithm::SlidingWindow => {
-                self.window_seconds().max(1) * 2
-            }
-            RateLimitAlgorithm::LeakyBucket => {
-                let interval = self.emission_interval_millis().max(1) as u64;
-                interval.div_ceil(1000).max(1) * 2
-            }
-            RateLimitAlgorithm::ThrottleQueue => {
-                let interval = self.emission_interval_millis().max(1) as u64;
-                let max_wait = self.max_wait_ms.max(1);
-                (interval.saturating_add(max_wait)).div_ceil(1000).max(1) * 2
-            }
-        }
-    }
-
-    pub fn signature(&self) -> String {
-        format!(
-            "{}:{}:{}:{}:{}",
-            self.algorithm.as_key_segment(),
-            self.rate,
-            self.window_seconds(),
-            self.effective_burst(),
-            self.max_wait_ms,
-        )
-    }
-}
+pub use config::{
+    RateLimitAlgorithm, RateLimitBackend, RateLimitConfig, RateLimitFailurePolicy,
+    RateLimitKeyType, RateLimitMode, RateLimitPer,
+};
+pub use context::RateLimitContext;
+pub use decision::{
+    RateLimitDecision, RateLimitMetadata, RateLimitMetadataHolder, RateLimitStats,
+    RateLimitStatsSnapshot,
+};
+pub use engine::{
+    DEFAULT_MEMORY_CAPACITY, DEFAULT_MEMORY_IDLE_SECS, RateLimitEngine, RateLimitEngineConfig,
+};
+pub use reservation::Reservation;
 
 // =============================================================================
-// 2. 决策、Metadata、Holder、Stats
-// =============================================================================
-
-/// 限流决策附带的元数据，可用于 HTTP `RateLimit-*` / `Retry-After` 头。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RateLimitMetadata {
-    pub limit: u32,
-    pub remaining: u32,
-    pub reset_after: Duration,
-    pub retry_after: Option<Duration>,
-}
-
-impl RateLimitMetadata {
-    pub fn rejected(limit: u32, retry_after: Duration) -> Self {
-        Self {
-            limit,
-            remaining: 0,
-            reset_after: retry_after,
-            retry_after: Some(retry_after),
-        }
-    }
-
-    /// allowlist / 不限速场景的 metadata。
-    pub fn unlimited() -> Self {
-        Self {
-            limit: u32::MAX,
-            remaining: u32::MAX,
-            reset_after: Duration::ZERO,
-            retry_after: None,
-        }
-    }
-}
-
-/// 跨多次 [`RateLimitContext::check`] 的共享 metadata 持有器。
-///
-/// 由 axum extractor 在 [`Parts::extensions`] 中注入；响应阶段的 layer 取出
-/// 写入 HTTP header。多键复合限流时取**最严格**（remaining 最少）的那一个。
-#[derive(Debug, Default)]
-pub struct RateLimitMetadataHolder {
-    inner: Mutex<Option<RateLimitMetadata>>,
-}
-
-impl RateLimitMetadataHolder {
-    pub fn record(&self, meta: RateLimitMetadata) {
-        let mut slot = self.inner.lock();
-        match slot.as_ref() {
-            Some(existing) if existing.remaining <= meta.remaining => {}
-            _ => *slot = Some(meta),
-        }
-    }
-
-    pub fn snapshot(&self) -> Option<RateLimitMetadata> {
-        *self.inner.lock()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum RateLimitDecision {
-    Allowed(RateLimitMetadata),
-    Delayed {
-        delay: Duration,
-        meta: RateLimitMetadata,
-    },
-    Rejected(RateLimitMetadata),
-    BackendUnavailable,
-}
-
-impl RateLimitDecision {
-    pub fn metadata(&self) -> Option<&RateLimitMetadata> {
-        match self {
-            Self::Allowed(meta) | Self::Rejected(meta) => Some(meta),
-            Self::Delayed { meta, .. } => Some(meta),
-            Self::BackendUnavailable => None,
-        }
-    }
-}
-
-/// 引擎运行时统计（atomic counter，线程安全），可对接 Prometheus / Datadog。
-#[derive(Debug, Default)]
-pub struct RateLimitStats {
-    pub allowed: AtomicU64,
-    pub delayed: AtomicU64,
-    pub rejected: AtomicU64,
-    pub backend_failures: AtomicU64,
-    pub fallback_to_memory: AtomicU64,
-    pub fail_open_passes: AtomicU64,
-    pub fail_closed_blocks: AtomicU64,
-    pub allowlist_passes: AtomicU64,
-    pub blocklist_blocks: AtomicU64,
-    pub shadow_passes: AtomicU64,
-    pub cost_consumed: AtomicU64,
-    pub cost_refunded: AtomicU64,
-}
-
-#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
-pub struct RateLimitStatsSnapshot {
-    pub allowed: u64,
-    pub delayed: u64,
-    pub rejected: u64,
-    pub backend_failures: u64,
-    pub fallback_to_memory: u64,
-    pub fail_open_passes: u64,
-    pub fail_closed_blocks: u64,
-    pub allowlist_passes: u64,
-    pub blocklist_blocks: u64,
-    pub shadow_passes: u64,
-    pub cost_consumed: u64,
-    pub cost_refunded: u64,
-}
-
-impl RateLimitStats {
-    pub fn snapshot(&self) -> RateLimitStatsSnapshot {
-        RateLimitStatsSnapshot {
-            allowed: self.allowed.load(Ordering::Relaxed),
-            delayed: self.delayed.load(Ordering::Relaxed),
-            rejected: self.rejected.load(Ordering::Relaxed),
-            backend_failures: self.backend_failures.load(Ordering::Relaxed),
-            fallback_to_memory: self.fallback_to_memory.load(Ordering::Relaxed),
-            fail_open_passes: self.fail_open_passes.load(Ordering::Relaxed),
-            fail_closed_blocks: self.fail_closed_blocks.load(Ordering::Relaxed),
-            allowlist_passes: self.allowlist_passes.load(Ordering::Relaxed),
-            blocklist_blocks: self.blocklist_blocks.load(Ordering::Relaxed),
-            shadow_passes: self.shadow_passes.load(Ordering::Relaxed),
-            cost_consumed: self.cost_consumed.load(Ordering::Relaxed),
-            cost_refunded: self.cost_refunded.load(Ordering::Relaxed),
-        }
-    }
-
-    fn record(&self, decision: &RateLimitDecision) {
-        match decision {
-            RateLimitDecision::Allowed(_) => {
-                self.allowed.fetch_add(1, Ordering::Relaxed);
-            }
-            RateLimitDecision::Delayed { .. } => {
-                self.delayed.fetch_add(1, Ordering::Relaxed);
-            }
-            RateLimitDecision::Rejected(_) => {
-                self.rejected.fetch_add(1, Ordering::Relaxed);
-            }
-            RateLimitDecision::BackendUnavailable => {
-                self.fail_closed_blocks.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-}
-
-// =============================================================================
-// 4. Engine 配置
-// =============================================================================
-
-/// [`RateLimitEngine`] 构造参数。
-#[derive(Debug, Clone)]
-pub struct RateLimitEngineConfig {
-    /// 内存 cache 单表最大条目数（防恶意 IP 注入）。默认 100_000。
-    pub memory_capacity: u64,
-    /// 内存 cache 闲置回收时间。默认 1 小时。
-    pub memory_idle: Duration,
-    /// 白名单：CIDR 命中直接放行，不消耗任何配额。
-    pub allowlist: Vec<IpNetwork>,
-    /// 黑名单：CIDR 命中直接拒绝（429）。
-    pub blocklist: Vec<IpNetwork>,
-}
-
-impl Default for RateLimitEngineConfig {
-    fn default() -> Self {
-        Self {
-            memory_capacity: DEFAULT_MEMORY_CAPACITY,
-            memory_idle: Duration::from_secs(DEFAULT_MEMORY_IDLE_SECS),
-            allowlist: Vec::new(),
-            blocklist: Vec::new(),
-        }
-    }
-}
-
-// =============================================================================
-// 5. 上下文（axum extractor）
-// =============================================================================
-
-/// 限流上下文，由 axum 的 [`FromRequestParts`] 自动提取。
-///
-/// 在 [`from_request_parts`] 中注入一个共享的 [`RateLimitMetadataHolder`]
-/// 到 [`Parts::extensions`]，[`headers_layer`] 在响应阶段从中读 metadata 写 HTTP 头。
-#[derive(Clone)]
-pub struct RateLimitContext {
-    pub client_ip: IpAddr,
-    pub user_id: Option<i64>,
-    pub headers: HeaderMap,
-    pub engine: RateLimitEngine,
-    pub metadata: Arc<RateLimitMetadataHolder>,
-}
-
-impl RateLimitContext {
-    pub fn extract_key(&self, key_type: RateLimitKeyType) -> String {
-        match key_type {
-            RateLimitKeyType::Global => "global".to_string(),
-            RateLimitKeyType::Ip => format!("ip:{}", self.client_ip),
-            RateLimitKeyType::User => self
-                .user_id
-                .map(|user_id| format!("user:{user_id}"))
-                .unwrap_or_else(|| format!("ip:{}", self.client_ip)),
-            RateLimitKeyType::Header(name) => self
-                .headers
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .map(|value| format!("header:{name}:{value}"))
-                .unwrap_or_else(|| format!("header:{name}:unknown")),
-        }
-    }
-
-    /// 标准检查（cost = 1）。
-    pub async fn check(
-        &self,
-        key: &str,
-        config: RateLimitConfig,
-        message: &str,
-    ) -> ApiResult<RateLimitMetadata> {
-        self.check_with_cost(key, config, 1, message).await
-    }
-
-    /// Token Cost-Based 检查；`cost` 是本次请求消耗的单位数。
-    ///
-    /// 仅 GCRA 内核的算法（TokenBucket / Gcra）真正按 cost 计算；其他算法忽略
-    /// cost（按请求数计数），但仍正常工作。
-    pub async fn check_with_cost(
-        &self,
-        key: &str,
-        config: RateLimitConfig,
-        cost: u32,
-        message: &str,
-    ) -> ApiResult<RateLimitMetadata> {
-        // ---- 名单短路：在算法之前判断，allowlist 不消耗配额，blocklist 直接拒绝。
-        if let Some(decision) = self.engine.check_lists(self.client_ip) {
-            self.engine.stats.record(&decision);
-            return self.finalize(decision, &config, message).await;
-        }
-
-        let cost = cost.max(1);
-        let decision = self.engine.check_with_cost(key, &config, cost).await;
-
-        // 记 cost 总量
-        if matches!(
-            decision,
-            RateLimitDecision::Allowed(_) | RateLimitDecision::Delayed { .. }
-        ) {
-            self.engine
-                .stats
-                .cost_consumed
-                .fetch_add(cost as u64, Ordering::Relaxed);
-        }
-
-        self.finalize(decision, &config, message).await
-    }
-
-    /// 预扣 `estimated_cost` 个单位的配额，返回 [`Reservation`]，业务结束后必须
-    /// 调用 [`Reservation::commit`] 或 [`Reservation::release`]。
-    ///
-    /// 仅支持 GCRA 内核算法（TokenBucket / Gcra）。
-    pub async fn reserve(
-        &self,
-        key: &str,
-        config: RateLimitConfig,
-        estimated_cost: u32,
-        message: &str,
-    ) -> ApiResult<Reservation> {
-        if !config.algorithm.supports_cost() {
-            return Err(ApiErrors::Internal(anyhow::anyhow!(
-                "reserve() only supports cost-based algorithms (token_bucket / gcra), \
-                 got `{}`",
-                config.algorithm.as_key_segment()
-            )));
-        }
-        let cost = estimated_cost.max(1);
-        let _meta = self
-            .check_with_cost(key, config.clone(), cost, message)
-            .await?;
-        Ok(Reservation {
-            engine: self.engine.clone(),
-            state: Some(ReservationState {
-                key: key.to_string(),
-                config,
-                reserved_cost: cost,
-            }),
-        })
-    }
-
-    /// 把 decision 转成 ApiResult，处理 Shadow 模式 / Delayed sleep / metadata holder。
-    async fn finalize(
-        &self,
-        decision: RateLimitDecision,
-        config: &RateLimitConfig,
-        message: &str,
-    ) -> ApiResult<RateLimitMetadata> {
-        // 写入 holder 给响应 layer 使用
-        if let Some(meta) = decision.metadata().copied() {
-            self.metadata.record(meta);
-        }
-
-        match decision {
-            RateLimitDecision::Allowed(meta) => Ok(meta),
-            RateLimitDecision::Delayed { delay, meta } => {
-                // tokio sleep 是 cancel-safe 的——client 断开时 axum drop task，
-                // sleep 自然停止；server 端已写入的 TAT 状态不回滚（限流领域标准语义）。
-                tokio::time::sleep(delay).await;
-                Ok(meta)
-            }
-            RateLimitDecision::Rejected(meta) if config.mode == RateLimitMode::Shadow => {
-                self.engine
-                    .stats
-                    .shadow_passes
-                    .fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(
-                    rate = config.rate,
-                    burst = config.effective_burst(),
-                    algorithm = config.algorithm.as_key_segment(),
-                    retry_after_ms = meta.retry_after.map(|d| d.as_millis()).unwrap_or(0),
-                    "rate-limit shadow mode: would have rejected"
-                );
-                Ok(meta)
-            }
-            RateLimitDecision::Rejected(_) => Err(ApiErrors::TooManyRequests(message.to_string())),
-            RateLimitDecision::BackendUnavailable => Err(ApiErrors::ServiceUnavailable(
-                "限流服务暂时不可用，请稍后再试".to_string(),
-            )),
-        }
-    }
-}
-
-impl<S: Send + Sync> FromRequestParts<S> for RateLimitContext {
-    type Rejection = summer_web::error::WebError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let client_ip = axum_client_ip::ClientIp::from_request_parts(parts, state)
-            .await
-            .map(|axum_client_ip::ClientIp(ip)| ip)
-            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
-
-        let user_id = parts
-            .extensions
-            .get::<summer_auth::UserSession>()
-            .map(|session| session.login_id.user_id);
-
-        let headers = parts.headers.clone();
-        let engine = if let Some(engine) = parts.extensions.get::<RateLimitEngine>().cloned() {
-            engine
-        } else {
-            parts.get_component::<RateLimitEngine>()?
-        };
-
-        // 共享 metadata holder：多次 check 累积到同一个 holder，最后由响应 layer 读取
-        let metadata = if let Some(holder) = parts
-            .extensions
-            .get::<Arc<RateLimitMetadataHolder>>()
-            .cloned()
-        {
-            holder
-        } else {
-            let holder = Arc::new(RateLimitMetadataHolder::default());
-            parts.extensions.insert(holder.clone());
-            holder
-        };
-
-        Ok(Self {
-            client_ip,
-            user_id,
-            headers,
-            engine,
-            metadata,
-        })
-    }
-}
-
-impl summer_web::aide::OperationInput for RateLimitContext {}
-
-// =============================================================================
-// 6. Reservation（配额预扣 / 退还）
-// =============================================================================
-
-/// 配额预扣的 RAII 凭证。
-///
-/// 必须显式调用 [`Self::commit`] 或 [`Self::release`]，否则 Drop 时会
-/// **异步退还全部预扣**（避免泄露配额）并在日志里 warn。
-#[must_use = "Reservation must be consumed via commit() or release(); \
-              dropping will refund everything (with a warning) on a best-effort basis"]
-pub struct Reservation {
-    engine: RateLimitEngine,
-    state: Option<ReservationState>,
-}
-
-#[derive(Debug)]
-struct ReservationState {
-    key: String,
-    config: RateLimitConfig,
-    reserved_cost: u32,
-}
-
-impl Reservation {
-    /// 提交实际消耗。如果 `actual_cost < reserved_cost` 自动退还差额。
-    pub async fn commit(mut self, actual_cost: u32) {
-        let Some(state) = self.state.take() else {
-            return;
-        };
-        let actual = actual_cost.min(state.reserved_cost);
-        if actual < state.reserved_cost {
-            let refund = state.reserved_cost - actual;
-            self.engine.refund(&state.key, &state.config, refund).await;
-        }
-    }
-
-    /// 全额退还（业务失败 / 取消时）。
-    pub async fn release(mut self) {
-        let Some(state) = self.state.take() else {
-            return;
-        };
-        self.engine
-            .refund(&state.key, &state.config, state.reserved_cost)
-            .await;
-    }
-}
-
-impl Drop for Reservation {
-    fn drop(&mut self) {
-        if let Some(state) = self.state.take() {
-            tracing::warn!(
-                key = %state.key,
-                cost = state.reserved_cost,
-                "Reservation dropped without commit/release; auto-refunding"
-            );
-            // 仅在 tokio runtime 中 spawn；运行时关闭时静默退化
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                let engine = self.engine.clone();
-                handle.spawn(async move {
-                    engine
-                        .refund(&state.key, &state.config, state.reserved_cost)
-                        .await;
-                });
-            }
-        }
-    }
-}
-
-// =============================================================================
-// 7. Engine
-// =============================================================================
-
-/// 内存状态，按算法分桶存储于不同 cache。
-struct FixedWindowState {
-    window_id: i64,
-    count: u32,
-}
-
-/// 限流引擎。`Clone` 廉价（内部全 `Arc`）。
-#[derive(Clone)]
-pub struct RateLimitEngine {
-    /// GCRA / TokenBucket / Gcra 共享：value 是 TAT (theoretical arrival time, ms)。
-    gcra_states: Cache<String, Arc<AtomicI64>>,
-    /// FixedWindow 状态（窗口 id + 计数）。
-    fixed_window_states: Cache<String, Arc<Mutex<FixedWindowState>>>,
-    /// SlidingWindow 时间戳日志。
-    sliding_window_states: Cache<String, Arc<Mutex<VecDeque<i64>>>>,
-    /// LeakyBucket / ThrottleQueue 共享：value 是 next_available_ms。
-    scheduled_states: Cache<String, Arc<AtomicI64>>,
-    redis: Option<summer_redis::Redis>,
-    stats: Arc<RateLimitStats>,
-    allowlist: Arc<Vec<IpNetwork>>,
-    blocklist: Arc<Vec<IpNetwork>>,
-}
-
-impl RateLimitEngine {
-    pub fn new(redis: Option<summer_redis::Redis>) -> Self {
-        Self::with_config(redis, RateLimitEngineConfig::default())
-    }
-
-    pub fn with_config(redis: Option<summer_redis::Redis>, cfg: RateLimitEngineConfig) -> Self {
-        let build_atomic = |capacity: u64, idle: Duration| -> Cache<String, Arc<AtomicI64>> {
-            Cache::builder()
-                .max_capacity(capacity)
-                .time_to_idle(idle)
-                .build()
-        };
-        let build_fixed =
-            |capacity: u64, idle: Duration| -> Cache<String, Arc<Mutex<FixedWindowState>>> {
-                Cache::builder()
-                    .max_capacity(capacity)
-                    .time_to_idle(idle)
-                    .build()
-            };
-        let build_sliding =
-            |capacity: u64, idle: Duration| -> Cache<String, Arc<Mutex<VecDeque<i64>>>> {
-                Cache::builder()
-                    .max_capacity(capacity)
-                    .time_to_idle(idle)
-                    .build()
-            };
-
-        Self {
-            gcra_states: build_atomic(cfg.memory_capacity, cfg.memory_idle),
-            fixed_window_states: build_fixed(cfg.memory_capacity, cfg.memory_idle),
-            sliding_window_states: build_sliding(cfg.memory_capacity, cfg.memory_idle),
-            scheduled_states: build_atomic(cfg.memory_capacity, cfg.memory_idle),
-            redis,
-            stats: Arc::new(RateLimitStats::default()),
-            allowlist: Arc::new(cfg.allowlist),
-            blocklist: Arc::new(cfg.blocklist),
-        }
-    }
-
-    /// 暴露给业务层做监控接入。
-    pub fn stats(&self) -> &RateLimitStats {
-        &self.stats
-    }
-
-    /// 名单短路：allowlist → 直接 Allowed；blocklist → 直接 Rejected。
-    pub fn check_lists(&self, client_ip: IpAddr) -> Option<RateLimitDecision> {
-        if !self.allowlist.is_empty() && self.allowlist.iter().any(|net| net.contains(client_ip)) {
-            self.stats.allowlist_passes.fetch_add(1, Ordering::Relaxed);
-            return Some(RateLimitDecision::Allowed(RateLimitMetadata::unlimited()));
-        }
-        if !self.blocklist.is_empty() && self.blocklist.iter().any(|net| net.contains(client_ip)) {
-            self.stats.blocklist_blocks.fetch_add(1, Ordering::Relaxed);
-            return Some(RateLimitDecision::Rejected(RateLimitMetadata::rejected(
-                0,
-                Duration::ZERO,
-            )));
-        }
-        None
-    }
-
-    pub async fn check(&self, key: &str, config: &RateLimitConfig) -> RateLimitDecision {
-        self.check_with_cost(key, config, 1).await
-    }
-
-    pub async fn check_with_cost(
-        &self,
-        key: &str,
-        config: &RateLimitConfig,
-        cost: u32,
-    ) -> RateLimitDecision {
-        let cost = cost.max(1);
-        let decision = match config.backend {
-            RateLimitBackend::Memory => self.check_memory(key, config, cost),
-            RateLimitBackend::Redis => self.check_redis(key, config, cost).await,
-        };
-        self.stats.record(&decision);
-        decision
-    }
-
-    /// 重置某个 key 的限流状态（运维干预）。
-    pub fn reset_key(&self, key: &str, config: &RateLimitConfig) {
-        let cache_key = format!("{}:{}", config.signature(), key);
-        match config.algorithm {
-            RateLimitAlgorithm::TokenBucket | RateLimitAlgorithm::Gcra => {
-                self.gcra_states.invalidate(&cache_key);
-            }
-            RateLimitAlgorithm::FixedWindow => {
-                self.fixed_window_states.invalidate(&cache_key);
-            }
-            RateLimitAlgorithm::SlidingWindow => {
-                self.sliding_window_states.invalidate(&cache_key);
-            }
-            RateLimitAlgorithm::LeakyBucket | RateLimitAlgorithm::ThrottleQueue => {
-                self.scheduled_states.invalidate(&cache_key);
-            }
-        }
-        // Redis 端：尝试删除（best effort）
-        if matches!(config.backend, RateLimitBackend::Redis)
-            && let Some(redis) = self.redis.clone()
-        {
-            let redis_key = self.redis_key_for(key, config);
-            tokio::spawn(async move {
-                let mut conn = redis;
-                let _: Result<i64, _> = summer_redis::redis::cmd("DEL")
-                    .arg(redis_key)
-                    .query_async(&mut conn)
-                    .await;
-            });
-        }
-    }
-
-    /// 退还 `cost` 个单位的配额（仅 GCRA 内核生效）。
-    pub async fn refund(&self, key: &str, config: &RateLimitConfig, cost: u32) {
-        if !config.algorithm.supports_cost() || cost == 0 {
-            return;
-        }
-        let emission = config.emission_interval_millis();
-        let refund_ms = (cost as i64).saturating_mul(emission);
-
-        match config.backend {
-            RateLimitBackend::Memory => {
-                let cache_key = format!("{}:{}", config.signature(), key);
-                if let Some(state) = self.gcra_states.get(&cache_key) {
-                    // fetch_sub atomic；TAT 可能临时低于 now，下次 check 用 max(tat, now) 兜底
-                    state.fetch_sub(refund_ms, Ordering::AcqRel);
-                }
-            }
-            RateLimitBackend::Redis => {
-                let Some(redis) = &self.redis else {
-                    return;
-                };
-                let redis_key = self.redis_key_for(key, config);
-                let mut conn = redis.clone();
-                let now_ms = current_time_millis();
-                let result = summer_redis::redis::Script::new(REDIS_GCRA_REFUND_SCRIPT)
-                    .key(redis_key)
-                    .arg(now_ms)
-                    .arg(emission)
-                    .arg(cost as i64)
-                    .invoke_async::<i64>(&mut conn)
-                    .await;
-                if let Err(error) = result {
-                    tracing::warn!(error = %error, key, cost, "rate-limit refund failed");
-                }
-            }
-        }
-        self.stats
-            .cost_refunded
-            .fetch_add(cost as u64, Ordering::Relaxed);
-    }
-
-    fn redis_key_for(&self, key: &str, config: &RateLimitConfig) -> String {
-        format!(
-            "rate-limit:{}:{}:{}:{}:{}:{}",
-            config.algorithm.as_key_segment(),
-            config.rate,
-            config.window_seconds(),
-            config.effective_burst(),
-            config.max_wait_ms,
-            key,
-        )
-    }
-
-    // -------- Memory 端 --------
-
-    fn check_memory(&self, key: &str, config: &RateLimitConfig, cost: u32) -> RateLimitDecision {
-        if config.algorithm.uses_gcra() {
-            self.check_memory_gcra(key, config, cost)
-        } else if config.algorithm.uses_scheduled_slot() {
-            let max_wait_ms = if config.algorithm == RateLimitAlgorithm::LeakyBucket {
-                0
-            } else {
-                config.max_wait_ms
-            };
-            self.check_memory_scheduled_slot(key, config, max_wait_ms)
-        } else {
-            match config.algorithm {
-                RateLimitAlgorithm::FixedWindow => self.check_memory_fixed_window(key, config),
-                RateLimitAlgorithm::SlidingWindow => self.check_memory_sliding_window(key, config),
-                _ => unreachable!("algorithm dispatch must be exhaustive"),
-            }
-        }
-    }
-
-    /// GCRA / TokenBucket 共享路径，CAS 无锁，支持 cost > 1。
-    fn check_memory_gcra(
-        &self,
-        key: &str,
-        config: &RateLimitConfig,
-        cost: u32,
-    ) -> RateLimitDecision {
-        let now_ms = current_time_millis();
-        let emission = config.emission_interval_millis();
-        let burst = config.effective_burst() as i64;
-        let cost = cost.max(1) as i64;
-        let capacity = burst * emission;
-        let cost_emission = cost * emission;
-        let limit = burst as u32;
-
-        let cache_key = format!("{}:{}", config.signature(), key);
-        let state = self
-            .gcra_states
-            .get_with(cache_key, || Arc::new(AtomicI64::new(now_ms)));
-
-        loop {
-            let tat = state.load(Ordering::Acquire);
-            let arrival = tat.max(now_ms);
-            let diff = arrival - now_ms;
-
-            // cost-based GCRA: 推进后桶超容 → 拒绝
-            if diff + cost_emission > capacity {
-                let retry_after_ms = (diff + cost_emission - capacity).max(0) as u64;
-                let retry_after = Duration::from_millis(retry_after_ms);
-                return RateLimitDecision::Rejected(RateLimitMetadata::rejected(
-                    limit,
-                    retry_after,
-                ));
-            }
-
-            let new_tat = arrival + cost_emission;
-            if state
-                .compare_exchange(tat, new_tat, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                let remaining = if emission > 0 {
-                    ((capacity - diff - cost_emission) / emission).max(0) as u32
-                } else {
-                    0
-                };
-                let reset_after = Duration::from_millis((new_tat - now_ms).max(0) as u64);
-                return RateLimitDecision::Allowed(RateLimitMetadata {
-                    limit,
-                    remaining,
-                    reset_after,
-                    retry_after: None,
-                });
-            }
-        }
-    }
-
-    fn check_memory_fixed_window(&self, key: &str, config: &RateLimitConfig) -> RateLimitDecision {
-        let now_ms = current_time_millis();
-        let window_ms = config.window_millis().max(1);
-        let window_id = now_ms.div_euclid(window_ms);
-        let limit = config.window_limit();
-
-        let cache_key = format!("{}:{}", config.signature(), key);
-        let state = self.fixed_window_states.get_with(cache_key, || {
-            Arc::new(Mutex::new(FixedWindowState {
-                window_id,
-                count: 0,
-            }))
-        });
-
-        let mut s = state.lock();
-        if s.window_id != window_id {
-            s.window_id = window_id;
-            s.count = 0;
-        }
-
-        let window_end_ms = (window_id + 1) * window_ms;
-        let reset_after = Duration::from_millis(window_end_ms.saturating_sub(now_ms).max(0) as u64);
-
-        if s.count >= limit {
-            return RateLimitDecision::Rejected(RateLimitMetadata {
-                limit,
-                remaining: 0,
-                reset_after,
-                retry_after: Some(reset_after),
-            });
-        }
-        s.count += 1;
-        RateLimitDecision::Allowed(RateLimitMetadata {
-            limit,
-            remaining: limit.saturating_sub(s.count),
-            reset_after,
-            retry_after: None,
-        })
-    }
-
-    fn check_memory_sliding_window(
-        &self,
-        key: &str,
-        config: &RateLimitConfig,
-    ) -> RateLimitDecision {
-        let now_ms = current_time_millis();
-        let window_ms = config.window_millis().max(1);
-        let limit = config.window_limit();
-
-        let cache_key = format!("{}:{}", config.signature(), key);
-        let state = self
-            .sliding_window_states
-            .get_with(cache_key, || Arc::new(Mutex::new(VecDeque::new())));
-
-        let mut entries = state.lock();
-        let cutoff = now_ms - window_ms;
-        while entries.front().is_some_and(|ts| *ts <= cutoff) {
-            entries.pop_front();
-        }
-
-        if entries.len() as u32 >= limit {
-            let retry_after_ms = entries
-                .front()
-                .map(|oldest| (oldest + window_ms - now_ms).max(0) as u64)
-                .unwrap_or(0);
-            let retry_after = Duration::from_millis(retry_after_ms);
-            return RateLimitDecision::Rejected(RateLimitMetadata {
-                limit,
-                remaining: 0,
-                reset_after: Duration::from_millis(window_ms as u64),
-                retry_after: Some(retry_after),
-            });
-        }
-
-        entries.push_back(now_ms);
-        RateLimitDecision::Allowed(RateLimitMetadata {
-            limit,
-            remaining: limit.saturating_sub(entries.len() as u32),
-            reset_after: Duration::from_millis(window_ms as u64),
-            retry_after: None,
-        })
-    }
-
-    fn check_memory_scheduled_slot(
-        &self,
-        key: &str,
-        config: &RateLimitConfig,
-        max_wait_ms: u64,
-    ) -> RateLimitDecision {
-        let now_ms = current_time_millis();
-        let interval_ms = config.emission_interval_millis().max(1);
-        let limit = 1u32;
-
-        let cache_key = format!("{}:{}", config.signature(), key);
-        let state = self
-            .scheduled_states
-            .get_with(cache_key, || Arc::new(AtomicI64::new(now_ms)));
-
-        loop {
-            let next_available = state.load(Ordering::Acquire);
-            let scheduled = next_available.max(now_ms);
-            let delay_ms = scheduled.saturating_sub(now_ms).max(0) as u64;
-
-            if delay_ms > max_wait_ms {
-                let retry_after = Duration::from_millis(delay_ms);
-                return RateLimitDecision::Rejected(RateLimitMetadata::rejected(
-                    limit,
-                    retry_after,
-                ));
-            }
-
-            let new_next = scheduled + interval_ms;
-            if state
-                .compare_exchange(
-                    next_available,
-                    new_next,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                let meta = RateLimitMetadata {
-                    limit,
-                    remaining: 0,
-                    reset_after: Duration::from_millis(interval_ms as u64),
-                    retry_after: None,
-                };
-                if delay_ms == 0 {
-                    return RateLimitDecision::Allowed(meta);
-                }
-                return RateLimitDecision::Delayed {
-                    delay: Duration::from_millis(delay_ms),
-                    meta,
-                };
-            }
-        }
-    }
-
-    // -------- Redis 端 --------
-
-    async fn check_redis(
-        &self,
-        key: &str,
-        config: &RateLimitConfig,
-        cost: u32,
-    ) -> RateLimitDecision {
-        let Some(redis) = &self.redis else {
-            return self.handle_backend_failure(key, config, cost);
-        };
-
-        let now_ms = current_time_millis();
-        let expire_seconds = config.redis_expire_seconds() as i64;
-        let redis_key = self.redis_key_for(key, config);
-        let mut conn = redis.clone();
-
-        let result = match config.algorithm {
-            RateLimitAlgorithm::TokenBucket | RateLimitAlgorithm::Gcra => {
-                let burst = config.effective_burst().max(1) as i64;
-                let emission = config.emission_interval_millis();
-                summer_redis::redis::Script::new(REDIS_GCRA_SCRIPT)
-                    .key(redis_key)
-                    .arg(now_ms)
-                    .arg(emission)
-                    .arg(burst)
-                    .arg(expire_seconds)
-                    .arg(cost as i64)
-                    .invoke_async::<Vec<i64>>(&mut conn)
-                    .await
-                    .map(|values| {
-                        let (allowed, value_ms, remaining) = unpack_triple(&values);
-                        decision_from_lua_triple(
-                            allowed,
-                            value_ms,
-                            remaining,
-                            burst as u32,
-                            Duration::from_millis(emission as u64),
-                        )
-                    })
-            }
-            RateLimitAlgorithm::FixedWindow => {
-                let limit = config.window_limit();
-                summer_redis::redis::Script::new(REDIS_FIXED_WINDOW_SCRIPT)
-                    .key(redis_key)
-                    .arg(now_ms)
-                    .arg(config.window_millis())
-                    .arg(limit as i64)
-                    .invoke_async::<Vec<i64>>(&mut conn)
-                    .await
-                    .map(|values| {
-                        let (allowed, value_ms, remaining) = unpack_triple(&values);
-                        decision_from_lua_triple(
-                            allowed,
-                            value_ms,
-                            remaining,
-                            limit,
-                            Duration::from_millis(config.window_millis() as u64),
-                        )
-                    })
-            }
-            RateLimitAlgorithm::SlidingWindow => {
-                let limit = config.window_limit();
-                summer_redis::redis::Script::new(REDIS_SLIDING_WINDOW_SCRIPT)
-                    .key(redis_key)
-                    .arg(now_ms)
-                    .arg(config.window_millis())
-                    .arg(limit as i64)
-                    .arg(format!("{now_ms}:{}", uuid::Uuid::new_v4()))
-                    .arg(expire_seconds)
-                    .invoke_async::<Vec<i64>>(&mut conn)
-                    .await
-                    .map(|values| {
-                        let (allowed, value_ms, remaining) = unpack_triple(&values);
-                        decision_from_lua_triple(
-                            allowed,
-                            value_ms,
-                            remaining,
-                            limit,
-                            Duration::from_millis(config.window_millis() as u64),
-                        )
-                    })
-            }
-            RateLimitAlgorithm::LeakyBucket => {
-                let interval = config.emission_interval_millis();
-                summer_redis::redis::Script::new(REDIS_SCHEDULED_SLOT_SCRIPT)
-                    .key(redis_key)
-                    .arg(now_ms)
-                    .arg(interval)
-                    .arg(0_i64)
-                    .arg(expire_seconds)
-                    .invoke_async::<Vec<i64>>(&mut conn)
-                    .await
-                    .map(|values| {
-                        let (allowed, value_ms, _) = unpack_triple(&values);
-                        scheduled_decision_from_lua(
-                            allowed,
-                            value_ms,
-                            Duration::from_millis(interval as u64),
-                        )
-                    })
-            }
-            RateLimitAlgorithm::ThrottleQueue => {
-                let interval = config.emission_interval_millis();
-                summer_redis::redis::Script::new(REDIS_SCHEDULED_SLOT_SCRIPT)
-                    .key(redis_key)
-                    .arg(now_ms)
-                    .arg(interval)
-                    .arg(config.max_wait_ms as i64)
-                    .arg(expire_seconds)
-                    .invoke_async::<Vec<i64>>(&mut conn)
-                    .await
-                    .map(|values| {
-                        let (allowed, value_ms, _) = unpack_triple(&values);
-                        scheduled_decision_from_lua(
-                            allowed,
-                            value_ms,
-                            Duration::from_millis(interval as u64),
-                        )
-                    })
-            }
-        };
-
-        match result {
-            Ok(decision) => decision,
-            Err(error) => {
-                self.stats.backend_failures.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(
-                    error = %error,
-                    key,
-                    rate = config.rate,
-                    burst = config.burst,
-                    algorithm = %config.algorithm.as_key_segment(),
-                    failure_policy = %config.failure_policy.as_key_segment(),
-                    window_seconds = config.window_seconds(),
-                    max_wait_ms = config.max_wait_ms,
-                    "redis rate limit check failed; applying failure policy"
-                );
-                self.handle_backend_failure(key, config, cost)
-            }
-        }
-    }
-
-    fn handle_backend_failure(
-        &self,
-        key: &str,
-        config: &RateLimitConfig,
-        cost: u32,
-    ) -> RateLimitDecision {
-        match config.failure_policy {
-            RateLimitFailurePolicy::FailOpen => {
-                self.stats.fail_open_passes.fetch_add(1, Ordering::Relaxed);
-                let limit = config.effective_burst().max(1);
-                RateLimitDecision::Allowed(RateLimitMetadata {
-                    limit,
-                    remaining: limit,
-                    reset_after: Duration::ZERO,
-                    retry_after: None,
-                })
-            }
-            RateLimitFailurePolicy::FailClosed => RateLimitDecision::BackendUnavailable,
-            RateLimitFailurePolicy::FallbackMemory => {
-                self.stats
-                    .fallback_to_memory
-                    .fetch_add(1, Ordering::Relaxed);
-                self.check_memory(key, config, cost)
-            }
-        }
-    }
-}
-
-// =============================================================================
-// 8. Lua 解析辅助
-// =============================================================================
-
-fn unpack_triple(values: &[i64]) -> (i64, i64, i64) {
-    (
-        values.first().copied().unwrap_or(0),
-        values.get(1).copied().unwrap_or(0),
-        values.get(2).copied().unwrap_or(0),
-    )
-}
-
-fn decision_from_lua_triple(
-    allowed: i64,
-    value_ms: i64,
-    remaining: i64,
-    limit: u32,
-    reset_after: Duration,
-) -> RateLimitDecision {
-    let remaining = remaining.max(0) as u32;
-    let value = value_ms.max(0) as u64;
-    if allowed == 1 {
-        RateLimitDecision::Allowed(RateLimitMetadata {
-            limit,
-            remaining,
-            reset_after,
-            retry_after: None,
-        })
-    } else {
-        let retry_after = Duration::from_millis(value);
-        RateLimitDecision::Rejected(RateLimitMetadata {
-            limit,
-            remaining: 0,
-            reset_after,
-            retry_after: Some(retry_after),
-        })
-    }
-}
-
-fn scheduled_decision_from_lua(
-    allowed: i64,
-    value_ms: i64,
-    reset_after: Duration,
-) -> RateLimitDecision {
-    let value = value_ms.max(0) as u64;
-    let limit = 1u32;
-    if allowed == 1 {
-        let meta = RateLimitMetadata {
-            limit,
-            remaining: 0,
-            reset_after,
-            retry_after: None,
-        };
-        if value == 0 {
-            RateLimitDecision::Allowed(meta)
-        } else {
-            RateLimitDecision::Delayed {
-                delay: Duration::from_millis(value),
-                meta,
-            }
-        }
-    } else {
-        let retry_after = Duration::from_millis(value);
-        RateLimitDecision::Rejected(RateLimitMetadata::rejected(limit, retry_after))
-    }
-}
-
-fn current_time_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
-}
-
-// =============================================================================
-// 9. Tests
+// Tests
 // =============================================================================
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use summer_web::axum::http::HeaderMap;
+
     use super::*;
 
     fn config(algorithm: RateLimitAlgorithm, rate: u32, burst: u32) -> RateLimitConfig {
@@ -1560,7 +298,7 @@ mod tests {
         assert!(matches!(d3, RateLimitDecision::Rejected(_)));
     }
 
-    // ---- 新增：Cost-Based ----
+    // ---- Cost-Based ----
 
     #[tokio::test]
     async fn cost_based_consumes_burst_proportionally() {
@@ -1653,7 +391,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ---- 新增：Allowlist / Blocklist ----
+    // ---- Allowlist / Blocklist ----
 
     #[tokio::test]
     async fn allowlist_passes_unconditionally() {
@@ -1693,7 +431,53 @@ mod tests {
         assert_eq!(engine.stats().snapshot().blocklist_blocks, 1);
     }
 
-    // ---- 新增：Shadow Mode ----
+    /// blocklist 命中的 metadata 不带 `retry_after`（避免攻击者立即重试）。
+    /// 同时 allowed/rejected counter 不应该被双重计数。
+    #[tokio::test]
+    async fn blocklist_no_double_count_no_retry_after() {
+        let engine = RateLimitEngine::with_config(
+            None,
+            RateLimitEngineConfig {
+                blocklist: vec!["1.2.3.0/24".parse().unwrap()],
+                ..Default::default()
+            },
+        );
+        let c = ctx_with_engine("1.2.3.4".parse().unwrap(), None, engine.clone());
+        let cfg = config(RateLimitAlgorithm::TokenBucket, 100, 100);
+
+        for _ in 0..5 {
+            let _ = c.check("k", cfg.clone(), "blocked").await;
+        }
+        let stats = engine.stats().snapshot();
+        assert_eq!(stats.blocklist_blocks, 5);
+        // 关键：rejected counter 不应该被加（之前的 bug 会让它也 +5）
+        assert_eq!(stats.rejected, 0);
+        assert_eq!(stats.allowed, 0);
+    }
+
+    /// allowlist 命中也不应该污染 allowed counter。
+    #[tokio::test]
+    async fn allowlist_no_double_count_to_allowed() {
+        let engine = RateLimitEngine::with_config(
+            None,
+            RateLimitEngineConfig {
+                allowlist: vec!["10.0.0.0/8".parse().unwrap()],
+                ..Default::default()
+            },
+        );
+        let c = ctx_with_engine("10.0.0.5".parse().unwrap(), None, engine.clone());
+        let cfg = config(RateLimitAlgorithm::TokenBucket, 1, 1);
+
+        for _ in 0..3 {
+            c.check("k", cfg.clone(), "limited").await.unwrap();
+        }
+        let stats = engine.stats().snapshot();
+        assert_eq!(stats.allowlist_passes, 3);
+        // 关键：allowed counter 不应该被加（之前的 bug 会让它也 +3）
+        assert_eq!(stats.allowed, 0);
+    }
+
+    // ---- Shadow Mode ----
 
     #[tokio::test]
     async fn shadow_mode_records_but_does_not_reject() {
@@ -1712,7 +496,7 @@ mod tests {
         assert!(stats.shadow_passes >= 2);
     }
 
-    // ---- 新增：reset_key ----
+    // ---- reset_key ----
 
     #[tokio::test]
     async fn reset_key_clears_bucket() {
@@ -1736,7 +520,7 @@ mod tests {
         ));
     }
 
-    // ---- 已有：fail_open / fail_closed / fallback ----
+    // ---- fail_open / fail_closed / fallback ----
 
     #[tokio::test]
     async fn fail_open_skips_fallback_and_records_stats() {
@@ -1808,12 +592,76 @@ mod tests {
         assert!(snap.allowed + snap.rejected > 0);
     }
 
+    /// 给一个超小容量的内存 cache 灌入 1000 个唯一 key，验证 moka 真的执行 eviction
+    /// 且不 panic、不脏读 —— 之前的并发测试只跑 200 个 key 远低于默认 100k 容量，
+    /// 实际**没触发**驱逐。
+    #[tokio::test]
+    async fn moka_evicts_when_capacity_exceeded() {
+        let engine = RateLimitEngine::with_config(
+            None,
+            RateLimitEngineConfig {
+                memory_capacity: 50,
+                memory_idle: Duration::from_secs(60),
+                ..Default::default()
+            },
+        );
+        let cfg = config(RateLimitAlgorithm::TokenBucket, 5, 5);
+
+        for i in 0..1000 {
+            let _ = engine.check(&format!("ip:k:{i}"), &cfg).await;
+        }
+
+        // moka 是 async eviction：写完后驱逐任务可能还在队列里，强制 flush。
+        engine.gcra_states.run_pending_tasks();
+        let count = engine.gcra_states.entry_count();
+        // moka W-TinyLFU 在 capacity 边界附近会有少量超额（瞬时窗口），用 2x 上限验证。
+        assert!(count <= 100, "expected ≤ 100 entries, got {count}");
+    }
+
+    /// 验证 Prometheus exporter helper 数组长度 + 名称符合规范。
+    #[tokio::test]
+    async fn stats_as_metrics_returns_12_named_counters() {
+        let engine = RateLimitEngine::new(None);
+        let cfg = config(RateLimitAlgorithm::TokenBucket, 5, 5);
+        let _ = engine.check("k", &cfg).await;
+        let snap = engine.stats().snapshot();
+        let metrics = snap.as_metrics();
+        assert_eq!(metrics.len(), 12);
+        for (name, _) in &metrics {
+            assert!(name.starts_with("rate_limit_"));
+            assert!(name.ends_with("_total"));
+        }
+    }
+
+    /// 验证 sanitize_user_key 在超长输入下走 hash 路径。
+    #[tokio::test]
+    async fn long_user_keys_are_hashed() {
+        use super::algorithms::sanitize_user_key;
+        let short = "user:42";
+        assert_eq!(sanitize_user_key(short), short);
+
+        let long = "x".repeat(500);
+        let hashed = sanitize_user_key(&long);
+        assert!(hashed.starts_with("h:"));
+        assert_eq!(hashed.len(), 34); // "h:" + 32 hex chars
+    }
+
     // ---- Redis 端集成（仅本地有 redis 时启用）----
 
     async fn redis_or_skip() -> Option<summer_redis::Redis> {
-        match summer_redis::redis::Client::open("redis://127.0.0.1/") {
-            Ok(client) => client.get_connection_manager().await.ok(),
-            Err(_) => None,
+        // `Client::open` 只解析 URL，不真的建连；`get_connection_manager` 创建延迟
+        // 连接对象但首次命令才会真正握手。如果 Redis 端口被防火墙挡 / 密码不对 /
+        // 服务挂了，这两步可能都"成功"但 PING 时才失败。所以用 PING 兜底防假阳性。
+        let client = summer_redis::redis::Client::open("redis://127.0.0.1/").ok()?;
+        let mut conn = client.get_connection_manager().await.ok()?;
+        let pong: Option<String> = summer_redis::redis::cmd("PING")
+            .query_async(&mut conn)
+            .await
+            .ok();
+        if pong.as_deref() == Some("PONG") {
+            Some(conn)
+        } else {
+            None
         }
     }
 

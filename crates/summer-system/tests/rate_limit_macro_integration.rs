@@ -398,11 +398,14 @@ async fn rate_limit_headers_include_retry_after_on_rejection() {
 
 #[tokio::test]
 async fn allowlist_passes_unconditionally() {
-    // 测试用 127.0.0.1（axum-client-ip 默认 fallback 的 IP）作为 allowlist
+    // 集成测试不带 `ClientIpSource` layer，axum-client-ip 提取失败 → fallback 到
+    // `0.0.0.0`（unspecified）。**故意不用 `127.0.0.1/32`** —— 让 localhost 做
+    // fallback 是限流领域典型陷阱（参见 RateLimitContext::from_request_parts 注释），
+    // 这里就用 `0.0.0.0/32` 来验证 allowlist 短路逻辑本身。
     let engine = RateLimitEngine::with_config(
         None,
         RateLimitEngineConfig {
-            allowlist: vec!["127.0.0.1/32".parse().unwrap()],
+            allowlist: vec!["0.0.0.0/32".parse().unwrap()],
             ..Default::default()
         },
     );
@@ -419,7 +422,7 @@ async fn allowlist_passes_unconditionally() {
             .expect("build request")
     };
 
-    // limited rate=2，但 allowlist 命中（127.0.0.1），连续 100 次都应该 200
+    // limited rate=2，但 allowlist 命中（0.0.0.0），连续 100 次都应该 200
     for _ in 0..100 {
         let response = router.clone().oneshot(request()).await.expect("response");
         assert_eq!(response.status(), StatusCode::OK);
