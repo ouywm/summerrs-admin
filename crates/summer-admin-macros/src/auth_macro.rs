@@ -422,7 +422,7 @@ pub fn expand_check_permission(args: TokenStream, input: TokenStream) -> TokenSt
             summer_auth::permission_matches(__p, #perm)
         }) {
             tracing::info!("权限不足: {}", #perm);
-            return Err(common::error::ApiErrors::Forbidden(
+            return Err(summer_common::error::ApiErrors::Forbidden(
                 "无权限".to_string()
             ));
         }
@@ -440,7 +440,7 @@ pub fn expand_check_role(args: TokenStream, input: TokenStream) -> TokenStream {
     let check_code = quote! {
         if !__auth_guard.roles().iter().any(|__r| __r == #role) {
             tracing::info!("角色不足: {}", #role);
-            return Err(common::error::ApiErrors::Forbidden(
+            return Err(summer_common::error::ApiErrors::Forbidden(
                 "无权限".to_string()
             ));
         }
@@ -463,7 +463,7 @@ pub fn expand_check_permissions(args: TokenStream, input: TokenStream) -> TokenS
                 #(
                     if !__user_perms.iter().any(|__p| summer_auth::permission_matches(__p, #values)) {
                         tracing::info!("权限不足: {}", #values);
-                        return Err(common::error::ApiErrors::Forbidden(
+                        return Err(summer_common::error::ApiErrors::Forbidden(
                             "无权限".to_string()
                         ));
                     }
@@ -479,7 +479,7 @@ pub fn expand_check_permissions(args: TokenStream, input: TokenStream) -> TokenS
                 });
                 if !__any_matched {
                     tracing::info!("权限不足: {}", [#(#values),*].join(" | "));
-                    return Err(common::error::ApiErrors::Forbidden(
+                    return Err(summer_common::error::ApiErrors::Forbidden(
                         "无权限".to_string()
                     ));
                 }
@@ -503,7 +503,7 @@ pub fn expand_check_roles(args: TokenStream, input: TokenStream) -> TokenStream 
                 #(
                     if !__user_roles.iter().any(|__r| __r == #values) {
                         tracing::info!("角色不足: {}", #values);
-                        return Err(common::error::ApiErrors::Forbidden(
+                        return Err(summer_common::error::ApiErrors::Forbidden(
                             "无权限".to_string()
                         ));
                     }
@@ -518,7 +518,7 @@ pub fn expand_check_roles(args: TokenStream, input: TokenStream) -> TokenStream 
                 });
                 if !__any_matched {
                     tracing::info!("角色不足: {}", [#(#values),*].join(" | "));
-                    return Err(common::error::ApiErrors::Forbidden(
+                    return Err(summer_common::error::ApiErrors::Forbidden(
                         "无权限".to_string()
                     ));
                 }
