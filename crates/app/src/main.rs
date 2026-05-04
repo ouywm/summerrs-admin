@@ -1,6 +1,7 @@
 mod router;
 
 use summer::App;
+use summer_ai::summer_ai_agent::SummerAiAgentPlugin;
 use summer_ai::summer_ai_billing::SummerAiBillingPlugin;
 use summer_ai::summer_ai_relay::SummerAiRelayPlugin;
 use summer_auth::SummerAuthPlugin;
@@ -40,6 +41,7 @@ async fn main() {
         .add_plugin(McpPlugin)
         .add_plugin(SummerAiRelayPlugin)
         .add_plugin(SummerAiBillingPlugin)
+        .add_plugin(SummerAiAgentPlugin)
         .add_jobs(summer_job::handler::auto_jobs())
         .add_router(router::router())
         .run()

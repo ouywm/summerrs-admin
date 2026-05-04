@@ -1,6 +1,6 @@
 //! summer-ai
 //!
-//! LLM 中转网关主 crate —— 把 5 个 sub-crate 汇聚到一个顶层 namespace。
+//! LLM 网关 + agent 主 crate —— 把 6 个 sub-crate 汇聚到一个顶层 namespace。
 //!
 //! # 使用
 //!
@@ -9,7 +9,7 @@
 //! `RedisPlugin`，必须在它们之后 build）：
 //!
 //! ```ignore
-//! use summer_ai::{SummerAiAdminPlugin, SummerAiBillingPlugin, SummerAiRelayPlugin};
+//! use summer_ai::{SummerAiAdminPlugin, SummerAiAgentPlugin, SummerAiBillingPlugin, SummerAiRelayPlugin};
 //!
 //! App::new()
 //!     .add_plugin(SeaOrmPlugin)
@@ -17,6 +17,7 @@
 //!     .add_plugin(SummerAiRelayPlugin)
 //!     .add_plugin(SummerAiAdminPlugin)
 //!     .add_plugin(SummerAiBillingPlugin)
+//!     .add_plugin(SummerAiAgentPlugin)
 //!     // ...
 //! ```
 //!
@@ -32,8 +33,10 @@
 //! - [`summer_ai_relay`] — 运行时（/v1/* 路由 + 鉴权 + 计费前置）
 //! - [`summer_ai_admin`] — 后台（/admin/ai/* CRUD）
 //! - [`summer_ai_billing`] — 计费引擎
+//! - [`summer_ai_agent`] — 业务侧 LLM 应用层（agent / RAG / tool calling，基于 rig）
 
 pub use summer_ai_admin;
+pub use summer_ai_agent;
 pub use summer_ai_billing;
 pub use summer_ai_core;
 pub use summer_ai_model;

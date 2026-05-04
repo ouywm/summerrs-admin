@@ -166,22 +166,7 @@ stateful_mode = true  # 有状态会话模式
 session_channel_capacity = 16 # 会话通道缓冲容量
 # session_keep_alive = 3600             # 会话不活动超时（秒），不设置则永不超时
 
-# ── Rig LLM 框架配置 ──
-[rig]
-default_provider = "openai"
-
-[rig.providers.openai]
-api_key = "${RIG_OPENAI_API_KEY}"
-base_url = "https://codex-api.packycode.com/v1"
-default_model = "gpt-5.4"
-provider_type = "openai"
-
-#[rig.providers.deepseek]
-#provider_type = "deepseek"
-#api_key = "sk-xxx"
-#default_model = "deepseek-chat"
-
-#[rig.providers.local]
-#provider_type = "ollama"
-#base_url = "http://localhost:11434"
-#default_model = "qwen2.5:14b"
+[agent]
+base_url = "${BASE_URL}"
+default_model = "mimo-v2.5-pro"
+token = "${TOKEN}"
