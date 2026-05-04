@@ -6,6 +6,7 @@ use summer_ai::summer_ai_relay::SummerAiRelayPlugin;
 use summer_auth::SummerAuthPlugin;
 use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
+use summer_job_dynamic::SummerSchedulerPlugin;
 use summer_mail::MailPlugin;
 use summer_mcp::McpPlugin;
 use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
@@ -27,6 +28,7 @@ async fn main() {
         .add_plugin(SummerShardingPlugin)
         .add_plugin(SummerSqlRewritePlugin)
         .add_plugin(JobPlugin)
+        .add_plugin(SummerSchedulerPlugin)
         .add_plugin(MailPlugin)
         .add_plugin(SummerAuthPlugin)
         .add_plugin(PermBitmapPlugin)

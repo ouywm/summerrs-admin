@@ -1,4 +1,5 @@
 mod auth_macro;
+mod job_handler_macro;
 mod log_macro;
 mod rate_limit_macro;
 
@@ -231,4 +232,27 @@ pub fn has_roles(args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn rate_limit(args: TokenStream, input: TokenStream) -> TokenStream {
     rate_limit_macro::expand(args, input)
+}
+
+/// `#[job_handler("name")]` - 注册动态调度任务 handler
+///
+/// 把 `async fn(ctx: JobContext) -> JobResult` 注册到 `summer_job_dynamic` 的 inventory，
+/// 启动期由 `HandlerRegistry::collect()` 收集成 `name → fn` 表。调度器按 `sys_job.handler`
+/// 字段查表执行，DB 改 cron / 启停 / 触发都不用重编译。
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// use summer_job_dynamic::{JobContext, JobResult};
+/// use summer_admin_macros::job_handler;
+///
+/// #[job_handler("s3_multipart_cleanup")]
+/// async fn s3_cleanup(ctx: JobContext) -> JobResult {
+///     // 业务代码：通过 ctx.app.get_expect_component::<T>() 取所需组件
+///     Ok(serde_json::json!({"aborted": 0}))
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn job_handler(args: TokenStream, input: TokenStream) -> TokenStream {
+    job_handler_macro::expand(args, input)
 }

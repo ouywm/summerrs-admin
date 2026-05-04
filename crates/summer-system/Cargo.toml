@@ -17,6 +17,7 @@ axum-valid = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+inventory = { workspace = true }
 md-5 = { workspace = true }
 mime = { workspace = true }
 regex = { workspace = true }
@@ -37,6 +38,7 @@ summer-auth = { workspace = true }
 summer-common = { workspace = true }
 summer-domain = { workspace = true }
 summer-job = { workspace = true }
+summer-job-dynamic = { workspace = true }
 summer-mail = { workspace = true }
 summer-plugins = { workspace = true }
 summer-redis = { workspace = true }

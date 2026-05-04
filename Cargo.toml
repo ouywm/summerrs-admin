@@ -18,6 +18,7 @@ members = [
     "crates/summer-plugins",
     "crates/summer-system",
     "crates/summer-system/model",
+    "crates/summer-job-dynamic",
 ]
 resolver = "2"
 
@@ -40,6 +41,7 @@ calamine = "0.31.0"
 chrono = "0.4.43"
 clap = "4"
 criterion = "0.5"
+croner = "3.0"
 flume = "0.12"
 futures = "0.3.32"
 garde = "0.22.1"
@@ -70,6 +72,7 @@ rand = "0.10.0"
 regex = "1.12.3"
 reqwest = "0.13.2"
 reqwest-eventsource = "0.6"
+rhai = { version = "1.19", features = ["sync"] }
 rig-core = "0.35.0"
 ring = "0.17.14"
 rmcp = "1.2.0"
@@ -98,6 +101,7 @@ summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
 summer-job = "0.5.0"
+summer-job-dynamic = { path = "crates/summer-job-dynamic" }
 summer-macros = "0.5.0"
 summer-mail = "0.5.0"
 summer-mcp = { path = "crates/summer-mcp" }
@@ -113,6 +117,7 @@ syn = "2"
 sysinfo = "0.35"
 thiserror = "2.0.18"
 tokio = "1.49.0"
+tokio-cron-scheduler = "0.15"
 tokio-stream = "0.1"
 tokio-util = "0.7"
 tower = "0.5.3"

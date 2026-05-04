@@ -1,55 +1,78 @@
-//! S3 分片上传过期清理
+//! S3 分片上传过期清理 —— 动态调度任务。
+//!
+//! 通过 `#[job_handler]` 注册到 `summer-job-dynamic` registry，DB 里 cron 表达式
+//! 由 `default_dto()` 在启动期 import（已存在则保留 DB 配置）。
 
-use std::{error::Error as StdError, time::SystemTime};
+use std::error::Error as StdError;
+use std::time::SystemTime;
 
-use aws_sdk_s3::{
-    error::SdkError,
-    operation::{RequestId, RequestIdExt, list_multipart_uploads::ListMultipartUploadsError},
-};
-use aws_smithy_types::{DateTime, error::metadata::ProvideErrorMetadata};
-use summer::extractor::{Component, Config};
-use summer_job::cron;
+use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::operation::list_multipart_uploads::ListMultipartUploadsError;
+use aws_sdk_s3::operation::{RequestId, RequestIdExt};
+use aws_smithy_types::DateTime;
+use aws_smithy_types::error::metadata::ProvideErrorMetadata;
+use summer_admin_macros::job_handler;
+use summer_job_dynamic::dto::CreateJobDto;
+use summer_job_dynamic::enums::ScheduleType;
+use summer_job_dynamic::{JobContext, JobError, JobResult};
+use summer_plugins::s3::S3Config;
 use tracing::{error, info};
 
-use summer_plugins::s3::S3Config;
+pub const HANDLER_NAME: &str = "summer_system::s3_multipart_cleanup";
 
-/// 每小时整点执行：扫描并清理过期的分片上传碎片
-#[cron("0 0 * * * *")]
-async fn s3_multipart_cleanup(
-    Component(s3): Component<aws_sdk_s3::Client>,
-    Config(config): Config<S3Config>,
-) {
+/// 内置任务默认配置：每小时整点扫描清理过期分片上传。启动期 import 到 DB；
+/// 已存在记录时**不**覆盖（运维改的 cron / 启停以 DB 为准）。
+fn default_dto() -> CreateJobDto {
+    CreateJobDto {
+        name: "s3-multipart-cleanup".to_string(),
+        group_name: Some("system".to_string()),
+        description: Some("扫描并清理过期的 S3 分片上传碎片".to_string()),
+        handler: HANDLER_NAME.to_string(),
+        schedule_type: ScheduleType::Cron,
+        cron_expr: Some("0 0 * * * *".to_string()),
+        interval_ms: None,
+        fire_time: None,
+        params_json: None,
+        script: None,
+        script_engine: None,
+        enabled: Some(true),
+        blocking: None,
+        misfire: None,
+        timeout_ms: Some(0),
+        retry_max: Some(0),
+        retry_backoff: None,
+        unique_key: None,
+        tenant_id: None,
+    }
+}
+
+inventory::submit!(summer_job_dynamic::BuiltinJob {
+    dto_factory: default_dto,
+});
+
+#[job_handler("summer_system::s3_multipart_cleanup")]
+async fn s3_multipart_cleanup(ctx: JobContext) -> JobResult {
+    let s3: aws_sdk_s3::Client = ctx.component();
+    let config = ctx.config::<S3Config>()?;
+
     let now = DateTime::from(SystemTime::now());
     let cutoff = DateTime::from_secs(now.secs() - config.multipart_max_age as i64);
     let bucket = &config.bucket;
 
     info!("开始清理过期分片上传");
 
-    match cleanup_stale_multipart_uploads(&s3, bucket, &cutoff).await {
-        Ok(count) if count > 0 => {
-            info!("清理了 {} 个过期分片上传", count);
-        }
-        Ok(_) => {
-            info!("未发现需要清理的过期分片上传");
-        }
-        Err(e) => {
-            let service_error = e.as_service_error();
-            error!(
-                sdk_error = %e,
-                sdk_error_debug = ?e,
-                http_status = ?e.raw_response().map(|raw| raw.status().as_u16()),
-                aws_error_code = ?service_error.and_then(|err| err.code()),
-                aws_error_message = ?service_error.and_then(|err| err.message()),
-                request_id = ?e.request_id(),
-                extended_request_id = ?e.extended_request_id(),
-                source_error = ?service_error.and_then(|err| err.source().map(ToString::to_string)),
-                "分片上传清理任务失败"
-            );
-        }
+    let count = cleanup_stale_multipart_uploads(&s3, bucket, &cutoff)
+        .await
+        .map_err(|e| JobError::Handler(anyhow::Error::new(e)))?;
+
+    if count > 0 {
+        info!("清理了 {} 个过期分片上传", count);
+    } else {
+        info!("未发现需要清理的过期分片上传");
     }
+    Ok(serde_json::json!({"aborted": count}))
 }
 
-/// 扫描并清理过期的分片上传
 async fn cleanup_stale_multipart_uploads(
     s3: &aws_sdk_s3::Client,
     bucket: &str,

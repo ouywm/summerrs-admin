@@ -6,6 +6,7 @@ version = "0.0.1"
 [dependencies]
 summer = { workspace = true }
 summer-job = { workspace = true }
+summer-job-dynamic = { workspace = true }
 summer-mail = { workspace = true }
 summer-redis = { workspace = true }
 summer-sea-orm = { workspace = true, features = [

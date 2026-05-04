@@ -1,0 +1,81 @@
+[
+  {
+    "children": [
+      {
+        "component": "/scheduler/job",
+        "meta": {
+          "authList": [
+            {
+              "authMark": "add",
+              "title": "新增"
+            },
+            {
+              "authMark": "edit",
+              "title": "编辑"
+            },
+            {
+              "authMark": "delete",
+              "title": "删除"
+            },
+            {
+              "authMark": "toggle",
+              "title": "启停"
+            },
+            {
+              "authMark": "trigger",
+              "title": "触发"
+            },
+            {
+              "authMark": "batch",
+              "title": "批量"
+            },
+            {
+              "authMark": "dependency",
+              "title": "依赖"
+            },
+            {
+              "authMark": "dryrun",
+              "title": "试运行"
+            }
+          ],
+          "icon": "ri:task-line",
+          "keepAlive": true,
+          "title": "menus.scheduler.job"
+        },
+        "name": "SchedulerJob",
+        "path": "job"
+      },
+      {
+        "component": "/scheduler/run",
+        "meta": {
+          "icon": "ri:history-line",
+          "keepAlive": true,
+          "title": "menus.scheduler.run"
+        },
+        "name": "SchedulerRun",
+        "path": "run"
+      },
+      {
+        "component": "/scheduler/instance",
+        "meta": {
+          "icon": "ri:server-line",
+          "keepAlive": true,
+          "title": "menus.scheduler.instance"
+        },
+        "name": "SchedulerInstance",
+        "path": "instance"
+      }
+    ],
+    "component": "/index/index",
+    "meta": {
+      "icon": "ri:timer-line",
+      "roles": [
+        "R_SUPER",
+        "R_ADMIN"
+      ],
+      "title": "menus.scheduler.title"
+    },
+    "name": "Scheduler",
+    "path": "/scheduler"
+  }
+]

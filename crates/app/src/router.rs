@@ -17,14 +17,16 @@ use tower_http::catch_panic::CatchPanicLayer;
 ///   `ApiKeyStrategy`(flavor 硬绑) + `panic_guard`(flavor 硬绑) + 共享 `RequestId`
 /// - `summer-ai-admin::router_with_layers()` —— 挂 JWT
 /// - `summer-system::router_with_layers()` —— 挂 JWT
+/// - `summer-job-dynamic::router_with_layers()` —— 动态调度器 admin API,挂 JWT
 /// - `auto_grouped_routers().default` —— 没显式 group 的 handler
 ///
-/// 全局 [`CatchPanicLayer`] 仅覆盖 admin / system / default 域,它们的 panic 转 RFC 7807。
-/// relay 域的 panic 由各家自己的 `*_panic_guard` 在 `CatchPanicLayer` 之前抓走,输出
-/// OpenAI / Claude / Gemini 风格的错误 JSON。
+/// 全局 [`CatchPanicLayer`] 仅覆盖 admin / system / scheduler / default 域,
+/// 它们的 panic 转 RFC 7807。relay 域的 panic 由各家自己的 `*_panic_guard` 在
+/// `CatchPanicLayer` 之前抓走,输出 OpenAI / Claude / Gemini 风格的错误 JSON。
 pub fn router() -> Router {
-    let api_router =
-        summer_system::router_with_layers().merge(summer_ai_admin::router_with_layers());
+    let api_router = summer_system::router_with_layers()
+        .merge(summer_ai_admin::router_with_layers())
+        .merge(summer_job_dynamic::router_with_layers());
 
     let default_router = auto_grouped_routers().default;
 
