@@ -11,6 +11,7 @@ use crate::convert::ingress::{ClaudeIngress, IngressFormat};
 use crate::error::ClaudeResult;
 use crate::extract::RelayRequestMeta;
 use crate::pipeline::{EngineOutcome, PipelineCall};
+use crate::service::backoff::RetryConfig;
 use crate::service::channel_store::ChannelStore;
 use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::sse_response;
@@ -20,7 +21,7 @@ use summer_ai_core::types::ingress_wire::claude::ClaudeMessagesRequest;
 use summer_common::response::Json;
 use summer_web::axum::body::Body;
 use summer_web::axum::response::{IntoResponse, Response};
-use summer_web::extractor::Component;
+use summer_web::extractor::{Component, Config};
 use summer_web::post;
 
 /// `POST /v1/messages`
@@ -34,6 +35,7 @@ pub async fn messages(
     Component(cooldown): Component<CooldownService>,
     Component(billing): Component<BillingService>,
     Component(price_resolver): Component<PriceResolver>,
+    Config(retry): Config<RetryConfig>,
     meta: RelayRequestMeta,
     Json(claude_req): Json<ClaudeMessagesRequest>,
 ) -> ClaudeResult<Response> {
@@ -59,6 +61,7 @@ pub async fn messages(
         cooldown,
         billing,
         price_resolver,
+        retry,
     };
 
     match call.execute().await? {

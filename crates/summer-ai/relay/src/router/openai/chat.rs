@@ -15,6 +15,7 @@ use crate::convert::ingress::{IngressFormat, OpenAIIngress};
 use crate::error::OpenAIResult;
 use crate::extract::RelayRequestMeta;
 use crate::pipeline::{EngineOutcome, PipelineCall};
+use crate::service::backoff::RetryConfig;
 use crate::service::channel_store::ChannelStore;
 use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::sse_response;
@@ -24,7 +25,7 @@ use summer_ai_core::ChatRequest;
 use summer_web::axum::Json;
 use summer_web::axum::body::Body;
 use summer_web::axum::response::{IntoResponse, Response};
-use summer_web::extractor::Component;
+use summer_web::extractor::{Component, Config};
 use summer_web::post;
 
 /// `POST /v1/chat/completions`
@@ -38,6 +39,7 @@ pub async fn chat_completions(
     Component(cooldown): Component<CooldownService>,
     Component(billing): Component<BillingService>,
     Component(price_resolver): Component<PriceResolver>,
+    Config(retry): Config<RetryConfig>,
     meta: RelayRequestMeta,
     Json(request): Json<ChatRequest>,
 ) -> OpenAIResult<Response> {
@@ -63,6 +65,7 @@ pub async fn chat_completions(
         cooldown,
         billing,
         price_resolver,
+        retry,
     };
 
     match call.execute().await? {

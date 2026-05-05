@@ -19,6 +19,7 @@ use crate::convert::ingress::{GeminiIngress, IngressFormat};
 use crate::error::{GeminiResult, RelayError};
 use crate::extract::RelayRequestMeta;
 use crate::pipeline::{EngineOutcome, PipelineCall};
+use crate::service::backoff::RetryConfig;
 use crate::service::channel_store::ChannelStore;
 use crate::service::cooldown::CooldownService;
 use crate::service::stream_driver::{collect_sse_to_json_array, sse_response};
@@ -31,7 +32,7 @@ use summer_web::axum::Json;
 use summer_web::axum::body::Body;
 use summer_web::axum::extract::{Path, Query};
 use summer_web::axum::response::{IntoResponse, Response};
-use summer_web::extractor::Component;
+use summer_web::extractor::{Component, Config};
 use summer_web::post;
 
 /// `?alt=sse` 的 query 参数。
@@ -61,6 +62,7 @@ pub async fn generate_content(
     Component(cooldown): Component<CooldownService>,
     Component(billing): Component<BillingService>,
     Component(price_resolver): Component<PriceResolver>,
+    Config(retry): Config<RetryConfig>,
     meta: RelayRequestMeta,
     Json(gemini_req): Json<GeminiGenerateContentRequest>,
 ) -> GeminiResult<Response> {
@@ -96,6 +98,7 @@ pub async fn generate_content(
         cooldown,
         billing,
         price_resolver,
+        retry,
     };
 
     match call.execute().await? {

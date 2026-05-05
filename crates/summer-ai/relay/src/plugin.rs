@@ -58,11 +58,10 @@ impl Plugin for SummerAiRelayPlugin {
         );
     }
 
-    fn name(&self) -> &str {
-        "summer_ai_relay::SummerAiRelayPlugin"
-    }
-
     fn dependencies(&self) -> Vec<&str> {
-        vec!["summer_sea_orm::SeaOrmPlugin", "summer_redis::RedisPlugin"]
+        vec![
+            std::any::type_name::<summer_redis::RedisPlugin>(),
+            std::any::type_name::<summer_sea_orm::SeaOrmPlugin>(),
+        ]
     }
 }

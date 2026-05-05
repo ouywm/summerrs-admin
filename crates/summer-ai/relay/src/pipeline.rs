@@ -68,6 +68,7 @@ use crate::auth::AiTokenContext;
 use crate::context::{ClientRequestMeta, RelayContext};
 use crate::convert::ingress::{IngressConverter, IngressCtx, IngressFormat};
 use crate::error::{RelayError, RelayResult, RetryKind};
+use crate::service::backoff::{self, RetryConfig};
 use crate::service::channel_store::{Candidate, ChannelStore};
 use crate::service::chat;
 use crate::service::cooldown::CooldownService;
@@ -116,10 +117,12 @@ pub struct PipelineCall<I: IngressConverter> {
     pub tracking: TrackingService,
     /// 冷却服务（失败后写 `rate_limited_until` / `overload_until` / `disabled_api_keys`）。
     pub cooldown: CooldownService,
-    /// 计费引擎（reserve/settle/refund）。`unlimited_quota` token 自动跳过。
+    /// 计费引擎(reserve/settle/refund)。`unlimited_quota` token 自动跳过。
     pub billing: BillingService,
-    /// 价格解析器（`ai.channel_model_price` + `ai.group_ratio`）。
+    /// 价格解析器(`ai.channel_model_price` + `ai.group_ratio`)。
     pub price_resolver: PriceResolver,
+    /// P9 韧性配置:候选数上限 + 退避参数。从 `[relay-resilience]` 段加载。
+    pub retry: RetryConfig,
 }
 
 /// 客户端响应的抽象 —— 交给 handler 包装成各自协议的 `Response`。
@@ -158,6 +161,7 @@ where
             cooldown,
             billing,
             price_resolver,
+            retry,
         } = self;
 
         let ctx = RelayContext::begin(
@@ -301,6 +305,7 @@ where
                 tracking,
                 cooldown,
                 billing_guard,
+                retry,
             )
             .await
         }
@@ -325,6 +330,7 @@ async fn execute_non_stream_with_retry<I>(
     tracking: TrackingService,
     cooldown: CooldownService,
     mut billing_guard: Option<BillingGuard>,
+    retry: RetryConfig,
 ) -> RelayResult<EngineOutcome<I>>
 where
     I: IngressConverter + Send + 'static,
@@ -333,8 +339,27 @@ where
     let mut attempts: Vec<AttemptRecord> = Vec::new();
     let mut last_err: Option<RelayError> = None;
 
-    for (idx, candidate) in candidates.into_iter().enumerate() {
+    // P9 韧性层:候选数按 `max_attempts` 截断,避免极端情况(比如 50 个候选全挂)
+    // 把 retry 拉到 50 次。截断在迭代器层完成,后续逻辑零感知。
+    let max_attempts = retry.max_attempts.max(1) as usize;
+    let candidate_iter = candidates.into_iter().take(max_attempts).enumerate();
+
+    for (idx, candidate) in candidate_iter {
         let attempt_no = (idx + 1) as i32;
+
+        // P9 韧性层:第一个候选立即试,从第二个开始按指数退避 + 抖动 sleep,
+        // 避免上游瞬时压力雪崩到下一家。
+        if idx > 0 {
+            let delay = backoff::backoff_delay((idx - 1) as u32, &retry);
+            tracing::debug!(
+                request_id = %ctx.request_id,
+                attempt_no,
+                delay_ms = delay.as_millis() as u64,
+                "retry backoff before next candidate"
+            );
+            tokio::time::sleep(delay).await;
+        }
+
         let attempt_start = Instant::now();
         let attempt_started_at = chrono::Utc::now().fixed_offset();
 

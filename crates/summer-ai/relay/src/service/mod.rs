@@ -6,6 +6,7 @@
 //!
 //! 后续 Phase 会加：`embeddings` / `audio` / `images` / `responses` / `rerank`。
 
+pub mod backoff;
 pub mod channel_store;
 pub mod chat;
 pub mod cooldown;

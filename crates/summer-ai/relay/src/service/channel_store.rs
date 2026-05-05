@@ -23,7 +23,6 @@
 //! 当前依赖 TTL 兜底；后续接入 `summer-stream` 后由 admin CRUD 发事件主动失效。
 
 use crate::error::RelayError;
-use crate::service::key_picker::{KeyPicker, RandomKeyPicker};
 use crate::service::oauth::openai_token_provider::OpenAiTokenProvider;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use summer::plugin::Service;
@@ -94,15 +93,16 @@ pub struct ChannelStore {
 }
 
 impl ChannelStore {
-    /// 按逻辑模型名列出全部可用候选（channel × account × key），按 P9 retry 期望的顺序排列。
+    /// 按逻辑模型名列出全部可用候选(channel × account × key),按 P9 retry 期望的顺序排列。
     ///
-    /// 排列规则：
-    /// 1. channel 按 `priority` 降序分组；同组内按 `weight` 加权随机**洗牌**（不是只挑一个）
+    /// 排列规则:
+    /// 1. channel 按 `priority` 降序分组;同组内按 `weight` 加权随机**洗牌**(不是只挑一个)
     /// 2. 每个 channel 下再按同规则展开 `account`——过滤掉 `rate_limited_until` / `overload_until`
     ///    未过期的 account
-    /// 3. 每个 account 用 `RandomKeyPicker` 从 `enabled_api_keys()` 里挑**一个** key 作为该候选的凭证
+    /// 3. 每个 account 把 `enabled_api_keys()` **全部展开**为多个候选——P9 韧性层语义:
+    ///    SameChannel 错(典型 429)切到同 account 的下一个 key 重试,而不是直接换 channel
     ///
-    /// 返 `Vec<Candidate>`，可能为空（表示路由空 —— handler 返 `NoAvailableChannel`）。
+    /// 返 `Vec<Candidate>`,可能为空(表示路由空 —— handler 返 `NoAvailableChannel`)。
     pub async fn candidates(
         &self,
         logical_model: &str,
@@ -123,9 +123,8 @@ impl ChannelStore {
             return Ok(Vec::new());
         }
 
-        // 组装 Candidate 顺序：channel 洗牌 × account 洗牌 × key 随机单选
+        // 组装 Candidate 顺序:channel 洗牌 × account 洗牌 × 同 account 内 key 全展开
         let channel_order = weighted_shuffle(channels, |c| (c.priority, c.weight));
-        let picker = RandomKeyPicker;
         let now = chrono::Utc::now().fixed_offset();
 
         let mut out: Vec<Candidate> = Vec::new();
@@ -142,18 +141,40 @@ impl ChannelStore {
                 .collect();
             let account_order = weighted_shuffle(alive, |a| (a.priority, a.weight));
             for account in account_order {
-                if let Some(selected_key) = select_account_key(&channel, &account, &picker) {
-                    out.push(Candidate {
-                        channel: channel.clone(),
-                        account,
-                        selected_key,
-                    });
-                } else {
+                // OAuth account: selected_key 是空串(凭证从 access_token 拿,见 resolve_auth_data)。
+                // 当前只有 OpenAI 渠道支持 OAuth credentials。
+                if account.is_oauth() {
+                    if channel.channel_type == channel::ChannelType::OpenAi {
+                        out.push(Candidate {
+                            channel: channel.clone(),
+                            account: account.clone(),
+                            selected_key: String::new(),
+                        });
+                    } else {
+                        tracing::debug!(
+                            account_id = account.id,
+                            channel_type = ?channel.channel_type,
+                            "oauth credentials only supported for OpenAI channels, skipping"
+                        );
+                    }
+                    continue;
+                }
+
+                let keys = account.enabled_api_keys();
+                if keys.is_empty() {
                     tracing::debug!(
                         account_id = account.id,
                         channel_id = account.channel_id,
                         "account has no enabled api key, skipping"
                     );
+                    continue;
+                }
+                for key in keys {
+                    out.push(Candidate {
+                        channel: channel.clone(),
+                        account: account.clone(),
+                        selected_key: key,
+                    });
                 }
             }
         }
@@ -545,19 +566,6 @@ pub fn build_service_target_with_auth(
     Ok(target)
 }
 
-fn select_account_key<K: KeyPicker>(
-    channel: &channel::Model,
-    account: &channel_account::Model,
-    picker: &K,
-) -> Option<String> {
-    if account.is_oauth() {
-        return (channel.channel_type == channel::ChannelType::OpenAi).then(String::new);
-    }
-
-    let enabled_keys = account.enabled_api_keys();
-    picker.pick(&enabled_keys).map(ToOwned::to_owned)
-}
-
 // ---------------------------------------------------------------------------
 // weighted_shuffle —— 纯函数（测试覆盖）
 // ---------------------------------------------------------------------------
@@ -812,30 +820,6 @@ mod tests {
         .unwrap();
         assert_eq!(target.actual_model(), "x");
         assert_eq!(target.auth.resolve().unwrap().as_deref(), Some("at"));
-    }
-
-    #[test]
-    fn selected_key_for_oauth_account_is_empty_string() {
-        let channel = mk_channel(
-            1,
-            vec!["x"],
-            1,
-            100,
-            channel::ChannelType::OpenAi,
-            "https://a",
-        );
-        let mut account = mk_account(10, 1, "sk-a", 1, 100);
-        account.credential_type = "oauth".into();
-        account.credentials = serde_json::json!({
-            "access_token": "at",
-            "refresh_token": "rt",
-            "id_token": "id",
-            "expires_at": "2026-04-20T12:00:00Z",
-            "client_id": "app_test"
-        });
-
-        let selected = select_account_key(&channel, &account, &RandomKeyPicker);
-        assert_eq!(selected.as_deref(), Some(""));
     }
 
     #[test]
