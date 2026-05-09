@@ -9,6 +9,3 @@ pub mod socket_session_gc;
 
 #[cfg(debug_assertions)]
 pub mod test_panic;
-
-#[cfg(debug_assertions)]
-pub mod test_blocking;

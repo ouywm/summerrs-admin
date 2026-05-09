@@ -11,10 +11,10 @@ use crate::dto::{
     BatchFailure, BatchResultVo, CreateJobDto, HandlerVo, JobDetailVo, JobQueryDto, JobRunQueryDto,
     JobRunVo, JobVo, UpdateJobDto,
 };
-use crate::engine::SchedulerHandle;
 use crate::entity::{sys_job, sys_job_run};
 use crate::enums::TriggerType;
 use crate::registry::HandlerRegistry;
+use crate::scheduler::SchedulerHandle;
 
 #[derive(Clone, Service)]
 pub struct JobService {
@@ -165,22 +165,7 @@ impl JobService {
             .await
             .context("查询任务失败")?
             .ok_or_else(|| ApiErrors::NotFound(format!("任务不存在: {id}")))?;
-        let last_runs = crate::engine::fetch_last_runs(&self.db, &[id])
-            .await
-            .context("查询最近执行记录失败")?;
-        let last = last_runs.get(&id);
-        let next_fire_at = crate::engine::compute_next_fire(
-            &model,
-            last.map(|l| l.scheduled_at),
-            last.and_then(|l| l.finished_at),
-            last.map(|l| l.state),
-        );
-        Ok(JobDetailVo::from_model_with_runtime(
-            model,
-            next_fire_at,
-            last.map(|l| l.state),
-            last.and_then(|l| l.finished_at),
-        ))
+        Ok(JobDetailVo::from_model(model))
     }
 
     pub async fn list_jobs(
@@ -194,37 +179,7 @@ impl JobService {
             .page(&self.db, &pagination)
             .await
             .context("分页查询任务失败")?;
-
-        // 批量取最近一次 run，给每个 job 算 nextFireAt + lastRun
-        let ids: Vec<i64> = page.content.iter().map(|j| j.id).collect();
-        let last_runs = crate::engine::fetch_last_runs(&self.db, &ids)
-            .await
-            .context("批量查询最近执行记录失败")?;
-
-        Ok(page.map(|m| {
-            let last = last_runs.get(&m.id);
-            let next_fire_at = crate::engine::compute_next_fire(
-                &m,
-                last.map(|l| l.scheduled_at),
-                last.and_then(|l| l.finished_at),
-                last.map(|l| l.state),
-            );
-            JobVo::from_model_with_runtime(
-                m,
-                next_fire_at,
-                last.map(|l| l.state),
-                last.and_then(|l| l.finished_at),
-            )
-        }))
-    }
-
-    pub async fn list_all_enabled(&self) -> ApiResult<Vec<sys_job::Model>> {
-        sys_job::Entity::find()
-            .filter(sys_job::Column::Enabled.eq(true))
-            .all(&self.db)
-            .await
-            .context("查询启用任务失败")
-            .map_err(ApiErrors::Internal)
+        Ok(page.map(JobVo::from_model))
     }
 
     pub async fn import_builtin_if_absent(&self, dto: CreateJobDto) -> ApiResult<()> {
@@ -270,25 +225,6 @@ impl JobService {
                     job_id = model.id,
                     "register_job failed after job upsert"
                 );
-                return;
-            }
-            match crate::engine::evaluate_misfire(&self.db, model).await {
-                Ok(decision) if decision.should_fire => {
-                    tracing::info!(
-                        job_id = model.id,
-                        missed = decision.missed_count,
-                        "job upsert: misfire FIRE_NOW catch-up"
-                    );
-                    let scheduler = scheduler.clone();
-                    let model = model.clone();
-                    tokio::spawn(async move {
-                        scheduler.fire_misfire(&model).await;
-                    });
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(?error, job_id = model.id, "misfire evaluate failed");
-                }
             }
         } else {
             scheduler.remove_job(model.id).await;

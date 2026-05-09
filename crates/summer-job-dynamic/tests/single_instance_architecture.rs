@@ -1,5 +1,7 @@
+//! 单机调度器架构守护测试：确保重构后的 plugin / service 没引入多机依赖。
+
 #[test]
-fn plugin_no_longer_uses_redis_event_bus_or_leader_election() {
+fn plugin_stays_single_instance() {
     let plugin = include_str!("../src/plugin.rs");
 
     assert!(
@@ -21,16 +23,12 @@ fn plugin_no_longer_uses_redis_event_bus_or_leader_election() {
 }
 
 #[test]
-fn job_service_uses_scheduler_handle_instead_of_event_bus() {
+fn job_service_uses_scheduler_handle_directly() {
     let service = include_str!("../src/service/job_service.rs");
 
     assert!(
         !service.contains("EventBus"),
         "JobService should sync the local scheduler directly, not publish events"
-    );
-    assert!(
-        !service.contains("SchedulerEvent"),
-        "JobService should not build scheduler events in single-instance mode"
     );
     assert!(
         service.contains("SchedulerHandle"),

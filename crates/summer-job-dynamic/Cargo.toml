@@ -7,16 +7,12 @@ version = "0.0.1"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-croner = { workspace = true }
 futures = { workspace = true }
 inventory = { workspace = true }
-rand = { workspace = true }
-rhai = { workspace = true }
 schemars = { workspace = true, features = ["derive"] }
 sea-orm = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 summer = { workspace = true }
 summer-admin-macros = { workspace = true }
 summer-auth = { workspace = true }
@@ -33,7 +29,6 @@ sysinfo = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tokio-cron-scheduler = { workspace = true }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
 validator = { workspace = true, features = ["derive"] }
