@@ -6,10 +6,7 @@ use serde_json::Value as Json;
 use validator::Validate;
 
 use crate::entity::{sys_job, sys_job_run};
-use crate::enums::{
-    BlockingStrategy, MisfireStrategy, RetryBackoff, RunState, ScheduleType, ScriptEngine,
-    TriggerType,
-};
+use crate::enums::{RunState, ScheduleType, TriggerType};
 
 // ---------------------------------------------------------------------------
 // 任务定义 DTO
@@ -30,15 +27,9 @@ pub struct CreateJobDto {
     pub interval_ms: Option<i64>,
     pub fire_time: Option<NaiveDateTime>,
     pub params_json: Option<Json>,
-    pub script: Option<String>,
-    pub script_engine: Option<ScriptEngine>,
     pub enabled: Option<bool>,
-    pub blocking: Option<BlockingStrategy>,
-    pub misfire: Option<MisfireStrategy>,
     pub timeout_ms: Option<i64>,
     pub retry_max: Option<i32>,
-    pub retry_backoff: Option<RetryBackoff>,
-    pub unique_key: Option<String>,
     pub tenant_id: Option<i64>,
 }
 
@@ -56,15 +47,9 @@ impl CreateJobDto {
             interval_ms: Set(self.interval_ms),
             fire_time: Set(self.fire_time),
             params_json: Set(self.params_json.unwrap_or(serde_json::json!({}))),
-            script: Set(self.script),
-            script_engine: Set(self.script_engine),
             enabled: Set(self.enabled.unwrap_or(true)),
-            blocking: Set(self.blocking.unwrap_or(BlockingStrategy::Serial)),
-            misfire: Set(self.misfire.unwrap_or(MisfireStrategy::FireNow)),
             timeout_ms: Set(self.timeout_ms.unwrap_or(0)),
             retry_max: Set(self.retry_max.unwrap_or(0)),
-            retry_backoff: Set(self.retry_backoff.unwrap_or(RetryBackoff::Exponential)),
-            unique_key: Set(self.unique_key),
             version: Set(0),
             created_by: Set(created_by),
             create_time: NotSet,
@@ -86,19 +71,13 @@ pub struct UpdateJobDto {
     pub interval_ms: Option<Option<i64>>,
     pub fire_time: Option<Option<NaiveDateTime>>,
     pub params_json: Option<Json>,
-    pub script: Option<Option<String>>,
-    pub script_engine: Option<Option<ScriptEngine>>,
     pub enabled: Option<bool>,
-    pub blocking: Option<BlockingStrategy>,
-    pub misfire: Option<MisfireStrategy>,
     pub timeout_ms: Option<i64>,
     pub retry_max: Option<i32>,
-    pub retry_backoff: Option<RetryBackoff>,
-    pub unique_key: Option<Option<String>>,
 }
 
 impl UpdateJobDto {
-    /// 把 dto 中提供的字段应用到 ActiveModel；同时把 version 自增 1（乐观锁 + 触发 reload 事件）。
+    /// 把 dto 中提供的字段应用到 ActiveModel；version 自增 1（乐观锁）。
     pub fn apply_to(self, active: &mut sys_job::ActiveModel, current_version: i64) {
         if let Some(v) = self.name {
             active.name = Set(v);
@@ -127,32 +106,14 @@ impl UpdateJobDto {
         if let Some(v) = self.params_json {
             active.params_json = Set(v);
         }
-        if let Some(v) = self.script {
-            active.script = Set(v);
-        }
-        if let Some(v) = self.script_engine {
-            active.script_engine = Set(v);
-        }
         if let Some(v) = self.enabled {
             active.enabled = Set(v);
-        }
-        if let Some(v) = self.blocking {
-            active.blocking = Set(v);
-        }
-        if let Some(v) = self.misfire {
-            active.misfire = Set(v);
         }
         if let Some(v) = self.timeout_ms {
             active.timeout_ms = Set(v);
         }
         if let Some(v) = self.retry_max {
             active.retry_max = Set(v);
-        }
-        if let Some(v) = self.retry_backoff {
-            active.retry_backoff = Set(v);
-        }
-        if let Some(v) = self.unique_key {
-            active.unique_key = Set(v);
         }
         active.version = Set(current_version + 1);
     }
@@ -272,24 +233,12 @@ pub struct JobVo {
     pub schedule_type: ScheduleType,
     pub cron_expr: Option<String>,
     pub enabled: bool,
-    pub blocking: BlockingStrategy,
     pub create_time: NaiveDateTime,
     pub update_time: NaiveDateTime,
-    /// 下次触发时间（enabled=false 或 OneShot 已触发返回 null）
-    pub next_fire_at: Option<NaiveDateTime>,
-    /// 最近一次执行的状态
-    pub last_run_state: Option<RunState>,
-    /// 最近一次执行的完成时间
-    pub last_run_finished_at: Option<NaiveDateTime>,
 }
 
 impl JobVo {
-    pub fn from_model_with_runtime(
-        m: sys_job::Model,
-        next_fire_at: Option<NaiveDateTime>,
-        last_run_state: Option<RunState>,
-        last_run_finished_at: Option<NaiveDateTime>,
-    ) -> Self {
+    pub fn from_model(m: sys_job::Model) -> Self {
         Self {
             id: m.id,
             tenant_id: m.tenant_id,
@@ -299,17 +248,9 @@ impl JobVo {
             schedule_type: m.schedule_type,
             cron_expr: m.cron_expr,
             enabled: m.enabled,
-            blocking: m.blocking,
             create_time: m.create_time,
             update_time: m.update_time,
-            next_fire_at,
-            last_run_state,
-            last_run_finished_at,
         }
-    }
-
-    pub fn from_model(m: sys_job::Model) -> Self {
-        Self::from_model_with_runtime(m, None, None, None)
     }
 }
 
@@ -318,36 +259,11 @@ impl JobVo {
 pub struct JobDetailVo {
     #[serde(flatten)]
     pub model: sys_job::Model,
-    /// 下次触发时间（enabled=false 或 OneShot 已触发返回 null）
-    pub next_fire_at: Option<NaiveDateTime>,
-    /// 最近一次执行的状态
-    pub last_run_state: Option<RunState>,
-    /// 最近一次执行的完成时间
-    pub last_run_finished_at: Option<NaiveDateTime>,
 }
 
 impl JobDetailVo {
     pub fn from_model(m: sys_job::Model) -> Self {
-        Self {
-            model: m,
-            next_fire_at: None,
-            last_run_state: None,
-            last_run_finished_at: None,
-        }
-    }
-
-    pub fn from_model_with_runtime(
-        m: sys_job::Model,
-        next_fire_at: Option<NaiveDateTime>,
-        last_run_state: Option<RunState>,
-        last_run_finished_at: Option<NaiveDateTime>,
-    ) -> Self {
-        Self {
-            model: m,
-            next_fire_at,
-            last_run_state,
-            last_run_finished_at,
-        }
+        Self { model: m }
     }
 }
 
@@ -369,46 +285,6 @@ impl JobRunVo {
 #[serde(rename_all = "camelCase")]
 pub struct HandlerVo {
     pub name: String,
-}
-
-// ---------------------------------------------------------------------------
-// 任务依赖 DTO
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, JsonSchema, Validate)]
-#[serde(rename_all = "camelCase")]
-pub struct AddDependencyDto {
-    pub downstream_id: i64,
-    #[serde(default = "default_on_state")]
-    pub on_state: crate::enums::DependencyOnState,
-}
-
-fn default_on_state() -> crate::enums::DependencyOnState {
-    crate::enums::DependencyOnState::Succeeded
-}
-
-/// 依赖关系展示（admin 列表用）：附带对端 job 的 name / groupName 方便前端渲染
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct DependencyVo {
-    pub id: i64,
-    pub upstream_id: i64,
-    pub upstream_name: String,
-    pub downstream_id: i64,
-    pub downstream_name: String,
-    pub on_state: crate::enums::DependencyOnState,
-    pub enabled: bool,
-    pub create_time: NaiveDateTime,
-}
-
-/// 双向依赖列表（GET /jobs/{id}/dependencies 返回）
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct JobDependencyListVo {
-    /// 出向：本 job 作为 upstream
-    pub outgoing: Vec<DependencyVo>,
-    /// 入向：本 job 作为 downstream
-    pub incoming: Vec<DependencyVo>,
 }
 
 // ---------------------------------------------------------------------------

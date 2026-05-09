@@ -2,12 +2,10 @@
 //!
 //! 路径前缀由 app 层 `nest("/api", ...)` 决定，本 crate 写相对路径。所有 handler
 //! 通过 inventory 自动注册到 `summer-job-dynamic` group，由 `router_with_layers()`
-//! 统一挂 JWT。开发期暂未挂 `#[has_perm]`，上线前需补回权限校验。
-
-use std::sync::Arc;
+//! 统一挂 JWT。
 
 use summer_auth::LoginUser;
-use summer_common::error::{ApiErrors, ApiResult};
+use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
 use summer_sea_orm::pagination::{Page, Pagination};
@@ -15,14 +13,13 @@ use summer_web::extractor::Component;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 use crate::dto::{
-    AddDependencyDto, CreateJobDto, HandlerVo, JobDependencyListVo, JobDetailVo, JobQueryDto,
-    JobRunQueryDto, JobRunVo, JobVo, TriggerJobDto, UpdateJobDto,
+    CreateJobDto, HandlerVo, JobDetailVo, JobQueryDto, JobRunQueryDto, JobRunVo, JobVo,
+    TriggerJobDto, UpdateJobDto,
 };
-use crate::engine::{MetricsSnapshot, SchedulerMetrics};
-use crate::service::{DependencyService, JobService};
+use crate::service::JobService;
 
 // ---------------------------------------------------------------------------
-// handler 注册表（registry 中可用 handler 列表，给前端下拉用）
+// handler 注册表（给前端下拉用）
 // ---------------------------------------------------------------------------
 
 #[get_api("/scheduler/handlers")]
@@ -128,48 +125,6 @@ pub async fn get_run_detail(
 }
 
 // ---------------------------------------------------------------------------
-// 监控
-// ---------------------------------------------------------------------------
-
-#[get_api("/scheduler/metrics")]
-pub async fn get_metrics(
-    Component(metrics): Component<Arc<SchedulerMetrics>>,
-) -> ApiResult<Json<MetricsSnapshot>> {
-    Ok(Json(metrics.snapshot()))
-}
-
-// ---------------------------------------------------------------------------
-// 任务依赖（A 跑完成功 → 自动触发 B）
-// ---------------------------------------------------------------------------
-
-#[get_api("/scheduler/jobs/{id}/dependencies")]
-pub async fn list_job_dependencies(
-    Component(svc): Component<DependencyService>,
-    Path(id): Path<i64>,
-) -> ApiResult<Json<JobDependencyListVo>> {
-    Ok(Json(svc.list_for_job(id).await?))
-}
-
-#[post_api("/scheduler/jobs/{id}/dependencies")]
-pub async fn add_job_dependency(
-    Component(svc): Component<DependencyService>,
-    Path(id): Path<i64>,
-    ValidatedJson(dto): ValidatedJson<AddDependencyDto>,
-) -> ApiResult<Json<i64>> {
-    let model = svc.add(id, dto.downstream_id, dto.on_state).await?;
-    Ok(Json(model.id))
-}
-
-#[delete_api("/scheduler/jobs/{id}/dependencies/{dep_id}")]
-pub async fn delete_job_dependency(
-    Component(svc): Component<DependencyService>,
-    Path((_id, dep_id)): Path<(i64, i64)>,
-) -> ApiResult<Json<()>> {
-    svc.remove(dep_id).await?;
-    Ok(Json(()))
-}
-
-// ---------------------------------------------------------------------------
 // 批量操作（前端列表多选用）
 // ---------------------------------------------------------------------------
 
@@ -199,56 +154,4 @@ pub async fn batch_trigger_jobs(
         svc.batch_trigger(dto.ids, Some(user.login_id.user_id))
             .await,
     ))
-}
-
-// ---------------------------------------------------------------------------
-// 脚本试运行（编辑器调试用）
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema, validator::Validate)]
-#[serde(rename_all = "camelCase")]
-pub struct ScriptDryrunDto {
-    /// 脚本引擎（当前只支持 "rhai"）
-    pub engine: String,
-    #[validate(length(min = 1, max = 100_000, message = "脚本长度必须 1-100000 字符"))]
-    pub script: String,
-    #[serde(default)]
-    pub params: serde_json::Value,
-    /// 超时毫秒，默认 5000，最大 30000
-    pub timeout_ms: Option<u64>,
-}
-
-#[post_api("/scheduler/script/dryrun")]
-pub async fn script_dryrun(
-    ValidatedJson(dto): ValidatedJson<ScriptDryrunDto>,
-) -> ApiResult<Json<crate::script::rhai_handler::DryrunResult>> {
-    if dto.engine != "rhai" {
-        return Err(ApiErrors::BadRequest(format!(
-            "暂不支持脚本引擎: {}（当前仅 rhai）",
-            dto.engine
-        )));
-    }
-    let result = crate::script::rhai_handler::dryrun(dto.script, dto.params, dto.timeout_ms).await;
-    Ok(Json(result))
-}
-
-// ---------------------------------------------------------------------------
-// 执行统计聚合（仪表盘 / 任务详情图表用）
-// ---------------------------------------------------------------------------
-
-#[get_api("/scheduler/stats/overview")]
-pub async fn stats_overview(
-    Component(svc): Component<crate::service::StatsService>,
-    Query(query): Query<crate::service::stats_service::StatsQuery>,
-) -> ApiResult<Json<crate::service::stats_service::StatsOverviewVo>> {
-    Ok(Json(svc.overview(query.period).await?))
-}
-
-#[get_api("/scheduler/jobs/{id}/stats")]
-pub async fn job_stats(
-    Component(svc): Component<crate::service::StatsService>,
-    Path(id): Path<i64>,
-    Query(query): Query<crate::service::stats_service::StatsQuery>,
-) -> ApiResult<Json<crate::service::stats_service::JobStatsVo>> {
-    Ok(Json(svc.job_stats(id, query.period).await?))
 }

@@ -1,26 +1,23 @@
 //! summer-job-dynamic
 //!
-//! 动态任务调度系统 —— 取代 `#[cron]` 硬编码模式，把任务定义放到 DB，支持网页 CRUD、
-//! 启停、手动触发、执行日志、失败重试、超时杀任务、阻塞 / 路由 / 分片策略。
+//! 单机动态任务调度系统 —— 任务定义存 DB，支持网页 CRUD、启停、手动触发、执行日志、
+//! 超时杀任务、失败重试（指数退避）、"上次还在跑就跳过"。
 //!
 //! 调度内核复用 `summer_job::JobPlugin` 已注册的 `tokio_cron_scheduler::JobScheduler`，
 //! 静态 `#[cron]` 任务和 DB 动态任务跑在同一个调度器实例里。
 //!
-//! handler 注册通过独立的 `JobHandlerEntry` inventory，宏 `#[job_handler("name")]` 把
-//! async fn 包成 `fn(JobContext) -> Future<JobResult>` 并注册到全局 registry，调度器
-//! 按 `sys_job.handler` 字段查表执行。
-//!
-//! 当前为 A1 阶段（核心骨架），DB / scheduler 同步 / CRUD / worker 留给 A2。
+//! handler 注册通过 inventory，宏 `#[job_handler("name")]` 把 async fn 包成
+//! `fn(JobContext) -> Future<JobResult>` 并注册到全局 registry，调度器按
+//! `sys_job.handler` 字段查表执行。
 
 pub mod context;
 pub mod dto;
-pub mod engine;
 pub mod entity;
 pub mod enums;
 pub mod plugin;
 pub mod registry;
 pub mod router;
-pub mod script;
+pub mod scheduler;
 pub mod service;
 
 pub use context::{JobContext, JobError, JobResult};

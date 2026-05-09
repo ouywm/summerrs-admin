@@ -33,15 +33,9 @@ fn default_dto() -> CreateJobDto {
         interval_ms: None,
         fire_time: None,
         params_json: None,
-        script: None,
-        script_engine: None,
         enabled: Some(true),
-        blocking: None,
-        misfire: None,
         timeout_ms: Some(0),
         retry_max: Some(0),
-        retry_backoff: None,
-        unique_key: None,
         tenant_id: None,
     }
 }

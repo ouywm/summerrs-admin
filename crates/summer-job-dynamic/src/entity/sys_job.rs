@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::enums::{BlockingStrategy, MisfireStrategy, RetryBackoff, ScheduleType, ScriptEngine};
+use crate::enums::ScheduleType;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize, JsonSchema)]
@@ -22,15 +22,9 @@ pub struct Model {
     pub fire_time: Option<DateTime>,
     #[sea_orm(column_type = "JsonBinary")]
     pub params_json: Json,
-    pub script: Option<String>,
-    pub script_engine: Option<ScriptEngine>,
     pub enabled: bool,
-    pub blocking: BlockingStrategy,
-    pub misfire: MisfireStrategy,
     pub timeout_ms: i64,
     pub retry_max: i32,
-    pub retry_backoff: RetryBackoff,
-    pub unique_key: Option<String>,
     pub version: i64,
     pub created_by: Option<i64>,
     pub create_time: DateTime,

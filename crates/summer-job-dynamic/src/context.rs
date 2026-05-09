@@ -1,9 +1,10 @@
+//! 单次任务执行的运行时上下文。
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 use summer::app::App;
-use tokio_util::sync::CancellationToken;
 
 pub type JobResult = Result<Value, JobError>;
 
@@ -17,16 +18,10 @@ pub enum JobError {
 
     #[error("timeout after {0:?}")]
     Timeout(Duration),
-
-    #[error("canceled")]
-    Canceled,
 }
 
-/// 单次任务执行的运行时上下文。
-///
 /// `app` 是 summer 的 `Arc<App>`，handler 内部用 `app.get_expect_component::<T>()`
-/// 取所需组件（DbConn / Redis / S3 等）。后续 P2 会引入 `FromApp` 风格 extractor，
-/// 让 handler 直接以 `Component<T>` `Config<T>` 形参声明依赖。
+/// 取所需组件（DbConn / Redis / S3 等）。
 #[derive(Clone)]
 pub struct JobContext {
     pub run_id: i64,
@@ -34,10 +29,7 @@ pub struct JobContext {
     pub trace_id: String,
     pub params: Value,
     pub retry_count: i32,
-    pub cancel: CancellationToken,
     pub app: Arc<App>,
-    /// 脚本任务源码（仅 handler = `script::rhai` 等脚本引擎使用）
-    pub script: Option<String>,
 }
 
 impl JobContext {
@@ -47,16 +39,7 @@ impl JobContext {
             .map_err(|e| JobError::InvalidParams(e.to_string()))
     }
 
-    /// 长循环里调用，被取消时立即返回 `Err(JobError::Canceled)`。
-    pub fn check_cancel(&self) -> Result<(), JobError> {
-        if self.cancel.is_cancelled() {
-            Err(JobError::Canceled)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// 从 app 取一个 component；不存在时 panic（业务通常用此变体，配置错就早崩）。
+    /// 从 app 取一个 component；不存在时 panic。
     pub fn component<T: Clone + Send + Sync + 'static>(&self) -> T {
         use summer::plugin::ComponentRegistry;
         self.app.get_expect_component::<T>()

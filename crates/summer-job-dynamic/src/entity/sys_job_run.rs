@@ -25,7 +25,6 @@ pub struct Model {
     pub result_json: Option<Json>,
     pub error_message: Option<String>,
     pub log_excerpt: Option<String>,
-    pub unique_key: Option<String>,
     pub create_time: DateTime,
 }
 
