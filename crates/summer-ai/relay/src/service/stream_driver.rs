@@ -352,6 +352,103 @@ where
     }
 }
 
+/// 同协议字节透传：客户端直接接收上游原始 SSE bytes，但后台仍解析 canonical 事件，
+/// 用于 tracking / billing 的 usage 与错误归因。
+pub fn passthrough_stream(
+    upstream: reqwest::Response,
+    kind: AdapterKind,
+    target: ServiceTarget,
+    outcome_tx: oneshot::Sender<StreamOutcome>,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
+    let upstream_status = upstream.status().as_u16();
+    let upstream_request_id = extract_upstream_request_id(upstream.headers());
+
+    async_stream::stream! {
+        let mut bytes = upstream.bytes_stream();
+        let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
+        let mut final_usage: Option<Usage> = None;
+        let mut outcome_slot: Option<oneshot::Sender<StreamOutcome>> = Some(outcome_tx);
+        let mut stream_error: Option<String> = None;
+
+        while let Some(chunk) = bytes.next().await {
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    let message = format!("upstream: {e}");
+                    if let Some(tx) = outcome_slot.take() {
+                        let _ = tx.send(StreamOutcome {
+                            upstream_status,
+                            upstream_request_id: upstream_request_id.clone(),
+                            usage: final_usage.clone(),
+                            error: Some(message.clone()),
+                        });
+                    }
+                    yield Err(std::io::Error::other(message));
+                    return;
+                }
+            };
+
+            buffer.extend_from_slice(&chunk);
+            yield Ok(chunk.clone());
+
+            while let Some(end) = find_event_boundary(&buffer) {
+                let event_bytes: Vec<u8> = buffer.drain(..end).collect();
+                let event_str = match std::str::from_utf8(&event_bytes) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let Some(data) = extract_data_lines(event_str) else {
+                    continue;
+                };
+                if data.trim() == "[DONE]" {
+                    break;
+                }
+
+                let canonical_events = match AdapterDispatcher::parse_chat_stream_event(
+                    kind,
+                    &target,
+                    &data,
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(?e, "adapter parse_chat_stream_event error during passthrough");
+                        continue;
+                    }
+                };
+
+                for canonical_event in canonical_events {
+                    match &canonical_event {
+                        ChatStreamEvent::UsageDelta(u) => {
+                            final_usage = Some(merge_stream_usage(final_usage.take(), u));
+                        }
+                        ChatStreamEvent::End(end_evt) => {
+                            if let Some(u) = &end_evt.usage {
+                                final_usage = Some(merge_stream_usage(final_usage.take(), u));
+                            }
+                        }
+                        ChatStreamEvent::Error(err) => {
+                            stream_error = Some(match &err.kind {
+                                Some(k) => format!("upstream stream error ({k}): {}", err.message),
+                                None => format!("upstream stream error: {}", err.message),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if let Some(tx) = outcome_slot.take() {
+            let _ = tx.send(StreamOutcome {
+                upstream_status,
+                upstream_request_id,
+                usage: final_usage,
+                error: stream_error,
+            });
+        }
+    }
+}
+
 /// 从上游 response header 取"上游请求 id"。不同家命名不一样，按常见顺序尝试。
 fn extract_upstream_request_id(headers: &reqwest::header::HeaderMap) -> Option<String> {
     for name in [

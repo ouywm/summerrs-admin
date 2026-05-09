@@ -48,10 +48,10 @@ use summer_ai_core::types::ingress_wire::openai_responses::{
     OpenAIResponsesTool, OpenAIResponsesToolChoice, OpenAIResponsesUsage,
 };
 use summer_ai_core::{
-    AdapterError, AdapterResult, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent,
-    ContentPart, FinishReason, ImageUrl, MessageContent, ReasoningEffort, ResponseFormat,
-    ResponsesExtras, Role, ServiceTier, Tool, ToolCall, ToolCallDelta, ToolCallFunction,
-    ToolChoice, ToolFunction, Usage, Verbosity,
+    AdapterError, AdapterKind, AdapterResult, ChatMessage, ChatRequest, ChatResponse,
+    ChatStreamEvent, ContentPart, FinishReason, ImageUrl, MessageContent, ReasoningEffort,
+    ResponseFormat, ResponsesExtras, Role, ServiceTarget, ServiceTier, ServiceType, Tool, ToolCall,
+    ToolCallDelta, ToolCallFunction, ToolChoice, ToolFunction, Usage, Verbosity,
 };
 
 use super::{
@@ -89,6 +89,52 @@ impl IngressConverter for OpenAIResponsesIngress {
             });
         };
         Ok(from_canonical_stream_event_impl(event, resp_state, ctx))
+    }
+
+    fn same_protocol_request_override(
+        target: &ServiceTarget,
+        service: ServiceType,
+        client_req_snapshot: &Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        if target.kind() != AdapterKind::OpenAIResp {
+            return None;
+        }
+        let mut raw = client_req_snapshot.clone()?;
+        let serde_json::Value::Object(ref mut obj) = raw else {
+            return None;
+        };
+        obj.insert(
+            "model".into(),
+            serde_json::Value::String(target.actual_model().to_string()),
+        );
+        obj.insert(
+            "stream".into(),
+            serde_json::Value::Bool(matches!(service, ServiceType::ResponsesStream)),
+        );
+        Some(raw)
+    }
+
+    fn same_protocol_client_response(
+        kind: AdapterKind,
+        raw_response_body: Option<serde_json::Value>,
+    ) -> Option<AdapterResult<Self::ClientResponse>> {
+        if kind != AdapterKind::OpenAIResp {
+            return None;
+        }
+        Some(
+            raw_response_body
+                .ok_or(AdapterError::Unsupported {
+                    adapter: "openai_responses_ingress",
+                    feature: "missing_same_protocol_raw_response",
+                })
+                .and_then(|raw| {
+                    serde_json::from_value(raw).map_err(AdapterError::DeserializeResponse)
+                }),
+        )
+    }
+
+    fn should_passthrough_stream(kind: AdapterKind) -> bool {
+        kind == AdapterKind::OpenAIResp
     }
 }
 
@@ -145,10 +191,19 @@ fn to_canonical_impl(req: OpenAIResponsesRequest, ctx: &IngressCtx) -> AdapterRe
             messages.push(ChatMessage::user(text));
         }
         OpenAIResponsesInput::Items(items) => {
+            let mut native_input_items = Vec::new();
             for item in items {
-                if let Some(msg) = input_item_to_chat_message(item)? {
-                    messages.push(msg);
+                match input_item_to_chat_message(item)? {
+                    InputItemProjection::Message(msg) => messages.push(*msg),
+                    InputItemProjection::Native(value) => native_input_items.push(value),
+                    InputItemProjection::Dropped => {}
                 }
+            }
+            if !native_input_items.is_empty() {
+                extra.insert(
+                    "__responses_native_input_items".to_string(),
+                    serde_json::Value::Array(native_input_items),
+                );
             }
         }
     }
@@ -190,14 +245,21 @@ fn to_canonical_impl(req: OpenAIResponsesRequest, ctx: &IngressCtx) -> AdapterRe
     extend_extra_option(&mut extra, "stream_options", stream_options);
     extend_extra_option(&mut extra, "max_tool_calls", max_tool_calls);
 
+    let native_input_items = extra
+        .remove("__responses_native_input_items")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+
     let responses_extras = if previous_response_id.is_some()
         || reasoning_summary.is_some()
         || instructions.is_some()
+        || !native_input_items.is_empty()
     {
         Some(ResponsesExtras {
             previous_response_id,
             reasoning_summary,
             instructions,
+            native_input_items,
         })
     } else {
         None
@@ -228,40 +290,66 @@ fn to_canonical_impl(req: OpenAIResponsesRequest, ctx: &IngressCtx) -> AdapterRe
     })
 }
 
+enum InputItemProjection {
+    Message(Box<ChatMessage>),
+    Native(serde_json::Value),
+    Dropped,
+}
+
 fn input_item_to_chat_message(
     item: OpenAIResponsesInputItem,
-) -> AdapterResult<Option<ChatMessage>> {
+) -> AdapterResult<InputItemProjection> {
     Ok(match item {
-        OpenAIResponsesInputItem::Message(m) => Some(message_item_to_chat_message(m)?),
-        OpenAIResponsesInputItem::FunctionCall(fc) => Some(function_call_item_to_chat_message(fc)),
+        OpenAIResponsesInputItem::Message(m) => {
+            InputItemProjection::Message(Box::new(message_item_to_chat_message(m)?))
+        }
+        OpenAIResponsesInputItem::FunctionCall(fc) => {
+            InputItemProjection::Message(Box::new(function_call_item_to_chat_message(fc)))
+        }
         OpenAIResponsesInputItem::FunctionCallOutput(fco) => {
-            Some(function_call_output_to_chat_message(fco))
+            InputItemProjection::Message(Box::new(function_call_output_to_chat_message(fco)))
         }
-        OpenAIResponsesInputItem::Unknown => {
-            tracing::warn!("responses ingress: unsupported input item type, dropped");
-            None
+        OpenAIResponsesInputItem::Unknown(val) => {
+            tracing::warn!(
+                "responses ingress: unsupported input item type, dropped item: {:?}",
+                val
+            );
+            InputItemProjection::Dropped
         }
-        _ => None,
+        other => InputItemProjection::Native(
+            serde_json::to_value(other).map_err(AdapterError::SerializeRequest)?,
+        ),
     })
 }
 
 fn message_item_to_chat_message(m: OpenAIResponsesMessageItem) -> AdapterResult<ChatMessage> {
     let role = parse_role(&m.role)?;
-    let content = match m.content {
-        OpenAIResponsesMessageContent::Text(text) => MessageContent::text(text),
+    let (content, refusal) = match m.content {
+        OpenAIResponsesMessageContent::Text(text) => (Some(MessageContent::text(text)), None),
         OpenAIResponsesMessageContent::Parts(parts) => {
+            let mut refusal: Option<String> = None;
             let canonical_parts: Vec<ContentPart> = parts
                 .into_iter()
-                .filter_map(content_part_to_canonical)
+                .filter_map(|part| match part {
+                    OpenAIResponsesInputContentPart::Refusal { refusal: value } => {
+                        if refusal.is_none() {
+                            refusal = Some(value);
+                        }
+                        None
+                    }
+                    other => content_part_to_canonical(other),
+                })
                 .collect();
-            MessageContent::parts(canonical_parts)
+            let content =
+                (!canonical_parts.is_empty()).then(|| MessageContent::parts(canonical_parts));
+            (content, refusal)
         }
     };
 
     Ok(ChatMessage {
         role,
-        content: Some(content),
-        refusal: None,
+        content,
+        refusal,
         name: None,
         tool_calls: None,
         tool_call_id: None,
@@ -291,8 +379,14 @@ fn parse_role(role: &str) -> AdapterResult<Role> {
 fn content_part_to_canonical(part: OpenAIResponsesInputContentPart) -> Option<ContentPart> {
     match part {
         OpenAIResponsesInputContentPart::InputText { text } => Some(ContentPart::Text { text }),
+        OpenAIResponsesInputContentPart::InputAudio { input_audio } => {
+            Some(ContentPart::InputAudio { input_audio })
+        }
         OpenAIResponsesInputContentPart::OutputText { text, .. } => {
             Some(ContentPart::Text { text })
+        }
+        OpenAIResponsesInputContentPart::Refusal { refusal } => {
+            Some(ContentPart::Text { text: refusal })
         }
         OpenAIResponsesInputContentPart::InputImage {
             image_url,
@@ -406,6 +500,10 @@ fn render_function_call_output(
                 .filter_map(|part| match part {
                     OpenAIResponsesInputContentPart::InputText { text }
                     | OpenAIResponsesInputContentPart::OutputText { text, .. } => Some(text),
+                    OpenAIResponsesInputContentPart::Refusal { refusal } => Some(refusal),
+                    OpenAIResponsesInputContentPart::InputAudio { input_audio } => {
+                        Some(format!("[input_audio format={}]", input_audio.format))
+                    }
                     OpenAIResponsesInputContentPart::InputFile { filename, file_id, .. } => {
                         Some(match (filename, file_id) {
                             (Some(name), Some(id)) => format!("[file {name} id={id}]"),
@@ -505,6 +603,9 @@ fn extend_extra_non_empty_vec<T: serde::Serialize>(
 // =========================================================================
 
 fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesResponse {
+    let response_id = resp.id.clone();
+    let created_at = resp.created;
+    let usage = resp.usage.clone();
     let mut output: Vec<OpenAIResponsesOutputItem> = Vec::new();
     let mut output_text_buf: String = String::new();
     let mut status = "completed".to_string();
@@ -521,6 +622,21 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
         };
 
         let msg = choice.message;
+        if let Some(raw) = msg.native_content_blocks.as_ref()
+            && let Ok(raw_output) =
+                serde_json::from_value::<Vec<OpenAIResponsesOutputItem>>(raw.clone())
+        {
+            let output_text = collect_output_text(&raw_output);
+            return build_responses_response(
+                response_id,
+                created_at,
+                ctx,
+                status,
+                raw_output,
+                output_text,
+                usage,
+            );
+        }
 
         // tool_calls → 每个一个 FunctionCall output item
         if let Some(tool_calls) = msg.tool_calls {
@@ -570,7 +686,7 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
         if !content_parts.is_empty() {
             output.push(OpenAIResponsesOutputItem::Message(
                 OpenAIResponsesOutputMessage {
-                    id: format!("msg_{}", resp.id),
+                    id: format!("msg_{}", response_id),
                     status: "completed".into(),
                     role: "assistant".into(),
                     content: content_parts,
@@ -580,26 +696,46 @@ fn from_canonical_impl(resp: ChatResponse, ctx: &IngressCtx) -> OpenAIResponsesR
         }
     }
 
+    build_responses_response(
+        response_id,
+        created_at,
+        ctx,
+        status,
+        output,
+        if output_text_buf.is_empty() {
+            None
+        } else {
+            Some(output_text_buf)
+        },
+        usage,
+    )
+}
+
+fn build_responses_response(
+    id: String,
+    created_at: i64,
+    ctx: &IngressCtx,
+    status: String,
+    output: Vec<OpenAIResponsesOutputItem>,
+    output_text: Option<String>,
+    usage: Usage,
+) -> OpenAIResponsesResponse {
     OpenAIResponsesResponse {
-        id: resp.id,
+        id,
         object: "response".into(),
-        created_at: resp.created,
+        created_at,
         completed_at: None,
         model: ctx.actual_model.clone(),
         status,
         output,
         usage: Some(OpenAIResponsesUsage {
-            input_tokens: resp.usage.prompt_tokens,
-            output_tokens: resp.usage.completion_tokens,
-            total_tokens: resp.usage.total_tokens,
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
             input_tokens_details: None,
             output_tokens_details: None,
         }),
-        output_text: if output_text_buf.is_empty() {
-            None
-        } else {
-            Some(output_text_buf)
-        },
+        output_text,
         incomplete_details: None,
         instructions: None,
         max_output_tokens: None,
@@ -1279,6 +1415,85 @@ mod tests {
     }
 
     #[test]
+    fn to_canonical_message_with_input_audio_part() {
+        let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5",
+            "input": [{
+                "type":"message",
+                "role":"user",
+                "content":[
+                    {"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}}
+                ]
+            }]
+        }))
+        .unwrap();
+        let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
+        let m = &c.messages[0];
+        let content = m.content.as_ref().unwrap();
+        match content {
+            MessageContent::Parts(parts) => {
+                assert_eq!(parts.len(), 1);
+                assert!(matches!(parts[0], ContentPart::InputAudio { .. }));
+            }
+            _ => panic!("expected Parts"),
+        }
+    }
+
+    #[test]
+    fn to_canonical_assistant_output_text_preserves_assistant_role() {
+        let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5",
+            "input": [{
+                "type":"message",
+                "role":"assistant",
+                "content":[{"type":"output_text","text":"previous answer","annotations":[]}]
+            }]
+        }))
+        .unwrap();
+        let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
+        assert_eq!(c.messages.len(), 1);
+        assert!(matches!(c.messages[0].role, Role::Assistant));
+        assert_eq!(c.messages[0].text(), Some("previous answer"));
+        assert!(c.messages[0].refusal.is_none());
+    }
+
+    #[test]
+    fn to_canonical_assistant_refusal_maps_to_refusal_field() {
+        let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5",
+            "input": [{
+                "type":"message",
+                "role":"assistant",
+                "content":[{"type":"refusal","refusal":"cannot comply"}]
+            }]
+        }))
+        .unwrap();
+        let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
+        assert_eq!(c.messages.len(), 1);
+        assert!(matches!(c.messages[0].role, Role::Assistant));
+        assert_eq!(c.messages[0].refusal.as_deref(), Some("cannot comply"));
+        assert!(c.messages[0].content.is_none());
+    }
+
+    #[test]
+    fn to_canonical_preserves_native_responses_items_in_responses_extras() {
+        let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5",
+            "input": [
+                {"type":"message","role":"user","content":"hello"},
+                {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"hidden"}]},
+                {"type":"web_search_call","id":"ws_1","status":"completed"}
+            ]
+        }))
+        .unwrap();
+        let c = OpenAIResponsesIngress::to_canonical(req, &ctx()).unwrap();
+        let extras = c.responses_extras.expect("responses_extras should exist");
+        assert_eq!(extras.native_input_items.len(), 2);
+        assert_eq!(extras.native_input_items[0]["type"], "reasoning");
+        assert_eq!(extras.native_input_items[1]["type"], "web_search_call");
+    }
+
+    #[test]
     fn to_canonical_function_tool_maps() {
         let req: OpenAIResponsesRequest = serde_json::from_value(serde_json::json!({
             "model": "gpt-5",
@@ -1487,6 +1702,32 @@ mod tests {
             }
             _ => panic!("expected Refusal"),
         }
+    }
+
+    #[test]
+    fn from_canonical_prefers_preserved_raw_output_items() {
+        let mut resp = chat_response("ignored", FinishReason::Stop);
+        resp.choices[0].message.native_content_blocks = Some(serde_json::json!([
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [{"type":"summary_text","text":"thinking"}]
+            },
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type":"output_text","text":"hello","annotations":[]}]
+            }
+        ]));
+        let out = OpenAIResponsesIngress::from_canonical(resp, &ctx()).unwrap();
+        assert_eq!(out.output.len(), 2);
+        assert!(matches!(
+            out.output[0],
+            OpenAIResponsesOutputItem::Reasoning(_)
+        ));
+        assert_eq!(out.output_text.as_deref(), Some("hello"));
     }
 
     // -------- stream: helpers --------

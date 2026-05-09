@@ -9,7 +9,7 @@ use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::common::Tool;
+use crate::types::common::{InputAudio, Tool};
 
 // =========================================================================
 // Request
@@ -76,9 +76,9 @@ pub struct OpenAIResponsesRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_management: Vec<OpenAIResponsesContextManagement>,
 
-    /// 此响应所属的会话。
+    /// 此响应所属的会话，可以是会话 ID 字符串或会话对象。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation: Option<OpenAIResponsesConversation>,
+    pub conversation: Option<OpenAIResponsesConversationParam>,
 
     /// 指定要包含在响应中的额外输出数据。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -137,11 +137,18 @@ pub struct OpenAIResponsesContextManagement {
     pub compact_threshold: Option<i64>,
 }
 
-/// 会话参数。
+/// 会话参数，支持直接传 ID 字符串或完整对象。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAIResponsesConversationParam {
+    Id(String),
+    Object(OpenAIResponsesConversation),
+}
+
+/// 会话对象。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesConversation {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+    pub id: String,
 }
 
 /// Prompt 引用。
@@ -277,8 +284,7 @@ pub enum OpenAIResponsesInputItem {
     /// Compaction 项。
     Compaction(OpenAIResponsesCompactionItem),
     /// 未识别的 Item 类型——丢 `Unknown` 保留原 JSON。
-    #[serde(other)]
-    Unknown,
+    Unknown(serde_json::Value),
 }
 
 /// `input` 里的 message item。
@@ -309,6 +315,8 @@ pub enum OpenAIResponsesMessageContent {
 pub enum OpenAIResponsesInputContentPart {
     /// 客户端输入文本。
     InputText { text: String },
+    /// 客户端输入音频。
+    InputAudio { input_audio: InputAudio },
     /// 客户端输入图像。
     InputImage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -337,6 +345,8 @@ pub enum OpenAIResponsesInputContentPart {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         annotations: Vec<OpenAIResponsesAnnotation>,
     },
+    /// assistant refusal part（作为历史 output message 回填到 input 时使用）。
+    Refusal { refusal: String },
     /// 未识别 part 类型。
     #[serde(other)]
     Unknown,
@@ -380,7 +390,8 @@ pub enum OpenAIResponsesFunctionCallOutput {
 /// Reasoning item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesReasoningItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub summary: Vec<OpenAIResponsesReasoningSummaryContent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<OpenAIResponsesReasoningTextContent>>,
@@ -407,7 +418,8 @@ pub struct OpenAIResponsesReasoningTextContent {
 /// File search call item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesFileSearchCallItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub queries: Vec<String>,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -431,7 +443,8 @@ pub struct OpenAIResponsesFileSearchResult {
 /// Computer call item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesComputerCallItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub call_id: String,
     pub pending_safety_checks: Vec<OpenAIResponsesSafetyCheck>,
     pub status: String,
@@ -528,7 +541,8 @@ pub struct OpenAIResponsesComputerScreenshot {
 /// Web search call item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesWebSearchCallItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<OpenAIResponsesWebSearchAction>,
     pub status: String,
@@ -594,7 +608,8 @@ pub struct OpenAIResponsesToolSearchOutputItem {
 /// Image generation call item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesImageGenerationCallItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
     pub status: String,
@@ -603,7 +618,8 @@ pub struct OpenAIResponsesImageGenerationCallItem {
 /// Code interpreter call item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesCodeInterpreterCallItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     pub container_id: String,
@@ -622,7 +638,8 @@ pub enum OpenAIResponsesCodeInterpreterOutput {
 /// Local shell call item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesLocalShellCallItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub action: OpenAIResponsesLocalShellAction,
     pub call_id: String,
     pub status: String,
@@ -631,8 +648,7 @@ pub struct OpenAIResponsesLocalShellCallItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesLocalShellAction {
     pub command: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub env: Option<HashMap<String, String>>,
+    pub env: HashMap<String, String>,
     #[serde(rename = "type")]
     pub type_: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -646,7 +662,8 @@ pub struct OpenAIResponsesLocalShellAction {
 /// Local shell call output item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesLocalShellCallOutputItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub output: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -689,12 +706,9 @@ pub struct OpenAIResponsesShellCallOutputItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesShellCallOutputContent {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stdout: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stderr: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<OpenAIResponsesShellCallOutcome>,
+    pub stdout: String,
+    pub stderr: String,
+    pub outcome: OpenAIResponsesShellCallOutcome,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -736,7 +750,8 @@ pub struct OpenAIResponsesApplyPatchCallOutputItem {
 /// MCP list tools item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesMcpListToolsItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub server_label: String,
     pub tools: Vec<OpenAIResponsesMcpToolDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -756,7 +771,8 @@ pub struct OpenAIResponsesMcpToolDefinition {
 /// MCP approval request item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesMcpApprovalRequestItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub arguments: String,
     pub name: String,
     pub server_label: String,
@@ -776,7 +792,8 @@ pub struct OpenAIResponsesMcpApprovalResponseItem {
 /// MCP call item。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesMcpCallItem {
-    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub arguments: String,
     pub name: String,
     pub server_label: String,

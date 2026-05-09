@@ -15,8 +15,10 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use summer_ai_core::{
-    AdapterKind, AdapterResult, ChatRequest, ChatResponse, ChatStreamEvent, EndpointScope, Usage,
+    AdapterKind, AdapterResult, ChatRequest, ChatResponse, ChatStreamEvent, EndpointScope,
+    ServiceTarget, ServiceType, Usage,
 };
 
 pub mod claude;
@@ -354,4 +356,33 @@ pub trait IngressConverter {
         state: &mut StreamConvertState,
         ctx: &IngressCtx,
     ) -> AdapterResult<Vec<Self::ClientStreamEvent>>;
+
+    /// 同协议上游支持客户端原生 wire 时，可覆写请求体直通逻辑。
+    ///
+    /// 默认返回 `None`，表示沿用 canonical → adapter rebuild。
+    fn same_protocol_request_override(
+        _target: &ServiceTarget,
+        _service: ServiceType,
+        _client_req_snapshot: &Option<Value>,
+    ) -> Option<Value> {
+        None
+    }
+
+    /// 同协议非流式响应可直接反序列化成客户端响应对象，避免 canonical egress 丢语义。
+    ///
+    /// 默认返回 `None`，表示沿用 `from_canonical`。
+    fn same_protocol_client_response(
+        _kind: AdapterKind,
+        _raw_response_body: Option<Value>,
+    ) -> Option<AdapterResult<Self::ClientResponse>>
+    where
+        Self::ClientResponse: DeserializeOwned,
+    {
+        None
+    }
+
+    /// 同协议流式场景是否允许直接透传原始 SSE bytes。
+    fn should_passthrough_stream(_kind: AdapterKind) -> bool {
+        false
+    }
 }

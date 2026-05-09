@@ -13,15 +13,16 @@ use crate::adapter::{
 use crate::error::{AdapterError, AdapterResult};
 use crate::resolver::{Endpoint, ServiceTarget};
 use crate::types::ingress_wire::openai_responses::{
-    OpenAIResponsesContextManagement, OpenAIResponsesConversation, OpenAIResponsesFunctionCallItem,
-    OpenAIResponsesFunctionCallOutput, OpenAIResponsesFunctionCallOutputItem, OpenAIResponsesInput,
-    OpenAIResponsesInputContentPart, OpenAIResponsesInputItem, OpenAIResponsesMessageContent,
-    OpenAIResponsesMessageItem, OpenAIResponsesOutputContentPart, OpenAIResponsesOutputItem,
-    OpenAIResponsesPrompt, OpenAIResponsesReasoning, OpenAIResponsesReasoningEffort,
-    OpenAIResponsesReasoningSummary, OpenAIResponsesRequest, OpenAIResponsesResponse,
-    OpenAIResponsesStreamEvent, OpenAIResponsesStreamOptions, OpenAIResponsesTextConfig,
-    OpenAIResponsesTextFormat, OpenAIResponsesTool, OpenAIResponsesToolChoice,
-    OpenAIResponsesToolChoiceFunction, OpenAIResponsesUsage,
+    OpenAIResponsesContextManagement, OpenAIResponsesConversationParam,
+    OpenAIResponsesFunctionCallItem, OpenAIResponsesFunctionCallOutput,
+    OpenAIResponsesFunctionCallOutputItem, OpenAIResponsesInput, OpenAIResponsesInputContentPart,
+    OpenAIResponsesInputItem, OpenAIResponsesMessageContent, OpenAIResponsesMessageItem,
+    OpenAIResponsesOutputContentPart, OpenAIResponsesOutputItem, OpenAIResponsesPrompt,
+    OpenAIResponsesReasoning, OpenAIResponsesReasoningEffort, OpenAIResponsesReasoningSummary,
+    OpenAIResponsesRequest, OpenAIResponsesResponse, OpenAIResponsesStreamEvent,
+    OpenAIResponsesStreamOptions, OpenAIResponsesTextConfig, OpenAIResponsesTextFormat,
+    OpenAIResponsesTool, OpenAIResponsesToolChoice, OpenAIResponsesToolChoiceFunction,
+    OpenAIResponsesUsage,
 };
 use crate::types::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ContentPart, FinishReason,
@@ -222,6 +223,7 @@ fn canonical_to_responses_request(
     } else {
         OpenAIResponsesInput::Items(input_items)
     };
+    let input = append_native_responses_input_items(input, req.responses_extras.as_ref())?;
 
     let tools = req
         .tools
@@ -261,7 +263,8 @@ fn canonical_to_responses_request(
     let context_management =
         take_extra_typed::<Vec<OpenAIResponsesContextManagement>>(&mut extra, "context_management")
             .unwrap_or_default();
-    let conversation = take_extra_typed::<OpenAIResponsesConversation>(&mut extra, "conversation");
+    let conversation =
+        take_extra_typed::<OpenAIResponsesConversationParam>(&mut extra, "conversation");
     let include = take_extra_typed::<Vec<String>>(&mut extra, "include").unwrap_or_default();
     let prompt = take_extra_typed::<OpenAIResponsesPrompt>(&mut extra, "prompt");
     let prompt_cache_key = take_extra_typed::<String>(&mut extra, "prompt_cache_key");
@@ -414,6 +417,32 @@ fn chat_message_to_item(message: &ChatMessage) -> AdapterResult<OpenAIResponsesM
 }
 
 fn chat_message_content_to_wire(message: &ChatMessage) -> OpenAIResponsesMessageContent {
+    if matches!(message.role, Role::Assistant) {
+        if let Some(refusal) = &message.refusal {
+            return OpenAIResponsesMessageContent::Parts(vec![
+                OpenAIResponsesInputContentPart::Refusal {
+                    refusal: refusal.clone(),
+                },
+            ]);
+        }
+
+        return match message.content.clone() {
+            Some(MessageContent::Text(text)) => OpenAIResponsesMessageContent::Parts(vec![
+                OpenAIResponsesInputContentPart::OutputText {
+                    text,
+                    annotations: Vec::new(),
+                },
+            ]),
+            Some(MessageContent::Parts(parts)) => OpenAIResponsesMessageContent::Parts(
+                parts
+                    .into_iter()
+                    .map(assistant_content_part_to_wire)
+                    .collect(),
+            ),
+            None => OpenAIResponsesMessageContent::Parts(Vec::new()),
+        };
+    }
+
     if let Some(refusal) = &message.refusal {
         return OpenAIResponsesMessageContent::Text(refusal.clone());
     }
@@ -421,23 +450,33 @@ fn chat_message_content_to_wire(message: &ChatMessage) -> OpenAIResponsesMessage
     match message.content.clone() {
         Some(MessageContent::Text(text)) => OpenAIResponsesMessageContent::Text(text),
         Some(MessageContent::Parts(parts)) => OpenAIResponsesMessageContent::Parts(
-            parts.into_iter().map(content_part_to_wire).collect(),
+            parts.into_iter().map(input_content_part_to_wire).collect(),
         ),
         None => OpenAIResponsesMessageContent::Text(String::new()),
     }
 }
 
-fn content_part_to_wire(part: ContentPart) -> OpenAIResponsesInputContentPart {
+fn input_content_part_to_wire(part: ContentPart) -> OpenAIResponsesInputContentPart {
     match part {
         ContentPart::Text { text } => OpenAIResponsesInputContentPart::InputText { text },
+        ContentPart::InputAudio { input_audio } => {
+            OpenAIResponsesInputContentPart::InputAudio { input_audio }
+        }
         ContentPart::ImageUrl { image_url } => OpenAIResponsesInputContentPart::InputImage {
             image_url: Some(image_url.url),
             file_id: None,
             detail: image_url.detail,
         },
-        ContentPart::InputAudio { input_audio } => OpenAIResponsesInputContentPart::InputText {
-            text: format!("[input_audio format={}]", input_audio.format),
+    }
+}
+
+fn assistant_content_part_to_wire(part: ContentPart) -> OpenAIResponsesInputContentPart {
+    match part {
+        ContentPart::Text { text } => OpenAIResponsesInputContentPart::OutputText {
+            text,
+            annotations: Vec::new(),
         },
+        other => input_content_part_to_wire(other),
     }
 }
 
@@ -460,6 +499,38 @@ fn render_message_text(message: &ChatMessage) -> Option<String> {
             Some(buf)
         }
     }
+}
+
+fn append_native_responses_input_items(
+    input: OpenAIResponsesInput,
+    extras: Option<&crate::types::ResponsesExtras>,
+) -> AdapterResult<OpenAIResponsesInput> {
+    let Some(extras) = extras else {
+        return Ok(input);
+    };
+    if extras.native_input_items.is_empty() {
+        return Ok(input);
+    }
+
+    let mut items = match input {
+        OpenAIResponsesInput::Text(text) => vec![OpenAIResponsesInputItem::Message(
+            OpenAIResponsesMessageItem {
+                id: None,
+                role: "user".to_string(),
+                status: None,
+                content: OpenAIResponsesMessageContent::Text(text),
+                phase: None,
+            },
+        )],
+        OpenAIResponsesInput::Items(items) => items,
+    };
+
+    for raw in &extras.native_input_items {
+        let item: OpenAIResponsesInputItem =
+            serde_json::from_value(raw.clone()).map_err(AdapterError::DeserializeResponse)?;
+        items.push(item);
+    }
+    Ok(OpenAIResponsesInput::Items(items))
 }
 
 fn role_to_wire(role: Role) -> &'static str {
@@ -537,6 +608,7 @@ fn take_extra_typed<T: serde::de::DeserializeOwned>(
 }
 
 fn responses_response_to_chat_response(resp: OpenAIResponsesResponse) -> ChatResponse {
+    let raw_output_items = serde_json::to_value(&resp.output).ok();
     let usage = resp
         .usage
         .as_ref()
@@ -590,7 +662,7 @@ fn responses_response_to_chat_response(resp: OpenAIResponsesResponse) -> ChatRes
         tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
         tool_call_id: None,
         audio: None,
-        native_content_blocks: None,
+        native_content_blocks: raw_output_items,
         options: None,
     };
 
@@ -757,6 +829,7 @@ mod tests {
             previous_response_id: Some("resp_prev".into()),
             reasoning_summary: Some("auto".into()),
             instructions: None,
+            native_input_items: Vec::new(),
         });
         req.reasoning_effort = Some(ReasoningEffort::Budget(5000));
 
@@ -790,6 +863,154 @@ mod tests {
         assert_eq!(wire.payload["prompt_cache_key"], "cache-key");
         assert_eq!(wire.payload["text"]["verbosity"], "high");
         assert_eq!(wire.payload["text"]["format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn build_chat_request_serializes_assistant_history_as_output_text() {
+        let assistant = ChatMessage {
+            role: Role::Assistant,
+            content: Some(MessageContent::Parts(vec![ContentPart::Text {
+                text: "previous answer".into(),
+            }])),
+            reasoning_content: None,
+            refusal: None,
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            audio: None,
+            native_content_blocks: None,
+            options: None,
+        };
+        let req = ChatRequest::new("alias-model", vec![ChatMessage::user("hello"), assistant]);
+
+        let wire =
+            OpenAIRespAdapter::build_chat_request(&target(), ServiceType::Responses, &req).unwrap();
+        let items = wire.payload["input"].as_array().unwrap();
+        assert_eq!(items[1]["role"], "assistant");
+        assert_eq!(items[1]["content"][0]["type"], "output_text");
+        assert_eq!(items[1]["content"][0]["text"], "previous answer");
+    }
+
+    #[test]
+    fn build_chat_request_serializes_assistant_refusal_as_refusal_part() {
+        let assistant = ChatMessage {
+            role: Role::Assistant,
+            content: None,
+            reasoning_content: None,
+            refusal: Some("cannot comply".into()),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            audio: None,
+            native_content_blocks: None,
+            options: None,
+        };
+        let req = ChatRequest::new("alias-model", vec![ChatMessage::user("hello"), assistant]);
+
+        let wire =
+            OpenAIRespAdapter::build_chat_request(&target(), ServiceType::Responses, &req).unwrap();
+        let items = wire.payload["input"].as_array().unwrap();
+        assert_eq!(items[1]["role"], "assistant");
+        assert_eq!(items[1]["content"][0]["type"], "refusal");
+        assert_eq!(items[1]["content"][0]["refusal"], "cannot comply");
+    }
+
+    #[test]
+    fn build_chat_request_serializes_input_audio_as_input_audio_part() {
+        let req = ChatRequest::new(
+            "gpt-5",
+            vec![ChatMessage {
+                role: Role::User,
+                content: Some(MessageContent::Parts(vec![ContentPart::InputAudio {
+                    input_audio: crate::types::InputAudio {
+                        data: "UklGRg==".into(),
+                        format: "wav".into(),
+                    },
+                }])),
+                reasoning_content: None,
+                refusal: None,
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                audio: None,
+                native_content_blocks: None,
+                options: None,
+            }],
+        );
+
+        let wire =
+            OpenAIRespAdapter::build_chat_request(&target(), ServiceType::Responses, &req).unwrap();
+        let payload = wire.payload;
+        let items = payload["input"].as_array().expect("responses input array");
+        assert_eq!(items[0]["content"][0]["type"], "input_audio");
+        assert_eq!(items[0]["content"][0]["input_audio"]["format"], "wav");
+        assert_eq!(items[0]["content"][0]["input_audio"]["data"], "UklGRg==");
+    }
+
+    #[test]
+    fn build_chat_request_appends_native_responses_input_items() {
+        let mut req = ChatRequest::new("gpt-5", vec![ChatMessage::user("hello")]);
+        req.responses_extras = Some(ResponsesExtras {
+            previous_response_id: None,
+            reasoning_summary: None,
+            instructions: None,
+            native_input_items: vec![serde_json::json!({
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [{"type":"summary_text","text":"hidden"}]
+            })],
+        });
+
+        let wire =
+            OpenAIRespAdapter::build_chat_request(&target(), ServiceType::Responses, &req).unwrap();
+        let items = wire.payload["input"]
+            .as_array()
+            .expect("responses input array");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1]["type"], "reasoning");
+        assert_eq!(items[1]["id"], "rs_1");
+    }
+
+    #[test]
+    fn parse_chat_response_preserves_raw_output_items_in_native_content_blocks() {
+        let resp = serde_json::json!({
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 1,
+            "model": "gpt-5",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type":"summary_text","text":"thinking"}]
+                },
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type":"output_text","text":"hello","annotations":[]}]
+                }
+            ],
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2
+            }
+        });
+        let chat = OpenAIRespAdapter::parse_chat_response(
+            &target(),
+            Bytes::from(serde_json::to_vec(&resp).unwrap()),
+        )
+        .unwrap();
+        let raw = chat.choices[0]
+            .message
+            .native_content_blocks
+            .clone()
+            .expect("native output items preserved");
+        assert_eq!(raw[0]["type"], "reasoning");
+        assert_eq!(raw[1]["type"], "message");
     }
 
     #[test]

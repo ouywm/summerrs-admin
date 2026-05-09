@@ -55,6 +55,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use futures::stream::Stream;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
@@ -135,7 +136,7 @@ impl<I> PipelineCall<I>
 where
     I: IngressConverter + Send + 'static,
     I::ClientRequest: Send,
-    I::ClientResponse: serde::Serialize + Send,
+    I::ClientResponse: serde::Serialize + DeserializeOwned + Send,
     I::ClientStreamEvent: serde::Serialize + Send,
 {
     /// 跑完整流程：选路 → 翻译 → 发上游 → 响应 + tracking。
@@ -334,7 +335,7 @@ async fn execute_non_stream_with_retry<I>(
 ) -> RelayResult<EngineOutcome<I>>
 where
     I: IngressConverter + Send + 'static,
-    I::ClientResponse: serde::Serialize + Send,
+    I::ClientResponse: serde::Serialize + DeserializeOwned + Send,
 {
     let mut attempts: Vec<AttemptRecord> = Vec::new();
     let mut last_err: Option<RelayError> = None;
@@ -404,6 +405,8 @@ where
         );
 
         let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, target.actual_model());
+        let raw_payload_override =
+            I::same_protocol_request_override(&target, service, &client_req_snapshot);
 
         tracing::debug!(
             request_id = %ctx.request_id,
@@ -421,6 +424,7 @@ where
             &target,
             service,
             &canonical_req,
+            raw_payload_override.as_ref(),
             &mut sent_headers_sink,
         )
         .await;
@@ -441,7 +445,10 @@ where
                 }
                 let canonical_resp = invoked.inner;
                 let usage = canonical_resp.usage.clone();
-                let resp_snapshot = serde_json::to_value(&canonical_resp).ok();
+                let resp_snapshot = invoked
+                    .raw_response_body
+                    .clone()
+                    .or_else(|| serde_json::to_value(&canonical_resp).ok());
 
                 attempts.push(AttemptRecord {
                     attempt_no,
@@ -464,7 +471,12 @@ where
 
                 cooldown.record_success(candidate.account.id);
 
-                let client_resp = match I::from_canonical(canonical_resp, &ingress_ctx) {
+                let client_resp_result =
+                    match I::same_protocol_client_response(kind, invoked.raw_response_body) {
+                        Some(resp) => resp,
+                        None => I::from_canonical(canonical_resp, &ingress_ctx),
+                    };
+                let client_resp = match client_resp_result {
                     Ok(r) => r,
                     Err(e) => {
                         let err = RelayError::from(e);
@@ -604,6 +616,8 @@ where
     );
 
     let ingress_ctx = IngressCtx::new(kind, &ctx.logical_model, target.actual_model());
+    let raw_payload_override =
+        I::same_protocol_request_override(&target, service, &client_req_snapshot);
 
     let mut sent_headers_sink: Option<Value> = None;
     let invoke_result = chat::invoke_stream_raw(
@@ -612,6 +626,7 @@ where
         &target,
         service,
         &canonical_req,
+        raw_payload_override.as_ref(),
         &mut sent_headers_sink,
     )
     .await;
@@ -694,8 +709,21 @@ where
         tracking_spawn.emit(ctx_spawn, outcome, client_snap_spawn, upstream_snap_spawn);
     });
 
-    let body_stream = stream_driver::transcode_stream::<I>(upstream, kind, target, ingress_ctx, tx);
-    Ok(EngineOutcome::Stream(Box::pin(body_stream)))
+    let body_stream: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+        if I::should_passthrough_stream(kind) {
+            Box::pin(stream_driver::passthrough_stream(
+                upstream, kind, target, tx,
+            ))
+        } else {
+            Box::pin(stream_driver::transcode_stream::<I>(
+                upstream,
+                kind,
+                target,
+                ingress_ctx,
+                tx,
+            ))
+        };
+    Ok(EngineOutcome::Stream(body_stream))
 }
 
 // ---------------------------------------------------------------------------
@@ -912,5 +940,82 @@ fn map_price_error(e: summer_ai_billing::PriceError) -> RelayError {
                 model: String::new(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::convert::ingress::{IngressConverter, OpenAIResponsesIngress};
+    use summer_ai_core::{AdapterKind, ServiceTarget, ServiceType};
+
+    fn openai_resp_target() -> ServiceTarget {
+        ServiceTarget::bearer(
+            AdapterKind::OpenAIResp,
+            "https://api.openai.com/v1",
+            "sk-test",
+            "gpt-5.4",
+        )
+    }
+
+    #[test]
+    fn same_protocol_request_override_rewrites_model_and_stream() {
+        let raw = serde_json::json!({
+            "model": "gpt-5",
+            "stream": false,
+            "input": "hello"
+        });
+        let patched = OpenAIResponsesIngress::same_protocol_request_override(
+            &openai_resp_target(),
+            ServiceType::ResponsesStream,
+            &Some(raw),
+        )
+        .expect("same-protocol override");
+        assert_eq!(patched["model"], serde_json::json!("gpt-5.4"));
+        assert_eq!(patched["stream"], serde_json::json!(true));
+        assert_eq!(patched["input"], serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn same_protocol_request_override_is_disabled_for_cross_protocol() {
+        let raw = serde_json::json!({"model":"gpt-5","input":"hello"});
+        let patched =
+            OpenAIResponsesIngress::same_protocol_client_response(AdapterKind::OpenAI, Some(raw));
+        assert!(patched.is_none());
+    }
+
+    #[test]
+    fn same_protocol_client_response_uses_raw_openai_responses_body() {
+        let raw = serde_json::json!({
+            "id": "resp_123",
+            "object": "response",
+            "created_at": 1,
+            "model": "gpt-5.4",
+            "status": "completed",
+            "output": [],
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 2,
+                "total_tokens": 3
+            }
+        });
+        let resp = OpenAIResponsesIngress::same_protocol_client_response(
+            AdapterKind::OpenAIResp,
+            Some(raw),
+        )
+        .expect("same-protocol branch")
+        .expect("deserialize raw response");
+        assert_eq!(resp.id, "resp_123");
+        assert_eq!(resp.model, "gpt-5.4");
+        assert_eq!(resp.status, "completed");
+    }
+
+    #[test]
+    fn should_passthrough_stream_only_for_openai_responses_same_protocol() {
+        assert!(OpenAIResponsesIngress::should_passthrough_stream(
+            AdapterKind::OpenAIResp
+        ));
+        assert!(!OpenAIResponsesIngress::should_passthrough_stream(
+            AdapterKind::OpenAI
+        ));
     }
 }

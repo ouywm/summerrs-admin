@@ -6,6 +6,7 @@ version = "0.0.1"
 [dependencies]
 async-stream = { workspace = true }
 async-trait = { workspace = true }
+axum = "0.8.9"
 axum-extra = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -14,6 +15,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }
 rust_decimal = { workspace = true }
+schemars = { workspace = true }
 sea-orm = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

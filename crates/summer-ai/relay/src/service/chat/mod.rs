@@ -22,6 +22,7 @@ use crate::extract::{extract_upstream_request_id, sanitize_reqwest_headers};
 pub struct Invoked<T> {
     pub inner: T,
     pub upstream_request_id: Option<String>,
+    pub raw_response_body: Option<Value>,
 }
 
 pub const fn service_type_for(scope: EndpointScope, is_stream: bool) -> ServiceType {
@@ -44,9 +45,13 @@ pub async fn invoke_non_stream(
     target: &ServiceTarget,
     service: ServiceType,
     request: &ChatRequest,
+    raw_payload_override: Option<&Value>,
     sent_headers_sink: &mut Option<Value>,
 ) -> RelayResult<Invoked<ChatResponse>> {
-    let wire = AdapterDispatcher::build_chat_request(kind, target, service, request)?;
+    let mut wire = AdapterDispatcher::build_chat_request(kind, target, service, request)?;
+    if let Some(raw_payload_override) = raw_payload_override {
+        wire.payload = raw_payload_override.clone();
+    }
     *sent_headers_sink = Some(sanitize_reqwest_headers(&wire.headers));
 
     tracing::debug!(
@@ -69,10 +74,12 @@ pub async fn invoke_non_stream(
 
     let upstream_request_id = extract_upstream_request_id(response.headers());
     let body = response.bytes().await?;
+    let raw_response_body = serde_json::from_slice::<Value>(&body).ok();
     let chat = AdapterDispatcher::parse_chat_response(kind, target, body)?;
     Ok(Invoked {
         inner: chat,
         upstream_request_id,
+        raw_response_body,
     })
 }
 
@@ -85,9 +92,13 @@ pub async fn invoke_stream_raw(
     target: &ServiceTarget,
     service: ServiceType,
     request: &ChatRequest,
+    raw_payload_override: Option<&Value>,
     sent_headers_sink: &mut Option<Value>,
 ) -> RelayResult<Invoked<reqwest::Response>> {
-    let wire = AdapterDispatcher::build_chat_request(kind, target, service, request)?;
+    let mut wire = AdapterDispatcher::build_chat_request(kind, target, service, request)?;
+    if let Some(raw_payload_override) = raw_payload_override {
+        wire.payload = raw_payload_override.clone();
+    }
     *sent_headers_sink = Some(sanitize_reqwest_headers(&wire.headers));
 
     tracing::debug!(
@@ -112,6 +123,7 @@ pub async fn invoke_stream_raw(
     Ok(Invoked {
         inner: response,
         upstream_request_id,
+        raw_response_body: None,
     })
 }
 

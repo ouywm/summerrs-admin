@@ -586,6 +586,7 @@ mod tests {
             previous_response_id: Some("resp_prev".into()),
             reasoning_summary: Some("auto".into()),
             instructions: Some("be concise".into()),
+            native_input_items: Vec::new(),
         });
         let data = OpenAIAdapter::build_chat_request(&target, ServiceType::Chat, &req).unwrap();
         assert!(
