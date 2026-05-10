@@ -205,7 +205,6 @@ pub struct Worker {
     pub db: DbConn,
     pub registry: Arc<HandlerRegistry>,
     pub app: Arc<App>,
-    pub instance: Arc<str>,
     /// 正在执行的 job_id 集合（简化版 DISCARD：在集合里就跳过本次触发）
     in_flight: Arc<RwLock<std::collections::HashSet<i64>>>,
 }
@@ -216,7 +215,6 @@ impl Worker {
             db,
             registry,
             app,
-            instance: Arc::from(instance_id()),
             in_flight: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
@@ -405,14 +403,12 @@ impl Worker {
             trigger_type: Set(trigger_type),
             trigger_by: Set(trigger_by),
             state: Set(RunState::Discarded),
-            instance: Set(Some(self.instance.to_string())),
             scheduled_at: Set(scheduled_at),
             started_at: Set(None),
             finished_at: Set(Some(now)),
             retry_count: Set(retry_count as i32),
             result_json: Set(None),
             error_message: Set(Some("blocked by previous run".into())),
-            log_excerpt: Set(None),
             create_time: NotSet,
         };
         if let Err(error) = active.insert(&self.db).await {
@@ -439,14 +435,12 @@ impl Worker {
             trigger_type: Set(trigger_type),
             trigger_by: Set(trigger_by),
             state: Set(state),
-            instance: Set(Some(self.instance.to_string())),
             scheduled_at: Set(scheduled_at),
             started_at: Set(Some(started_at)),
             finished_at: Set(None),
             retry_count: Set(retry_count as i32),
             result_json: Set(None),
             error_message: Set(None),
-            log_excerpt: Set(None),
             create_time: NotSet,
         };
         let model = active.insert(&self.db).await.context("插入 job_run 失败")?;

@@ -181,7 +181,6 @@ pub struct JobRunQueryDto {
     pub trace_id: Option<String>,
     pub trigger_type: Option<TriggerType>,
     pub state: Option<RunState>,
-    pub instance: Option<String>,
     pub start_time: Option<NaiveDateTime>,
     pub end_time: Option<NaiveDateTime>,
 }
@@ -202,11 +201,6 @@ impl From<JobRunQueryDto> for Condition {
         }
         if let Some(s) = q.state {
             cond = cond.add(sys_job_run::Column::State.eq(s));
-        }
-        if let Some(inst) = q.instance
-            && !inst.is_empty()
-        {
-            cond = cond.add(sys_job_run::Column::Instance.eq(inst));
         }
         if let Some(start) = q.start_time {
             cond = cond.add(sys_job_run::Column::ScheduledAt.gte(start));

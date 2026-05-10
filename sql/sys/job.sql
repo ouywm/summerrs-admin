@@ -55,14 +55,12 @@ CREATE TABLE sys.job_run (
     trigger_type  VARCHAR(16)   NOT NULL,
     trigger_by    BIGINT,
     state         VARCHAR(16)   NOT NULL,
-    instance      VARCHAR(64),
     scheduled_at  TIMESTAMP     NOT NULL,
     started_at    TIMESTAMP,
     finished_at   TIMESTAMP,
     retry_count   INT           NOT NULL DEFAULT 0,
     result_json   JSONB,
     error_message TEXT,
-    log_excerpt   TEXT,
     create_time   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -76,11 +74,9 @@ COMMENT ON COLUMN sys.job_run.trace_id IS '链路追踪ID';
 COMMENT ON COLUMN sys.job_run.trigger_type IS '触发来源：CRON / MANUAL / RETRY';
 COMMENT ON COLUMN sys.job_run.trigger_by IS '手动触发的用户ID';
 COMMENT ON COLUMN sys.job_run.state IS '状态：RUNNING / SUCCEEDED / FAILED / TIMEOUT / DISCARDED';
-COMMENT ON COLUMN sys.job_run.instance IS '执行实例标识 hostname:pid';
 COMMENT ON COLUMN sys.job_run.scheduled_at IS '计划触发时间';
 COMMENT ON COLUMN sys.job_run.started_at IS '实际开始执行时间';
 COMMENT ON COLUMN sys.job_run.finished_at IS '执行结束时间';
 COMMENT ON COLUMN sys.job_run.retry_count IS '当前重试次数';
 COMMENT ON COLUMN sys.job_run.result_json IS '返回值（handler 成功返回的 JSON）';
 COMMENT ON COLUMN sys.job_run.error_message IS '错误信息';
-COMMENT ON COLUMN sys.job_run.log_excerpt IS '日志摘录';
