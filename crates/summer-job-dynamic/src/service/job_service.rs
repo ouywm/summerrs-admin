@@ -31,10 +31,11 @@ impl JobService {
 
     pub fn list_handlers(&self) -> Vec<HandlerVo> {
         self.registry
-            .names()
+            .entries()
             .into_iter()
-            .map(|name| HandlerVo {
+            .map(|(name, description)| HandlerVo {
                 name: name.to_string(),
+                description: description.to_string(),
             })
             .collect()
     }

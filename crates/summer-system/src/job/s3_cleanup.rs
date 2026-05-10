@@ -44,6 +44,8 @@ inventory::submit!(summer_job_dynamic::BuiltinJob {
     dto_factory: default_dto,
 });
 
+/// 扫描并清理过期的 S3 分片上传碎片。按 `S3Config.multipart_max_age` 判定过期，
+/// 超时的 multipart upload 逐个 abort。任务执行时间与 bucket 内未完成分片数量成正比。
 #[job_handler("summer_system::s3_multipart_cleanup")]
 async fn s3_multipart_cleanup(ctx: JobContext) -> JobResult {
     let s3: aws_sdk_s3::Client = ctx.component();

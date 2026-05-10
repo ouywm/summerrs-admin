@@ -285,6 +285,8 @@ impl JobRunVo {
 #[serde(rename_all = "camelCase")]
 pub struct HandlerVo {
     pub name: String,
+    /// 从 `#[job_handler]` 注解的函数 `///` doc comment 抽取，可能为空字符串
+    pub description: String,
 }
 
 // ---------------------------------------------------------------------------

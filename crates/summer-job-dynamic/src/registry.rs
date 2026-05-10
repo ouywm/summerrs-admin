@@ -10,10 +10,12 @@ pub type HandlerFn = fn(JobContext) -> HandlerFuture;
 
 /// 编译期收集的 handler 注册项。
 ///
-/// `#[job_handler("name")]` 宏展开生成 `inventory::submit!` 把每个 handler 函数
-/// 包成统一签名 `fn(JobContext) -> Pin<Box<dyn Future<Output = JobResult>>>`。
+/// `#[job_handler("name")]` 宏展开生成 `inventory::submit!`，把 handler 函数包成
+/// 统一签名 `fn(JobContext) -> Pin<Box<dyn Future<Output = JobResult>>>`，并把函数
+/// 上的 `///` doc comment 作为 description 一并注册（前端下拉里展示用）。
 pub struct JobHandlerEntry {
     pub name: &'static str,
+    pub description: &'static str,
     pub call: HandlerFn,
 }
 
@@ -40,11 +42,13 @@ inventory::collect!(BuiltinJob);
 /// 调度器按 `sys_job.handler` 字段（字符串）从这张表查函数指针调用。
 pub struct HandlerRegistry {
     map: HashMap<&'static str, HandlerFn>,
+    descriptions: HashMap<&'static str, &'static str>,
 }
 
 impl HandlerRegistry {
     pub fn collect() -> Self {
         let mut map = HashMap::new();
+        let mut descriptions = HashMap::new();
         for entry in inventory::iter::<JobHandlerEntry> {
             if map.insert(entry.name, entry.call).is_some() {
                 tracing::warn!(
@@ -52,8 +56,9 @@ impl HandlerRegistry {
                     "duplicate job handler name, last registration wins"
                 );
             }
+            descriptions.insert(entry.name, entry.description);
         }
-        Self { map }
+        Self { map, descriptions }
     }
 
     pub fn get(&self, name: &str) -> Option<HandlerFn> {
@@ -64,9 +69,24 @@ impl HandlerRegistry {
         self.map.contains_key(name)
     }
 
+    pub fn description(&self, name: &str) -> Option<&'static str> {
+        self.descriptions.get(name).copied()
+    }
+
     pub fn names(&self) -> Vec<&'static str> {
         let mut v: Vec<&'static str> = self.map.keys().copied().collect();
         v.sort_unstable();
+        v
+    }
+
+    /// 按 handler name 升序返回 `(name, description)` 列表，前端下拉展示用。
+    pub fn entries(&self) -> Vec<(&'static str, &'static str)> {
+        let mut v: Vec<(&'static str, &'static str)> = self
+            .map
+            .keys()
+            .map(|name| (*name, self.descriptions.get(name).copied().unwrap_or("")))
+            .collect();
+        v.sort_unstable_by_key(|(n, _)| *n);
         v
     }
 

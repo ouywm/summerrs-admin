@@ -32,6 +32,8 @@ inventory::submit!(summer_job_dynamic::BuiltinJob {
     dto_factory: default_dto,
 });
 
+/// 清理 socket 会话索引中的幽灵条目。Redis 里偶尔会残留已断开连接但索引未
+/// 清理的会话记录，本任务周期扫描并剔除这些失效条目。
 #[job_handler("summer_system::socket_session_gc")]
 async fn socket_session_gc(ctx: JobContext) -> JobResult {
     let service: SocketGatewayService = ctx.component();
