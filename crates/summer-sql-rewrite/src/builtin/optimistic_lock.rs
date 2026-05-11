@@ -26,6 +26,8 @@ pub struct OptimisticLockConfig {
     pub version_column: String,
     /// 只对这些表生效。空 = 全部表。
     pub tables: Vec<String>,
+    /// 始终跳过这些表，优先级高于 `tables`。
+    pub skip_tables: Vec<String>,
 }
 
 impl Default for OptimisticLockConfig {
@@ -33,6 +35,7 @@ impl Default for OptimisticLockConfig {
         Self {
             version_column: "version".to_string(),
             tables: Vec::new(),
+            skip_tables: Vec::new(),
         }
     }
 }
@@ -40,11 +43,14 @@ impl Default for OptimisticLockConfig {
 impl OptimisticLockConfig {
     /// 添加一个 SeaORM 实体到白名单，自动提取 schema + table 名。
     pub fn with_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
-        let name = match _entity.schema_name() {
-            Some(schema) => format!("{}.{}", schema, _entity.table_name()),
-            None => _entity.table_name().to_string(),
-        };
-        self.tables.push(name);
+        self.tables.push(super::entity_qualified_name(&_entity));
+        self
+    }
+
+    /// 添加一个 SeaORM 实体到跳过列表。
+    pub fn skip_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
+        self.skip_tables
+            .push(super::entity_qualified_name(&_entity));
         self
     }
 }
@@ -60,11 +66,19 @@ impl OptimisticLockPlugin {
     }
 
     fn applies_to_table(&self, table: &str) -> bool {
+        let table_low = table.to_ascii_lowercase();
+        let short = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
+        if self
+            .config
+            .skip_tables
+            .iter()
+            .any(|t| matches_table(t.as_str(), table_low.as_str(), short))
+        {
+            return false;
+        }
         if self.config.tables.is_empty() {
             return true;
         }
-        let table_low = table.to_ascii_lowercase();
-        let short = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
         self.config
             .tables
             .iter()
