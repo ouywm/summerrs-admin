@@ -10,9 +10,7 @@ use summer_mcp::McpPlugin;
 use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
-use summer_sharding::SummerShardingPlugin;
-use summer_sql_rewrite::SqlRewriteConfigurator;
-use summer_sql_rewrite::builtin::ProbePlugin;
+use summer_sharding::{ProbePlugin, SqlRewriteConfigurator, SummerShardingPlugin};
 use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 use summer_web::{WebConfigurator, WebPlugin};
 

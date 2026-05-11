@@ -48,9 +48,7 @@ impl HintRouter {
                     })
                     .collect(),
             )),
-            ShardingHint::Value(_, _) | ShardingHint::Shadow | ShardingHint::SkipMasking => {
-                Ok(None)
-            }
+            ShardingHint::Value(_, _) => Ok(None),
         }
     }
 

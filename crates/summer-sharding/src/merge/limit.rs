@@ -21,15 +21,19 @@ pub fn apply(
 mod tests {
     use std::collections::BTreeMap;
 
-    use sea_orm::Value;
+    use sea_orm::{ProxyRow, QueryResult, Value};
 
-    use crate::merge::{limit::apply, row::from_values};
+    use crate::merge::limit::apply;
+
+    fn row(values: BTreeMap<String, Value>) -> QueryResult {
+        ProxyRow::new(values).into()
+    }
 
     #[test]
     fn limit_apply_respects_offset_and_limit() {
         let rows = (1..=5)
             .map(|value| {
-                from_values(BTreeMap::from([(
+                row(BTreeMap::from([(
                     "id".to_string(),
                     Value::Int(Some(value)),
                 )]))

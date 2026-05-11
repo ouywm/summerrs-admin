@@ -4,46 +4,47 @@ use serde::{Deserialize, Serialize};
 use summer::config::Configurable;
 
 use super::{
-    AuditConfig, BindingGroupConfig, CdcConfig, DEFAULT_BOOTSTRAP_DATASOURCE, EncryptConfig,
-    LookupIndexConfig, MaskingConfig, MaskingRuleConfig, OnlineDdlConfig, ReadWriteSplittingConfig,
-    ShadowConfig, ShardingSectionConfig, TableRuleConfig, split_qualified_name,
+    BindingGroupConfig, DEFAULT_BOOTSTRAP_DATASOURCE, ReadWriteSplittingConfig,
+    ShardingSectionConfig, TableRuleConfig, split_qualified_name,
 };
 use crate::{
     config::{TenantConfig, TenantIsolationLevel},
     error::{Result, ShardingError},
 };
 
+// ---------------------------------------------------------------------------
+// 审计配置（still used by connector/connection/audit.rs for slow_query / fanout metrics）
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AuditConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_slow_query_threshold")]
+    pub slow_query_threshold_ms: u64,
+    #[serde(default)]
+    pub log_full_scatter: bool,
+    #[serde(default)]
+    pub log_no_sharding_key: bool,
+}
+
+fn default_slow_query_threshold() -> u64 {
+    1000
+}
+
+// ---------------------------------------------------------------------------
+// 运行时分片配置
+// ---------------------------------------------------------------------------
+
 /// 运行时分片配置。
-///
-/// 这是经过启动配置归一化并验证后的内部配置对象，
-/// 用于真正驱动路由、改写和执行流程。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ShardingConfig {
-    /// 多租户相关配置。
     #[serde(default)]
     pub tenant: TenantConfig,
-    /// 分片规则配置。
     #[serde(default)]
     pub sharding: ShardingSectionConfig,
-    /// 读写分离配置。
     #[serde(default)]
     pub read_write_splitting: ReadWriteSplittingConfig,
-    /// 加密配置。
-    #[serde(default)]
-    pub encrypt: EncryptConfig,
-    /// 脱敏配置。
-    #[serde(default)]
-    pub masking: MaskingConfig,
-    /// 影子流量配置。
-    #[serde(default)]
-    pub shadow: ShadowConfig,
-    /// 在线 DDL 配置。
-    #[serde(default)]
-    pub online_ddl: OnlineDdlConfig,
-    /// CDC 配置。
-    #[serde(default)]
-    pub cdc: CdcConfig,
-    /// 审计配置。
     #[serde(default)]
     pub audit: AuditConfig,
 }
@@ -85,14 +86,6 @@ impl ShardingConfig {
                         rule.name
                     )));
                 }
-                for replica in &rule.replicas {
-                    if replica.trim().is_empty() {
-                        return Err(ShardingError::Config(format!(
-                            "read/write rule `{}` contains an empty replica name",
-                            rule.name
-                        )));
-                    }
-                }
             }
         }
 
@@ -106,82 +99,6 @@ impl ShardingConfig {
                 return Err(ShardingError::Config(
                     "binding group sharding_column cannot be empty".to_string(),
                 ));
-            }
-        }
-
-        if self.encrypt.enabled {
-            for rule in &self.encrypt.rules {
-                if rule.algorithm.trim().is_empty() || rule.key_env.trim().is_empty() {
-                    return Err(ShardingError::Config(format!(
-                        "encrypt rule `{}`.{} requires algorithm and key_env",
-                        rule.table, rule.column
-                    )));
-                }
-            }
-        }
-
-        if self.masking.enabled {
-            for rule in &self.masking.rules {
-                if rule.table.trim().is_empty()
-                    || rule.column.trim().is_empty()
-                    || rule.algorithm.trim().is_empty()
-                {
-                    return Err(ShardingError::Config(
-                        "masking rules require table, column and algorithm".to_string(),
-                    ));
-                }
-            }
-        }
-
-        for index in &self.sharding.lookup_indexes {
-            if index.logic_table.trim().is_empty()
-                || index.lookup_column.trim().is_empty()
-                || index.lookup_table.trim().is_empty()
-                || index.sharding_column.trim().is_empty()
-            {
-                return Err(ShardingError::Config(
-                    "lookup index requires logic_table, lookup_column, lookup_table and sharding_column"
-                        .to_string(),
-                ));
-            }
-        }
-
-        if self.shadow.enabled
-            && self.shadow.database_mode.enabled
-            && self.shadow.database_mode.datasource.is_none()
-        {
-            return Err(ShardingError::Config(
-                "shadow database mode requires datasource".to_string(),
-            ));
-        }
-
-        if self.online_ddl.enabled
-            && (self.online_ddl.concurrency == 0 || self.online_ddl.batch_size == 0)
-        {
-            return Err(ShardingError::Config(
-                "online_ddl concurrency and batch_size must be positive".to_string(),
-            ));
-        }
-
-        if self.cdc.enabled {
-            for task in &self.cdc.tasks {
-                if task.name.trim().is_empty() {
-                    return Err(ShardingError::Config(
-                        "cdc task name cannot be empty".to_string(),
-                    ));
-                }
-                if task.source_tables.is_empty() {
-                    return Err(ShardingError::Config(format!(
-                        "cdc task `{}` requires at least one source table",
-                        task.name
-                    )));
-                }
-                if task.batch_size == 0 {
-                    return Err(ShardingError::Config(format!(
-                        "cdc task `{}` batch_size must be positive",
-                        task.name
-                    )));
-                }
             }
         }
 
@@ -231,54 +148,6 @@ impl ShardingConfig {
         })
     }
 
-    pub fn lookup_indexes_for(&self, logic_table: &str) -> Vec<&LookupIndexConfig> {
-        let (_, table_only) = split_qualified_name(logic_table);
-        self.sharding
-            .lookup_indexes
-            .iter()
-            .filter(|index| {
-                index.logic_table.eq_ignore_ascii_case(logic_table)
-                    || split_qualified_name(index.logic_table.as_str())
-                        .1
-                        .eq_ignore_ascii_case(table_only)
-            })
-            .collect()
-    }
-
-    pub fn lookup_index_for(
-        &self,
-        logic_table: &str,
-        lookup_column: &str,
-    ) -> Option<&LookupIndexConfig> {
-        self.lookup_indexes_for(logic_table)
-            .into_iter()
-            .find(|index| index.lookup_column.eq_ignore_ascii_case(lookup_column))
-    }
-
-    pub fn masking_rules_for(&self, table: &str) -> Vec<&MaskingRuleConfig> {
-        let (_, table_only) = split_qualified_name(table);
-        self.masking
-            .rules
-            .iter()
-            .filter(|rule| {
-                rule.table.eq_ignore_ascii_case(table)
-                    || split_qualified_name(rule.table.as_str())
-                        .1
-                        .eq_ignore_ascii_case(table_only)
-            })
-            .collect()
-    }
-
-    pub fn shadow_routes_table(&self, table: &str) -> bool {
-        let (_, table_only) = split_qualified_name(table);
-        self.shadow.table_mode.tables.iter().any(|candidate| {
-            candidate.eq_ignore_ascii_case(table)
-                || split_qualified_name(candidate.as_str())
-                    .1
-                    .eq_ignore_ascii_case(table_only)
-        })
-    }
-
     pub fn default_datasource_name(&self) -> Option<&str> {
         Some(
             self.sharding
@@ -299,40 +168,17 @@ impl ShardingConfig {
 }
 
 /// Summer 框架启动期分片配置。
-///
-/// 该结构体负责从配置中心或 TOML 中反序列化，
-/// 随后通过 `into_runtime_config()` 转成运行时使用的 `ShardingConfig`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, Configurable)]
 #[config_prefix = "summer-sharding"]
 pub struct SummerShardingConfig {
-    /// 是否启用分片插件。
     #[serde(default)]
     pub enabled: bool,
-    /// 多租户相关配置。
     #[serde(default)]
     pub tenant: TenantConfig,
-    /// 分片规则配置。
     #[serde(default)]
     pub sharding: ShardingSectionConfig,
-    /// 读写分离配置。
     #[serde(default)]
     pub read_write_splitting: ReadWriteSplittingConfig,
-    /// 加密配置。
-    #[serde(default)]
-    pub encrypt: EncryptConfig,
-    /// 脱敏配置。
-    #[serde(default)]
-    pub masking: MaskingConfig,
-    /// 影子流量配置。
-    #[serde(default)]
-    pub shadow: ShadowConfig,
-    /// 在线 DDL 配置。
-    #[serde(default)]
-    pub online_ddl: OnlineDdlConfig,
-    /// CDC 配置。
-    #[serde(default)]
-    pub cdc: CdcConfig,
-    /// 审计配置。
     #[serde(default)]
     pub audit: AuditConfig,
 }
@@ -343,11 +189,6 @@ impl SummerShardingConfig {
             tenant: self.tenant,
             sharding: self.sharding,
             read_write_splitting: self.read_write_splitting,
-            encrypt: self.encrypt,
-            masking: self.masking,
-            shadow: self.shadow,
-            online_ddl: self.online_ddl,
-            cdc: self.cdc,
             audit: self.audit,
         };
         config.validate()?;
@@ -427,76 +268,6 @@ mod tests {
             config.schema_primary_datasource("ai"),
             Some(DEFAULT_BOOTSTRAP_DATASOURCE)
         );
-    }
-
-    #[test]
-    fn config_parses_lookup_masking_shadow_and_cdc_sections() {
-        let config = ShardingConfig::from_test_str(
-            r#"
-            [[sharding.tables]]
-            logic_table = "ai.log"
-            actual_tables = "ai.log_${yyyyMM}"
-            sharding_column = "create_time"
-            algorithm = "time_range"
-
-            [[sharding.lookup_indexes]]
-            logic_table = "ai.log"
-            lookup_column = "trace_id"
-            lookup_table = "ai.log_lookup_trace_id"
-            sharding_column = "create_time"
-
-            [masking]
-            enabled = true
-
-              [[masking.rules]]
-              table = "ai.log"
-              column = "client_ip"
-              algorithm = "ip"
-
-            [shadow]
-            enabled = true
-            shadow_suffix = "_shadow"
-
-              [shadow.table_mode]
-              enabled = true
-              tables = ["ai.log"]
-
-            [shadow.database_mode]
-            enabled = true
-            datasource = "shadow_dynamic"
-
-              [[shadow.conditions]]
-              type = "column"
-              column = "is_shadow"
-              value = "1"
-
-            [online_ddl]
-            enabled = true
-            concurrency = 2
-            batch_size = 2000
-
-            [cdc]
-            enabled = true
-
-              [[cdc.tasks]]
-              name = "expand_log"
-              source_tables = ["ai.log_202603"]
-              sink_tables = ["ai.log_0", "ai.log_1"]
-              batch_size = 100
-            "#,
-        )
-        .expect("config should parse");
-
-        assert_eq!(
-            config
-                .lookup_index_for("ai.log", "trace_id")
-                .map(|item| item.lookup_table.as_str()),
-            Some("ai.log_lookup_trace_id")
-        );
-        assert_eq!(config.masking_rules_for("log").len(), 1);
-        assert!(config.shadow_routes_table("ai.log"));
-        assert_eq!(config.online_ddl.batch_size, 2000);
-        assert_eq!(config.cdc.tasks.len(), 1);
     }
 
     #[test]

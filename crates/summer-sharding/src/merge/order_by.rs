@@ -149,19 +149,20 @@ fn sort_value(row: &QueryResult, column: &str) -> SortValue {
 mod tests {
     use std::collections::BTreeMap;
 
-    use sea_orm::Value;
+    use sea_orm::{ProxyRow, QueryResult, Value};
 
-    use crate::{
-        merge::{order_by::merge, row::from_values},
-        router::OrderByItem,
-    };
+    use crate::{merge::order_by::merge, router::OrderByItem};
+
+    fn row(values: BTreeMap<String, Value>) -> QueryResult {
+        ProxyRow::new(values).into()
+    }
 
     #[test]
     fn order_by_merge_sorts_ascending_and_puts_null_last() {
         let rows = vec![
-            from_values(BTreeMap::from([("sort".to_string(), Value::Int(Some(3)))])),
-            from_values(BTreeMap::from([("sort".to_string(), Value::Int(Some(1)))])),
-            from_values(BTreeMap::from([("sort".to_string(), Value::Int(None))])),
+            row(BTreeMap::from([("sort".to_string(), Value::Int(Some(3)))])),
+            row(BTreeMap::from([("sort".to_string(), Value::Int(Some(1)))])),
+            row(BTreeMap::from([("sort".to_string(), Value::Int(None))])),
         ];
 
         let merged = merge(
@@ -182,15 +183,15 @@ mod tests {
     #[test]
     fn order_by_merge_sorts_descending() {
         let rows = vec![
-            from_values(BTreeMap::from([(
+            row(BTreeMap::from([(
                 "name".to_string(),
                 Value::String(Some("a".to_string())),
             )])),
-            from_values(BTreeMap::from([(
+            row(BTreeMap::from([(
                 "name".to_string(),
                 Value::String(Some("c".to_string())),
             )])),
-            from_values(BTreeMap::from([(
+            row(BTreeMap::from([(
                 "name".to_string(),
                 Value::String(Some("b".to_string())),
             )])),

@@ -27,10 +27,9 @@ sea-orm = { workspace = true, features = [
 ] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sqlparser = { workspace = true }
+sqlparser = { workspace = true, features = ["visitor"] }
 summer = { workspace = true }
 summer-auth = { workspace = true }
-summer-sql-rewrite = { workspace = true }
 summer-web = { workspace = true, features = ["openapi"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }

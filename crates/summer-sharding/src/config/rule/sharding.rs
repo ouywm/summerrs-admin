@@ -111,9 +111,6 @@ pub struct ShardingSectionConfig {
     /// 绑定表组列表。
     #[serde(default)]
     pub binding_groups: Vec<BindingGroupConfig>,
-    /// lookup 索引配置列表。
-    #[serde(default)]
-    pub lookup_indexes: Vec<super::LookupIndexConfig>,
     /// 全局分片配置。
     #[serde(default)]
     pub global: ShardingGlobalConfig,

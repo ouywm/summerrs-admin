@@ -15,7 +15,7 @@
 //! 该插件读 [`crate::rewrite_plugin::ShardingRouteInfo`] 扩展，
 //! 这个扩展由 `DefaultSqlRewriter` 在执行 plugin chain 之前注入。
 
-use summer_sql_rewrite::{Result, SqlRewriteContext, SqlRewritePlugin};
+use crate::sql_rewrite::{Result, SqlRewriteContext, SqlRewritePlugin};
 
 use crate::rewrite_plugin::ShardingRouteInfo;
 
@@ -60,9 +60,9 @@ impl SqlRewritePlugin for TableShardingPlugin {
 
 #[cfg(test)]
 mod tests {
+    use crate::sql_rewrite::{Extensions, SqlOperation, SqlRewriteContext};
     use sqlparser::dialect::PostgreSqlDialect;
     use sqlparser::parser::Parser;
-    use summer_sql_rewrite::{Extensions, SqlOperation, SqlRewriteContext};
 
     use super::*;
     use crate::rewrite_plugin::{ShardingRouteInfo, TableRewritePair};

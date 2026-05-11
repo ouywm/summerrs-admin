@@ -7,7 +7,6 @@ use crate::{
     connector::statement::{StatementContext, analyze_statement},
     error::{Result, ShardingError},
     execute::{ExecutionUnit, RawStatementExecutor},
-    lookup::update_assigns_column,
     router::{RoutePlan, SqlOperation},
 };
 
@@ -85,7 +84,7 @@ impl ShardingConnectionInner {
 
     pub(crate) async fn prepare_statement(
         &self,
-        raw: &dyn RawStatementExecutor,
+        _raw: &dyn RawStatementExecutor,
         stmt: &Statement,
         force_primary: bool,
         overrides: ExecutionOverrides,
@@ -94,19 +93,10 @@ impl ShardingConnectionInner {
         analysis.hint = overrides.hint;
         analysis.access_context = overrides.access_context;
         analysis.tenant = overrides.tenant;
-        analysis.shadow_headers = overrides
-            .shadow_headers
-            .as_deref()
-            .cloned()
-            .unwrap_or_default();
         self.ensure_tenant_available(analysis.tenant.as_ref())?;
-        self.resolve_lookup_sharding_conditions(raw, &mut analysis)
-            .await?;
         self.reject_sharding_key_update(&analysis, stmt.values.as_ref())?;
-        self.reject_ambiguous_lookup_mutation(&analysis)?;
         let mut plan = self.router.route(&analysis, force_primary)?;
         self.apply_tenant_route(&mut plan, analysis.tenant.as_ref());
-        self.shadow_router.apply(&mut plan, &analysis);
         let statements =
             self.rewriter
                 .rewrite(stmt, &analysis, &plan, self.plugin_registry.get())?;
@@ -145,45 +135,29 @@ impl ShardingConnectionInner {
             return Ok(());
         };
         let _ = values;
-        if update_assigns_column(&analysis.ast, rule.sharding_column.as_str()) {
+        // 分片键更新检查：通过 AST 直接判断 UPDATE 是否修改了分片列
+        let assigns_sharding_key = match &analysis.ast {
+            sqlparser::ast::Statement::Update { assignments, .. } => assignments.iter().any(|a| {
+                if let sqlparser::ast::AssignmentTarget::ColumnName(col) = &a.target {
+                    col.0
+                        .last()
+                        .map(|ident| {
+                            ident
+                                .value
+                                .eq_ignore_ascii_case(rule.sharding_column.as_str())
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            }),
+            _ => false,
+        };
+        if assigns_sharding_key {
             return Err(ShardingError::Unsupported(format!(
                 "updating sharding column `{}` on `{}` is not supported; use explicit reshard / move flow",
                 rule.sharding_column, rule.logic_table
             )));
-        }
-        Ok(())
-    }
-
-    fn reject_ambiguous_lookup_mutation(&self, analysis: &StatementContext) -> Result<()> {
-        if !matches!(
-            analysis.operation,
-            SqlOperation::Update | SqlOperation::Delete
-        ) {
-            return Ok(());
-        }
-        let Some(primary_table) = analysis.primary_table() else {
-            return Ok(());
-        };
-        for index in self
-            .config
-            .lookup_indexes_for(primary_table.full_name().as_str())
-        {
-            if analysis
-                .exact_condition_value(index.lookup_column.as_str())
-                .is_none()
-            {
-                return Err(ShardingError::Unsupported(format!(
-                    "{} on `{}` with lookup index `{}` requires an exact `{}` predicate to keep lookup table consistent",
-                    match analysis.operation {
-                        SqlOperation::Update => "update",
-                        SqlOperation::Delete => "delete",
-                        _ => unreachable!(),
-                    },
-                    primary_table.full_name(),
-                    index.lookup_table,
-                    index.lookup_column
-                )));
-            }
         }
         Ok(())
     }
@@ -219,10 +193,6 @@ impl ShardingConnectionInner {
             .prepare_statement(raw, &stmt, force_primary, overrides)
             .await?;
         let result = self.executor.execute(raw, units).await.map_err(DbErr::from);
-        if result.is_ok() {
-            self.sync_lookup_table(raw, &analysis, stmt.values.as_ref())
-                .await?;
-        }
         self.audit(stmt.sql, &analysis, &plan, started_at.elapsed().as_millis());
         result
     }

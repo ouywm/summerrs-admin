@@ -11,4 +11,4 @@ pub struct ShardingRouteInfo {
     pub is_fanout: bool,
 }
 
-pub type RewriteContext<'a> = summer_sql_rewrite::SqlRewriteContext<'a>;
+pub type RewriteContext<'a> = crate::sql_rewrite::SqlRewriteContext<'a>;

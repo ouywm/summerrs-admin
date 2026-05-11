@@ -1,5 +1,4 @@
 mod hint_router;
-mod rw_router;
 mod schema_router;
 mod table_router;
 
@@ -10,13 +9,11 @@ use crate::{
     config::ShardingConfig,
     connector::statement::StatementContext,
     error::{Result, ShardingError},
-    lookup::{LookupDefinition, LookupIndex},
 };
 
+pub use crate::sql_rewrite::{QualifiedTableName, SqlOperation};
 pub use hint_router::HintRouter;
-pub use rw_router::ReadWriteRouter;
 pub use schema_router::SchemaRouter;
-pub use summer_sql_rewrite::{QualifiedTableName, SqlOperation};
 pub use table_router::TableRouter;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,27 +56,23 @@ pub struct DefaultSqlRouter {
     hint_router: HintRouter,
     schema_router: SchemaRouter,
     table_router: TableRouter,
-    read_write_router: ReadWriteRouter,
-    lookup_index: Arc<LookupIndex>,
 }
 
 impl DefaultSqlRouter {
-    pub fn new(config: Arc<ShardingConfig>, lookup_index: Arc<LookupIndex>) -> Self {
+    pub fn new(config: Arc<ShardingConfig>) -> Self {
         let config = config.as_ref().clone();
         Self {
             hint_router: HintRouter,
             schema_router: SchemaRouter::new(&config),
             table_router: TableRouter::new(&config),
-            read_write_router: ReadWriteRouter::new(&config),
             algorithms: AlgorithmRegistry,
-            lookup_index,
             config,
         }
     }
 }
 
 impl SqlRouter for DefaultSqlRouter {
-    fn route(&self, analysis: &StatementContext, force_primary: bool) -> Result<RoutePlan> {
+    fn route(&self, analysis: &StatementContext, _force_primary: bool) -> Result<RoutePlan> {
         let Some(primary_table) = analysis.primary_table().cloned() else {
             let datasource = self
                 .config
@@ -92,11 +85,7 @@ impl SqlRouter for DefaultSqlRouter {
                 operation: analysis.operation,
                 logic_tables: Vec::new(),
                 targets: vec![RouteTarget {
-                    datasource: self.read_write_router.route(
-                        datasource.as_str(),
-                        analysis.operation,
-                        force_primary,
-                    ),
+                    datasource,
                     table_rewrites: Vec::new(),
                 }],
                 order_by: analysis.order_by.clone(),
@@ -112,12 +101,7 @@ impl SqlRouter for DefaultSqlRouter {
             .map(|rule| QualifiedTableName::parse(rule.logic_table.as_str()))
             .unwrap_or_else(|| primary_table.clone());
 
-        let base_datasource = self.schema_router.route(logic_table.schema.as_deref())?;
-        let default_datasource = self.read_write_router.route(
-            base_datasource.as_str(),
-            analysis.operation,
-            force_primary,
-        );
+        let datasource = self.schema_router.route(logic_table.schema.as_deref())?;
 
         if let Some(rule) = self.config.table_rule(logic_table.full_name().as_str()) {
             let algorithm = self.algorithms.build(rule)?;
@@ -125,7 +109,7 @@ impl SqlRouter for DefaultSqlRouter {
             if let Some(hint) = &analysis.hint
                 && let Some(targets) = self.hint_router.route(
                     hint,
-                    default_datasource.as_str(),
+                    datasource.as_str(),
                     Some(&logic_table),
                     &available_targets
                         .iter()
@@ -164,10 +148,6 @@ impl SqlRouter for DefaultSqlRouter {
                             .override_sharding_value(hint, rule.sharding_column.as_str())
                     }) {
                         algorithm.do_sharding(&available_targets, value)
-                    } else if let Some(value) =
-                        self.resolve_lookup_sharding_value(&logic_table, analysis, rule)
-                    {
-                        algorithm.do_sharding(&available_targets, &value)
                     } else {
                         match analysis.sharding_condition(rule.sharding_column.as_str()) {
                             Some(ShardingCondition::Exact(value)) => {
@@ -207,11 +187,7 @@ impl SqlRouter for DefaultSqlRouter {
                     actual_targets
                         .into_iter()
                         .map(|actual_table| RouteTarget {
-                            datasource: self.read_write_router.route(
-                                default_datasource.as_str(),
-                                analysis.operation,
-                                force_primary,
-                            ),
+                            datasource: datasource.clone(),
                             table_rewrites: vec![TableRewrite {
                                 logic_table: logic_table.clone(),
                                 actual_table,
@@ -232,7 +208,7 @@ impl SqlRouter for DefaultSqlRouter {
             operation: analysis.operation,
             logic_tables: analysis.tables.clone(),
             targets: vec![RouteTarget {
-                datasource: default_datasource,
+                datasource,
                 table_rewrites: vec![TableRewrite {
                     logic_table: logic_table.clone(),
                     actual_table: logic_table,
@@ -249,35 +225,6 @@ impl SqlRouter for DefaultSqlRouter {
 }
 
 impl DefaultSqlRouter {
-    fn resolve_lookup_sharding_value(
-        &self,
-        logic_table: &QualifiedTableName,
-        analysis: &StatementContext,
-        rule: &crate::config::TableRuleConfig,
-    ) -> Option<crate::algorithm::ShardingValue> {
-        self.config
-            .lookup_indexes_for(logic_table.full_name().as_str())
-            .into_iter()
-            .filter(|index| {
-                index
-                    .sharding_column
-                    .eq_ignore_ascii_case(rule.sharding_column.as_str())
-            })
-            .find_map(|index| {
-                self.lookup_index
-                    .register(LookupDefinition::from_config(index));
-                analysis
-                    .exact_condition_value(index.lookup_column.as_str())
-                    .and_then(|value| {
-                        self.lookup_index.resolve(
-                            logic_table.full_name().as_str(),
-                            index.lookup_column.as_str(),
-                            value,
-                        )
-                    })
-            })
-    }
-
     fn apply_binding_group(
         &self,
         targets: Vec<RouteTarget>,
@@ -364,10 +311,6 @@ impl DefaultSqlRouter {
                         .override_sharding_value(hint, rule.sharding_column.as_str())
                 }) {
                     algorithm.do_sharding(&available_targets, value)
-                } else if let Some(value) =
-                    self.resolve_lookup_sharding_value(logic_table, analysis, rule)
-                {
-                    algorithm.do_sharding(&available_targets, &value)
                 } else {
                     match analysis.sharding_condition(rule.sharding_column.as_str()) {
                         Some(ShardingCondition::Exact(value)) => {
@@ -409,17 +352,17 @@ mod tests {
 
     use sea_orm::{DbBackend, Statement};
 
-    use crate::{connector::analyze_statement, lookup::LookupIndex};
+    use crate::connector::analyze_statement;
 
     use super::{DefaultSqlRouter, QualifiedTableName, SqlOperation, SqlRouter};
 
     #[test]
     fn router_exports_shared_sql_rewrite_types() {
-        let table: summer_sql_rewrite::QualifiedTableName = QualifiedTableName::parse("sys.user");
-        let operation: summer_sql_rewrite::SqlOperation = SqlOperation::Select;
+        let table: crate::sql_rewrite::QualifiedTableName = QualifiedTableName::parse("sys.user");
+        let operation: crate::sql_rewrite::SqlOperation = SqlOperation::Select;
 
         assert_eq!(table.full_name(), "sys.user");
-        assert_eq!(operation, summer_sql_rewrite::SqlOperation::Select);
+        assert_eq!(operation, crate::sql_rewrite::SqlOperation::Select);
     }
 
     #[test]
@@ -457,7 +400,7 @@ mod tests {
             )
             .expect("config"),
         );
-        let router = DefaultSqlRouter::new(config, Arc::new(LookupIndex::default()));
+        let router = DefaultSqlRouter::new(config);
         let analysis = analyze_statement(&Statement::from_string(
             DbBackend::Postgres,
             r#"SELECT r.id, e.status

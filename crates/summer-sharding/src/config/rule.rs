@@ -1,26 +1,9 @@
-mod audit;
-mod cdc;
-mod ddl;
-mod encrypt;
-mod lookup;
-mod masking;
 mod runtime;
-mod shadow;
 mod sharding;
 
 use std::collections::BTreeMap;
 
-pub use audit::AuditConfig;
-pub use cdc::{CdcConfig, CdcTaskConfig};
-pub use ddl::OnlineDdlConfig;
-pub use encrypt::{EncryptConfig, EncryptRuleConfig};
-pub use lookup::LookupIndexConfig;
-pub use masking::{MaskingConfig, MaskingRuleConfig};
-pub use runtime::{ShardingConfig, SummerShardingConfig};
-pub use shadow::{
-    ShadowConditionConfig, ShadowConditionKind, ShadowConfig, ShadowDatabaseModeConfig,
-    ShadowTableModeConfig,
-};
+pub use runtime::{AuditConfig, ShardingConfig, SummerShardingConfig};
 pub use sharding::{
     ActualTablesConfig, BindingGroupConfig, KeyGeneratorConfig, ReadWriteSplittingConfig,
     ShardingGlobalConfig, ShardingSectionConfig, TableRuleConfig,

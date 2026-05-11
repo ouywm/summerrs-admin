@@ -1,13 +1,12 @@
 mod aggregate_rewrite;
-mod encrypt_rewrite;
 mod limit_rewrite;
 mod schema_rewrite;
 mod table_rewrite;
 
 use std::sync::Arc;
 
+use crate::sql_rewrite::SqlRewriteContext;
 use sea_orm::Statement;
-use summer_sql_rewrite::SqlRewriteContext;
 
 use crate::{
     config::ShardingConfig,
@@ -19,7 +18,6 @@ use crate::{
 };
 
 use aggregate_rewrite::apply_aggregate_rewrite;
-pub use encrypt_rewrite::apply_encrypt_rewrite;
 pub use limit_rewrite::inflate_limit_for_fanout;
 pub use schema_rewrite::apply_schema_rewrite;
 pub use table_rewrite::rewrite_table_names;
@@ -75,7 +73,6 @@ impl SqlRewriter for DefaultSqlRewriter {
             if let Some(tenant) = analysis.tenant.as_ref() {
                 apply_tenant_rewrite(&mut parsed, tenant, &self.config, &plan.logic_tables);
             }
-            apply_encrypt_rewrite(&mut statement, &mut parsed, analysis, &self.config)?;
 
             let mut comments = Vec::new();
             if let Some(registry) = plugin_registry {
@@ -114,7 +111,7 @@ impl SqlRewriter for DefaultSqlRewriter {
             }
 
             statement.sql =
-                summer_sql_rewrite::helpers::format_with_comments(&parsed.to_string(), &comments);
+                crate::sql_rewrite::helpers::format_with_comments(&parsed.to_string(), &comments);
             rewritten.push(statement);
         }
 

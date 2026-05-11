@@ -9,6 +9,7 @@ pub mod plugin;
 pub mod rewrite;
 pub mod rewrite_plugin;
 pub mod router;
+pub mod sql_rewrite;
 pub mod tenant;
 pub mod web;
 
@@ -48,7 +49,7 @@ pub use router::{
     DefaultSqlRouter, OrderByItem, QualifiedTableName, RoutePlan, RouteTarget, SqlOperation,
     SqlRouter, TableRewrite,
 };
-pub use summer_sql_rewrite::Extensions;
+pub use sql_rewrite::{Extensions, ProbePlugin, SqlRewriteConfigurator};
 pub use tenant::{
     SeaOrmTenantMetadataLoader, SysTenantDatasourceMetadataLoader, TenantContext,
     TenantLifecycleManager, TenantMetadataApplyOutcome, TenantMetadataEvent,

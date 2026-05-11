@@ -120,13 +120,11 @@ where
             self.default_isolation,
             self.sharding.as_ref(),
         );
-        let shadow_headers = request_headers(req.headers());
         let request_scoped_sharding = self.sharding.as_ref().map(|sharding| {
-            let sharding = sharding.with_shadow_headers(shadow_headers);
             tenant
                 .as_ref()
                 .map(|tenant| sharding.with_tenant_context(tenant.clone()))
-                .unwrap_or(sharding)
+                .unwrap_or_else(|| sharding.clone())
         });
         let mut inner = self.inner.clone();
 
@@ -142,6 +140,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 fn request_headers(headers: &summer_web::axum::http::HeaderMap) -> BTreeMap<String, String> {
     headers
         .iter()
@@ -164,7 +163,7 @@ fn resolve_tenant_context(
     let tenant = resolve_extension_tenant(req, default_isolation)
         .or_else(|| resolve_source_tenant(req, source, tenant_id_field, default_isolation))?;
     Some(match sharding {
-        Some(sharding) => sharding.resolve_tenant_context(tenant),
+        Some(sharding) => sharding.inner.tenant_router.resolve_context(tenant),
         None => tenant,
     })
 }
