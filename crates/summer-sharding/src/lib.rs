@@ -42,7 +42,7 @@ pub use plugin::SummerShardingPlugin;
 pub use rewrite::{DefaultSqlRewriter, SqlRewriter};
 pub use rewrite_plugin::{
     PluginRegistry, RewriteContext, ShardingRouteInfo, SqlRewritePlugin, TableRewritePair,
-    TableShardingPlugin, helpers as rewrite_helpers,
+    TableShardingPlugin,
 };
 pub use router::{
     DefaultSqlRouter, OrderByItem, QualifiedTableName, RoutePlan, RouteTarget, SqlOperation,
