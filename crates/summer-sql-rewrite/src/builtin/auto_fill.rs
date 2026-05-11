@@ -48,6 +48,18 @@ impl Default for AutoFillConfig {
     }
 }
 
+impl AutoFillConfig {
+    /// 添加一个 SeaORM 实体到白名单，自动提取 schema + table 名。
+    pub fn with_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
+        let name = match _entity.schema_name() {
+            Some(schema) => format!("{}.{}", schema, _entity.table_name()),
+            None => _entity.table_name().to_string(),
+        };
+        self.tables.push(name);
+        self
+    }
+}
+
 #[derive(Debug)]
 pub struct AutoFillPlugin {
     config: AutoFillConfig,

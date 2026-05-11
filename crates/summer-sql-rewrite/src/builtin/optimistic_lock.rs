@@ -13,7 +13,7 @@ use sqlparser::ast::{
     Statement as AstStatement, Value as SqlValue,
 };
 
-use crate::{Result, SqlOperation, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin};
+use crate::{Result, SqlOperation, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin, helpers};
 
 /// 当前实体的旧版本号——由业务在请求处理时塞进 extensions。
 #[derive(Debug, Clone, Copy)]
@@ -34,6 +34,18 @@ impl Default for OptimisticLockConfig {
             version_column: "version".to_string(),
             tables: Vec::new(),
         }
+    }
+}
+
+impl OptimisticLockConfig {
+    /// 添加一个 SeaORM 实体到白名单，自动提取 schema + table 名。
+    pub fn with_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
+        let name = match _entity.schema_name() {
+            Some(schema) => format!("{}.{}", schema, _entity.table_name()),
+            None => _entity.table_name().to_string(),
+        };
+        self.tables.push(name);
+        self
     }
 }
 
@@ -103,7 +115,8 @@ impl SqlRewritePlugin for OptimisticLockPlugin {
             .iter()
             .any(|a| assignment_targets_column(a, column.as_str()))
         {
-            inject_where_version_eq(selection, column.as_str(), old_value);
+            let predicate = helpers::build_eq_int_expr(column.as_str(), old_value);
+            inject_condition(selection, predicate);
             return Ok(());
         }
 
@@ -116,7 +129,8 @@ impl SqlRewritePlugin for OptimisticLockPlugin {
             },
         });
 
-        inject_where_version_eq(selection, column.as_str(), old_value);
+        let predicate = helpers::build_eq_int_expr(column.as_str(), old_value);
+        inject_condition(selection, predicate);
 
         ctx.append_comment(format!("optimistic_lock:version={old_value}").as_str());
 
@@ -143,20 +157,9 @@ fn assignment_targets_column(a: &Assignment, column: &str) -> bool {
     false
 }
 
-fn inject_where_version_eq(selection: &mut Option<Expr>, column: &str, old_value: i64) {
-    let predicate = Expr::BinaryOp {
-        left: Box::new(Expr::Identifier(Ident::new(column))),
-        op: BinaryOperator::Eq,
-        right: Box::new(Expr::Value(SqlValue::Number(old_value.to_string(), false))),
-    };
+fn inject_condition(selection: &mut Option<Expr>, predicate: Expr) {
     match selection.take() {
-        Some(existing) => {
-            *selection = Some(Expr::BinaryOp {
-                left: Box::new(existing),
-                op: BinaryOperator::And,
-                right: Box::new(predicate),
-            });
-        }
+        Some(existing) => *selection = Some(helpers::and(existing, predicate)),
         None => *selection = Some(predicate),
     }
 }

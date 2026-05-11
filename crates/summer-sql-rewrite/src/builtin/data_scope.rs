@@ -11,9 +11,9 @@
 //! ## TODO（待部门表落地后补全）
 //! - [`DataScope::Dept`] / [`DataScope::DeptAndChildren`]
 
-use sqlparser::ast::{BinaryOperator, Expr, Ident, Statement as AstStatement, Value as SqlValue};
+use sqlparser::ast::{BinaryOperator, Expr, Value as SqlValue};
 
-use crate::{Result, SqlOperation, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin};
+use crate::{Result, SqlOperation, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin, helpers};
 
 /// 当前请求所允许的数据范围，由业务通过 extensions 注入。
 #[derive(Debug, Clone)]
@@ -50,6 +50,18 @@ impl Default for DataScopeConfig {
     }
 }
 
+impl DataScopeConfig {
+    /// 添加一个 SeaORM 实体到白名单，自动提取 schema + table 名。
+    pub fn with_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
+        let name = match _entity.schema_name() {
+            Some(schema) => format!("{}.{}", schema, _entity.table_name()),
+            None => _entity.table_name().to_string(),
+        };
+        self.tables.push(name);
+        self
+    }
+}
+
 #[derive(Debug)]
 pub struct DataScopePlugin {
     config: DataScopeConfig,
@@ -75,11 +87,9 @@ impl DataScopePlugin {
     fn build_predicate(&self, scope: &DataScope) -> Result<Option<Expr>> {
         match scope {
             DataScope::All => Ok(None),
-            DataScope::Self_ { user_id } => Ok(Some(Expr::BinaryOp {
-                left: Box::new(Expr::Identifier(Ident::new(self.config.creator_column.as_str()))),
-                op: BinaryOperator::Eq,
-                right: Box::new(Expr::Value(SqlValue::Number(user_id.to_string(), false))),
-            })),
+            DataScope::Self_ { user_id } => {
+                Ok(Some(helpers::build_eq_int_expr(&self.config.creator_column, *user_id)))
+            }
             DataScope::Custom { dept_ids } => {
                 if dept_ids.is_empty() {
                     return Ok(Some(Expr::BinaryOp {
@@ -88,15 +98,7 @@ impl DataScopePlugin {
                         right: Box::new(Expr::Value(SqlValue::Number("0".to_string(), false))),
                     }));
                 }
-                let list = dept_ids
-                    .iter()
-                    .map(|id| Expr::Value(SqlValue::Number(id.to_string(), false)))
-                    .collect();
-                Ok(Some(Expr::InList {
-                    expr: Box::new(Expr::Identifier(Ident::new(self.config.dept_column.as_str()))),
-                    list,
-                    negated: false,
-                }))
+                Ok(Some(helpers::build_in_int_expr(&self.config.dept_column, dept_ids)))
             }
             DataScope::Dept { .. } | DataScope::DeptAndChildren { .. } => {
                 Err(SqlRewriteError::Plugin {
@@ -143,32 +145,7 @@ impl SqlRewritePlugin for DataScopePlugin {
         let Some(predicate) = self.build_predicate(&scope)? else {
             return Ok(());
         };
-
-        match ctx.statement {
-            AstStatement::Query(query) => apply_to_query(query, predicate),
-            AstStatement::Update { selection, .. } => apply_to_selection(selection, predicate),
-            AstStatement::Delete(delete) => apply_to_selection(&mut delete.selection, predicate),
-            _ => {}
-        }
+        helpers::append_where(ctx.statement, predicate);
         Ok(())
-    }
-}
-
-fn apply_to_query(query: &mut sqlparser::ast::Query, predicate: Expr) {
-    if let sqlparser::ast::SetExpr::Select(select) = query.body.as_mut() {
-        apply_to_selection(&mut select.selection, predicate);
-    }
-}
-
-fn apply_to_selection(selection: &mut Option<Expr>, predicate: Expr) {
-    match selection.take() {
-        Some(existing) => {
-            *selection = Some(Expr::BinaryOp {
-                left: Box::new(existing),
-                op: BinaryOperator::And,
-                right: Box::new(predicate),
-            });
-        }
-        None => *selection = Some(predicate),
     }
 }
