@@ -36,10 +36,8 @@ pub struct DataScopeConfig {
     pub creator_column: String,
     /// 用于 `Dept` / `Custom` 范围的列名
     pub dept_column: String,
-    /// 当列表非空时只对这些表生效
-    pub include_tables: Vec<String>,
-    /// 出现在该列表的表跳过插件
-    pub exclude_tables: Vec<String>,
+    /// 只对这些表生效。空 = 全部表。
+    pub tables: Vec<String>,
 }
 
 impl Default for DataScopeConfig {
@@ -47,8 +45,7 @@ impl Default for DataScopeConfig {
         Self {
             creator_column: "creator_id".to_string(),
             dept_column: "dept_id".to_string(),
-            include_tables: Vec::new(),
-            exclude_tables: Vec::new(),
+            tables: Vec::new(),
         }
     }
 }
@@ -64,23 +61,15 @@ impl DataScopePlugin {
     }
 
     fn applies_to_table(&self, table: &str) -> bool {
-        let table_low = table.to_ascii_lowercase();
-        let trimmed = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
-        if self
-            .config
-            .exclude_tables
-            .iter()
-            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), trimmed))
-        {
-            return false;
-        }
-        if self.config.include_tables.is_empty() {
+        if self.config.tables.is_empty() {
             return true;
         }
+        let table_low = table.to_ascii_lowercase();
+        let short = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
         self.config
-            .include_tables
+            .tables
             .iter()
-            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), trimmed))
+            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), short))
     }
 
     fn build_predicate(&self, scope: &DataScope) -> Result<Option<Expr>> {

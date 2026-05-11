@@ -2,7 +2,7 @@
 //!
 //! 触发条件：
 //! - SQL 是 UPDATE
-//! - 表名命中插件配置（默认全部表，可白名单/黑名单约束）
+//! - 表名命中 `tables` 白名单（空 = 全部表）
 //! - 配置的 `version` 列存在于赋值列表之外（不要重复加）
 //!
 //! 期望调用方在执行前往 [`crate::SqlRewriteContext::extensions`] 注入当前实体的 `version` 旧值，
@@ -24,18 +24,15 @@ pub struct OptimisticLockValue(pub i64);
 pub struct OptimisticLockConfig {
     /// 版本列名。默认 `version`。
     pub version_column: String,
-    /// 当列表非空时只对这些表生效。
-    pub include_tables: Vec<String>,
-    /// 出现在该列表的表跳过插件。
-    pub exclude_tables: Vec<String>,
+    /// 只对这些表生效。空 = 全部表。
+    pub tables: Vec<String>,
 }
 
 impl Default for OptimisticLockConfig {
     fn default() -> Self {
         Self {
             version_column: "version".to_string(),
-            include_tables: Vec::new(),
-            exclude_tables: Vec::new(),
+            tables: Vec::new(),
         }
     }
 }
@@ -51,23 +48,15 @@ impl OptimisticLockPlugin {
     }
 
     fn applies_to_table(&self, table: &str) -> bool {
-        let table_low = table.to_ascii_lowercase();
-        let trimmed = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
-        if self
-            .config
-            .exclude_tables
-            .iter()
-            .any(|t| matches_table(t.as_str(), table_low.as_str(), trimmed))
-        {
-            return false;
-        }
-        if self.config.include_tables.is_empty() {
+        if self.config.tables.is_empty() {
             return true;
         }
+        let table_low = table.to_ascii_lowercase();
+        let short = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
         self.config
-            .include_tables
+            .tables
             .iter()
-            .any(|t| matches_table(t.as_str(), table_low.as_str(), trimmed))
+            .any(|t| matches_table(t.as_str(), table_low.as_str(), short))
     }
 }
 

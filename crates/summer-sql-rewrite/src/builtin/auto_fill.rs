@@ -29,10 +29,8 @@ pub struct AutoFillConfig {
     pub create_by_column: String,
     pub update_time_column: String,
     pub update_by_column: String,
-    /// 当列表非空时只对这些表生效。
-    pub include_tables: Vec<String>,
-    /// 出现在该列表的表跳过插件。
-    pub exclude_tables: Vec<String>,
+    /// 只对这些表生效。空 = 全部表。
+    pub tables: Vec<String>,
     /// `create_by` / `update_by` 写用户 ID 还是用户名。
     pub use_user_id_for_by: bool,
 }
@@ -44,8 +42,7 @@ impl Default for AutoFillConfig {
             create_by_column: "create_by".to_string(),
             update_time_column: "update_time".to_string(),
             update_by_column: "update_by".to_string(),
-            include_tables: Vec::new(),
-            exclude_tables: Vec::new(),
+            tables: Vec::new(),
             use_user_id_for_by: true,
         }
     }
@@ -62,23 +59,15 @@ impl AutoFillPlugin {
     }
 
     fn applies_to_table(&self, table: &str) -> bool {
-        let table_low = table.to_ascii_lowercase();
-        let trimmed = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
-        if self
-            .config
-            .exclude_tables
-            .iter()
-            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), trimmed))
-        {
-            return false;
-        }
-        if self.config.include_tables.is_empty() {
+        if self.config.tables.is_empty() {
             return true;
         }
+        let table_low = table.to_ascii_lowercase();
+        let short = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
         self.config
-            .include_tables
+            .tables
             .iter()
-            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), trimmed))
+            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), short))
     }
 
     fn now_literal(&self) -> Expr {
