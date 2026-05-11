@@ -13,7 +13,9 @@ use sqlparser::ast::{
     Value as SqlValue,
 };
 
-use crate::{Result, SqlOperation, SqlRewriteContext, SqlRewritePlugin};
+use crate::{QualifiedTableName, Result, SqlOperation, SqlRewriteContext, SqlRewritePlugin};
+
+use super::matches_name;
 
 /// 当前操作用户上下文，由业务通过 extensions 注入。
 #[derive(Debug, Clone)]
@@ -23,45 +25,54 @@ pub struct CurrentUser {
 }
 
 /// 自动填充字段名配置。空字符串表示禁用该字段。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AutoFillConfig {
     pub create_time_column: String,
     pub create_by_column: String,
     pub update_time_column: String,
     pub update_by_column: String,
     /// 只对这些表生效。空 = 全部表。
-    pub tables: Vec<String>,
+    pub tables: Vec<QualifiedTableName>,
     /// 始终跳过这些表，优先级高于 `tables`。
-    pub skip_tables: Vec<String>,
+    pub skip_tables: Vec<QualifiedTableName>,
     /// `create_by` / `update_by` 写用户 ID 还是用户名。
     pub use_user_id_for_by: bool,
 }
 
-impl Default for AutoFillConfig {
-    fn default() -> Self {
+impl AutoFillConfig {
+    pub fn new() -> Self {
         Self {
             create_time_column: "create_time".to_string(),
             create_by_column: "create_by".to_string(),
             update_time_column: "update_time".to_string(),
             update_by_column: "update_by".to_string(),
-            tables: Vec::new(),
-            skip_tables: Vec::new(),
             use_user_id_for_by: true,
+            ..Default::default()
         }
     }
-}
 
-impl AutoFillConfig {
-    /// 添加一个 SeaORM 实体到白名单，自动提取 schema + table 名。
+    /// 添加一个 SeaORM 实体到白名单。
     pub fn with_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
-        self.tables.push(super::entity_qualified_name(&_entity));
+        self.tables.push(super::entity_to_qualified(&_entity));
+        self
+    }
+
+    /// 添加一个字符串表名到白名单（如 `"sys.user"` 或 `"user"`）。
+    pub fn with_table(mut self, table: impl AsRef<str>) -> Self {
+        self.tables.push(QualifiedTableName::parse(table.as_ref()));
         self
     }
 
     /// 添加一个 SeaORM 实体到跳过列表。
     pub fn skip_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
+        self.skip_tables.push(super::entity_to_qualified(&_entity));
+        self
+    }
+
+    /// 添加一个字符串表名到跳过列表。
+    pub fn skip_table(mut self, table: impl AsRef<str>) -> Self {
         self.skip_tables
-            .push(super::entity_qualified_name(&_entity));
+            .push(QualifiedTableName::parse(table.as_ref()));
         self
     }
 }
@@ -77,13 +88,12 @@ impl AutoFillPlugin {
     }
 
     fn applies_to_table(&self, table: &str) -> bool {
-        let table_low = table.to_ascii_lowercase();
-        let short = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
+        let candidate = QualifiedTableName::parse(table);
         if self
             .config
             .skip_tables
             .iter()
-            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), short))
+            .any(|t| matches_name(t, &candidate))
         {
             return false;
         }
@@ -93,7 +103,7 @@ impl AutoFillPlugin {
         self.config
             .tables
             .iter()
-            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), short))
+            .any(|t| matches_name(t, &candidate))
     }
 
     fn now_literal(&self) -> Expr {
@@ -109,11 +119,6 @@ impl AutoFillPlugin {
             Expr::Value(SqlValue::SingleQuotedString(user.user_name.clone()))
         }
     }
-}
-
-fn eq_or_short(pattern: &str, full: &str, short: &str) -> bool {
-    let p = pattern.to_ascii_lowercase();
-    p == full || p == short
 }
 
 impl SqlRewritePlugin for AutoFillPlugin {

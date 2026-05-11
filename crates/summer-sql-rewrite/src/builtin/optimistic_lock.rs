@@ -13,44 +13,58 @@ use sqlparser::ast::{
     Statement as AstStatement, Value as SqlValue,
 };
 
-use crate::{Result, SqlOperation, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin, helpers};
+use crate::{
+    QualifiedTableName, Result, SqlOperation, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin,
+    helpers,
+};
+
+use super::matches_name;
 
 /// 当前实体的旧版本号——由业务在请求处理时塞进 extensions。
 #[derive(Debug, Clone, Copy)]
 pub struct OptimisticLockValue(pub i64);
 
 /// 乐观锁插件配置。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OptimisticLockConfig {
     /// 版本列名。默认 `version`。
     pub version_column: String,
     /// 只对这些表生效。空 = 全部表。
-    pub tables: Vec<String>,
+    pub tables: Vec<QualifiedTableName>,
     /// 始终跳过这些表，优先级高于 `tables`。
-    pub skip_tables: Vec<String>,
-}
-
-impl Default for OptimisticLockConfig {
-    fn default() -> Self {
-        Self {
-            version_column: "version".to_string(),
-            tables: Vec::new(),
-            skip_tables: Vec::new(),
-        }
-    }
+    pub skip_tables: Vec<QualifiedTableName>,
 }
 
 impl OptimisticLockConfig {
-    /// 添加一个 SeaORM 实体到白名单，自动提取 schema + table 名。
+    pub fn new() -> Self {
+        Self {
+            version_column: "version".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// 添加一个 SeaORM 实体到白名单。
     pub fn with_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
-        self.tables.push(super::entity_qualified_name(&_entity));
+        self.tables.push(super::entity_to_qualified(&_entity));
+        self
+    }
+
+    /// 添加一个字符串表名到白名单（如 `"sys.user"` 或 `"user"`）。
+    pub fn with_table(mut self, table: impl AsRef<str>) -> Self {
+        self.tables.push(QualifiedTableName::parse(table.as_ref()));
         self
     }
 
     /// 添加一个 SeaORM 实体到跳过列表。
     pub fn skip_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
+        self.skip_tables.push(super::entity_to_qualified(&_entity));
+        self
+    }
+
+    /// 添加一个字符串表名到跳过列表。
+    pub fn skip_table(mut self, table: impl AsRef<str>) -> Self {
         self.skip_tables
-            .push(super::entity_qualified_name(&_entity));
+            .push(QualifiedTableName::parse(table.as_ref()));
         self
     }
 }
@@ -66,13 +80,12 @@ impl OptimisticLockPlugin {
     }
 
     fn applies_to_table(&self, table: &str) -> bool {
-        let table_low = table.to_ascii_lowercase();
-        let short = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
+        let candidate = QualifiedTableName::parse(table);
         if self
             .config
             .skip_tables
             .iter()
-            .any(|t| matches_table(t.as_str(), table_low.as_str(), short))
+            .any(|t| matches_name(t, &candidate))
         {
             return false;
         }
@@ -82,13 +95,8 @@ impl OptimisticLockPlugin {
         self.config
             .tables
             .iter()
-            .any(|t| matches_table(t.as_str(), table_low.as_str(), short))
+            .any(|t| matches_name(t, &candidate))
     }
-}
-
-fn matches_table(pattern: &str, full: &str, short: &str) -> bool {
-    let pattern = pattern.to_ascii_lowercase();
-    pattern == full || pattern == short
 }
 
 impl SqlRewritePlugin for OptimisticLockPlugin {

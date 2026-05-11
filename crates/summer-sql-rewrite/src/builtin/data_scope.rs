@@ -13,7 +13,12 @@
 
 use sqlparser::ast::{BinaryOperator, Expr, Value as SqlValue};
 
-use crate::{Result, SqlOperation, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin, helpers};
+use crate::{
+    QualifiedTableName, Result, SqlOperation, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin,
+    helpers,
+};
+
+use super::matches_name;
 
 /// 当前请求所允许的数据范围，由业务通过 extensions 注入。
 #[derive(Debug, Clone)]
@@ -30,40 +35,49 @@ pub enum DataScope {
     Custom { dept_ids: Vec<i64> },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DataScopeConfig {
     /// 用于 `Self_` 范围的列名
     pub creator_column: String,
     /// 用于 `Dept` / `Custom` 范围的列名
     pub dept_column: String,
     /// 只对这些表生效。空 = 全部表。
-    pub tables: Vec<String>,
+    pub tables: Vec<QualifiedTableName>,
     /// 始终跳过这些表，优先级高于 `tables`。
-    pub skip_tables: Vec<String>,
-}
-
-impl Default for DataScopeConfig {
-    fn default() -> Self {
-        Self {
-            creator_column: "creator_id".to_string(),
-            dept_column: "dept_id".to_string(),
-            tables: Vec::new(),
-            skip_tables: Vec::new(),
-        }
-    }
+    pub skip_tables: Vec<QualifiedTableName>,
 }
 
 impl DataScopeConfig {
-    /// 添加一个 SeaORM 实体到白名单，自动提取 schema + table 名。
+    pub fn new() -> Self {
+        Self {
+            creator_column: "creator_id".to_string(),
+            dept_column: "dept_id".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// 添加一个 SeaORM 实体到白名单。
     pub fn with_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
-        self.tables.push(super::entity_qualified_name(&_entity));
+        self.tables.push(super::entity_to_qualified(&_entity));
+        self
+    }
+
+    /// 添加一个字符串表名到白名单（如 `"sys.user"` 或 `"user"`）。
+    pub fn with_table(mut self, table: impl AsRef<str>) -> Self {
+        self.tables.push(QualifiedTableName::parse(table.as_ref()));
         self
     }
 
     /// 添加一个 SeaORM 实体到跳过列表。
     pub fn skip_entity<E: sea_orm::EntityName + Default>(mut self, _entity: E) -> Self {
+        self.skip_tables.push(super::entity_to_qualified(&_entity));
+        self
+    }
+
+    /// 添加一个字符串表名到跳过列表。
+    pub fn skip_table(mut self, table: impl AsRef<str>) -> Self {
         self.skip_tables
-            .push(super::entity_qualified_name(&_entity));
+            .push(QualifiedTableName::parse(table.as_ref()));
         self
     }
 }
@@ -79,13 +93,12 @@ impl DataScopePlugin {
     }
 
     fn applies_to_table(&self, table: &str) -> bool {
-        let table_low = table.to_ascii_lowercase();
-        let short = table_low.rsplit('.').next().unwrap_or(table_low.as_str());
+        let candidate = QualifiedTableName::parse(table);
         if self
             .config
             .skip_tables
             .iter()
-            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), short))
+            .any(|t| matches_name(t, &candidate))
         {
             return false;
         }
@@ -95,7 +108,7 @@ impl DataScopePlugin {
         self.config
             .tables
             .iter()
-            .any(|t| eq_or_short(t.as_str(), table_low.as_str(), short))
+            .any(|t| matches_name(t, &candidate))
     }
 
     fn build_predicate(&self, scope: &DataScope) -> Result<Option<Expr>> {
@@ -112,7 +125,10 @@ impl DataScopePlugin {
                         right: Box::new(Expr::Value(SqlValue::Number("0".to_string(), false))),
                     }));
                 }
-                Ok(Some(helpers::build_in_int_expr(&self.config.dept_column, dept_ids)))
+                Ok(Some(helpers::build_in_int_expr(
+                    &self.config.dept_column,
+                    dept_ids,
+                )))
             }
             DataScope::Dept { .. } | DataScope::DeptAndChildren { .. } => {
                 Err(SqlRewriteError::Plugin {
@@ -122,11 +138,6 @@ impl DataScopePlugin {
             }
         }
     }
-}
-
-fn eq_or_short(pattern: &str, full: &str, short: &str) -> bool {
-    let p = pattern.to_ascii_lowercase();
-    p == full || p == short
 }
 
 impl SqlRewritePlugin for DataScopePlugin {
