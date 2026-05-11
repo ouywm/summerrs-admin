@@ -11,7 +11,10 @@ use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlu
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
 use summer_sharding::SummerShardingPlugin;
-use summer_sql_rewrite::SummerSqlRewritePlugin;
+use summer_sql_rewrite::{
+    AutoFillConfig, AutoFillPlugin, DataScopeConfig, DataScopePlugin, OptimisticLockConfig,
+    OptimisticLockPlugin, SqlRewriteConfigurator, SummerSqlRewritePlugin,
+};
 use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 use summer_web::{WebConfigurator, WebPlugin};
 
@@ -38,6 +41,12 @@ async fn main() {
         .add_plugin(McpPlugin)
         .add_jobs(summer_job::handler::auto_jobs())
         .add_router(router::router())
+        .sql_rewrite_configure(|registry| {
+            registry
+                .register(OptimisticLockPlugin::new(OptimisticLockConfig::default()))
+                .register(AutoFillPlugin::new(AutoFillConfig::default()))
+                .register(DataScopePlugin::new(DataScopeConfig::default()))
+        })
         .run()
         .await;
 }

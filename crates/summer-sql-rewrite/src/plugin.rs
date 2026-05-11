@@ -1,7 +1,9 @@
 use crate::{context::SqlRewriteContext, error::Result};
 
 pub trait SqlRewritePlugin: Send + Sync + 'static {
-    fn name(&self) -> &str;
+    fn name(&self) -> &str {
+        std::any::type_name::<Self>()
+    }
 
     fn order(&self) -> i32 {
         100

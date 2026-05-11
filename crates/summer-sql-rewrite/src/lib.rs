@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+pub mod builtin;
 pub mod configurator;
 pub mod connection;
 pub mod context;
@@ -14,6 +15,10 @@ pub mod transaction;
 #[cfg(feature = "web")]
 pub mod web;
 
+pub use builtin::{
+    AutoFillConfig, AutoFillPlugin, CurrentUser, DataScope, DataScopeConfig, DataScopePlugin,
+    OptimisticLockConfig, OptimisticLockPlugin, OptimisticLockValue,
+};
 pub use connection::RewriteConnection;
 pub use context::{SqlOperation, SqlRewriteContext};
 pub use error::{Result, SqlRewriteError};
