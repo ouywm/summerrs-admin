@@ -1,28 +1,16 @@
-#[cfg(feature = "web")]
-use std::sync::Arc;
-
-#[cfg(feature = "summer")]
 use summer::app::AppBuilder;
-#[cfg(feature = "summer")]
 use summer::plugin::MutableComponentRegistry;
 
-#[cfg(feature = "web")]
-use crate::extensions::Extensions;
-#[cfg(feature = "summer")]
 use crate::registry::PluginRegistry;
 
-#[cfg(feature = "web")]
-pub type SqlRewriteRequestExtender =
-    Arc<dyn Fn(&http::Extensions, &mut Extensions) + Send + Sync + 'static>;
-
-#[cfg(feature = "summer")]
+/// 把 `.sql_rewrite_configure(|reg| reg.register(...))` 注册的 [`PluginRegistry`]
+/// 作为 component 挂进 app，供下游 plugin（如 `SummerShardingPlugin`）消费。
 pub trait SqlRewriteConfigurator {
     fn sql_rewrite_configure<F>(&mut self, f: F) -> &mut Self
     where
         F: FnOnce(&mut PluginRegistry) -> &mut PluginRegistry;
 }
 
-#[cfg(feature = "summer")]
 impl SqlRewriteConfigurator for AppBuilder {
     fn sql_rewrite_configure<F>(&mut self, f: F) -> &mut Self
     where

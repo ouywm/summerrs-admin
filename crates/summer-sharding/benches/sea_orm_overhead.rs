@@ -9,17 +9,13 @@ use std::{
 };
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-#[cfg(feature = "web")]
 use sea_orm::QueryResult;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
-#[cfg(feature = "web")]
 use serde::Deserialize;
-#[cfg(feature = "web")]
 use summer_sharding::{CurrentTenant, TenantContextLayer, TenantShardingConnection};
 use summer_sharding::{
     ShardingConfig, ShardingConnection, SummerShardingConfig, TenantContext, TenantIsolationLevel,
 };
-#[cfg(feature = "web")]
 use summer_web::axum::{
     Extension, Router,
     body::{Body, to_bytes},
@@ -28,7 +24,6 @@ use summer_web::axum::{
     response::IntoResponse,
     routing::get,
 };
-#[cfg(feature = "web")]
 use tower::util::ServiceExt;
 
 const BENCH_SCHEMA: &str = "bench_perf";
@@ -126,7 +121,6 @@ fn benchmark_sharding_overhead(c: &mut Criterion) {
 
     bench_passthrough(c, &rt, env.clone());
     bench_tenant_rewrite(c, &rt, env.clone());
-    #[cfg(feature = "web")]
     bench_http(c, &rt, env.clone());
     bench_hash_route(c, &rt, env);
 }
@@ -581,7 +575,6 @@ fn bench_hash_route(
     group.finish();
 }
 
-#[cfg(feature = "web")]
 fn bench_http(c: &mut Criterion, rt: &tokio::runtime::Runtime, env: Arc<BenchmarkEnvironment>) {
     let raw_context_router = build_http_raw_context_router();
     let tenant_context_router = build_http_tenant_context_router(None);
@@ -1154,25 +1147,21 @@ fn next_insert_id(counter: &AtomicI64) -> i64 {
     counter.fetch_add(1, Ordering::Relaxed)
 }
 
-#[cfg(feature = "web")]
 #[derive(Debug, Deserialize)]
 struct IdQuery {
     id: i64,
 }
 
-#[cfg(feature = "web")]
 #[derive(Debug, Deserialize)]
 struct RangeQuery {
     start: i64,
     end: i64,
 }
 
-#[cfg(feature = "web")]
 fn build_http_raw_context_router() -> Router {
     Router::new().route("/tenant-context", get(http_raw_context_handler))
 }
 
-#[cfg(feature = "web")]
 fn build_http_tenant_context_router(sharding: Option<ShardingConnection>) -> Router {
     let mut layer = TenantContextLayer::from_header();
     if let Some(sharding) = sharding {
@@ -1183,14 +1172,12 @@ fn build_http_tenant_context_router(sharding: Option<ShardingConnection>) -> Rou
         .layer(layer)
 }
 
-#[cfg(feature = "web")]
 fn build_http_raw_select_router(raw: DatabaseConnection) -> Router {
     Router::new()
         .route("/tenant/select", get(http_raw_select_handler))
         .layer(Extension(raw))
 }
 
-#[cfg(feature = "web")]
 fn build_http_manual_bind_select_router(sharding: ShardingConnection) -> Router {
     Router::new()
         .route("/tenant/select", get(http_manual_bind_select_handler))
@@ -1198,21 +1185,18 @@ fn build_http_manual_bind_select_router(sharding: ShardingConnection) -> Router 
         .layer(TenantContextLayer::from_header())
 }
 
-#[cfg(feature = "web")]
 fn build_http_auto_inject_select_router(sharding: ShardingConnection) -> Router {
     Router::new()
         .route("/tenant/select", get(http_auto_inject_select_handler))
         .layer(TenantContextLayer::from_header().with_sharding(sharding))
 }
 
-#[cfg(feature = "web")]
 fn build_http_raw_limit_router(raw: DatabaseConnection) -> Router {
     Router::new()
         .route("/tenant/limit", get(http_raw_limit_handler))
         .layer(Extension(raw))
 }
 
-#[cfg(feature = "web")]
 fn build_http_manual_bind_limit_router(sharding: ShardingConnection) -> Router {
     Router::new()
         .route("/tenant/limit", get(http_manual_bind_limit_handler))
@@ -1220,24 +1204,20 @@ fn build_http_manual_bind_limit_router(sharding: ShardingConnection) -> Router {
         .layer(TenantContextLayer::from_header())
 }
 
-#[cfg(feature = "web")]
 fn build_http_auto_inject_limit_router(sharding: ShardingConnection) -> Router {
     Router::new()
         .route("/tenant/limit", get(http_auto_inject_limit_handler))
         .layer(TenantContextLayer::from_header().with_sharding(sharding))
 }
 
-#[cfg(feature = "web")]
 async fn http_raw_context_handler(headers: HeaderMap) -> impl IntoResponse {
     tenant_id_from_headers(&headers).to_string()
 }
 
-#[cfg(feature = "web")]
 async fn http_tenant_context_handler(CurrentTenant(tenant): CurrentTenant) -> impl IntoResponse {
     tenant.tenant_id
 }
 
-#[cfg(feature = "web")]
 async fn http_raw_select_handler(
     Extension(raw): Extension<DatabaseConnection>,
     headers: HeaderMap,
@@ -1254,7 +1234,6 @@ async fn http_raw_select_handler(
     payload_from_row(row)
 }
 
-#[cfg(feature = "web")]
 async fn http_manual_bind_select_handler(
     CurrentTenant(tenant): CurrentTenant,
     Extension(sharding): Extension<ShardingConnection>,
@@ -1269,7 +1248,6 @@ async fn http_manual_bind_select_handler(
     payload_from_row(row)
 }
 
-#[cfg(feature = "web")]
 async fn http_auto_inject_select_handler(
     CurrentTenant(_tenant): CurrentTenant,
     TenantShardingConnection(sharding): TenantShardingConnection,
@@ -1283,7 +1261,6 @@ async fn http_auto_inject_select_handler(
     payload_from_row(row)
 }
 
-#[cfg(feature = "web")]
 async fn http_raw_limit_handler(
     Extension(raw): Extension<DatabaseConnection>,
     headers: HeaderMap,
@@ -1300,7 +1277,6 @@ async fn http_raw_limit_handler(
     rows.len().to_string()
 }
 
-#[cfg(feature = "web")]
 async fn http_manual_bind_limit_handler(
     CurrentTenant(tenant): CurrentTenant,
     Extension(sharding): Extension<ShardingConnection>,
@@ -1314,7 +1290,6 @@ async fn http_manual_bind_limit_handler(
     rows.len().to_string()
 }
 
-#[cfg(feature = "web")]
 async fn http_auto_inject_limit_handler(
     CurrentTenant(_tenant): CurrentTenant,
     TenantShardingConnection(sharding): TenantShardingConnection,
@@ -1327,7 +1302,6 @@ async fn http_auto_inject_limit_handler(
     rows.len().to_string()
 }
 
-#[cfg(feature = "web")]
 fn tenant_id_from_headers(headers: &HeaderMap) -> &str {
     headers
         .get("x-tenant-id")
@@ -1336,12 +1310,10 @@ fn tenant_id_from_headers(headers: &HeaderMap) -> &str {
         .expect("x-tenant-id header")
 }
 
-#[cfg(feature = "web")]
 fn payload_from_row(row: QueryResult) -> String {
     row.try_get("", "payload").expect("payload")
 }
 
-#[cfg(feature = "web")]
 fn http_context_request() -> Request<Body> {
     Request::builder()
         .uri("/tenant-context")
@@ -1350,7 +1322,6 @@ fn http_context_request() -> Request<Body> {
         .expect("http context request")
 }
 
-#[cfg(feature = "web")]
 fn http_select_request(id: i64) -> Request<Body> {
     Request::builder()
         .uri(format!("/tenant/select?id={id}"))
@@ -1359,7 +1330,6 @@ fn http_select_request(id: i64) -> Request<Body> {
         .expect("http select request")
 }
 
-#[cfg(feature = "web")]
 fn http_limit_request(start: i64, end: i64) -> Request<Body> {
     Request::builder()
         .uri(format!("/tenant/limit?start={start}&end={end}"))

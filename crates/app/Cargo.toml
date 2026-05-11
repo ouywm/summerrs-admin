@@ -15,8 +15,8 @@ summer-sea-orm = { workspace = true, features = [
     "with-web",
     "with-web-openapi",
 ] }
-summer-sharding = { workspace = true, features = ["web"] }
-summer-sql-rewrite = { workspace = true, features = ["summer-auth"] }
+summer-sharding = { workspace = true }
+summer-sql-rewrite = { workspace = true }
 summer-web = { workspace = true, features = [
     "openapi",
     "openapi-swagger",

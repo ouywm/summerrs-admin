@@ -5,10 +5,8 @@ use summer::app::AppBuilder;
 use summer::async_trait;
 use summer::config::ConfigRegistry;
 use summer::plugin::{ComponentRegistry, MutableComponentRegistry, Plugin};
-#[cfg(feature = "web")]
 use summer_web::LayerConfigurator;
 
-#[cfg(feature = "web")]
 use crate::TenantContextLayer;
 use crate::{
     ShardingConnection,
@@ -31,11 +29,8 @@ impl Plugin for SummerShardingPlugin {
         let config = app
             .get_config::<SummerShardingConfig>()
             .expect("summer-sharding plugin config load failed");
-        #[cfg(feature = "web")]
         let tenant_id_source = config.tenant.tenant_id_source;
-        #[cfg(feature = "web")]
         let tenant_id_field = config.tenant.tenant_id_field.clone();
-        #[cfg(feature = "web")]
         let default_isolation = config.tenant.default_isolation;
 
         if !config.enabled {
@@ -133,13 +128,11 @@ impl Plugin for SummerShardingPlugin {
             }
         });
 
-        #[cfg(feature = "web")]
         let tenant_layer =
             TenantContextLayer::from_source_and_field(tenant_id_source, tenant_id_field)
                 .with_default_isolation(default_isolation)
                 .with_sharding(connection.clone());
 
-        #[cfg(feature = "web")]
         app.add_router_layer(move |router| router.layer(tenant_layer.clone()));
 
         app.add_component(connection);

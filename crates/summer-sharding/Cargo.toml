@@ -3,19 +3,6 @@ edition = "2024"
 name = "summer-sharding"
 version = "0.0.1"
 
-[features]
-default = []
-web = [
-    "summer-auth",
-    "summer-sql-rewrite/web",
-    "summer-sql-rewrite/summer-auth",
-    "summer-web",
-    "summer-web/openapi",
-    "tower-layer",
-    "tower-service",
-]
-web-probes = ["web"]
-
 [dependencies]
 async-trait = { workspace = true }
 base64 = { workspace = true }
@@ -42,13 +29,13 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sqlparser = { workspace = true }
 summer = { workspace = true }
-summer-auth = { workspace = true, optional = true }
-summer-sql-rewrite = { workspace = true, features = ["summer"] }
-summer-web = { workspace = true, optional = true }
+summer-auth = { workspace = true }
+summer-sql-rewrite = { workspace = true }
+summer-web = { workspace = true, features = ["openapi"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
-tower-layer = { workspace = true, optional = true }
-tower-service = { workspace = true, optional = true }
+tower-layer = { workspace = true }
+tower-service = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 
@@ -59,7 +46,3 @@ tower = { workspace = true }
 [[bench]]
 harness = false
 name = "sea_orm_overhead"
-
-[[example]]
-name = "http_wrk_bench"
-required-features = ["web"]

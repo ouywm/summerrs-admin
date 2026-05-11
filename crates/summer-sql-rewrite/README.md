@@ -1,63 +1,51 @@
 # summer-sql-rewrite
 
-通用 SQL AST 改写层。
+通用 SQL 改写插件框架。
 
-它把 SQL 改写能力从分片运行时中抽离出来，既可以单独包裹普通 `DatabaseConnection` 使用，也可以在 `summer-sharding` 中作为底层能力继续复用。
+提供 `SqlRewritePlugin` trait、`PluginRegistry`、AST 操作辅助函数等通用能力，
+被 `summer-sharding` 作为底层能力复用。本 crate **不**提供 DB 连接封装——
+所有连接（`ShardingConnection` 等）由上层 crate 提供。
 
 ## 能力
 
-- AST 级 SQL 插件链
-- 类型安全 `Extensions`
-- `RewriteConnection`
-- `RewriteTransaction`
-- `StreamTrait`
-- Web 中间件 `SqlRewriteLayer`
-- 请求提取器 `RewriteDbConn`
-- 与 Summer `AppBuilder` 的集成插件 `SummerSqlRewritePlugin`
+- AST 级 SQL 插件链：`SqlRewritePlugin` trait + `PluginRegistry`
+- 类型安全的请求级容器 `Extensions`
+- 框架层表名过滤：trait 的 `tables()` / `skip_tables()` 由 registry 统一处理
+- AST 操作辅助 `helpers`：`append_where` / `build_eq_int_expr` / `replace_table_qualified` 等
+- `QualifiedTableName`：分离的 schema/table 名表示，含大小写不敏感匹配
+- 探针插件 `ProbePlugin`：不改 SQL，只统计命中次数，用于集成测试
+- 与 Summer `AppBuilder` 的集成：`SqlRewriteConfigurator` trait 提供 `.sql_rewrite_configure(|reg| ...)`
 
 ## 快速开始
 
-### 直接包裹普通连接
+### 实现一个插件
 
 ```rust,no_run
-use sea_orm::{ConnectionTrait, DbBackend, MockDatabase, Statement};
 use summer_sql_rewrite::{
-    Extensions, PluginRegistry, RewriteConnection, SqlRewriteContext, SqlRewritePlugin,
+    QualifiedTableName, Result, SqlRewriteContext, SqlRewritePlugin,
 };
 
-struct AuditCommentPlugin;
+struct AuditCommentPlugin {
+    tables: Vec<QualifiedTableName>,
+}
 
 impl SqlRewritePlugin for AuditCommentPlugin {
     fn name(&self) -> &str {
         "audit_comment"
     }
 
+    fn tables(&self) -> &[QualifiedTableName] {
+        &self.tables
+    }
+
     fn matches(&self, ctx: &SqlRewriteContext) -> bool {
         ctx.is_select()
     }
 
-    fn rewrite(&self, ctx: &mut SqlRewriteContext) -> summer_sql_rewrite::Result<()> {
+    fn rewrite(&self, ctx: &mut SqlRewriteContext) -> Result<()> {
         ctx.append_comment("trace=demo");
         Ok(())
     }
-}
-
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), sea_orm::DbErr> {
-    let db = MockDatabase::new(DbBackend::Postgres).into_connection();
-    let mut registry = PluginRegistry::new();
-    registry.register(AuditCommentPlugin);
-
-    let conn = RewriteConnection::new(db, registry, Extensions::new());
-
-    let _ = conn
-        .query_all_raw(Statement::from_string(
-            DbBackend::Postgres,
-            "SELECT * FROM users",
-        ))
-        .await?;
-
-    Ok(())
 }
 ```
 
@@ -65,7 +53,7 @@ async fn main() -> Result<(), sea_orm::DbErr> {
 
 ```rust
 use sqlparser::{dialect::PostgreSqlDialect, parser::Parser};
-use summer_sql_rewrite::{helpers, QualifiedTableName};
+use summer_sql_rewrite::{QualifiedTableName, helpers};
 
 let mut stmt = Parser::parse_sql(&PostgreSqlDialect {}, "SELECT * FROM biz.orders")
     .unwrap()
@@ -80,35 +68,33 @@ helpers::replace_table_qualified(
 assert!(stmt.to_string().contains("biz.orders_202603"));
 ```
 
-## Web 集成
+### 在 Summer 应用里注册插件
 
-启用 `web` feature 后，可通过 `SqlRewriteLayer` 在请求级构建改写连接。
+```rust,ignore
+use summer::App;
+use summer_sharding::SummerShardingPlugin;
+use summer_sql_rewrite::SqlRewriteConfigurator;
+use summer_sql_rewrite::builtin::ProbePlugin;
 
-典型流程：
+App::new()
+    .add_plugin(SummerShardingPlugin)
+    .sql_rewrite_configure(|registry| {
+        registry.register(ProbePlugin::new())
+        // .register(YourPlugin::new(...))
+    })
+    .run()
+    .await;
+```
 
-1. 认证层把 `UserSession` 放入 `request.extensions`
-2. `SqlRewriteLayer` 读取请求扩展，构建请求级 `Extensions`
-3. handler 通过 `RewriteDbConn` 提取带上下文的连接
-
-说明：
-
-- 当前 builtin 注入只包含 `UserSession`
-- 其他上下文应通过 `SqlRewriteRequestExtender` 手动注入
-
-## 非 Web 与 Web 的区别
-
-- 非 Web：`RewriteConnection` 通常由调用方直接构造
-- Web：应优先通过 `RewriteDbConn` 提取器获取请求级连接
-- `SummerSqlRewritePlugin` 注册的 `RewriteConnection` component 更适合后台任务、CLI、定时任务等非请求场景
+`SummerShardingPlugin` 会拉取注册的 `PluginRegistry`，灌入 `ShardingConnection`。
+所有进出 `ShardingConnection` 的 SQL 都会按 `order` 顺序应用 matched 插件。
 
 ## 与 summer-sharding 的关系
 
-`summer-sharding` 直接复用本 crate 的：
+`summer-sharding` 直接复用本 crate：
 
-- `SqlRewritePlugin`
-- `SqlRewriteContext`
-- `SqlOperation`
-- `QualifiedTableName`
-- `Extensions`
+- `SqlRewritePlugin` / `PluginRegistry` / `SqlRewriteContext` / `SqlOperation`
+- `QualifiedTableName` / `Extensions`
+- `helpers` AST 操作
 
-分片侧只额外注入 `ShardingRouteInfo`，用于暴露当前数据源、物理表改写结果和 fanout 信息。
+分片侧额外注入 `ShardingRouteInfo` 扩展，让业务插件能拿到当前数据源、物理表改写结果和 fanout 信息。

@@ -11,8 +11,8 @@ use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlu
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
 use summer_sharding::SummerShardingPlugin;
+use summer_sql_rewrite::SqlRewriteConfigurator;
 use summer_sql_rewrite::builtin::ProbePlugin;
-use summer_sql_rewrite::{SqlRewriteConfigurator, SummerSqlRewritePlugin};
 use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 use summer_web::{WebConfigurator, WebPlugin};
 
@@ -25,7 +25,6 @@ async fn main() {
         .add_plugin(SeaOrmPlugin)
         .add_plugin(RedisPlugin)
         .add_plugin(SummerShardingPlugin)
-        .add_plugin(SummerSqlRewritePlugin)
         .add_plugin(JobPlugin)
         .add_plugin(SummerSchedulerPlugin)
         .add_plugin(MailPlugin)

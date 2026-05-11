@@ -2,7 +2,7 @@ use std::any::Any;
 
 use axum_client_ip::ClientIpSource;
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
-use summer_sql_rewrite::RewriteConnection;
+use summer_sharding::ShardingConnection;
 use summer_web::Router;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::axum::routing::get;
@@ -53,7 +53,7 @@ fn handle_panic(err: Box<dyn Any + Send + 'static>) -> Response {
         .into_response()
 }
 
-async fn test_sql_rewrite_plugin(Component(rc): Component<RewriteConnection>) {
+async fn test_sql_rewrite_plugin(Component(rc): Component<ShardingConnection>) {
     let sql = "select version()";
 
     rc.execute_raw(Statement::from_string(DbBackend::Postgres, sql.to_string()))
