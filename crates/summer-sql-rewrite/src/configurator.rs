@@ -37,20 +37,3 @@ impl SqlRewriteConfigurator for AppBuilder {
         }
     }
 }
-
-#[cfg(all(feature = "summer", feature = "web"))]
-pub trait SqlRewriteWebConfigurator {
-    fn sql_rewrite_web_configure<F>(&mut self, f: F) -> &mut Self
-    where
-        F: Fn(&http::Extensions, &mut Extensions) + Send + Sync + 'static;
-}
-
-#[cfg(all(feature = "summer", feature = "web"))]
-impl SqlRewriteWebConfigurator for AppBuilder {
-    fn sql_rewrite_web_configure<F>(&mut self, f: F) -> &mut Self
-    where
-        F: Fn(&http::Extensions, &mut Extensions) + Send + Sync + 'static,
-    {
-        self.add_component::<SqlRewriteRequestExtender>(Arc::new(f))
-    }
-}

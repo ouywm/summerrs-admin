@@ -15,10 +15,6 @@ pub mod transaction;
 #[cfg(feature = "web")]
 pub mod web;
 
-pub use builtin::{
-    AutoFillConfig, AutoFillPlugin, CurrentUser, DataScope, DataScopeConfig, DataScopePlugin,
-    OptimisticLockConfig, OptimisticLockPlugin, OptimisticLockValue,
-};
 pub use connection::RewriteConnection;
 pub use context::{SqlOperation, SqlRewriteContext};
 pub use error::{Result, SqlRewriteError};
@@ -31,10 +27,8 @@ pub use transaction::RewriteTransaction;
 #[cfg(feature = "summer")]
 pub use configurator::SqlRewriteConfigurator;
 #[cfg(all(feature = "summer", feature = "web"))]
-pub use configurator::{SqlRewriteRequestExtender, SqlRewriteWebConfigurator};
+pub use configurator::SqlRewriteRequestExtender;
 
-#[cfg(feature = "summer")]
-use std::sync::Arc;
 #[cfg(feature = "summer")]
 use summer::app::AppBuilder;
 #[cfg(feature = "summer")]
@@ -55,7 +49,9 @@ impl Plugin for SummerSqlRewritePlugin {
             .get_component::<sea_orm::DatabaseConnection>()
             .expect("DatabaseConnection not found; ensure SeaOrmPlugin is registered first");
 
-        let registry = Arc::new(app.get_component::<PluginRegistry>().unwrap_or_default());
+        let registry = app
+            .get_component::<PluginRegistry>()
+            .expect("PluginRegistry not found; ensure app component PluginRegistry");
 
         app.add_component(RewriteConnection::new(
             db.clone(),

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    QualifiedTableName,
     context::SqlRewriteContext,
     error::{Result, SqlRewriteError},
     plugin::SqlRewritePlugin,
@@ -41,6 +42,9 @@ impl PluginRegistry {
 
     pub fn rewrite_all(&self, ctx: &mut SqlRewriteContext) -> Result<()> {
         for plugin in &self.plugins {
+            if !table_filter_passes(plugin.as_ref(), &ctx.tables) {
+                continue;
+            }
             if plugin.matches(ctx) {
                 tracing::debug!(
                     plugin = plugin.name(),
@@ -76,6 +80,25 @@ impl PluginRegistry {
     }
 }
 
+/// 框架层表名过滤：在调用 plugin.matches() 之前执行。
+/// - skip_tables 优先：命中任意一个就跳过
+/// - tables 为空：全部表通过
+/// - tables 非空：至少命中一个才通过
+fn table_filter_passes(plugin: &dyn SqlRewritePlugin, tables: &[String]) -> bool {
+    let skip = plugin.skip_tables();
+    let allow = plugin.tables();
+    if skip.is_empty() && allow.is_empty() {
+        return true;
+    }
+    tables.iter().any(|t| {
+        let candidate = QualifiedTableName::parse(t);
+        if skip.iter().any(|s| s.matches_qualified(&candidate)) {
+            return false;
+        }
+        allow.is_empty() || allow.iter().any(|a| a.matches_qualified(&candidate))
+    })
+}
+
 impl Default for PluginRegistry {
     fn default() -> Self {
         Self::new()
@@ -100,7 +123,7 @@ impl std::fmt::Debug for PluginRegistry {
 
 #[cfg(test)]
 mod tests {
-    use crate::{SqlRewriteContext, SqlRewriteError, SqlRewritePlugin};
+    use crate::{QualifiedTableName, SqlRewriteContext, SqlRewriteError, SqlRewritePlugin};
 
     use super::PluginRegistry;
 
@@ -121,6 +144,56 @@ mod tests {
                 message: "boom".to_string(),
             })
         }
+    }
+
+    /// 限定表名的插件，用于验证框架层 table_filter_passes。
+    struct ScopedPlugin {
+        name: &'static str,
+        tables: Vec<QualifiedTableName>,
+        skip_tables: Vec<QualifiedTableName>,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl SqlRewritePlugin for ScopedPlugin {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn tables(&self) -> &[QualifiedTableName] {
+            &self.tables
+        }
+
+        fn skip_tables(&self) -> &[QualifiedTableName] {
+            &self.skip_tables
+        }
+
+        fn matches(&self, _ctx: &SqlRewriteContext) -> bool {
+            true
+        }
+
+        fn rewrite(&self, _ctx: &mut SqlRewriteContext) -> crate::Result<()> {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn run_with_table(registry: &PluginRegistry, table: &str) {
+        let mut stmt = sqlparser::parser::Parser::parse_sql(
+            &sqlparser::dialect::PostgreSqlDialect {},
+            &format!("SELECT * FROM {table}"),
+        )
+        .expect("parse")
+        .remove(0);
+        let mut ext = crate::Extensions::new();
+        let mut ctx = SqlRewriteContext {
+            statement: &mut stmt,
+            operation: crate::SqlOperation::Select,
+            tables: vec![table.to_string()],
+            original_sql: "",
+            extensions: &mut ext,
+            comments: Vec::new(),
+        };
+        registry.rewrite_all(&mut ctx).expect("rewrite");
     }
 
     #[test]
@@ -154,5 +227,89 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn whitelist_filter_runs_plugin_only_for_listed_table() {
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = PluginRegistry::new();
+        registry.register(ScopedPlugin {
+            name: "scoped",
+            tables: vec![QualifiedTableName::parse("sys.user")],
+            skip_tables: vec![],
+            hits: hits.clone(),
+        });
+
+        run_with_table(&registry, "sys.user");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        run_with_table(&registry, "sys.role");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "non-whitelisted table should not invoke plugin"
+        );
+    }
+
+    #[test]
+    fn skip_filter_takes_priority_over_whitelist() {
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = PluginRegistry::new();
+        registry.register(ScopedPlugin {
+            name: "scoped",
+            tables: vec![QualifiedTableName::parse("sys.user")],
+            skip_tables: vec![QualifiedTableName::parse("sys.user")],
+            hits: hits.clone(),
+        });
+
+        run_with_table(&registry, "sys.user");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "skip_tables should override tables whitelist"
+        );
+    }
+
+    #[test]
+    fn empty_filters_run_for_every_table() {
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = PluginRegistry::new();
+        registry.register(ScopedPlugin {
+            name: "scoped",
+            tables: vec![],
+            skip_tables: vec![],
+            hits: hits.clone(),
+        });
+
+        run_with_table(&registry, "sys.user");
+        run_with_table(&registry, "sys.role");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn schema_less_pattern_matches_table_in_any_schema() {
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = PluginRegistry::new();
+        registry.register(ScopedPlugin {
+            name: "scoped",
+            tables: vec![QualifiedTableName::parse("user")],
+            skip_tables: vec![],
+            hits: hits.clone(),
+        });
+
+        run_with_table(&registry, "sys.user");
+        run_with_table(&registry, "biz.user");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "schema-less pattern should match any schema"
+        );
+
+        run_with_table(&registry, "sys.role");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "table name mismatch should not invoke plugin"
+        );
     }
 }

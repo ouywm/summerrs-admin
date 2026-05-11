@@ -59,6 +59,22 @@ impl QualifiedTableName {
             _ => false,
         }
     }
+
+    /// 判断 `self`（pattern）是否匹配 `candidate`。
+    ///
+    /// - table 名大小写不敏感
+    /// - pattern 没有 schema 时只比较 table 名（宽松匹配）
+    /// - pattern 有 schema 时 schema 也必须匹配
+    pub fn matches_qualified(&self, candidate: &QualifiedTableName) -> bool {
+        if !self.table.eq_ignore_ascii_case(&candidate.table) {
+            return false;
+        }
+        match (&self.schema, &candidate.schema) {
+            (Some(ps), Some(cs)) => ps.eq_ignore_ascii_case(cs),
+            (None, _) => true,
+            (Some(_), None) => false,
+        }
+    }
 }
 
 #[cfg(test)]
