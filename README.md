@@ -75,7 +75,7 @@ The system is built around **plugin composition**. `crates/app/src/main.rs` is t
                        ▼
         ┌──────────────────────────────────┐
         │  Sharding / SQL rewrite layer    │
-        │  Tenant context / encrypt / mask │
+        │  Tenant context injection        │
         └──────┬─────────────┬─────────────┘
                ▼             ▼
           PostgreSQL 17    Redis 7
@@ -91,7 +91,7 @@ The system is built around **plugin composition**. `crates/app/src/main.rs` is t
 
 ### Authentication & Authorization
 - **Multi-algorithm JWT** — HS256 / RS256 / ES256 / EdDSA, key rotation supported
-- **Bitmap RBAC** — Permission bitmap compression for memory efficiency
+- **Bitmap RBAC** — Permission bitmap compression to reduce transmission size
 - **Declarative macros** — `#[login]` `#[has_perm("user:create")]` `#[has_role("admin")]` `#[public]`
 - **Session governance** — concurrent login limits, per-device caps, token refresh, force logout
 
@@ -107,7 +107,6 @@ The system is built around **plugin composition**. `crates/app/src/main.rs` is t
 
 - **SQL rewrite engine** — tenant context injected transparently, business code untouched
 - **CDC pipeline** — change data capture across tenants
-- **Encryption / masking / audit** — built into the sharding layer, applied before persistence
 
 ### MCP Server Integration
 - **Schema discovery** — AI assistants can introspect the database schema
@@ -163,13 +162,13 @@ summerrs-admin/
 ## Frontend & Docs
 
 ### Frontend Project
-Ant Design Pro:
+Frontend implementation based on Ant Design Pro:
 - **Repository**: [art-design-pro](https://github.com/ouywm/art-design-pro)
 
 
 ### Documentation Site
 Project documentation and guides:
-- **Online**: [https://ouywm.github.io/summer-admin-site/](https://ouywm.github.io/summer-admin-site/)
+[https://ouywm.github.io/summer-admin-site/](https://ouywm.github.io/summer-admin-site/)
 
 ---
 
