@@ -1,12 +1,8 @@
 use std::any::Any;
 
 use axum_client_ip::ClientIpSource;
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
-use summer_sharding::ShardingConnection;
 use summer_web::Router;
 use summer_web::axum::response::{IntoResponse, Response};
-use summer_web::axum::routing::get;
-use summer_web::extractor::Component;
 use summer_web::handler::auto_grouped_routers;
 use tower_http::catch_panic::CatchPanicLayer;
 
@@ -28,7 +24,6 @@ pub fn router() -> Router {
     let default_router = auto_grouped_routers().default;
 
     Router::new()
-        .route("/sql", get(test_sql_rewrite_plugin))
         .nest("/api", api_router)
         .merge(default_router)
         .layer(CatchPanicLayer::custom(handle_panic))
@@ -51,12 +46,4 @@ fn handle_panic(err: Box<dyn Any + Send + 'static>) -> Response {
     summer_web::problem_details::ProblemDetails::new("internal-error", "Internal Server Error", 500)
         .with_detail(detail)
         .into_response()
-}
-
-async fn test_sql_rewrite_plugin(Component(rc): Component<ShardingConnection>) {
-    let sql = "select version()";
-
-    rc.execute_raw(Statement::from_string(DbBackend::Postgres, sql.to_string()))
-        .await
-        .unwrap();
 }
