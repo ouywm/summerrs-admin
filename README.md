@@ -6,7 +6,7 @@
 
 [中文](README.zh.md) | **English**
 
-> Full-stack Rust admin system · LLM relay gateway, database sharding, multi-tenant isolation, MCP service, declarative macros — all in one binary
+> Full-stack Rust admin system · Database sharding, multi-tenant isolation, MCP service, declarative macros — all in one binary
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.93%2B-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -22,7 +22,7 @@
 
 ## What It Is
 
-`summerrs-admin` is a production-grade admin system **written entirely in Rust**, built on top of the [Summer framework](https://github.com/ouywm/spring-rs) (a Spring-style application skeleton for Rust). It bundles capabilities that usually require a whole backend team to assemble — authentication, multi-tenancy, AI gateway, real-time messaging, object storage, declarative auditing — into a single binary via a **plugin composition** model. Use what you need, ignore what you don't.
+`summerrs-admin` is a production-grade admin system **written entirely in Rust**, built on top of the [Summer framework](https://github.com/ouywm/spring-rs) (a Spring-style application skeleton for Rust). It bundles capabilities that usually require a whole backend team to assemble — authentication, multi-tenancy, real-time messaging, object storage, declarative auditing — into a single binary via a **plugin composition** model. Use what you need, ignore what you don't.
 
 It is not a demo, nor a showcase of any single component — it is a **complete, self-contained, deployable** backend foundation.
 
@@ -30,22 +30,25 @@ It is not a demo, nor a showcase of any single component — it is a **complete,
 
 ## How It Differs From Similar Projects
 
-The market generally splits into **CRUD scaffolds**, **AI gateways**, and **sharding middleware**. Few projects combine them. `summerrs-admin` puts four things in one place:
+`summerrs-admin` leverages **Rust's zero-cost abstractions, type safety, and compile-time guarantees** to integrate capabilities that typically require multiple independent services into a single high-performance binary:
 
-| Capability | Typical | This Project |
+| Capability | Typical | This Project (Rust Advantages) |
 |---|---|---|
-| **LLM Relay Gateway** | A separate project (new-api, one-api, AxonHub) | Embedded as the `summer-ai` crate, sharing auth / billing / audit with the admin |
-| **Database Sharding** | Bolted on via ShardingSphere / Vitess | `summer-sharding` rewrites SQL transparently — no business code changes |
-| **MCP Service** | A standalone MCP server process | `summer-mcp` introspects business schema directly; AI assistants generate CRUD |
-| **Declarative Audit & Rate Limiting** | Middleware + handwritten code | `#[login]` `#[has_perm]` `#[rate_limit]` — single-line attributes |
+| **Database Sharding** | Bolted on via ShardingSphere / Vitess | `summer-sharding` rewrites SQL transparently — zero runtime overhead, compile-time type safety |
+| **MCP Service** | A standalone MCP server process | `summer-mcp` introspects business schema directly; AI assistants generate CRUD with type-safe guarantees |
+| **Declarative Audit & Rate Limiting** | Middleware + handwritten code | `#[login]` `#[has_perm]` `#[rate_limit]` — procedural macros expand at compile time, no reflection overhead |
 
-Not every project needs all of this. But once you need any two of them, putting them in the same process **saves an entire layer of ops**.
+**Core Rust Advantages**:
+- **Single Binary Deployment** — No JVM/interpreter required, instant startup
+- **Memory Safety** — Eliminates data races and memory leaks at compile time
+- **High Performance** — Zero-cost abstractions, performance close to C/C++
+- **Type Safety** — Catches most errors at compile time, reducing runtime failures
 
 ---
 
 ## Architecture
 
-The system is built around **plugin composition**. `crates/app/src/main.rs` is the assembly point — 17 plugins fed into `App::new()` in order:
+The system is built around **plugin composition**. `crates/app/src/main.rs` is the assembly point — plugins fed into `App::new()` in order:
 
 ```
                     HTTP 8080
@@ -57,12 +60,9 @@ The system is built around **plugin composition**. `crates/app/src/main.rs` is t
         │  client IP extraction)           │
         └──────────────┬───────────────────┘
                        │
-        ┌──────────────┼──────────────────┐
-        ▼              ▼                  ▼
-   /api/* (JWT)    /v1/*  (API key)   default
-   summer-system  summer-ai-relay     handler
-   summer-ai-admin (OpenAI/Claude/    auto-grouped
-                   Gemini ingress)
+                       ▼
+                  /api/* (JWT)
+                  summer-system
                        │
                        ▼
         ┌──────────────────────────────────┐
@@ -85,16 +85,13 @@ The system is built around **plugin composition**. `crates/app/src/main.rs` is t
                     Socket.IO / background jobs / S3
 ```
 
-**Plugin roster (17)**:
-`WebPlugin` · `SeaOrmPlugin` · `RedisPlugin` · `SummerShardingPlugin` · `SummerSqlRewritePlugin` · `JobPlugin` · `MailPlugin` · `SummerAuthPlugin` · `PermBitmapPlugin` · `SocketGatewayPlugin` · `Ip2RegionPlugin` · `S3Plugin` · `BackgroundTaskPlugin` · `LogBatchCollectorPlugin` · `McpPlugin` · `SummerAiRelayPlugin` · `SummerAiBillingPlugin`
-
 ---
 
 ## Core Capabilities
 
 ### Authentication & Authorization
 - **Multi-algorithm JWT** — HS256 / RS256 / ES256 / EdDSA, key rotation supported
-- **Bitmap RBAC** — bit-wise permission checks, O(1)
+- **Bitmap RBAC** — Permission bitmap compression for memory efficiency
 - **Declarative macros** — `#[login]` `#[has_perm("user:create")]` `#[has_role("admin")]` `#[public]`
 - **Session governance** — concurrent login limits, per-device caps, token refresh, force logout
 
@@ -111,22 +108,6 @@ The system is built around **plugin composition**. `crates/app/src/main.rs` is t
 - **SQL rewrite engine** — tenant context injected transparently, business code untouched
 - **CDC pipeline** — change data capture across tenants
 - **Encryption / masking / audit** — built into the sharding layer, applied before persistence
-
-### AI Gateway (summer-ai)
-- **Three ingress protocols**
-
-  | Protocol | Path | Compatibility |
-  |---|---|---|
-  | OpenAI | `/v1/chat/completions` `/v1/responses` `/v1/models` | native |
-  | Claude | `/v1/messages` | native |
-  | Gemini | `/v1beta/models/{target}` | native |
-
-- **40+ upstream providers** — implemented as ZST (zero-sized type) adapters, zero runtime overhead
-- **6-dimension dynamic routing** — protocol family / endpoint / credentials / model mapping / extra headers / routing strategy
-- **Three-phase billing** — Reserve → Settle → Refund, atomic
-- **Automatic failover** — retry across channels by priority on failure (streaming requests do not retry)
-- **Hot-reload** — config lives in the database, no restart needed
-- **Full tracing** — lifecycle logs including every retry attempt
 
 ### MCP Server Integration
 - **Schema discovery** — AI assistants can introspect the database schema
@@ -159,14 +140,7 @@ summerrs-admin/
 │   ├── summer-auth/                  # JWT auth + path policy
 │   ├── summer-common/                # shared types & utilities
 │   ├── summer-domain/                # domain models (entities / VOs)
-│   ├── summer-ai/                    # AI gateway (relay + billing + admin)
-│   │   ├── core/                     # protocol core
-│   │   ├── model/                    # data models
-│   │   ├── relay/                    # relay engine
-│   │   ├── admin/                    # admin API
-│   │   └── billing/                  # billing & settlement
 │   ├── summer-sharding/              # sharding / multi-tenancy middleware
-│   ├── summer-sql-rewrite/           # SQL rewrite engine
 │   ├── summer-mcp/                   # MCP server
 │   ├── summer-plugins/               # S3 / IP2Region / background jobs etc.
 │   └── summer-system/                # system business (RBAC / users / menus / Socket.IO)
@@ -175,9 +149,7 @@ summerrs-admin/
 ├── sql/                              # database source of truth
 │   ├── sys/                          # system domain (users / menus / perms / logs)
 │   ├── tenant/                       # tenant control plane
-│   ├── biz/                          # B/C-side business
-│   ├── ai/                           # AI gateway schema
-│   └── migration/                    # one-shot migration scripts
+│   └── biz/                          # B/C-side business
 ├── doc/                              # deployment / migration / technical guides
 ├── docs/                             # research, surveys, reference materials
 ├── locales/                          # i18n resources

@@ -6,7 +6,7 @@
 
 **中文** | [English](README.md)
 
-> 全栈 Rust 后台管理系统 · 内置 LLM 中转网关、数据库分片、多租户隔离、MCP 服务、声明式宏
+> 全栈 Rust 后台管理系统 · 数据库分片、多租户隔离、MCP 服务、声明式宏
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.93%2B-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -22,7 +22,7 @@
 
 ## 项目定位
 
-`summerrs-admin` 是一套**完全用 Rust 写**的生产级后台管理系统，构建在 [Summer 框架](https://github.com/ouywm/spring-rs)（一个 Spring 风格的 Rust 应用骨架）之上。它把通常需要一整支后端团队才能拼齐的能力——身份鉴权、多租户、AI 网关、消息推送、对象存储、声明式审计——以**插件组合**的形式集成到一个二进制中，开箱即用，按需启用。
+`summerrs-admin` 是一套**完全用 Rust 写**的生产级后台管理系统，构建在 [Summer 框架](https://github.com/ouywm/spring-rs)（一个 Spring 风格的 Rust 应用骨架）之上。它把通常需要一整支后端团队才能拼齐的能力——身份鉴权、多租户、消息推送、对象存储、声明式审计——以**插件组合**的形式集成到一个二进制中，开箱即用，按需启用。
 
 它不是一个 demo，也不是某个独立组件的展示——它是一个**完整、自洽、可部署**的后台底座。
 
@@ -30,22 +30,25 @@
 
 ## 与同类项目的差异
 
-市面上的后台框架要么是**业务后台（CRUD 脚手架）**，要么是**AI 网关**，要么是**分片中间件**，但很少把这些能力放在同一个工程里。`summerrs-admin` 把四件事拧到了一起：
+`summerrs-admin` 充分利用 **Rust 的零成本抽象、类型安全和编译期保证**，将通常需要多个独立服务的能力整合到一个高性能二进制中：
 
-| 能力 | 通常情况 | 本项目 |
+| 能力 | 通常情况 | 本项目（Rust 优势）|
 |---|---|---|
-| **LLM 中转网关** | 单独一个项目（new-api、one-api、AxonHub） | 内嵌为 `summer-ai` crate，跟后台共用鉴权、计费、审计 |
 | **数据库分片** | 接 ShardingSphere/Vitess 等独立中间件 | `summer-sharding` 在 SQL 层透明改写，无需改业务代码 |
-| **MCP 服务** | 写一个独立的 MCP server 进程 | `summer-mcp` 直接和业务 schema 联动，AI 助手可生成 CRUD |
-| **声明式审计与限流** | 中间件 + 手写代码 | `#[login]` `#[has_perm]` `#[rate_limit]` 单行属性搞定 |
+| **MCP 服务** | 写一个独立的 MCP server 进程 | `summer-mcp` 直接和业务 schema 联动，AI 助手可生成 CRUD，类型安全保证 |
+| **声明式审计与限流** | 中间件 + 手写代码 | `#[login]` `#[has_perm]` `#[rate_limit]` 过程宏在编译期展开，无反射开销 |
 
-不是每个项目都需要全部这些能力，但当你需要其中任意两个时，把它们装在同一个进程里**省一整层运维**。
+**Rust 带来的核心优势**：
+- **单二进制部署** —— 无需 JVM/解释器，启动即用
+- **内存安全** —— 编译期消除数据竞争和内存泄漏
+- **高性能** —— 零成本抽象，接近 C/C++ 的性能
+- **类型安全** —— 编译期捕获大部分错误，减少运行时故障
 
 ---
 
 ## 架构概览
 
-系统以**插件组合**为核心模式。`crates/app/src/main.rs` 是组装入口，把 17 个插件依次塞进 `App::new()`：
+系统以**插件组合**为核心模式。`crates/app/src/main.rs` 是组装入口，把插件依次塞进 `App::new()`：
 
 ```
                     HTTP 8080
@@ -56,12 +59,9 @@
         │  panic 兜底 / 客户端 IP 提取）   │
         └──────────────┬───────────────────┘
                        │
-        ┌──────────────┼──────────────────┐
-        ▼              ▼                  ▼
-   /api/* (JWT)    /v1/*  (API key)   default
-   summer-system  summer-ai-relay     handler
-   summer-ai-admin (OpenAI/Claude/    auto-grouped
-                   Gemini 入口)
+                       ▼
+                  /api/* (JWT)
+                  summer-system
                        │
                        ▼
         ┌──────────────────────────────────┐
@@ -84,16 +84,13 @@
                     Socket.IO / 后台任务 / S3
 ```
 
-**插件清单（17 个）**：
-`WebPlugin` · `SeaOrmPlugin` · `RedisPlugin` · `SummerShardingPlugin` · `SummerSqlRewritePlugin` · `JobPlugin` · `MailPlugin` · `SummerAuthPlugin` · `PermBitmapPlugin` · `SocketGatewayPlugin` · `Ip2RegionPlugin` · `S3Plugin` · `BackgroundTaskPlugin` · `LogBatchCollectorPlugin` · `McpPlugin` · `SummerAiRelayPlugin` · `SummerAiBillingPlugin`
-
 ---
 
 ## 核心能力
 
 ### 身份验证与授权
 - **多算法 JWT** —— HS256 / RS256 / ES256 / EdDSA，支持密钥轮转
-- **位图 RBAC** —— 权限按位运算，O(1) 检查
+- **位图 RBAC** —— 权限位图压缩,减少传输大小
 - **声明式宏** —— `#[login]` `#[has_perm("user:create")]` `#[has_role("admin")]` `#[public]`
 - **会话治理** —— 并发登录控制、设备数限制、令牌刷新、强制下线
 
@@ -110,22 +107,6 @@
 - **SQL 改写引擎** —— 透明注入租户上下文，业务代码无感
 - **CDC 管道** —— 跨租户变更捕获
 - **加密 / 脱敏 / 审计** —— 内置于分片层，落库前完成
-
-### AI 网关（summer-ai）
-- **三大入口协议**
-
-  | 协议 | 路径 | 适配 |
-  |---|---|---|
-  | OpenAI | `/v1/chat/completions` `/v1/responses` `/v1/models` | 原生兼容 |
-  | Claude | `/v1/messages` | 原生兼容 |
-  | Gemini | `/v1beta/models/{target}` | 原生兼容 |
-
-- **40+ 上游供应商** —— 用 ZST（零大小类型）适配器实现，零运行时开销
-- **6 维动态路由** —— 协议家族 / Endpoint / 凭证 / 模型映射 / 额外 headers / 路由策略
-- **三阶段计费** —— Reserve（预扣）→ Settle（结算）→ Refund（退款），原子操作
-- **自动故障转移** —— 失败时按优先级重试其它渠道（流式不重试）
-- **热更新** —— 配置在数据库里，无需重启
-- **完整追踪** —— 全生命周期日志，含每次重试
 
 ### MCP 服务器集成
 - **结构发现** —— AI 助手能查询数据库 schema
@@ -158,14 +139,7 @@ summerrs-admin/
 │   ├── summer-auth/                  # JWT 鉴权 + 路径策略
 │   ├── summer-common/                # 通用类型与工具
 │   ├── summer-domain/                # 领域模型（实体 / VO）
-│   ├── summer-ai/                    # AI 网关（中转 + 计费 + 管理）
-│   │   ├── core/                     # 协议核心
-│   │   ├── model/                    # 数据模型
-│   │   ├── relay/                    # 中转引擎
-│   │   ├── admin/                    # 后台 API
-│   │   └── billing/                  # 计费与结算
 │   ├── summer-sharding/              # 分片 / 多租户中间件
-│   ├── summer-sql-rewrite/           # SQL 改写引擎
 │   ├── summer-mcp/                   # MCP 服务器
 │   ├── summer-plugins/               # S3 / IP2Region / 后台任务等插件
 │   └── summer-system/                # 系统业务（RBAC / 用户 / 菜单 / Socket.IO）
@@ -174,9 +148,7 @@ summerrs-admin/
 ├── sql/                              # 数据库 source of truth
 │   ├── sys/                          # 系统域（用户 / 菜单 / 权限 / 日志）
 │   ├── tenant/                       # 租户控制面
-│   ├── biz/                          # B/C 端业务
-│   ├── ai/                           # AI 网关 schema
-│   └── migration/                    # 一次性迁移脚本
+│   └── biz/                          # B/C 端业务
 ├── doc/                              # 部署 / 迁移 / 技术指南
 ├── docs/                             # 调研、研究、参考资料
 ├── locales/                          # i18n 资源
