@@ -1,14 +1,22 @@
-//! 仅 debug 构建注册的 panic handler，用于验证 worker 的 catch_unwind 链路。
-//! release 构建不会有这个 handler，前端下拉也看不到。
+//! 仅 debug 构建注册的 panic handler，用于验证执行器的 panic 处理链路。
+//! release 构建不会注册这个 handler。
 
 #![cfg(debug_assertions)]
 
-use summer_admin_macros::job_handler;
-use summer_job_dynamic::{JobContext, JobResult};
+use summer::async_trait;
+use summer_xxl_job::{AsyncJobHandler, JobContext};
 
-/// [debug 专用] 故意 panic，用于验证 worker 的 catch_unwind 链路是否把 panic
-/// 正确转成 FAILED 而不是搞崩进程。release 构建不注册，生产网页看不到。
-#[job_handler("summer_system::test_panic")]
-async fn test_panic(_ctx: JobContext) -> JobResult {
-    panic!("intentional panic for catch_unwind test");
+/// admin 侧任务绑定的 handler 名。
+pub const HANDLER_NAME: &str = "summer_system::test_panic";
+
+/// [debug 专用] 故意 panic，用于验证执行器是否把 panic 正确转成失败回调而不是
+/// 搞崩进程。release 构建不注册。
+#[derive(Clone)]
+pub struct TestPanicHandler;
+
+#[async_trait]
+impl AsyncJobHandler for TestPanicHandler {
+    async fn process(&self, _ctx: JobContext) -> anyhow::Result<JobContext> {
+        panic!("intentional panic for panic-handling test");
+    }
 }

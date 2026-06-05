@@ -46,6 +46,25 @@ services:
       - "${S3_PORT:-9000}:9000"             # S3 API
       - "${S3_CONSOLE_PORT:-9001}:9001"     # 控制台
 
+  ratchjob:
+    image: qingpan/ratchjob:stable
+    container_name: summerrs-ratchjob
+    restart: unless-stopped
+    environment:
+      RUST_LOG: ${RATCH_LOG:-info}
+      RATCH_HTTP_API_PORT: 8725             # open-api / xxl-job-admin 接入端口
+      RATCH_HTTP_CONSOLE_PORT: 8825         # 控制台端口
+      RATCH_GRPC_CLUSTER_PORT: 8925         # raft 集群通信端口
+      RATCH_XXL_DEFAULT_ACCESS_TOKEN: ${XXL_JOB_ACCESS_TOKEN:-default_token}
+      DEFAULT_XXL_JOB_ADMIN_PREFIX_PATH: /xxl-job-admin
+      RATCH_GMT_OFFSET_HOURS: ${RATCH_GMT_OFFSET_HOURS:-8}
+    volumes:
+      - ratchjob_data:/io
+    ports:
+      - "${RATCH_API_PORT:-8725}:8725"      # 执行器接入 / open-api
+      - "${RATCH_CONSOLE_PORT:-8825}:8825"  # web 控制台
+      - "${RATCH_GRPC_PORT:-8925}:8925"     # grpc raft
+
   app:
     build:
       context: .
@@ -62,6 +81,8 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_started
+      ratchjob:
+        condition: service_started
     environment:
       SUMMER_ENV: prod
       RUST_LOG: ${RUST_LOG:-info}
@@ -77,6 +98,10 @@ services:
       S3_REGION: ${S3_REGION:-us-east-1}
 
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET}
+
+      # xxl-job 执行器接入 ratch-job(容器内通过服务名访问)
+      XXL_JOB_ADMIN_ADDRESSES: http://ratchjob:8725/xxl-job-admin
+      XXL_JOB_ACCESS_TOKEN: ${XXL_JOB_ACCESS_TOKEN:-default_token}
     volumes:
       - app_logs:/app/logs
     ports:
@@ -86,4 +111,5 @@ volumes:
   postgres_data:
   redis_data:
   rustfs_data:
+  ratchjob_data:
   app_logs:

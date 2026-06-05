@@ -12,14 +12,12 @@ use tower_http::catch_panic::CatchPanicLayer;
 /// 只做拼装:
 ///
 /// - `summer-system::router_with_layers()` —— 挂 JWT
-/// - `summer-job-dynamic::router_with_layers()` —— 动态调度器 admin API,挂 JWT
 /// - `auto_grouped_routers().default` —— 没显式 group 的 handler
 ///
-/// 全局 [`CatchPanicLayer`] 覆盖 admin / system / scheduler / default 域,
+/// 全局 [`CatchPanicLayer`] 覆盖 admin / system / default 域,
 /// 它们的 panic 转 RFC 7807。
 pub fn router() -> Router {
-    let api_router =
-        summer_system::router_with_layers().merge(summer_job_dynamic::router_with_layers());
+    let api_router = summer_system::router_with_layers();
 
     let default_router = auto_grouped_routers().default;
 

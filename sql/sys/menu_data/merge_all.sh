@@ -20,7 +20,6 @@ jq -s 'add' \
   exception.json \
   safeguard.json \
   help.json \
-  scheduler.json \
   > "$temp_file"
 
 echo "✅ 已生成合并的 JSON 文件: $temp_file"

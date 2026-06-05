@@ -10,7 +10,6 @@ members = [
     "crates/summer-plugins",
     "crates/summer-system",
     "crates/summer-system/model",
-    "crates/summer-job-dynamic",
 ]
 resolver = "2"
 
@@ -87,7 +86,6 @@ summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
 summer-job = "0.7.1"
-summer-job-dynamic = { path = "crates/summer-job-dynamic" }
 summer-macros = "0.7.1"
 summer-mail = "0.7.1"
 summer-mcp = { path = "crates/summer-mcp" }
@@ -98,6 +96,7 @@ summer-sharding = { path = "crates/summer-sharding" }
 summer-system = { path = "crates/summer-system" }
 summer-system-model = { path = "crates/summer-system/model" }
 summer-web = "0.7.2"
+summer-xxl-job = "0.7.2"
 syn = "2"
 sysinfo = "0.35"
 thiserror = "2.0.18"

@@ -6,7 +6,6 @@ version = "0.0.1"
 [dependencies]
 summer = { workspace = true }
 summer-job = { workspace = true }
-summer-job-dynamic = { workspace = true }
 summer-mail = { workspace = true }
 summer-redis = { workspace = true }
 summer-sea-orm = { workspace = true, features = [
@@ -27,6 +26,7 @@ summer-auth = { workspace = true }
 summer-mcp = { workspace = true }
 summer-plugins = { workspace = true }
 summer-system = { workspace = true }
+summer-xxl-job = { workspace = true, features = ["rustls-tls"] }
 
 axum-client-ip = { workspace = true, features = ["connect-info"] }
 tokio = { workspace = true, features = ["full"] }

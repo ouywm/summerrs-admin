@@ -37,7 +37,6 @@ summer-auth = { workspace = true }
 summer-common = { workspace = true }
 summer-domain = { workspace = true }
 summer-job = { workspace = true }
-summer-job-dynamic = { workspace = true }
 summer-mail = { workspace = true }
 summer-plugins = { workspace = true }
 summer-redis = { workspace = true }
@@ -55,6 +54,7 @@ summer-web = { workspace = true, features = [
     "multipart",
     "socket_io",
 ] }
+summer-xxl-job = { workspace = true }
 sysinfo = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

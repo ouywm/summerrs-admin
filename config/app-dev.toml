@@ -70,6 +70,19 @@ uri = "${REDIS_URL:redis://127.0.0.1/}"
 ipv4_db_path = "./data/ip2region_v4.xdb"
 # ipv6_db_path = "./data/ip2region_v6.xdb"
 
+[xxl-job]
+access_token = "${XXL_JOB_ACCESS_TOKEN:default_token}"
+admin_addresses = "${XXL_JOB_ADMIN_ADDRESSES:http://127.0.0.1:8725/xxl-job-admin}"
+app_name = "summerrs-admin-executor"
+log_path = "logs/xxl-job"
+# 可选项
+# ip = "10.0.0.5"
+# port = 9999
+# log_retention_days = 30
+# ssl_danger_accept_invalid_certs = false
+# [xxl-job.headers]
+# X-Gateway-Token = "my-token"
+
 [auth]
 access_timeout = 7200         # 秒（开发调试用，生产建议 7200）
 concurrent_login = true
