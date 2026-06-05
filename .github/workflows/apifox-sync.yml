@@ -1,0 +1,102 @@
+name: sync-apifox
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "config/**"
+      - ".github/workflows/apifox-sync.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APIFOX_API_VERSION: "2024-03-28"
+  APIFOX_PROJECT_ID: "7928762"
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  OPENAPI_FILE: target/openapi/openapi.json
+
+jobs:
+  sync:
+    name: Sync OpenAPI to Apifox
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Export OpenAPI
+        run: cargo run -p app --bin export_openapi -- "$OPENAPI_FILE"
+
+      - name: Import OpenAPI to Apifox
+        env:
+          APIFOX_ACCESS_TOKEN: ${{ secrets.APIFOX_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -z "${APIFOX_ACCESS_TOKEN}" ]]; then
+            echo "::error::Missing GitHub secret APIFOX_ACCESS_TOKEN"
+            exit 1
+          fi
+
+          payload="$(mktemp)"
+          response="$(mktemp)"
+          trap 'rm -f "$payload" "$response"' EXIT
+
+          jq -n --rawfile spec "$OPENAPI_FILE" '{
+            input: $spec,
+            options: {
+              endpointOverwriteBehavior: "OVERWRITE_EXISTING",
+              schemaOverwriteBehavior: "OVERWRITE_EXISTING",
+              updateFolderOfChangedEndpoint: true,
+              prependBasePath: false,
+              deleteUnmatchedResources: false
+            }
+          }' > "$payload"
+
+          http_status="$(
+            curl --silent --show-error --location \
+              --write-out "%{http_code}" \
+              --output "$response" \
+              --request POST "https://api.apifox.com/v1/projects/${APIFOX_PROJECT_ID}/import-openapi?locale=zh-CN" \
+              --header "X-Apifox-Api-Version: ${APIFOX_API_VERSION}" \
+              --header "Authorization: Bearer ${APIFOX_ACCESS_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data-binary "@${payload}"
+          )"
+
+          echo "Apifox HTTP status: ${http_status}"
+          if ! jq . "$response"; then
+            cat "$response"
+            exit 1
+          fi
+
+          if [[ "$http_status" -lt 200 || "$http_status" -ge 300 ]]; then
+            echo "::error::Apifox import failed with HTTP ${http_status}"
+            exit 1
+          fi
+
+          error_count="$(jq '(.data.errors // []) | length' "$response")"
+          if [[ "$error_count" -gt 0 ]]; then
+            echo "::error::Apifox import completed with ${error_count} reported error(s)"
+            exit 1
+          fi
+
+          jq -r '.data.counters? // {} | to_entries[] | "\(.key)=\(.value)"' "$response"
