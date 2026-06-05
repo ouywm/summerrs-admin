@@ -13,21 +13,25 @@ pub struct UserProfile {
 
 impl UserProfile {
     /// 获取昵称
+    #[must_use]
     pub fn nick_name(&self) -> &str {
         &self.nick_name
     }
 
     /// 获取用户名
+    #[must_use]
     pub fn user_name(&self) -> &str {
         &self.user_name
     }
 
     /// 获取角色列表
+    #[must_use]
     pub fn roles(&self) -> &[String] {
         &self.roles
     }
 
     /// 获取权限列表
+    #[must_use]
     pub fn permissions(&self) -> &[String] {
         &self.permissions
     }

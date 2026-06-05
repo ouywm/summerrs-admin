@@ -7,7 +7,7 @@ use syn::{
     ReturnType, Token, parse_macro_input, parse_quote,
 };
 
-/// 操作类型枚举，对应数据库 business_type 字段
+/// 操作类型枚举，对应数据库 `business_type` 字段
 ///
 /// Other=0, Create=1, Update=2, Delete=3, Query=4, Export=5, Import=6, Auth=7
 #[derive(Debug, Clone, Copy)]
@@ -150,7 +150,7 @@ impl Parse for LogArgs {
 /// 从函数参数列表中查找 `Json(xxx)` 或 `ValidatedJson(xxx)` 模式，返回内部变量名 `xxx`
 ///
 /// 匹配 `Json(dto): Json<T>` 和 `ValidatedJson(dto): ValidatedJson<T>` 两种提取器。
-/// 仅匹配路径末段为 `Json` 或 `ValidatedJson` 的 TupleStruct 模式。
+/// 仅匹配路径末段为 `Json` 或 `ValidatedJson` 的 `TupleStruct` 模式。
 fn find_json_body_ident(inputs: &syn::punctuated::Punctuated<FnArg, Token![,]>) -> Option<Ident> {
     for arg in inputs {
         let FnArg::Typed(pat_type) = arg else {
@@ -280,7 +280,7 @@ fn is_api_errors_ty(ty: &syn::Type) -> bool {
 }
 
 /// 从返回类型 `Result<T, E>` / `ApiResult<T>` 中推断：
-/// - `ok_is_response`：Ok 类型是否为 axum `Response`（需要从 resp.status() 取状态码）
+/// - `ok_is_response`：Ok 类型是否为 axum `Response`（需要从 `resp.status()` 取状态码）
 /// - `err_is_api_errors`：Err 类型是否为 `ApiErrors`（可按变体映射 HTTP 状态码）
 fn infer_log_status_code_strategy(output: &syn::ReturnType) -> (bool, bool) {
     /// 从 `ReturnType` 一路钻到最外层泛型的类型参数列表
@@ -333,7 +333,7 @@ fn infer_log_status_code_strategy(output: &syn::ReturnType) -> (bool, bool) {
 /// 转换过程：
 /// 1. 在函数参数列表前注入单一 `OperationLogContext` 提取器（内部合并 Method、Uri、HeaderMap、ClientIp、LoginId、Service）
 /// 2. 将原始函数体包装在 `AssertUnwindSafe(async { ... }).catch_unwind().await` 中，同时捕获业务错误和 panic
-/// 3. 根据执行结果提取操作状态（1=成功, 2=失败, 3=异常），记录请求信息、响应结果、耗时等，通过 tokio::spawn 异步写入数据库
+/// 3. 根据执行结果提取操作状态（1=成功, 2=失败, 3=异常），记录请求信息、响应结果、耗时等，通过 `tokio::spawn` 异步写入数据库
 /// 4. 返回原始执行结果；若为 panic 则 `resume_unwind` 恢复原始 panic，不影响业务逻辑
 pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     // 1. 解析宏参数

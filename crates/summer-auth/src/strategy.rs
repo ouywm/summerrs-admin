@@ -7,7 +7,7 @@
 //! - token 从哪里取（Header / Cookie / query / body）
 //! - 验证逻辑（JWT / sha256 查表 / HMAC / OAuth）
 //! - 哪些路径豁免（`path_config` + 编译期 `#[no_auth]` 合并）
-//! - 失败时给客户端返什么响应格式（admin 返 ProblemDetails；relay 要返 OpenAI 风格 error）
+//! - 失败时给客户端返什么响应格式（admin 返 ProblemDetails；relay 要返 `OpenAI` 风格 error）
 //!
 //! 各 crate 的策略之间完全正交，切入一个新协议只需加一个 `impl`，不影响其他 group。
 

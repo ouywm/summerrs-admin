@@ -99,7 +99,7 @@ pub enum AuthError {
 
 pub type AuthResult<T> = Result<T, AuthError>;
 
-/// anyhow::Error → AuthError::StorageError 自动转换
+/// `anyhow::Error` → `AuthError::StorageError` 自动转换
 /// 使得存储层调用可以直接 `storage.get_session(...).await?`
 impl From<anyhow::Error> for AuthError {
     fn from(e: anyhow::Error) -> Self {

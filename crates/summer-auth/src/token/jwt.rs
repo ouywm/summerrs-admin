@@ -40,7 +40,7 @@ pub struct AccessClaims {
     /// 权限列表（无 bitmap 时使用）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<String>,
-    /// 权限位图（Base64 编码，有 PermissionMap 时使用）
+    /// 权限位图（Base64 编码，有 `PermissionMap` 时使用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pb: Option<String>,
 }
@@ -72,7 +72,7 @@ pub struct JwtHandler {
 
 impl JwtHandler {
     /// 从加密原语直接构造
-    pub fn new(
+    pub const fn new(
         algorithm: Algorithm,
         encoding_key: EncodingKey,
         decoding_key: DecodingKey,
@@ -126,7 +126,7 @@ impl JwtHandler {
             } else {
                 profile.permissions().to_vec()
             },
-            pb: pb.map(|s| s.to_string()),
+            pb: pb.map(ToString::to_string),
         };
 
         let token = jsonwebtoken::encode(&Header::new(self.algorithm), &claims, &self.encoding_key)

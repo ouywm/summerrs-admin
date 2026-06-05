@@ -5,23 +5,23 @@ fn default_token_name() -> String {
     "Authorization".to_string()
 }
 
-fn default_access_timeout() -> i64 {
+const fn default_access_timeout() -> i64 {
     7200 // 2 小时
 }
 
-fn default_refresh_timeout() -> i64 {
-    604800 // 7 天
+const fn default_refresh_timeout() -> i64 {
+    604_800 // 7 天
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
-fn default_max_devices() -> usize {
+const fn default_max_devices() -> usize {
     5
 }
 
-fn default_qr_timeout() -> i64 {
+const fn default_qr_timeout() -> i64 {
     300 // 5 分钟
 }
 
@@ -40,30 +40,31 @@ fn default_jwt_audience() -> String {
 /// JWT 签名算法
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub enum JwtAlgorithm {
-    /// HMAC-SHA256（对称，使用 jwt_secret）
+    /// HMAC-SHA256（对称，使用 `jwt_secret`）
     #[default]
     HS256,
-    /// HMAC-SHA384（对称，使用 jwt_secret）
+    /// HMAC-SHA384（对称，使用 `jwt_secret`）
     HS384,
-    /// HMAC-SHA512（对称，使用 jwt_secret）
+    /// HMAC-SHA512（对称，使用 `jwt_secret`）
     HS512,
-    /// RSA PKCS#1 v1.5 SHA-256（非对称，使用 jwt_private_key / jwt_public_key）
+    /// RSA PKCS#1 v1.5 SHA-256（非对称，使用 `jwt_private_key` / `jwt_public_key`）
     RS256,
     /// RSA PKCS#1 v1.5 SHA-384
     RS384,
     /// RSA PKCS#1 v1.5 SHA-512
     RS512,
-    /// ECDSA P-256 SHA-256（非对称，使用 jwt_private_key / jwt_public_key）
+    /// ECDSA P-256 SHA-256（非对称，使用 `jwt_private_key` / `jwt_public_key`）
     ES256,
     /// ECDSA P-384 SHA-384
     ES384,
-    /// EdDSA Ed25519（非对称，使用 jwt_private_key / jwt_public_key）
+    /// `EdDSA` Ed25519（非对称，使用 `jwt_private_key` / `jwt_public_key`）
     EdDSA,
 }
 
 impl JwtAlgorithm {
     /// 是否为对称算法（HMAC 系列）
-    pub fn is_symmetric(&self) -> bool {
+    #[must_use]
+    pub const fn is_symmetric(&self) -> bool {
         matches!(self, Self::HS256 | Self::HS384 | Self::HS512)
     }
 }
@@ -107,7 +108,7 @@ pub struct AuthConfig {
     #[serde(default)]
     pub is_read_cookie: bool,
 
-    /// Cookie 名称（is_read_cookie = true 时使用），默认与 token_name 相同
+    /// Cookie 名称（`is_read_cookie` = true 时使用），默认与 `token_name` 相同
     #[serde(default)]
     pub cookie_name: Option<String>,
 
@@ -116,8 +117,8 @@ pub struct AuthConfig {
     pub qr_code_timeout: i64,
 
     /// JWT 签名算法，默认 HS256
-    /// 对称算法（HS256/HS384/HS512）使用 jwt_secret
-    /// 非对称算法（RS256/ES256/EdDSA 等）使用 jwt_private_key + jwt_public_key
+    /// 对称算法（HS256/HS384/HS512）使用 `jwt_secret`
+    /// 非对称算法（RS256/ES256/EdDSA 等）使用 `jwt_private_key` + `jwt_public_key`
     #[serde(default)]
     pub jwt_algorithm: JwtAlgorithm,
 

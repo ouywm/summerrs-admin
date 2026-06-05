@@ -20,27 +20,38 @@ COMMENT ON COLUMN sys.role_menu.role_id IS '角色ID（关联 sys."role".id）';
 COMMENT ON COLUMN sys.role_menu.menu_id IS '菜单ID（关联 sys.menu.id）';
 
 -- ============================================================
--- 测试数据
--- R_SUPER(1): 拥有所有菜单和按钮
--- R_ADMIN(2): 拥有所有菜单和按钮（不含菜单管理）
--- R_USER(3):  仅仪表盘
+-- 初始化数据（依赖 sql/sys/role.sql 与 sql/sys/menu_data_all.sql 先执行）
+--
+-- 用 INSERT ... SELECT 从 sys.menu 动态取菜单 ID，不写死编号：
+-- 菜单增删后重跑本段即可，授权关系自动对齐当前菜单全集。
+--   R_SUPER：全部菜单与按钮
+--   R_ADMIN：全部，但排除"菜单管理"(Menus)及其按钮
+--   R_USER ：仅仪表盘(Dashboard)及其子页
 -- ============================================================
 
--- R_SUPER → 全部
-INSERT INTO sys.role_menu (role_id, menu_id)
-VALUES
-    (1, 1), (1, 2), (1, 3),
-    (1, 4), (1, 5), (1, 6), (1, 7),
-    (1, 8), (1, 9), (1, 10), (1, 11);
+TRUNCATE TABLE sys.role_menu RESTART IDENTITY;
 
--- R_ADMIN → 仪表盘 + 系统管理（不含菜单管理）+ 用户按钮
+-- R_SUPER → 全部菜单
 INSERT INTO sys.role_menu (role_id, menu_id)
-VALUES
-    (2, 1), (2, 2), (2, 3),
-    (2, 4), (2, 5), (2, 6),
-    (2, 8), (2, 9), (2, 10), (2, 11);
+SELECT r.id, m.id
+FROM sys."role" r
+CROSS JOIN sys.menu m
+WHERE r.role_code = 'R_SUPER';
 
--- R_USER → 仅仪表盘
+-- R_ADMIN → 全部菜单，排除"菜单管理"(Menus)及其下挂按钮
 INSERT INTO sys.role_menu (role_id, menu_id)
-VALUES
-    (3, 1), (3, 2), (3, 3);
+SELECT r.id, m.id
+FROM sys."role" r
+CROSS JOIN sys.menu m
+WHERE r.role_code = 'R_ADMIN'
+  AND m.id NOT IN (SELECT id FROM sys.menu WHERE name = 'Menus')
+  AND m.parent_id NOT IN (SELECT id FROM sys.menu WHERE name = 'Menus');
+
+-- R_USER → 仅仪表盘（根节点 Dashboard 及其直接子页）
+INSERT INTO sys.role_menu (role_id, menu_id)
+SELECT r.id, m.id
+FROM sys."role" r
+CROSS JOIN sys.menu m
+WHERE r.role_code = 'R_USER'
+  AND (m.name = 'Dashboard'
+       OR m.parent_id IN (SELECT id FROM sys.menu WHERE name = 'Dashboard'));

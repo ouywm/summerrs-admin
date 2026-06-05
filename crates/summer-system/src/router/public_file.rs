@@ -7,8 +7,7 @@ use summer_web::axum::body::Body;
 use summer_web::axum::http::{StatusCode, header};
 use summer_web::axum::response::IntoResponse;
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
-use summer_web::{Router, get_api};
+use summer_web::get_api;
 
 use crate::service::sys_file_upload_service::SysFileUploadService;
 
@@ -49,8 +48,4 @@ pub async fn download_public_file(
         body,
     )
         .into_response())
-}
-
-pub fn routes(router: Router) -> Router {
-    router.typed_route(download_public_file)
 }

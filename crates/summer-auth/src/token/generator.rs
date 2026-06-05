@@ -11,26 +11,26 @@ use crate::user_type::{DeviceType, LoginId};
 ///
 /// 职责边界：
 /// - `JwtHandler` 是纯加密原语包装，只管 encode/decode
-/// - `TokenGenerator` 是适配层，负责从 AuthConfig 构建 JwtHandler 并提供统一生成接口
+/// - `TokenGenerator` 是适配层，负责从 `AuthConfig` 构建 `JwtHandler` 并提供统一生成接口
 #[derive(Clone)]
 pub struct TokenGenerator {
     jwt_handler: JwtHandler,
 }
 
 impl TokenGenerator {
-    /// 根据 AuthConfig 创建 TokenGenerator
+    /// 根据 `AuthConfig` 创建 `TokenGenerator`
     ///
-    /// 根据 jwt_algorithm 自动选择密钥类型：
-    /// - HMAC 系列（HS256/HS384/HS512）：使用 jwt_secret
-    /// - 非对称算法（RS256/ES256/EdDSA 等）：读取 jwt_private_key / jwt_public_key 文件
+    /// 根据 `jwt_algorithm` 自动选择密钥类型：
+    /// - HMAC 系列（HS256/HS384/HS512）：使用 `jwt_secret`
+    /// - 非对称算法（RS256/ES256/EdDSA 等）：读取 `jwt_private_key` / `jwt_public_key` 文件
     pub fn new(config: &AuthConfig) -> Self {
         Self {
             jwt_handler: Self::build_jwt_handler(config),
         }
     }
 
-    /// 获取 JwtHandler 引用
-    pub fn jwt(&self) -> &JwtHandler {
+    /// 获取 `JwtHandler` 引用
+    pub const fn jwt(&self) -> &JwtHandler {
         &self.jwt_handler
     }
 
@@ -92,8 +92,8 @@ impl TokenGenerator {
     }
 }
 
-/// JwtAlgorithm → jsonwebtoken::Algorithm 映射（模块私有）
-fn map_algorithm(alg: JwtAlgorithm) -> Algorithm {
+/// `JwtAlgorithm` → `jsonwebtoken::Algorithm` 映射（模块私有）
+const fn map_algorithm(alg: JwtAlgorithm) -> Algorithm {
     match alg {
         JwtAlgorithm::HS256 => Algorithm::HS256,
         JwtAlgorithm::HS384 => Algorithm::HS384,
@@ -107,7 +107,7 @@ fn map_algorithm(alg: JwtAlgorithm) -> Algorithm {
     }
 }
 
-/// 读取非对称密钥文件并构造 EncodingKey / DecodingKey（模块私有）
+/// 读取非对称密钥文件并构造 `EncodingKey` / `DecodingKey`（模块私有）
 fn load_asymmetric_keys(config: &AuthConfig) -> (EncodingKey, DecodingKey) {
     let private_key_path = config.jwt_private_key.as_deref().unwrap_or_else(|| {
         panic!(

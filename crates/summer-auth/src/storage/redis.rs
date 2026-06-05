@@ -11,7 +11,8 @@ pub struct RedisStorage {
 }
 
 impl RedisStorage {
-    pub fn new(conn: Redis) -> Self {
+    #[must_use]
+    pub const fn new(conn: Redis) -> Self {
         Self { conn }
     }
 }

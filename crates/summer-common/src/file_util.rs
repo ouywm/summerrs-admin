@@ -127,7 +127,7 @@ pub fn extract_file_name_from_path(path: &str) -> &str {
 pub fn compute_md5(data: &[u8]) -> String {
     let mut hasher = Md5::new();
     hasher.update(data);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// 校验文件大小和后缀

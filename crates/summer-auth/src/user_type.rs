@@ -1,23 +1,26 @@
 use serde::{Deserialize, Serialize};
 
-/// 完整的登录身份标识（单用户模式下仅包含 user_id）
+/// 完整的登录身份标识（单用户模式下仅包含 `user_id`）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LoginId {
     pub user_id: i64,
 }
 
 impl LoginId {
-    /// 通过 user_id 构造登录身份
+    /// 通过 `user_id` 构造登录身份
+    #[must_use]
     pub const fn new(user_id: i64) -> Self {
         Self { user_id }
     }
 
     /// session 的 Redis key（如 `auth:session:123`）。
+    #[must_use]
     pub fn session_key(&self) -> String {
         format!("auth:session:{}", self.user_id)
     }
 
     /// 编码为字符串形式（如 `123`）。
+    #[must_use]
     pub fn encode(&self) -> String {
         self.user_id.to_string()
     }
@@ -54,7 +57,8 @@ pub enum DeviceType {
 }
 
 impl DeviceType {
-    pub fn as_str(&self) -> &str {
+    #[must_use]
+    pub const fn as_str(&self) -> &str {
         match self {
             Self::Web => "web",
             Self::Android => "android",

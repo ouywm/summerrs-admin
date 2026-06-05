@@ -1,5 +1,3 @@
-//! SummerAuthPlugin - 注册 SessionManager 组件
-
 use std::sync::Arc;
 
 use summer::app::AppBuilder;

@@ -33,26 +33,3 @@ pub fn router_with_layers() -> Router {
         JwtStrategy::for_group(crate::system_group()),
     ))
 }
-
-pub fn admin_router() -> Router {
-    let router = Router::new();
-    let router = auth::routes(router);
-    let router = login_log::routes(router);
-    let router = monitor::routes(router);
-    let router = online::routes(router);
-    let router = operation_log::routes(router);
-    let router = public_file::routes(router);
-    let router = sys_config::routes(router);
-    let router = sys_config_group::routes(router);
-    let router = sys_dict::routes(router);
-    let router = sys_file::routes(router);
-    let router = sys_file_folder::routes(router);
-    let router = sys_file_upload::routes(router);
-    let router = sys_menu::routes(router);
-    let router = sys_notice::routes(router);
-    let router = sys_role::routes(router);
-    let router = sys_tenant::routes(router);
-    let router = sys_user::routes(router);
-    let router = user_notice::routes(router);
-    user_profile::routes(router)
-}

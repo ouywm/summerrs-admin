@@ -8,6 +8,6 @@ pub struct TokenPair {
     pub access_token: String,
     /// 刷新令牌（长期，如 7 天）
     pub refresh_token: String,
-    /// access_token 过期时间（秒）
+    /// `access_token` 过期时间（秒）
     pub expires_in: i64,
 }

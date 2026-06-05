@@ -64,11 +64,13 @@ pub struct PathAuthConfig {
 
 impl PathAuthConfig {
     /// 空配置；`include` 为空意味着 `requires_auth` 总返 `false`（鉴权关闭）。
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// 从既有规则向量构造（反序列化、批量装载等场景）。
+    #[must_use]
     pub fn from_rules(include: Vec<RouteRule>, exclude: Vec<RouteRule>) -> Self {
         let mut cfg = Self {
             include,
@@ -169,6 +171,7 @@ impl PathAuthConfig {
     }
 
     /// 检查路径是否需要鉴权。
+    #[must_use]
     pub fn requires_auth(&self, method: &http::Method, path: &str) -> bool {
         if self.include.is_empty() {
             return false;

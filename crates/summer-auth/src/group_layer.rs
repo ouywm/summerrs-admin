@@ -11,7 +11,7 @@
 //! ```
 //!
 //! 运行期一次请求的处理：
-//! 1. Strategy 通过 `RequestPartsExt::get_component()` 从 AppState 获取依赖
+//! 1. Strategy 通过 `RequestPartsExt::get_component()` 从 `AppState` 获取依赖
 //! 2. 调用 `strategy.authenticate(req)`
 //! 3. `Ok(())` → 透传到下游 handler；`Err(resp)` → 直接返回错误响应
 //!

@@ -38,6 +38,7 @@ fn device_prefix(login_id: &LoginId) -> String {
 /// - 末尾 `*` 通配：`system:*` 匹配 `system:user:list`、`system:role:add` 等所有 `system:` 开头的权限
 /// - 中间段 `*`：`system:*:list` 匹配 `system:user:list`、`system:role:list`
 /// - 段数不匹配时不通配（除非 owned 末尾是 `*`，此时匹配后续所有段）
+#[must_use]
 pub fn permission_matches(owned: &str, required: &str) -> bool {
     // 完全相等，快速返回
     if owned == required {
@@ -105,8 +106,8 @@ impl SessionManager {
             perm_map: Arc::new(RwLock::new(None)),
         }
     }
-
-    pub fn config(&self) -> &AuthConfig {
+    #[must_use]
+    pub const fn config(&self) -> &AuthConfig {
         &self.config
     }
 
@@ -116,6 +117,7 @@ impl SessionManager {
     }
 
     /// 读取权限映射表（clone）
+    #[must_use]
     pub fn permission_map(&self) -> Option<PermissionMap> {
         self.perm_map.read().clone()
     }
@@ -172,7 +174,10 @@ impl SessionManager {
         login_id: &LoginId,
         device: &DeviceType,
     ) -> AuthResult<()> {
-        if !self.config.concurrent_login {
+        if self.config.concurrent_login {
+            // 同设备重复登录：清除旧设备
+            self.cleanup_device(login_id, device).await;
+        } else {
             // 不允许并发登录：清除所有设备
             let keys = self
                 .storage
@@ -183,9 +188,6 @@ impl SessionManager {
                     self.cleanup_device(login_id, &d).await;
                 }
             }
-        } else {
-            // 同设备重复登录：清除旧设备
-            self.cleanup_device(login_id, device).await;
         }
 
         // 检查最大设备数
@@ -410,7 +412,7 @@ impl SessionManager {
 
     // ── Token 验证 ──
 
-    /// 验证 Access JWT + deny check → 返回 ValidatedAccess
+    /// 验证 Access JWT + deny check → 返回 `ValidatedAccess`
     pub async fn validate_token(&self, access_token: &str) -> AuthResult<ValidatedAccess> {
         // 1. JWT 验证签名 + exp（本地，零 IO）
         let claims = self.token_gen.jwt().decode_access(access_token)?;
@@ -452,11 +454,10 @@ impl SessionManager {
 
         // 3. 解码权限：bitmap 优先，降级为 permissions 数组
         let permissions = if let Some(ref pb) = claims.pb {
-            self.perm_map
-                .read()
-                .as_ref()
-                .map(|map| crate::bitmap::decode(pb, map))
-                .unwrap_or_else(|| claims.permissions.clone())
+            self.perm_map.read().as_ref().map_or_else(
+                || claims.permissions.clone(),
+                |map| crate::bitmap::decode(pb, map),
+            )
         } else {
             claims.permissions.clone()
         };
@@ -472,8 +473,8 @@ impl SessionManager {
         })
     }
 
-    /// 仅解析 Refresh JWT（不查 Redis），返回 LoginId
-    /// 给应用层拿 login_id 查 DB 用
+    /// 仅解析 Refresh JWT（不查 Redis），返回 `LoginId`
+    /// 给应用层拿 `login_id` 查 DB 用
     pub fn parse_refresh_token(&self, token: &str) -> AuthResult<LoginId> {
         let claims = self.token_gen.jwt().decode_refresh(token)?;
         LoginId::decode(&claims.sub).ok_or(AuthError::InvalidRefreshToken)
@@ -511,10 +512,10 @@ impl SessionManager {
         Ok(())
     }
 
-    /// 强制刷新（设 deny="refresh:{timestamp}" TTL=access_timeout）
+    /// 强制刷新（设 deny="refresh:{timestamp}" TTL=`access_timeout`）
     /// 用于权限变更后让用户重新获取最新权限
-    /// 时间戳方案：refresh 后签发的新 token (iat >= deny_ts) 自动放行，
-    /// 旧 token (iat < deny_ts) 返回 RefreshRequired，消除多设备竞态
+    /// 时间戳方案：refresh 后签发的新 token (iat >= `deny_ts`) 自动放行，
+    /// 旧 token (iat < `deny_ts`) 返回 `RefreshRequired`，消除多设备竞态
     pub async fn force_refresh(&self, login_id: &LoginId) -> AuthResult<()> {
         let deny_value = format!("refresh:{}", chrono::Local::now().timestamp());
         self.storage

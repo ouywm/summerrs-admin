@@ -10,9 +10,7 @@ use summer_system_model::dto::sys_file::{
     UpdateFileStatusDto, UpdateFileVisibilityDto,
 };
 use summer_system_model::vo::sys_file::{FilePageVo, FilePublicLinkVo, FileVo};
-use summer_web::Router;
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
 use summer_web::{delete_api, get_api, post_api, put_api};
 
 use crate::service::sys_file_service::SysFileService;
@@ -122,17 +120,4 @@ pub async fn move_file(
 ) -> ApiResult<()> {
     svc.move_file(id, dto).await?;
     Ok(())
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(list_files)
-        .typed_route(get_file)
-        .typed_route(delete_file)
-        .typed_route(generate_public_link)
-        .typed_route(revoke_public_link)
-        .typed_route(update_visibility)
-        .typed_route(update_status)
-        .typed_route(update_display_name)
-        .typed_route(move_file)
 }

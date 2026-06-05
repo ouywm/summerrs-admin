@@ -23,6 +23,8 @@ COPY --from=builder --chown=summer:summer /build/app-bin /app/app
 COPY --chown=summer:summer config/ /app/config/
 COPY --chown=summer:summer data/ip2region_v4.xdb /app/data/ip2region_v4.xdb
 
+RUN mkdir -p /app/logs && chown -R summer:summer /app/logs
+
 ENV SUMMER_ENV=prod \
     RUST_LOG=info \
     RUST_BACKTRACE=1

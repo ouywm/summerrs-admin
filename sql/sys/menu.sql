@@ -64,39 +64,3 @@ COMMENT ON COLUMN sys.menu.sort IS '排序（数值越小越靠前）';
 COMMENT ON COLUMN sys.menu.enabled IS '是否启用';
 COMMENT ON COLUMN sys.menu.create_time IS '创建时间';
 COMMENT ON COLUMN sys.menu.update_time IS '更新时间';
-
--- ============================================================
--- 测试数据
--- ============================================================
-
--- 一级菜单：仪表盘
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, redirect, icon, title, sort)
-VALUES (1, 0, 1, 'Dashboard', '/dashboard', '/dashboard/console', 'dashboard', '仪表盘', 1);
-
--- 二级菜单：控制台、分析页
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, title, sort)
-VALUES
-    (2, 1, 1, 'DashboardConsole',  'console',  'dashboard/console/index',  '控制台', 1),
-    (3, 1, 1, 'DashboardAnalysis', 'analysis', 'dashboard/analysis/index', '分析页', 2);
-
--- 一级菜单：系统管理
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, redirect, icon, title, sort)
-VALUES (4, 0, 1, 'System', '/system', '/system/user', 'system', '系统管理', 2);
-
--- 二级菜单：用户管理、角色管理、菜单管理
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, title, sort)
-VALUES
-    (5, 4, 1, 'SystemUser', 'user', 'system/user/index', '用户管理', 1),
-    (6, 4, 1, 'SystemRole', 'role', 'system/role/index', '角色管理', 2),
-    (7, 4, 1, 'SystemMenu', 'menu', 'system/menu/index', '菜单管理', 3);
-
--- 按钮权限：用户管理下的操作按钮
-INSERT INTO sys.menu (id, parent_id, menu_type, title, auth_name, auth_mark, bit_position, sort)
-VALUES
-    (8,  5, 2, '新增用户', '新增', 'btn_add',    0, 1),
-    (9,  5, 2, '编辑用户', '编辑', 'btn_edit',   1, 2),
-    (10, 5, 2, '删除用户', '删除', 'btn_delete', 2, 3),
-    (11, 5, 2, '导出用户', '导出', 'btn_export', 3, 4);
-
--- 重置序列
-SELECT setval('sys.menu_id_seq', (SELECT MAX(id) FROM sys.menu));

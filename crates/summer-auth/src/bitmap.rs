@@ -1,33 +1,36 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::collections::HashMap;
 
-/// 权限映射表：auth_mark <-> bit_position
+/// `权限映射表：auth_mark` <-> `bit_position`
 #[derive(Debug, Clone)]
 pub struct PermissionMap {
-    /// auth_mark -> bit_position
+    /// `auth_mark` -> `bit_position`
     forward: HashMap<String, u32>,
-    /// bit_position -> auth_mark
+    /// `bit_position` -> `auth_mark`
     reverse: HashMap<u32, String>,
 }
 
 impl PermissionMap {
+    #[must_use]
     pub fn new(mapping: Vec<(String, u32)>) -> Self {
         let forward: HashMap<String, u32> = mapping.iter().cloned().collect();
         let reverse: HashMap<u32, String> =
             mapping.into_iter().map(|(perm, pos)| (pos, perm)).collect();
         Self { forward, reverse }
     }
-
+    #[must_use]
     pub fn get_position(&self, perm: &str) -> Option<u32> {
         self.forward.get(perm).copied()
     }
 
+    #[must_use]
     pub fn get_perm(&self, pos: u32) -> Option<&str> {
         self.reverse.get(&pos).map(|s| s.as_str())
     }
 }
 
 /// 编码: Vec<String> -> Base64 bitmap, 无有效权限时返回 None
+#[must_use]
 pub fn encode(permissions: &[String], map: &PermissionMap) -> Option<String> {
     let positions: Vec<u32> = permissions
         .iter()
@@ -46,6 +49,7 @@ pub fn encode(permissions: &[String], map: &PermissionMap) -> Option<String> {
 }
 
 /// 解码: Base64 bitmap -> Vec<String>
+#[must_use]
 pub fn decode(pb: &str, map: &PermissionMap) -> Vec<String> {
     let bytes = STANDARD.decode(pb).unwrap_or_default();
     let mut perms = Vec::new();

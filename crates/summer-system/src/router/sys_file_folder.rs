@@ -7,8 +7,7 @@ use summer_common::response::Json;
 use summer_system_model::dto::sys_file_folder::{CreateFileFolderDto, UpdateFileFolderDto};
 use summer_system_model::vo::sys_file_folder::{FileFolderTreeVo, FileFolderVo};
 use summer_web::extractor::Component;
-use summer_web::handler::TypeRouter;
-use summer_web::{Router, delete_api, get_api, post_api, put_api};
+use summer_web::{delete_api, get_api, post_api, put_api};
 
 use crate::service::sys_file_folder_service::SysFileFolderService;
 
@@ -65,13 +64,4 @@ pub async fn delete_folder(
 ) -> ApiResult<()> {
     svc.delete(id).await?;
     Ok(())
-}
-
-pub fn routes(router: Router) -> Router {
-    router
-        .typed_route(tree)
-        .typed_route(get_folder)
-        .typed_route(create_folder)
-        .typed_route(update_folder)
-        .typed_route(delete_folder)
 }

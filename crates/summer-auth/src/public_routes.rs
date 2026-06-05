@@ -5,7 +5,7 @@ use summer_web::axum::http;
 /// Compile-time registered "public route" rule.
 ///
 /// 通过 `inventory` 从 handler crate 用 `#[public]` / `#[no_auth]` 发射过来。
-/// `group` 字段用于多鉴权域共存场景：每个 group 的 AuthLayer 只看自己 group
+/// `group` 字段用于多鉴权域共存场景：每个 group 的 `AuthLayer` 只看自己 group
 /// 下注册的 public route。旧调用点发射的条目 `group == ""`，兼容语义。
 #[derive(Clone, Copy)]
 pub struct PublicRoute {
@@ -28,6 +28,7 @@ pub enum MethodTag {
 }
 
 impl MethodTag {
+    #[must_use]
     pub fn matches(&self, method: &http::Method) -> bool {
         match self {
             Self::Any => true,
@@ -62,13 +63,15 @@ impl fmt::Display for MethodTag {
 
 inventory::collect!(PublicRoute);
 
-pub fn iter_public_routes() -> inventory::iter<PublicRoute> {
+#[must_use]
+pub const fn iter_public_routes() -> inventory::iter<PublicRoute> {
     inventory::iter::<PublicRoute>
 }
 
 /// 只返回指定 group 下注册的公共路由（含 `group == ""` 的旧条目视情况处理）。
 ///
 /// 返 `Vec` 而不是 `impl Iterator`：启动期一次性收集，调用端一般想多次迭代。
+#[must_use]
 pub fn public_routes_in_group(group: &str) -> Vec<&'static PublicRoute> {
     iter_public_routes()
         .into_iter()

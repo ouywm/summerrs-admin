@@ -15,7 +15,7 @@ pub struct SingleArg {
 impl Parse for SingleArg {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let lit: LitStr = input.parse()?;
-        Ok(SingleArg { value: lit.value() })
+        Ok(Self { value: lit.value() })
     }
 }
 
@@ -52,7 +52,7 @@ impl Parse for MultiArgs {
         syn::parenthesized!(content in input);
 
         let punctuated: Punctuated<LitStr, Token![,]> = Punctuated::parse_terminated(&content)?;
-        let values: Vec<String> = punctuated.iter().map(|lit| lit.value()).collect();
+        let values: Vec<String> = punctuated.iter().map(syn::LitStr::value).collect();
 
         if values.is_empty() {
             return Err(syn::Error::new(
@@ -61,7 +61,7 @@ impl Parse for MultiArgs {
             ));
         }
 
-        Ok(MultiArgs { mode, values })
+        Ok(Self { mode, values })
     }
 }
 
@@ -150,7 +150,7 @@ impl Parse for PublicArgs {
 
 // ── 宏展开 ──
 
-/// `#[login]` — 注入 LoginUser 提取器确保已登录
+/// `#[login]` — 注入 `LoginUser` 提取器确保已登录
 ///
 /// 展开后在参数列表中注入 `_: summer_auth::LoginUser`，
 /// 如果用户未登录，LoginUser 提取器会返回 401。
@@ -276,12 +276,13 @@ fn resolve_public_routes(
     // 默认 group 等同 `TypedHandlerRegistrar::group()` 的默认实现，取调用点 crate 名。
     // 用 `env!` 宏展开期求值，结果是 `&'static str` 字面量。
     let default_group_expr = quote!(env!("CARGO_PKG_NAME"));
-    let manual_group_expr = manual_group
-        .map(|g| {
+    let manual_group_expr = manual_group.map_or_else(
+        || default_group_expr.clone(),
+        |g| {
             let lit = LitStr::new(g, proc_macro2::Span::call_site());
             quote!(#lit)
-        })
-        .unwrap_or_else(|| default_group_expr.clone());
+        },
+    );
 
     // Manual path always wins.
     if let Some(path) = manual_path {

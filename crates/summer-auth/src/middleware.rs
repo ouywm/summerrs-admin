@@ -22,7 +22,8 @@ pub struct AuthLayer {
 }
 
 impl AuthLayer {
-    pub fn new(manager: SessionManager, path_config: Option<PathAuthConfig>) -> Self {
+    #[must_use]
+    pub const fn new(manager: SessionManager, path_config: Option<PathAuthConfig>) -> Self {
         Self {
             manager,
             path_config,

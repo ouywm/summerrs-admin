@@ -35,17 +35,19 @@ impl<S: Send + Sync> FromRequestParts<S> for LoginUser {
 
 impl LoginUser {
     /// 返回当前登录用户的角色列表
+    #[must_use]
     pub fn roles(&self) -> &[String] {
         self.profile.roles()
     }
 
     /// 返回当前登录用户的权限列表
+    #[must_use]
     pub fn permissions(&self) -> &[String] {
         self.profile.permissions()
     }
 }
 
-/// `LoginUser` 对 OpenAPI 文档透明
+/// `LoginUser` 对 `OpenAPI` 文档透明
 impl summer_web::aide::OperationInput for LoginUser {}
 
 /// 可选用户提取器
@@ -62,7 +64,7 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalLoginUser {
     }
 }
 
-/// `OptionalLoginUser` 对 OpenAPI 文档透明
+/// `OptionalLoginUser` 对 `OpenAPI` 文档透明
 impl summer_web::aide::OperationInput for OptionalLoginUser {}
 
 /// 401 未登录响应
