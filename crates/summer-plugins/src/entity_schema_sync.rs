@@ -23,7 +23,21 @@ impl Plugin for EntitySchemaSyncPlugin {
             );
 
         let system_prefix = summer_system_model::schema_registry_prefix();
-        finish_sync(system_prefix, summer_system_model::sync_schema(&db).await);
+        // sea-schema 的 PostgreSQL discovery future 不是 Send，无法跨越本
+        // async fn(#[async_trait] 要求 Send)的 await 点。把它整体隔离到
+        // spawn_blocking 的独立线程 + 当前线程 runtime 内执行，!Send future
+        // 在闭包里创建并消费完毕，永不逃逸到外层 Send future。
+        let sync_db = db.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build schema-sync runtime")
+                .block_on(summer_system_model::sync_schema(&sync_db))
+        })
+        .await
+        .expect("schema-sync task panicked");
+        finish_sync(system_prefix, result);
     }
 
     fn name(&self) -> &str {

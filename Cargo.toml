@@ -18,34 +18,34 @@ resolver = "2"
 accept-language = "3.1.0"
 anyhow = "1.0.102"
 argon2 = "0.5"
-async-stream = "0.3"
-async-trait = "0.1"
-aws-config = "1.8.14"
-aws-credential-types = "1.2.13"
-aws-sdk-s3 = "1.124.0"
-aws-smithy-types = "1.4.6"
+async-stream = "0.3.6"
+async-trait = "0.1.89"
+aws-config = "1.8.18"
+aws-credential-types = "1.2.14"
+aws-sdk-s3 = "1.135.0"
+aws-smithy-types = "1.4.9"
 axum-client-ip = "1.3.1"
 axum-extra = "0.12.6"
-axum-valid = "0.22.0"
+axum-valid = "0.24.0"
 base64 = "0.22.1"
 bytes = "1.11.1"
-calamine = "0.31.0"
+calamine = "0.35.0"
 chrono = "0.4.43"
 clap = "4"
-criterion = "0.5"
-croner = "3.0"
-flume = "0.12"
+criterion = "0.8.2"
+croner = "3.0.1"
+flume = "0.12.0"
 futures = "0.3.32"
-garde = "0.22.1"
-governor = "0.8"
-hex = "0.4"
-http = "1"
-indexmap = "2.13.0"
-inventory = "0.3"
+garde = "0.23.0"
+governor = "0.10.4"
+hex = "0.4.3"
+http = "1.4.1"
+indexmap = "2.14.0"
+inventory = "0.3.24"
 #ip2region = { git = "https://gitee.com/lionsoul/ip2region.git", branch = "master" }
 bigdecimal = "0.4.10"
 ip2region = { git = "https://github.com/lionsoul2014/ip2region.git", branch = "master" }
-ipnetwork = "0.20.0"
+ipnetwork = "0.21.1"
 jsonwebtoken = "10.3.0"
 kanal = "0.1"
 lettre = "0.11"
@@ -75,29 +75,29 @@ rust_xlsxwriter = "0.91.0"
 rustc-hash = "2"
 schema = "0.1.0"
 schemars = "1.1"
-sea-orm = "=2.0.0-rc.38"
+sea-orm = "2.0.0-rc.40"
 serde = "1.0.228"
 serde_json = "1.0.149"
 serde_repr = "0.1"
 sha2 = "0.10"
 sqlparser = "0.54.0"
-summer = "0.5.0"
+summer = "0.7.1"
 summer-admin-macros = { path = "crates/summer-admin-macros" }
 summer-auth = { path = "crates/summer-auth" }
 summer-common = { path = "crates/summer-common" }
 summer-domain = { path = "crates/summer-domain" }
-summer-job = "0.5.0"
+summer-job = "0.7.1"
 summer-job-dynamic = { path = "crates/summer-job-dynamic" }
-summer-macros = "0.5.0"
-summer-mail = "0.5.0"
+summer-macros = "0.7.1"
+summer-mail = "0.7.1"
 summer-mcp = { path = "crates/summer-mcp" }
 summer-plugins = { path = "crates/summer-plugins" }
-summer-redis = "0.5.0"
-summer-sea-orm = { version = "0.5.0-rc.1", default-features = false }
+summer-redis = "0.7.1"
+summer-sea-orm = { version = "0.7.1", default-features = false }
 summer-sharding = { path = "crates/summer-sharding" }
 summer-system = { path = "crates/summer-system" }
 summer-system-model = { path = "crates/summer-system/model" }
-summer-web = "0.5.0"
+summer-web = "0.7.2"
 syn = "2"
 sysinfo = "0.35"
 thiserror = "2.0.18"
@@ -117,7 +117,6 @@ validator = "0.20.0"
 woothee = "0.13"
 
 [patch.crates-io]
-sea-orm = { git = "https://github.com/ouywm/sea-orm.git", rev = "829259d70091bd46a999f436151d66ccc7553585" }
-summer = { git = "https://github.com/ouywm/spring-rs.git", rev = "e8e60826" }
-summer-macros = { git = "https://github.com/ouywm/spring-rs.git", rev = "e8e60826" }
-summer-web = { git = "https://github.com/ouywm/spring-rs.git", rev = "e8e60826" }
+summer = { git = "https://github.com/ouywm/spring-rs.git", branch = "feat/router-group" }
+summer-macros = { git = "https://github.com/ouywm/spring-rs.git", branch = "feat/router-group" }
+summer-web = { git = "https://github.com/ouywm/spring-rs.git", branch = "feat/router-group" }

@@ -12,7 +12,6 @@ sea-orm = { workspace = true, features = [
     "with-chrono",
     "with-time",
     "with-json",
-    "postgres-vector",
     "postgres-array",
     "debug-print",
     "with-ipnetwork",
