@@ -18,7 +18,6 @@ use crate::{
     },
 };
 
-const TENANT_METADATA_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct SummerShardingPlugin;
@@ -110,10 +109,6 @@ impl Plugin for SummerShardingPlugin {
             );
         }
 
-        let _poll_handle = connection.spawn_tenant_metadata_polling(
-            metadata_connection.clone(),
-            TENANT_METADATA_POLL_INTERVAL,
-        );
         let _ = connection
             .inner
             .pool

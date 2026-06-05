@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use super::ShardingConnection;
 use crate::error::{Result, ShardingError};
 
@@ -42,22 +40,5 @@ impl ShardingConnection {
                 .await?;
         }
         Ok(())
-    }
-
-    pub fn spawn_tenant_metadata_polling(
-        &self,
-        metadata_connection: sea_orm::DatabaseConnection,
-        interval: Duration,
-    ) -> tokio::task::JoinHandle<()> {
-        let connection = self.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            loop {
-                ticker.tick().await;
-                let _ = connection
-                    .reload_tenant_metadata(&metadata_connection)
-                    .await;
-            }
-        })
     }
 }

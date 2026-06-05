@@ -21,6 +21,7 @@ env:
   REGISTRY_DOCKERHUB: docker.io
   REGISTRY_GHCR: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_IMAGE_NAME: oywm/summer-admin
 
 jobs:
   build-and-push:
@@ -58,7 +59,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.REGISTRY_DOCKERHUB }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY_DOCKERHUB }}/${{ env.DOCKERHUB_IMAGE_NAME }}
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
