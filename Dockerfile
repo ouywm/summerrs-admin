@@ -4,7 +4,6 @@ WORKDIR /build
 COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
     cargo build --release --bin app && \
     strip /build/target/release/app && \
