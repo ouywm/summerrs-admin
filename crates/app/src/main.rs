@@ -9,7 +9,6 @@ use summer_mcp::McpPlugin;
 use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
-use summer_sharding::{ProbePlugin, SqlRewriteConfigurator, SummerShardingPlugin};
 use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
 use summer_web::{WebConfigurator, WebPlugin};
 use summer_xxl_job::XxlJobPlugin;
@@ -22,7 +21,6 @@ async fn main() {
     app.add_plugin(WebPlugin)
         .add_plugin(SeaOrmPlugin)
         .add_plugin(RedisPlugin)
-        .add_plugin(SummerShardingPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(XxlJobPlugin)
         .add_plugin(MailPlugin)
@@ -36,8 +34,5 @@ async fn main() {
         .add_plugin(McpPlugin)
         .add_jobs(summer_job::handler::auto_jobs());
     summer_system::job::register_xxl_handlers(&mut app);
-    app.add_router(router::router())
-        .sql_rewrite_configure(|registry| registry.register(ProbePlugin::new()))
-        .run()
-        .await;
+    app.add_router(router::router()).run().await;
 }

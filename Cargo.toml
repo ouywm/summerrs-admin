@@ -5,7 +5,6 @@ members = [
     "crates/summer-auth",
     "crates/summer-common",
     "crates/summer-domain",
-    "crates/summer-sharding",
     "crates/summer-mcp",
     "crates/summer-plugins",
     "crates/summer-system",
@@ -92,7 +91,6 @@ summer-mcp = { path = "crates/summer-mcp" }
 summer-plugins = { path = "crates/summer-plugins" }
 summer-redis = "0.7.1"
 summer-sea-orm = { version = "0.7.1", default-features = false }
-summer-sharding = { path = "crates/summer-sharding" }
 summer-system = { path = "crates/summer-system" }
 summer-system-model = { path = "crates/summer-system/model" }
 summer-web = "0.7.2"

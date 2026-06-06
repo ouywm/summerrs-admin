@@ -14,7 +14,6 @@ summer-sea-orm = { workspace = true, features = [
     "with-web",
     "with-web-openapi",
 ] }
-summer-sharding = { workspace = true }
 summer-web = { workspace = true, features = [
     "openapi",
     "openapi-swagger",
