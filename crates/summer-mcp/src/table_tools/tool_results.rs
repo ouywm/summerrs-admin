@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use rmcp::schemars;
 use sea_orm::JsonValue;
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,8 @@ use crate::{
     },
 };
 
+type JsonRowSchema = BTreeMap<String, JsonValue>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 pub(crate) struct ListTablesResult {
     pub schema: String,
@@ -29,6 +33,7 @@ pub(crate) struct TableLookupResult {
     pub schema: String,
     pub table: String,
     pub found: bool,
+    #[schemars(with = "Option<JsonRowSchema>")]
     pub item: Option<JsonValue>,
 }
 
@@ -36,6 +41,7 @@ pub(crate) struct TableLookupResult {
 pub(crate) struct TableListResult {
     pub schema: String,
     pub table: String,
+    #[schemars(with = "Vec<JsonRowSchema>")]
     pub items: Vec<JsonValue>,
     pub total: u64,
     pub limit: u64,
@@ -48,6 +54,7 @@ pub(crate) struct TableMutationResult {
     pub table: String,
     pub found: bool,
     pub changed: bool,
+    #[schemars(with = "Option<JsonRowSchema>")]
     pub item: Option<JsonValue>,
 }
 
@@ -62,6 +69,7 @@ pub(crate) struct TableDeleteResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 pub(crate) struct SqlQueryReadonlyResult {
+    #[schemars(with = "Vec<JsonRowSchema>")]
     pub rows: Vec<JsonValue>,
     pub row_count: u64,
     pub limit: u64,

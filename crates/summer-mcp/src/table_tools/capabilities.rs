@@ -53,6 +53,8 @@ pub(crate) struct ServerRuntimeSummary {
     pub path: String,
     pub stateful_mode: bool,
     pub json_response: bool,
+    pub allowed_hosts: Vec<String>,
+    pub allowed_origins: Vec<String>,
     pub session_channel_capacity: usize,
     pub session_keep_alive_seconds: Option<u64>,
     pub default_database_url_available: bool,

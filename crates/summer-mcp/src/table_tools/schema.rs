@@ -150,6 +150,14 @@ struct CheckConstraintRow {
 }
 
 pub async fn list_tables(db: &DatabaseConnection) -> Result<Vec<String>, McpError> {
+    list_tables_in_schema(db, PUBLIC_SCHEMA).await
+}
+
+pub async fn list_tables_in_schema(
+    db: &DatabaseConnection,
+    schema: &str,
+) -> Result<Vec<String>, McpError> {
+    let schema = normalize_schema(Some(schema))?;
     let statement = Statement::from_sql_and_values(
         DbBackend::Postgres,
         r#"
@@ -160,13 +168,13 @@ pub async fn list_tables(db: &DatabaseConnection) -> Result<Vec<String>, McpErro
               AND c.relkind = 'r'
             ORDER BY c.relname
         "#,
-        [Value::from(PUBLIC_SCHEMA.to_string())],
+        [Value::from(schema.clone())],
     );
 
     let rows = SelectorRaw::<SelectModel<TableNameRow>>::from_statement::<TableNameRow>(statement)
         .all(db)
         .await
-        .map_err(|error| db_error("list public tables", error))?;
+        .map_err(|error| db_error(format!("list tables in schema `{schema}`"), error))?;
 
     let tables: Vec<String> = rows
         .into_iter()
@@ -178,16 +186,25 @@ pub async fn list_tables(db: &DatabaseConnection) -> Result<Vec<String>, McpErro
 }
 
 pub async fn describe_table(db: &DatabaseConnection, table: &str) -> Result<TableSchema, McpError> {
+    describe_table_in_schema(db, PUBLIC_SCHEMA, table).await
+}
+
+pub async fn describe_table_in_schema(
+    db: &DatabaseConnection,
+    schema: &str,
+    table: &str,
+) -> Result<TableSchema, McpError> {
+    let schema = normalize_schema(Some(schema))?;
     ensure_valid_identifier(table, "table")?;
 
-    let (comment, columns, primary_key) = load_columns_and_primary_key(db, table).await?;
+    let (comment, columns, primary_key) = load_columns_and_primary_key(db, &schema, table).await?;
 
-    let indexes = load_indexes(db, table).await?;
-    let foreign_keys = load_foreign_keys(db, table).await?;
-    let check_constraints = load_check_constraints(db, table).await?;
+    let indexes = load_indexes(db, &schema, table).await?;
+    let foreign_keys = load_foreign_keys(db, &schema, table).await?;
+    let check_constraints = load_check_constraints(db, &schema, table).await?;
 
     Ok(TableSchema {
-        schema: PUBLIC_SCHEMA.to_string(),
+        schema,
         table: table.to_string(),
         comment,
         primary_key,
@@ -201,16 +218,18 @@ pub async fn describe_table(db: &DatabaseConnection, table: &str) -> Result<Tabl
 /// Lightweight variant of [`describe_table`] that only loads columns and primary key,
 /// skipping indexes, foreign keys, and check constraints. Suitable for CRUD operations
 /// where only column metadata is needed.
-pub async fn describe_table_for_crud(
+pub async fn describe_table_for_crud_in_schema(
     db: &DatabaseConnection,
+    schema: &str,
     table: &str,
 ) -> Result<TableSchema, McpError> {
+    let schema = normalize_schema(Some(schema))?;
     ensure_valid_identifier(table, "table")?;
 
-    let (comment, columns, primary_key) = load_columns_and_primary_key(db, table).await?;
+    let (comment, columns, primary_key) = load_columns_and_primary_key(db, &schema, table).await?;
 
     Ok(TableSchema {
-        schema: PUBLIC_SCHEMA.to_string(),
+        schema,
         table: table.to_string(),
         comment,
         primary_key,
@@ -223,16 +242,17 @@ pub async fn describe_table_for_crud(
 
 async fn load_columns_and_primary_key(
     db: &DatabaseConnection,
+    schema: &str,
     table: &str,
 ) -> Result<(Option<String>, Vec<TableColumnSchema>, Vec<String>), McpError> {
-    let column_rows = load_column_rows(db, table).await?;
+    let column_rows = load_column_rows(db, schema, table).await?;
     if column_rows.is_empty() {
         return Err(invalid_params_error(
             "table_not_found",
             "Table not found",
-            Some("Read schema://tables first to confirm the live table name."),
-            Some(format!("unknown table `{table}`")),
-            Some(serde_json::json!({ "table": table })),
+            Some("Read schema://tables first to confirm the live table name and schema."),
+            Some(format!("unknown table `{schema}.{table}`")),
+            Some(serde_json::json!({ "schema": schema, "table": table })),
         ));
     }
 
@@ -283,6 +303,7 @@ async fn load_columns_and_primary_key(
 
 async fn load_column_rows(
     db: &DatabaseConnection,
+    schema: &str,
     table: &str,
 ) -> Result<Vec<ColumnSchemaRow>, McpError> {
     let statement = Statement::from_sql_and_values(
@@ -325,7 +346,7 @@ async fn load_column_rows(
             ORDER BY a.attnum
         "#,
         [
-            Value::from(PUBLIC_SCHEMA.to_string()),
+            Value::from(schema.to_string()),
             Value::from(table.to_string()),
         ],
     );
@@ -333,11 +354,12 @@ async fn load_column_rows(
     SelectorRaw::<SelectModel<ColumnSchemaRow>>::from_statement::<ColumnSchemaRow>(statement)
         .all(db)
         .await
-        .map_err(|error| db_error(format!("describe table `{table}` columns"), error))
+        .map_err(|error| db_error(format!("describe table `{schema}.{table}` columns"), error))
 }
 
 async fn load_indexes(
     db: &DatabaseConnection,
+    schema: &str,
     table: &str,
 ) -> Result<Vec<TableIndexSchema>, McpError> {
     let statement = Statement::from_sql_and_values(
@@ -365,7 +387,7 @@ async fn load_indexes(
             ORDER BY ix.indisprimary DESC, ix.indisunique DESC, idx.relname
         "#,
         [
-            Value::from(PUBLIC_SCHEMA.to_string()),
+            Value::from(schema.to_string()),
             Value::from(table.to_string()),
         ],
     );
@@ -374,7 +396,9 @@ async fn load_indexes(
         SelectorRaw::<SelectModel<IndexSchemaRow>>::from_statement::<IndexSchemaRow>(statement)
             .all(db)
             .await
-            .map_err(|error| db_error(format!("describe table `{table}` indexes"), error))?;
+            .map_err(|error| {
+                db_error(format!("describe table `{schema}.{table}` indexes"), error)
+            })?;
 
     rows.into_iter()
         .map(|row| {
@@ -390,6 +414,7 @@ async fn load_indexes(
 
 async fn load_foreign_keys(
     db: &DatabaseConnection,
+    schema: &str,
     table: &str,
 ) -> Result<Vec<TableForeignKeySchema>, McpError> {
     let statement = Statement::from_sql_and_values(
@@ -438,7 +463,7 @@ async fn load_foreign_keys(
             ORDER BY con.conname
         "#,
         [
-            Value::from(PUBLIC_SCHEMA.to_string()),
+            Value::from(schema.to_string()),
             Value::from(table.to_string()),
         ],
     );
@@ -449,7 +474,12 @@ async fn load_foreign_keys(
         )
         .all(db)
         .await
-        .map_err(|error| db_error(format!("describe table `{table}` foreign keys"), error))?;
+        .map_err(|error| {
+            db_error(
+                format!("describe table `{schema}.{table}` foreign keys"),
+                error,
+            )
+        })?;
 
     rows.into_iter()
         .map(|row| {
@@ -471,6 +501,7 @@ async fn load_foreign_keys(
 
 async fn load_check_constraints(
     db: &DatabaseConnection,
+    schema: &str,
     table: &str,
 ) -> Result<Vec<TableCheckConstraintSchema>, McpError> {
     let statement = Statement::from_sql_and_values(
@@ -488,7 +519,7 @@ async fn load_check_constraints(
             ORDER BY con.conname
         "#,
         [
-            Value::from(PUBLIC_SCHEMA.to_string()),
+            Value::from(schema.to_string()),
             Value::from(table.to_string()),
         ],
     );
@@ -499,7 +530,12 @@ async fn load_check_constraints(
         )
         .all(db)
         .await
-        .map_err(|error| db_error(format!("describe table `{table}` check constraints"), error))?;
+        .map_err(|error| {
+            db_error(
+                format!("describe table `{schema}.{table}` check constraints"),
+                error,
+            )
+        })?;
 
     Ok(rows
         .into_iter()
@@ -535,6 +571,12 @@ fn json_array_to_strings(value: JsonValue, field: &str) -> Result<Vec<String>, M
             })
         })
         .collect()
+}
+
+pub fn normalize_schema(schema: Option<&str>) -> Result<String, McpError> {
+    let schema = schema.unwrap_or(PUBLIC_SCHEMA).trim();
+    ensure_valid_identifier(schema, "schema")?;
+    Ok(schema.to_string())
 }
 
 pub fn quote_identifier(identifier: &str) -> String {

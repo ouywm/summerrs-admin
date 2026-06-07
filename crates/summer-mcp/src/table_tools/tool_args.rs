@@ -27,7 +27,16 @@ type JsonMap = BTreeMap<String, JsonValue>;
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct ListTablesArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DescribeTableArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 需要查看的表名
     pub(crate) table: String,
 }
@@ -35,6 +44,8 @@ pub(crate) struct DescribeTableArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TableQueryArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 目标表名
     pub(crate) table: String,
     /// 需要返回的列，为空时返回所有可读列
@@ -57,6 +68,8 @@ pub(crate) struct TableQueryArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TableGetArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 目标表名
     pub(crate) table: String,
     /// 主键对象，支持联合主键
@@ -66,6 +79,8 @@ pub(crate) struct TableGetArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TableInsertArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 目标表名
     pub(crate) table: String,
     /// 新纪录字段值
@@ -75,6 +90,8 @@ pub(crate) struct TableInsertArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TableUpdateArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 目标表名
     pub(crate) table: String,
     /// 主键对象，支持联合主键
@@ -86,6 +103,8 @@ pub(crate) struct TableUpdateArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TableDeleteArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 目标表名
     pub(crate) table: String,
     /// 主键对象，支持联合主键
@@ -95,6 +114,8 @@ pub(crate) struct TableDeleteArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SqlQueryReadonlyArgs {
+    /// PostgreSQL schema；传入后会在当前事务内设置 search_path
+    pub(crate) schema: Option<String>,
     /// 只读 SQL，当前仅允许单条 SELECT / WITH ... SELECT 语句
     pub(crate) sql: String,
     /// PostgreSQL 位置参数，对应 $1、$2 ...
@@ -110,6 +131,8 @@ pub(crate) struct SqlQueryReadonlyArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SqlExecArgs {
+    /// PostgreSQL schema；传入后会在当前事务内设置 search_path
+    pub(crate) schema: Option<String>,
     /// 执行 SQL，允许单条 DDL / DML / 管理语句
     pub(crate) sql: String,
     /// PostgreSQL 位置参数，对应 $1、$2 ...
@@ -146,6 +169,8 @@ pub(crate) struct GenerateEntityFromTableArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerateAdminModuleFromTableArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 需要生成后台模块骨架的表名
     pub(crate) table: String,
     /// 是否覆盖已有文件
@@ -174,6 +199,8 @@ pub(crate) struct GenerateAdminModuleFromTableArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerateFrontendApiFromTableArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 需要生成前端 api/类型声明 的表名
     pub(crate) table: String,
     /// 是否覆盖已有文件
@@ -200,6 +227,8 @@ pub(crate) struct GenerateFrontendApiFromTableArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerateFrontendBundleFromTableArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 需要一次生成 frontend api/类型声明/page 的表名
     pub(crate) table: String,
     /// 是否覆盖已有文件
@@ -243,6 +272,8 @@ pub(crate) struct GenerateFrontendBundleFromTableArgs {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GenerateFrontendPageFromTableArgs {
+    /// PostgreSQL schema，默认 public
+    pub(crate) schema: Option<String>,
     /// 需要生成前端页面骨架的表名
     pub(crate) table: String,
     /// 是否覆盖已有文件
@@ -291,9 +322,12 @@ pub(crate) struct GenerateFrontendPageFromTableArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
+#[schemars(extend("type" = "object"))]
 pub(crate) enum UpgradeEntityEnumsFromTableArgs {
     /// 预览实体枚举升级计划，不写文件
     PlanUpgrade {
+        /// PostgreSQL schema，默认 public
+        schema: Option<String>,
         /// 目标表名
         table: String,
         /// 路由基础路径，默认自动从表名推导，例如 sys_user -> user
@@ -311,6 +345,8 @@ pub(crate) enum UpgradeEntityEnumsFromTableArgs {
     },
     /// 应用实体枚举升级计划并写回实体文件
     ApplyUpgrade {
+        /// PostgreSQL schema，默认 public
+        schema: Option<String>,
         /// 目标表名
         table: String,
         /// 路由基础路径，默认自动从表名推导，例如 sys_user -> user
@@ -330,6 +366,7 @@ pub(crate) enum UpgradeEntityEnumsFromTableArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
+#[schemars(extend("type" = "object"))]
 pub(crate) enum MenuToolArgs {
     /// 获取管理端菜单树
     ListTree,
@@ -358,6 +395,7 @@ pub(crate) enum MenuToolArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
+#[schemars(extend("type" = "object"))]
 pub(crate) enum DictToolArgs {
     /// 查询字典类型列表
     ListTypes { query: Option<DictTypeQueryDto> },

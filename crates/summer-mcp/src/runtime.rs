@@ -66,6 +66,8 @@ fn build_http_service_components(
     server_config.sse_retry = Some(Duration::from_secs(config.sse_retry));
     server_config.stateful_mode = config.stateful_mode;
     server_config.json_response = config.json_response;
+    server_config.allowed_hosts = config.allowed_hosts.clone();
+    server_config.allowed_origins = config.allowed_origins.clone();
     server_config.cancellation_token = cancellation_token;
 
     HttpServiceComponents {
@@ -158,4 +160,30 @@ where
 
     tracing::info!("MCP HTTP server stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_service_components_apply_access_control_config() {
+        let config = McpConfig {
+            allowed_hosts: vec!["mcp.example.com".to_string(), "127.0.0.1:9090".to_string()],
+            allowed_origins: vec!["https://admin.example.com".to_string()],
+            ..McpConfig::default()
+        };
+
+        let components =
+            build_http_service_components(&config, tokio_util::sync::CancellationToken::new());
+
+        assert_eq!(
+            components.server_config.allowed_hosts,
+            vec!["mcp.example.com".to_string(), "127.0.0.1:9090".to_string(),]
+        );
+        assert_eq!(
+            components.server_config.allowed_origins,
+            vec!["https://admin.example.com".to_string()]
+        );
+    }
 }

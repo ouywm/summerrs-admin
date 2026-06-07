@@ -65,6 +65,14 @@ pub struct McpConfig {
     #[serde(default)]
     pub json_response: bool,
 
+    /// HTTP Host 白名单；为空表示不校验 Host，不建议公网部署使用。
+    #[serde(default = "default_allowed_hosts")]
+    pub allowed_hosts: Vec<String>,
+
+    /// HTTP Origin 白名单；为空表示不校验 Origin。
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+
     // ── 会话配置（SessionConfig） ──
     /// 会话通道缓冲容量
     #[serde(default = "default_session_channel_capacity")]
@@ -96,6 +104,8 @@ impl Default for McpConfig {
             sse_retry: default_sse_retry(),
             stateful_mode: true,
             json_response: false,
+            allowed_hosts: default_allowed_hosts(),
+            allowed_origins: vec![],
             session_channel_capacity: default_session_channel_capacity(),
             session_keep_alive: None,
             default_database_url: None,
@@ -190,4 +200,12 @@ fn default_session_channel_capacity() -> usize {
 
 fn default_stateful_mode() -> bool {
     true
+}
+
+fn default_allowed_hosts() -> Vec<String> {
+    vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ]
 }

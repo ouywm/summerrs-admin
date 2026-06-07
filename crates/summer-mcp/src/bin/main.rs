@@ -37,6 +37,14 @@ struct Cli {
     /// MCP 端点路径 (仅 http 模式)
     #[arg(long, default_value = "/mcp")]
     path: String,
+
+    /// 允许的 Host / authority，支持多次传入或逗号分隔；默认只允许 localhost/127.0.0.1/::1
+    #[arg(long, value_delimiter = ',')]
+    allowed_host: Vec<String>,
+
+    /// 允许的浏览器 Origin，支持多次传入或逗号分隔；为空时不校验 Origin
+    #[arg(long, value_delimiter = ',')]
+    allowed_origin: Vec<String>,
 }
 
 #[tokio::main]
@@ -58,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("database connected");
 
     // 构建 MCP 配置
-    let config = McpConfig {
+    let mut config = McpConfig {
         transport: cli.transport,
         http_mode: McpHttpMode::Standalone,
         port: cli.port,
@@ -67,6 +75,12 @@ async fn main() -> anyhow::Result<()> {
         default_database_url: Some(cli.database_url.clone()),
         ..Default::default()
     };
+    if !cli.allowed_host.is_empty() {
+        config.allowed_hosts = cli.allowed_host;
+    }
+    if !cli.allowed_origin.is_empty() {
+        config.allowed_origins = cli.allowed_origin;
+    }
 
     let run_result = run_server_with_shutdown(config, db.clone(), async {
         tokio::signal::ctrl_c().await.ok();

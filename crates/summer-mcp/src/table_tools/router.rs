@@ -30,8 +30,9 @@ use crate::{
             build_update_assignments,
         },
         schema::{
-            TableSchema, db_error, describe_table, describe_table_for_crud,
-            ensure_valid_identifier, list_tables, quote_identifier, readable_select_list,
+            TableSchema, db_error, describe_table_for_crud_in_schema, describe_table_in_schema,
+            ensure_valid_identifier, list_tables_in_schema, normalize_schema, quote_identifier,
+            readable_select_list,
         },
         sql_scanner::{convert_sql_params, normalize_exec_sql, normalize_readonly_sql},
         tool_args::*,
@@ -122,6 +123,22 @@ fn build_crud_field_selection(
     }
 }
 
+fn normalize_explicit_schema(schema: Option<&str>) -> Result<Option<String>, McpError> {
+    schema
+        .map(|value| normalize_schema(Some(value)))
+        .transpose()
+}
+
+fn search_path_statement(schema: &str) -> Statement {
+    Statement::from_string(
+        DbBackend::Postgres,
+        format!(
+            "SET LOCAL search_path TO {}, pg_catalog",
+            quote_identifier(schema)
+        ),
+    )
+}
+
 #[tool_router(router = tool_router, vis = "pub(crate)")]
 impl AdminMcpServer {
     #[tool(
@@ -155,6 +172,8 @@ impl AdminMcpServer {
                 path: config.path.clone(),
                 stateful_mode: config.stateful_mode,
                 json_response: config.json_response,
+                allowed_hosts: config.allowed_hosts.clone(),
+                allowed_origins: config.allowed_origins.clone(),
                 session_channel_capacity: config.session_channel_capacity,
                 session_keep_alive_seconds: config.session_keep_alive,
                 default_database_url_available: config.default_database_url.is_some(),
@@ -170,13 +189,14 @@ impl AdminMcpServer {
     }
 
     #[tool(description = "List runtime-discovered database tables exposed by this MCP server")]
-    async fn schema_list_tables(&self) -> Result<Json<ListTablesResult>, McpError> {
+    async fn schema_list_tables(
+        &self,
+        Parameters(args): Parameters<ListTablesArgs>,
+    ) -> Result<Json<ListTablesResult>, McpError> {
         tool_result!("schema_list_tables", {
-            let tables = list_tables(self.db()).await?;
-            Ok(Json(ListTablesResult {
-                schema: "public".to_string(),
-                tables,
-            }))
+            let schema = normalize_schema(args.schema.as_deref())?;
+            let tables = list_tables_in_schema(self.db(), &schema).await?;
+            Ok(Json(ListTablesResult { schema, tables }))
         })
     }
 
@@ -188,7 +208,8 @@ impl AdminMcpServer {
         Parameters(args): Parameters<DescribeTableArgs>,
     ) -> Result<Json<TableSchema>, McpError> {
         tool_result!("schema_describe_table", {
-            let schema = describe_table(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema = describe_table_in_schema(self.db(), &schema_name, &args.table).await?;
             Ok(Json(schema))
         })
     }
@@ -216,7 +237,8 @@ impl AdminMcpServer {
             for field in variant_name_overrides.keys() {
                 ensure_valid_identifier(field, "variant_name_overrides field")?;
             }
-            let schema = describe_table_for_crud(self.db(), &table).await?;
+            let schema_name = normalize_schema(database_schema.as_deref())?;
+            let schema = describe_table_for_crud_in_schema(self.db(), &schema_name, &table).await?;
 
             let generator =
                 EntityGenerator::new(self.default_database_url().map(ToOwned::to_owned))?;
@@ -264,6 +286,7 @@ impl AdminMcpServer {
         tool_result!("upgrade_entity_enums_from_table", {
             let (
                 mode,
+                schema,
                 table,
                 route_base,
                 output_dir,
@@ -272,6 +295,7 @@ impl AdminMcpServer {
                 variant_name_overrides,
             ) = match args {
                 UpgradeEntityEnumsFromTableArgs::PlanUpgrade {
+                    schema,
                     table,
                     route_base,
                     output_dir,
@@ -280,6 +304,7 @@ impl AdminMcpServer {
                     variant_name_overrides,
                 } => (
                     ToolExecutionMode::Plan,
+                    schema,
                     table,
                     route_base,
                     output_dir,
@@ -288,6 +313,7 @@ impl AdminMcpServer {
                     variant_name_overrides,
                 ),
                 UpgradeEntityEnumsFromTableArgs::ApplyUpgrade {
+                    schema,
                     table,
                     route_base,
                     output_dir,
@@ -296,6 +322,7 @@ impl AdminMcpServer {
                     variant_name_overrides,
                 } => (
                     ToolExecutionMode::Apply,
+                    schema,
                     table,
                     route_base,
                     output_dir,
@@ -321,7 +348,8 @@ impl AdminMcpServer {
                 ensure_valid_identifier(field, "variant_name_overrides field")?;
             }
 
-            let schema = describe_table_for_crud(self.db(), &table).await?;
+            let schema_name = normalize_schema(schema.as_deref())?;
+            let schema = describe_table_for_crud_in_schema(self.db(), &schema_name, &table).await?;
             let upgrader = EntityEnumUpgrader::new()?;
             let request = crate::tools::entity_enum_upgrader::EntityEnumUpgradeRequest {
                 schema,
@@ -393,7 +421,8 @@ impl AdminMcpServer {
             let output_dir = args.output_dir.clone();
             let overwrite = args.overwrite.unwrap_or(false);
             let workspace_root = workspace_root()?;
-            let schema = describe_table(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema = describe_table_in_schema(self.db(), &schema_name, &args.table).await?;
             let generator = AdminModuleGenerator::new()?;
             let result = generator
                 .generate(GenerateAdminModuleRequest {
@@ -461,7 +490,8 @@ impl AdminMcpServer {
             let frontend_root_dir = target_preset
                 .resolve_bundle_layout(&workspace_root, output_dir.as_deref())?
                 .frontend_root_dir;
-            let schema = describe_table(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema = describe_table_in_schema(self.db(), &schema_name, &args.table).await?;
             let generator = FrontendApiGenerator::new()?;
             let result = generator
                 .generate(GenerateFrontendApiRequest {
@@ -519,7 +549,8 @@ impl AdminMcpServer {
             );
             validate_crud_field_selection(&field_selection)?;
 
-            let schema = describe_table(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema = describe_table_in_schema(self.db(), &schema_name, &args.table).await?;
             let generator = FrontendBundleGenerator::new()?;
             let output_dir = args.output_dir.clone();
             let result = generator
@@ -601,7 +632,8 @@ impl AdminMcpServer {
             let frontend_root_dir = target_preset
                 .resolve_bundle_layout(&workspace_root, output_dir.as_deref())?
                 .frontend_root_dir;
-            let schema = describe_table(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema = describe_table_in_schema(self.db(), &schema_name, &args.table).await?;
             let generator = FrontendPageGenerator::new()?;
             let result = generator
                 .generate(GenerateFrontendPageRequest {
@@ -911,6 +943,7 @@ impl AdminMcpServer {
     ) -> Result<Json<SqlQueryReadonlyResult>, McpError> {
         tool_result!("sql_query_readonly", {
             let sql = normalize_readonly_sql(&args.sql)?;
+            let search_path_schema = normalize_explicit_schema(args.schema.as_deref())?;
             let limit = args
                 .limit
                 .unwrap_or(DEFAULT_SQL_QUERY_LIMIT)
@@ -925,12 +958,20 @@ impl AdminMcpServer {
                 .db()
                 .transaction_with_config(
                     move |txn| {
+                        let search_path_schema = search_path_schema.clone();
                         let statement = Statement::from_sql_and_values(
                             DbBackend::Postgres,
                             wrapped_sql.clone(),
                             params.clone(),
                         );
                         Box::pin(async move {
+                            if let Some(schema) = search_path_schema.as_deref() {
+                                txn.execute_raw(search_path_statement(schema))
+                                    .await
+                                    .map_err(|error| {
+                                        sql_tool_db_error("set SQL search_path", error)
+                                    })?;
+                            }
                             SelectorRaw::<SelectModel<JsonValue>>::from_statement::<JsonValue>(
                                 statement,
                             )
@@ -971,6 +1012,7 @@ impl AdminMcpServer {
     ) -> Result<Json<SqlExecResult>, McpError> {
         tool_result!("sql_exec", {
             let sql = normalize_exec_sql(&args.sql)?;
+            let search_path_schema = normalize_explicit_schema(args.schema.as_deref())?;
             let params = convert_sql_params(&args.params)?;
 
             tracing::warn!(target: "summer_mcp::sql_exec", sql = %sql, "executing raw SQL via MCP sql_exec");
@@ -978,9 +1020,15 @@ impl AdminMcpServer {
             let rows_affected = self
                 .db()
                 .transaction(move |txn| {
+                    let search_path_schema = search_path_schema.clone();
                     let statement =
                         Statement::from_sql_and_values(DbBackend::Postgres, sql.clone(), params);
                     Box::pin(async move {
+                        if let Some(schema) = search_path_schema.as_deref() {
+                            txn.execute_raw(search_path_statement(schema))
+                                .await
+                                .map_err(|error| sql_tool_db_error("set SQL search_path", error))?;
+                        }
                         let result = txn
                             .execute_raw(statement)
                             .await
@@ -1006,7 +1054,9 @@ impl AdminMcpServer {
         Parameters(args): Parameters<TableGetArgs>,
     ) -> Result<Json<TableLookupResult>, McpError> {
         tool_result!("table_get", {
-            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema =
+                describe_table_for_crud_in_schema(self.db(), &schema_name, &args.table).await?;
             let select_list = readable_select_list(&schema, None)?;
             let mut params = Vec::new();
             let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
@@ -1044,7 +1094,9 @@ impl AdminMcpServer {
         Parameters(args): Parameters<TableQueryArgs>,
     ) -> Result<Json<TableListResult>, McpError> {
         tool_result!("table_query", {
-            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema =
+                describe_table_for_crud_in_schema(self.db(), &schema_name, &args.table).await?;
             let select_list = readable_select_list(&schema, args.columns.as_deref())?;
             let window = ListWindow::from_args(args.limit, args.offset);
 
@@ -1111,7 +1163,9 @@ impl AdminMcpServer {
         Parameters(args): Parameters<TableInsertArgs>,
     ) -> Result<Json<TableMutationResult>, McpError> {
         tool_result!("table_insert", {
-            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema =
+                describe_table_for_crud_in_schema(self.db(), &schema_name, &args.table).await?;
             let (columns, values, params) = build_insert_assignments(&schema, &args.values)?;
             let returning = readable_select_list(&schema, None)?;
             let statement = Statement::from_sql_and_values(
@@ -1147,7 +1201,9 @@ impl AdminMcpServer {
         Parameters(args): Parameters<TableUpdateArgs>,
     ) -> Result<Json<TableMutationResult>, McpError> {
         tool_result!("table_update", {
-            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema =
+                describe_table_for_crud_in_schema(self.db(), &schema_name, &args.table).await?;
             let (set_clause, mut params) = build_update_assignments(&schema, &args.values)?;
             let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
             let returning = readable_select_list(&schema, None)?;
@@ -1208,7 +1264,9 @@ impl AdminMcpServer {
         Parameters(args): Parameters<TableDeleteArgs>,
     ) -> Result<Json<TableDeleteResult>, McpError> {
         tool_result!("table_delete", {
-            let schema = describe_table_for_crud(self.db(), &args.table).await?;
+            let schema_name = normalize_schema(args.schema.as_deref())?;
+            let schema =
+                describe_table_for_crud_in_schema(self.db(), &schema_name, &args.table).await?;
             let mut params = Vec::new();
             let where_clause = build_key_clause(&schema, &args.key, &mut params)?;
             let statement = Statement::from_sql_and_values(
@@ -1268,7 +1326,7 @@ mod tests {
     use super::*;
     use crate::config::{McpConfig, McpHttpMode, McpTransport};
     use crate::table_tools::query_builder::TableFilterInput;
-    use sea_orm::{DbBackend, MockDatabase, Value};
+    use sea_orm::{DbBackend, MockDatabase, MockExecResult, Value};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -1339,6 +1397,116 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.params.len(), 1);
+    }
+
+    #[test]
+    fn sql_and_table_args_accept_optional_pg_schema() {
+        let list_args: ListTablesArgs = serde_json::from_value(json!({
+            "schema": "tenant_demo",
+        }))
+        .unwrap();
+        assert_eq!(list_args.schema.as_deref(), Some("tenant_demo"));
+
+        let default_list_args: ListTablesArgs = serde_json::from_value(json!({})).unwrap();
+        assert!(default_list_args.schema.is_none());
+
+        let query_args: SqlQueryReadonlyArgs = serde_json::from_value(json!({
+            "schema": "tenant_demo",
+            "sql": "select * from sys_role",
+        }))
+        .unwrap();
+        assert_eq!(query_args.schema.as_deref(), Some("tenant_demo"));
+
+        let exec_args: SqlExecArgs = serde_json::from_value(json!({
+            "schema": "tenant_demo",
+            "sql": "update sys_role set enabled = true",
+        }))
+        .unwrap();
+        assert_eq!(exec_args.schema.as_deref(), Some("tenant_demo"));
+
+        let table_args: TableQueryArgs = serde_json::from_value(json!({
+            "schema": "tenant_demo",
+            "table": "sys_role",
+        }))
+        .unwrap();
+        assert_eq!(table_args.schema.as_deref(), Some("tenant_demo"));
+    }
+
+    #[test]
+    fn listed_tool_schemas_are_compatible_with_strict_mcp_clients() {
+        for (index, tool) in AdminMcpServer::tool_router().list_all().iter().enumerate() {
+            assert_eq!(
+                tool.input_schema.get("type"),
+                Some(&json!("object")),
+                "tool #{index} `{}` inputSchema root type must be object: {}",
+                tool.name,
+                serde_json::to_string(&tool.input_schema).unwrap()
+            );
+
+            if let Some(output_schema) = &tool.output_schema {
+                assert_eq!(
+                    output_schema.get("type"),
+                    Some(&json!("object")),
+                    "tool #{index} `{}` outputSchema root type must be object",
+                    tool.name
+                );
+                assert_top_level_properties_are_schema_objects(&tool.name, output_schema.as_ref());
+            }
+        }
+    }
+
+    fn assert_top_level_properties_are_schema_objects(
+        tool_name: &str,
+        schema: &serde_json::Map<String, serde_json::Value>,
+    ) {
+        let Some(serde_json::Value::Object(properties)) = schema.get("properties") else {
+            return;
+        };
+
+        for (property, property_schema) in properties {
+            assert!(
+                property_schema.is_object(),
+                "tool `{tool_name}` outputSchema property `{property}` must be a schema object, got {property_schema}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sql_exec_sets_search_path_before_user_sql_when_schema_is_specified() {
+        let db = MockDatabase::new(DbBackend::Postgres)
+            .append_exec_results([
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 0,
+                },
+                MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 1,
+                },
+            ])
+            .into_connection();
+        let server = AdminMcpServer::new(&McpConfig::default(), db.clone());
+
+        let Json(result) = server
+            .sql_exec_tool(Parameters(SqlExecArgs {
+                schema: Some("tenant_demo".to_string()),
+                sql: "update sys_role set enabled = true".to_string(),
+                params: vec![],
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(result.rows_affected, 1);
+
+        let logs = db.into_transaction_log();
+        let statements = logs[0].statements();
+        assert_eq!(statements[0].sql, "BEGIN");
+        assert_eq!(
+            statements[1].sql,
+            "SET LOCAL search_path TO \"tenant_demo\", pg_catalog"
+        );
+        assert_eq!(statements[2].sql, "update sys_role set enabled = true");
+        assert_eq!(statements[3].sql, "COMMIT");
     }
 
     #[test]
