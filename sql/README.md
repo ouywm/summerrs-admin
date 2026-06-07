@@ -29,7 +29,9 @@
 3. `sql/biz/`
 4. `sql/ai/`（先看 `sql/ai/README.md` 再进入子目录）
 5. 按需导入 `sql/sys/menu_data_all.sql`
-6. 仅在老库改造时执行 `sql/migration/`
+6. 导入 `sql/sys/role_menu.sql` 后，再导入 `sql/sys/resource.sql`（资源种子依赖菜单按钮）
+7. 已有库增量启用 AI 代码生成时，执行 `sql/sys/ai_codegen_incremental.sql`；全量初始化时可执行 `sql/sys/ai_codegen.sql` 并随菜单/资源种子一同导入
+8. 仅在老库改造时执行 `sql/migration/`
 
 关于 PostgreSQL schema：
 

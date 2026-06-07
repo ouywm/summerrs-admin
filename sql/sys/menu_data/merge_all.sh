@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 按正确顺序合并所有 JSON 文件
-# 顺序：仪表盘、模版中心、组件中心、功能示例、系统管理、文章管理、结果页面、异常页面、运维管理、官方文档、精简版本、v2.6.1版本、更新日志、调度
+# 顺序：仪表盘、模版中心、组件中心、功能示例、系统管理、文章管理、结果页面、异常页面、运维管理、调度、文件管理、AI、开发工具、官方文档、精简版本、v2.6.1版本、更新日志
 
 cd "$(dirname "$0")"
 
@@ -19,6 +19,10 @@ jq -s 'add' \
   result.json \
   exception.json \
   safeguard.json \
+  scheduler.json \
+  file.json \
+  ai.json \
+  dev_tools.json \
   help.json \
   > "$temp_file"
 

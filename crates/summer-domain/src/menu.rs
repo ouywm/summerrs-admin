@@ -274,6 +274,8 @@ impl MenuDomainService {
     }
 
     pub async fn create_menu(&self, dto: CreateMenuDto) -> ApiResult<MenuVo> {
+        dto.validate_for_save().map_err(ApiErrors::BadRequest)?;
+
         let existing = sys_menu::Entity::find()
             .filter(sys_menu::Column::Name.eq(&dto.name))
             .filter(sys_menu::Column::MenuType.eq(sys_menu::MenuType::Menu))
@@ -329,6 +331,13 @@ impl MenuDomainService {
             .context("查询菜单失败")?
             .ok_or_else(|| ApiErrors::NotFound("菜单不存在".to_string()))?;
 
+        if menu.menu_type != sys_menu::MenuType::Menu {
+            return Err(ApiErrors::BadRequest("该记录不是菜单".to_string()));
+        }
+
+        dto.validate_for_existing(&menu)
+            .map_err(ApiErrors::BadRequest)?;
+
         if let Some(ref new_name) = dto.name {
             let existing = sys_menu::Entity::find()
                 .filter(sys_menu::Column::Name.eq(new_name))
@@ -358,6 +367,10 @@ impl MenuDomainService {
             .await
             .context("查询按钮失败")?
             .ok_or_else(|| ApiErrors::NotFound("按钮不存在".to_string()))?;
+
+        if button.menu_type != sys_menu::MenuType::Button {
+            return Err(ApiErrors::BadRequest("该记录不是按钮".to_string()));
+        }
 
         let need_reload = dto.auth_mark.is_some() || dto.enabled.is_some();
 

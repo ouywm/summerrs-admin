@@ -38,7 +38,7 @@ pub async fn list_menus(
 #[post_api("/system/menu")]
 pub async fn create_menu(
     Component(svc): Component<SysMenuService>,
-    ValidatedJson(dto): ValidatedJson<CreateMenuDto>,
+    Json(dto): Json<CreateMenuDto>,
 ) -> ApiResult<()> {
     svc.create_menu(dto).await?;
     Ok(())
@@ -61,7 +61,7 @@ pub async fn create_button(
 pub async fn update_menu(
     Component(svc): Component<SysMenuService>,
     Path(id): Path<i64>,
-    ValidatedJson(dto): ValidatedJson<UpdateMenuDto>,
+    Json(dto): Json<UpdateMenuDto>,
 ) -> ApiResult<()> {
     svc.update_menu(id, dto).await?;
     Ok(())

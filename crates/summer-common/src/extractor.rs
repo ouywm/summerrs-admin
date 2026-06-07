@@ -1,5 +1,6 @@
 use serde::de::DeserializeOwned;
 use summer_web::axum::Json;
+use summer_web::axum::body::to_bytes;
 use summer_web::axum::extract::{FromRequest, FromRequestParts, Request};
 use summer_web::axum::http::header;
 use summer_web::axum::http::request::Parts;
@@ -146,6 +147,52 @@ where
 
 /// ValidatedJson 对 OpenAPI 文档：生成请求体 schema（委托给 Json<T>）
 impl<T: schemars::JsonSchema> summer_web::aide::OperationInput for ValidatedJson<T> {
+    fn operation_input(
+        ctx: &mut summer_web::aide::generate::GenContext,
+        operation: &mut summer_web::aide::openapi::Operation,
+    ) {
+        <summer_web::axum::Json<T> as summer_web::aide::OperationInput>::operation_input(
+            ctx, operation,
+        );
+    }
+}
+
+/// 可选 JSON 提取器：空 body 表示 `None`，非空 body 会执行反序列化和 validator 校验。
+#[derive(Debug)]
+pub struct OptionalValidatedJson<T>(pub Option<T>);
+
+impl<T> std::ops::Deref for OptionalValidatedJson<T> {
+    type Target = Option<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T, S> FromRequest<S> for OptionalValidatedJson<T>
+where
+    T: DeserializeOwned + Validate,
+    S: Send + Sync,
+{
+    type Rejection = ApiErrors;
+
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = to_bytes(req.into_body(), 1024 * 1024)
+            .await
+            .map_err(|_| ApiErrors::BadRequest("请求数据无法解析".to_string()))?;
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return Ok(OptionalValidatedJson(None));
+        }
+
+        let data = serde_json::from_slice::<T>(&bytes)
+            .map_err(|_| ApiErrors::BadRequest("请求数据无法解析".to_string()))?;
+        data.validate()
+            .map_err(|e| ApiErrors::ValidationFailed(extract_first_error_message(&e)))?;
+
+        Ok(OptionalValidatedJson(Some(data)))
+    }
+}
+
+impl<T: schemars::JsonSchema> summer_web::aide::OperationInput for OptionalValidatedJson<T> {
     fn operation_input(
         ctx: &mut summer_web::aide::generate::GenContext,
         operation: &mut summer_web::aide::openapi::Operation,

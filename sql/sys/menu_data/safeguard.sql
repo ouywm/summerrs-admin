@@ -8,5 +8,11 @@ INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect,
 
 INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (801, 800, 1, 'SafeguardServer', 'server', '/safeguard/server', '', 'ri:hard-drive-3-line', 'menus.safeguard.server', '', false, false, false, false, false, true, false, false, '', '', '', '', 1, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
+INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (802, 801, 2, '', '', '', '', '', '查询服务器监控', '', false, false, false, false, false, false, false, false, '', '', '查询服务器监控', 'system:monitor:server', 1, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (803, 801, 2, '', '', '', '', '', '查询缓存监控', '', false, false, false, false, false, false, false, false, '', '', '查询缓存监控', 'system:monitor:cache', 2, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (804, 801, 2, '', '', '', '', '', '清理缓存', '', false, false, false, false, false, false, false, false, '', '', '清理缓存', 'system:monitor:cache-delete', 3, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
 -- 重置序列
 SELECT setval('sys.menu_id_seq', (SELECT MAX(id) FROM sys.menu));

@@ -102,6 +102,26 @@
         "path": "drag"
       },
       {
+        "component": "/widgets/data-select",
+        "meta": {
+          "icon": "ri:list-check-3",
+          "keepAlive": true,
+          "title": "menus.widgets.dataSelect"
+        },
+        "name": "WidgetsDataSelect",
+        "path": "data-select"
+      },
+      {
+        "component": "/widgets/resource-select",
+        "meta": {
+          "icon": "ri:folder-image-line",
+          "keepAlive": true,
+          "title": "menus.widgets.resourceSelect"
+        },
+        "name": "WidgetsResourceSelect",
+        "path": "resource-select"
+      },
+      {
         "component": "/widgets/text-scroll",
         "meta": {
           "icon": "ri:input-method-line",
