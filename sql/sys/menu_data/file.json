@@ -1,0 +1,71 @@
+[
+  {
+    "name": "File",
+    "path": "/file",
+    "component": "/index/index",
+    "meta": {
+      "title": "menus.file.title",
+      "icon": "ri:folder-3-line"
+    },
+    "children": [
+      {
+        "name": "FileManage",
+        "path": "manage",
+        "component": "/file/manage",
+        "meta": {
+          "title": "menus.file.manage",
+          "icon": "ri:file-list-3-line",
+          "keepAlive": true,
+          "authList": [
+            {
+              "title": "查询文件",
+              "authMark": "file:manage:list"
+            },
+            {
+              "title": "上传文件",
+              "authMark": "file:manage:upload"
+            },
+            {
+              "title": "编辑文件",
+              "authMark": "file:manage:update"
+            },
+            {
+              "title": "删除文件",
+              "authMark": "file:manage:delete"
+            },
+            {
+              "title": "分享文件",
+              "authMark": "file:manage:share"
+            },
+            {
+              "title": "新增目录",
+              "authMark": "file:folder:create"
+            },
+            {
+              "title": "编辑目录",
+              "authMark": "file:folder:update"
+            },
+            {
+              "title": "删除目录",
+              "authMark": "file:folder:delete"
+            },
+            {
+              "title": "下载文件",
+              "authMark": "file:manage:download"
+            }
+          ]
+        }
+      },
+      {
+        "name": "FileExamples",
+        "path": "examples",
+        "component": "/file/examples",
+        "meta": {
+          "title": "menus.file.examples",
+          "icon": "ri:upload-cloud-2-line",
+          "keepAlive": true
+        }
+      }
+    ]
+  }
+]

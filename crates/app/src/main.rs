@@ -9,7 +9,8 @@ use summer_mcp::McpPlugin;
 use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
-use summer_system::plugins::{PermBitmapPlugin, SocketGatewayPlugin};
+use summer_system::job::ratch_client::RatchJobClientPlugin;
+use summer_system::plugins::{PermBitmapPlugin, ResourcePermissionPlugin, SocketGatewayPlugin};
 use summer_web::{WebConfigurator, WebPlugin};
 use summer_xxl_job::XxlJobPlugin;
 
@@ -23,9 +24,11 @@ async fn main() {
         .add_plugin(RedisPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(XxlJobPlugin)
+        .add_plugin(RatchJobClientPlugin)
         .add_plugin(MailPlugin)
         .add_plugin(SummerAuthPlugin)
         .add_plugin(PermBitmapPlugin)
+        .add_plugin(ResourcePermissionPlugin)
         .add_plugin(SocketGatewayPlugin)
         .add_plugin(Ip2RegionPlugin)
         .add_plugin(S3Plugin)

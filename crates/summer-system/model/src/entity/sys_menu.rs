@@ -95,6 +95,12 @@ pub struct Model {
     /// sys_menu → sys_role（多对多，通过 sys_role_menu）
     #[sea_orm(has_many, via = "sys_role_menu")]
     pub roles: HasMany<super::sys_role::Entity>,
+    /// sys_menu(Button) → sys_action_resource（一对多）
+    #[sea_orm(has_many)]
+    pub action_resources: HasMany<super::sys_action_resource::Entity>,
+    /// sys_menu(Button) → sys_resource（多对多，通过 sys_action_resource）
+    #[sea_orm(has_many, via = "sys_action_resource")]
+    pub resources: HasMany<super::sys_resource::Entity>,
 }
 
 #[sea_orm::entity::prelude::async_trait::async_trait]

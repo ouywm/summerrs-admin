@@ -1,0 +1,69 @@
+[
+  {
+    "name": "Scheduler",
+    "path": "/scheduler",
+    "component": "/index/index",
+    "meta": {
+      "title": "menus.scheduler.title",
+      "icon": "ri:timer-line"
+    },
+    "children": [
+      {
+        "name": "SchedulerJob",
+        "path": "job",
+        "component": "/scheduler/job",
+        "meta": {
+          "title": "menus.scheduler.job",
+          "icon": "ri:list-check-2",
+          "keepAlive": true,
+          "authList": [
+            {
+              "title": "查询任务",
+              "authMark": "scheduler:job:list"
+            },
+            {
+              "title": "新增任务",
+              "authMark": "scheduler:job:create"
+            },
+            {
+              "title": "编辑任务",
+              "authMark": "scheduler:job:update"
+            },
+            {
+              "title": "启停任务",
+              "authMark": "scheduler:job:toggle"
+            },
+            {
+              "title": "触发任务",
+              "authMark": "scheduler:job:trigger"
+            },
+            {
+              "title": "删除任务",
+              "authMark": "scheduler:job:delete"
+            }
+          ]
+        }
+      },
+      {
+        "name": "SchedulerRun",
+        "path": "run",
+        "component": "/scheduler/run",
+        "meta": {
+          "title": "menus.scheduler.run",
+          "icon": "ri:history-line",
+          "keepAlive": true,
+          "authList": [
+            {
+              "title": "查询执行记录",
+              "authMark": "scheduler:run:list"
+            },
+            {
+              "title": "查看执行记录",
+              "authMark": "scheduler:run:detail"
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

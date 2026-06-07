@@ -10,6 +10,7 @@ pub mod path_auth;
 pub mod plugin;
 pub mod public_routes;
 pub mod qrcode;
+pub mod resource_permission;
 pub mod session;
 pub mod storage;
 pub mod strategy;
@@ -28,6 +29,10 @@ pub use online::{OnlineUserItem, OnlineUserPage, OnlineUserQuery};
 pub use path_auth::PathAuthConfig;
 pub use plugin::SummerAuthPlugin;
 pub use qrcode::QrCodeState;
+pub use resource_permission::{
+    ResourcePermissionDecision, ResourcePermissionPolicy, ResourcePermissionRegistry,
+    ResourcePermissionRule, ResourcePermissionStrategy,
+};
 pub use session::{
     DeviceInfo, DeviceSession, LoginParams, SessionManager, UserProfile, UserSession,
     ValidatedAccess, permission_matches,

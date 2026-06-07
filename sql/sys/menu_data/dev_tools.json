@@ -1,0 +1,53 @@
+[
+  {
+    "name": "DevTools",
+    "path": "/dev-tools",
+    "component": "/index/index",
+    "meta": {
+      "title": "menus.devTools.title",
+      "icon": "ri:tools-line"
+    },
+    "children": [
+      {
+        "name": "DevToolsAiGenerator",
+        "path": "ai-generator",
+        "component": "/dev-tools/ai-generator",
+        "meta": {
+          "title": "menus.devTools.aiGenerator",
+          "icon": "ri:sparkling-2-line",
+          "keepAlive": true,
+          "authList": [
+            {
+              "title": "查询生成历史",
+              "authMark": "ai:codegen:list"
+            },
+            {
+              "title": "创建生成会话",
+              "authMark": "ai:codegen:create"
+            },
+            {
+              "title": "解析需求",
+              "authMark": "ai:codegen:analyze"
+            },
+            {
+              "title": "更新Schema",
+              "authMark": "ai:codegen:update-schema"
+            },
+            {
+              "title": "校验Schema",
+              "authMark": "ai:codegen:validate"
+            },
+            {
+              "title": "生成预览",
+              "authMark": "ai:codegen:preview"
+            },
+            {
+              "title": "执行生成",
+              "authMark": "ai:codegen:apply"
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

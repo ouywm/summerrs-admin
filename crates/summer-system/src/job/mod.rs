@@ -5,6 +5,7 @@
 //! 无依赖的用 `add_xxl_async_handler`。调用 [`register_xxl_handlers`] 一次性
 //! 完成全部注册。
 
+pub mod ratch_client;
 pub mod s3_cleanup;
 pub mod socket_session_gc;
 

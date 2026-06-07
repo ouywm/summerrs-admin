@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod job;
 pub mod login_log;
 pub mod monitor;
 pub mod operation_log;
@@ -9,6 +10,7 @@ pub mod sys_file;
 pub mod sys_file_folder;
 pub mod sys_menu;
 pub mod sys_notice;
+pub mod sys_resource;
 pub mod sys_role;
 pub mod sys_tenant;
 pub mod sys_user;
