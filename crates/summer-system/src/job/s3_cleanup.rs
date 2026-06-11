@@ -1,8 +1,4 @@
-//! S3 分片上传过期清理 —— xxl-job 执行器 handler。
-//!
-//! 通过 [`crate::job::register_xxl_handlers`] 注册到 summer-xxl-job，由 ratch-job /
-//! xxl-job-admin 远程下发调度。调度配置（原 cron `0 0 * * * *`，每小时整点）现在
-//! 在 admin 控制台维护，绑定 handler 名 [`HANDLER_NAME`]。
+//! S3 分片上传过期清理 —— summer-job 固定周期任务。
 
 use std::error::Error as StdError;
 use std::time::SystemTime;
@@ -12,45 +8,45 @@ use aws_sdk_s3::operation::list_multipart_uploads::ListMultipartUploadsError;
 use aws_sdk_s3::operation::{RequestId, RequestIdExt};
 use aws_smithy_types::DateTime;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
-use summer::async_trait;
-use summer::plugin::service::Service;
+use summer::extractor::{Component, Config};
+use summer_job::cron;
 use summer_plugins::s3::S3Config;
-use summer_xxl_job::{AsyncJobHandler, JobContext};
 use tracing::{error, info};
 
-/// admin 侧任务绑定的 handler 名。
-pub const HANDLER_NAME: &str = "summer_system::s3_multipart_cleanup";
-
-/// 扫描并清理过期的 S3 分片上传碎片。按 `S3Config.multipart_max_age` 判定过期，
-/// 超时的 multipart upload 逐个 abort。任务执行时间与 bucket 内未完成分片数量成正比。
-#[derive(Clone, Service)]
-pub struct S3MultipartCleanupHandler {
-    #[inject(component)]
-    s3: aws_sdk_s3::Client,
-    #[inject(config)]
-    config: S3Config,
+/// 每小时整点扫描并清理过期的 S3 分片上传碎片。
+#[cron("0 0 * * * *")]
+pub async fn s3_multipart_cleanup_job(
+    Component(s3): Component<aws_sdk_s3::Client>,
+    Config(config): Config<S3Config>,
+) {
+    if let Err(e) = run_s3_multipart_cleanup(&s3, &config).await {
+        error!(%e, "S3 分片上传清理任务失败");
+    }
 }
 
-#[async_trait]
-impl AsyncJobHandler for S3MultipartCleanupHandler {
-    async fn process(&self, ctx: JobContext) -> anyhow::Result<JobContext> {
-        let now = DateTime::from(SystemTime::now());
-        let cutoff = DateTime::from_secs(now.secs() - self.config.multipart_max_age as i64);
-        let bucket = &self.config.bucket;
+/// 按 `S3Config.multipart_max_age` 判定过期，超时的 multipart upload 逐个 abort。
+/// 任务执行时间与 bucket 内未完成分片数量成正比。
+async fn run_s3_multipart_cleanup(
+    s3: &aws_sdk_s3::Client,
+    config: &S3Config,
+) -> anyhow::Result<()> {
+    let now = DateTime::from(SystemTime::now());
+    let cutoff = DateTime::from_secs(now.secs() - config.multipart_max_age as i64);
+    let bucket = &config.bucket;
 
-        info!("开始清理过期分片上传");
+    info!("开始清理过期分片上传");
 
-        let count = cleanup_stale_multipart_uploads(&self.s3, bucket, &cutoff)
-            .await
-            .map_err(anyhow::Error::new)?;
+    let count = cleanup_stale_multipart_uploads(s3, bucket, &cutoff)
+        .await
+        .map_err(anyhow::Error::new)?;
 
-        if count > 0 {
-            info!("清理了 {} 个过期分片上传", count);
-        } else {
-            info!("未发现需要清理的过期分片上传");
-        }
-        Ok(ctx)
+    if count > 0 {
+        info!("清理了 {} 个过期分片上传", count);
+    } else {
+        info!("未发现需要清理的过期分片上传");
     }
+
+    Ok(())
 }
 
 async fn cleanup_stale_multipart_uploads(

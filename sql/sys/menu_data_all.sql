@@ -232,20 +232,6 @@ INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect,
 INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1111, 1101, 2, '', '', '', '', '', '下载文件', '', false, false, false, false, false, false, false, false, '', '', '下载文件', 'file:manage:download', 9, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
 -- ============================================================
--- 开发工具模块（ID: 1300-1308）
--- ============================================================
-
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1300, 0, 1, 'DevTools', '/dev-tools', '/index/index', '', 'ri:tools-line', 'menus.devTools.title', '', false, false, false, false, false, false, false, false, '', '', '', '', 90, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1301, 1300, 1, 'DevToolsAiGenerator', 'ai-generator', '/dev-tools/ai-generator', '', 'ri:sparkling-2-line', 'menus.devTools.aiGenerator', '', false, false, false, false, false, true, false, false, '', '', '', '', 1, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1302, 1301, 2, '', '', '', '', '', '查询生成历史', '', false, false, false, false, false, false, false, false, '', '', '查询生成历史', 'ai:codegen:list', 1, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1303, 1301, 2, '', '', '', '', '', '创建生成会话', '', false, false, false, false, false, false, false, false, '', '', '创建生成会话', 'ai:codegen:create', 2, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1304, 1301, 2, '', '', '', '', '', '解析需求', '', false, false, false, false, false, false, false, false, '', '', '解析需求', 'ai:codegen:analyze', 3, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1305, 1301, 2, '', '', '', '', '', '更新Schema', '', false, false, false, false, false, false, false, false, '', '', '更新Schema', 'ai:codegen:update-schema', 4, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1306, 1301, 2, '', '', '', '', '', '校验Schema', '', false, false, false, false, false, false, false, false, '', '', '校验Schema', 'ai:codegen:validate', 5, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1307, 1301, 2, '', '', '', '', '', '生成预览', '', false, false, false, false, false, false, false, false, '', '', '生成预览', 'ai:codegen:preview', 6, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (1308, 1301, 2, '', '', '', '', '', '执行生成', '', false, false, false, false, false, false, false, false, '', '', '执行生成', 'ai:codegen:apply', 7, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-
--- ============================================================
 -- Help 模块（ID: 900-903）
 -- ============================================================
 
@@ -257,5 +243,23 @@ INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect,
 -- ============================================================
 -- 重置序列
 -- ============================================================
+
+-- 回填按钮权限位图位置
+WITH missing_bit_positions AS (
+    SELECT
+        id,
+        (
+            COALESCE(
+                (SELECT MAX(bit_position) + 1 FROM sys.menu WHERE menu_type = 2 AND bit_position IS NOT NULL),
+                0
+            ) + ROW_NUMBER() OVER (ORDER BY id) - 1
+        )::INTEGER AS next_bit_position
+    FROM sys.menu
+    WHERE menu_type = 2 AND bit_position IS NULL
+)
+UPDATE sys.menu AS m
+SET bit_position = missing_bit_positions.next_bit_position
+FROM missing_bit_positions
+WHERE m.id = missing_bit_positions.id;
 
 SELECT setval('sys.menu_id_seq', (SELECT MAX(id) FROM sys.menu));

@@ -42,22 +42,6 @@ session_ttl_seconds = 86400
 enable_logging = true
 uri = "${DATABASE_URL:postgres://admin:123456@localhost/summerrs-admin}"
 
-# [summer-ai] section 先不放——P3 walking skeleton 阶段 plugin 不读 config，
-# 上游 endpoint 和 API key 全部从 env 读（OPENAI_BASE_URL / OPENAI_API_KEY）。
-# P4 DB 化时再引入配置项（channel_refresh_secs、request_timeout_secs 等）。
-
-[summer-sharding]
-enabled = true
-
-[summer-sharding.tenant]
-default_isolation = "shared_row"
-enabled = true
-tenant_id_source = "request_extension"
-
-[summer-sharding.tenant.row_level]
-column_name = "tenant_id"
-strategy = "sql_rewrite"
-
 [sea-orm-web]
 default_page_size = 20
 max_page_size = 2000
@@ -178,8 +162,3 @@ stateful_mode = true  # 有状态会话模式
 # ── 会话配置（SessionConfig） ──
 session_channel_capacity = 16 # 会话通道缓冲容量
 # session_keep_alive = 3600             # 会话不活动超时（秒），不设置则永不超时
-
-[agent]
-base_url = "${BASE_URL}"
-default_model = "mimo-v2.5-pro"
-token = "${TOKEN}"

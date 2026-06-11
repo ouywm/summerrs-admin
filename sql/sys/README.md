@@ -16,8 +16,3 @@
 - 配置与字典：`sys.config_group`、`sys.config`、`sys.dict_type`、`sys.dict_data`
 - 日志与文件：`sys.login_log`、`sys.operation_log`、`sys.notice`、`sys.notice_target`、`sys.notice_user`、`sys.file`
 - 认证层：`sys.verification_token`、`sys.two_factor`、`sys.two_factor_backup_code`、`sys.custom_oauth_provider`、`sys.user_oauth_binding`、`sys.passkey_credential`
-- AI 代码生成：`sys.ai_codegen_session`、`sys.ai_codegen_message`、`sys.ai_codegen_task`、`sys.ai_codegen_version`
-
-增量脚本：
-
-- `ai_codegen_incremental.sql`：给已有库新增 AI 代码生成表、菜单按钮权限、资源清单、ActionResource 映射，并默认授权给 `R_SUPER` / `R_ADMIN`。

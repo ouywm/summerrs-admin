@@ -162,5 +162,23 @@ INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect,
 
 INSERT INTO sys.menu (id, parent_id, menu_type, name, path, component, redirect, icon, title, link, is_iframe, is_hide, is_hide_tab, is_full_page, is_first_level, keep_alive, fixed_tab, show_badge, show_text_badge, active_path, auth_name, auth_mark, sort, enabled, create_time, update_time) VALUES (115, 114, 1, 'NestedMenu3-2-1', 'menu3-2-1', '/system/nested/menu3/menu3-2', '', '', 'menus.system.menu321', '', false, false, false, false, false, true, false, false, '', '', '', '', 1, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
+-- 回填按钮权限位图位置
+WITH missing_bit_positions AS (
+    SELECT
+        id,
+        (
+            COALESCE(
+                (SELECT MAX(bit_position) + 1 FROM sys.menu WHERE menu_type = 2 AND bit_position IS NOT NULL),
+                0
+            ) + ROW_NUMBER() OVER (ORDER BY id) - 1
+        )::INTEGER AS next_bit_position
+    FROM sys.menu
+    WHERE menu_type = 2 AND bit_position IS NULL
+)
+UPDATE sys.menu AS m
+SET bit_position = missing_bit_positions.next_bit_position
+FROM missing_bit_positions
+WHERE m.id = missing_bit_positions.id;
+
 -- 重置序列
 SELECT setval('sys.menu_id_seq', (SELECT MAX(id) FROM sys.menu));
