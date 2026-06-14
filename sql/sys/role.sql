@@ -24,13 +24,3 @@ COMMENT ON COLUMN sys."role".description IS '角色描述';
 COMMENT ON COLUMN sys."role".enabled IS '是否启用';
 COMMENT ON COLUMN sys."role".create_time IS '创建时间';
 COMMENT ON COLUMN sys."role".update_time IS '更新时间';
-
--- ============================================================
--- 测试数据
--- ============================================================
-
-INSERT INTO sys."role" (role_name, role_code, description)
-VALUES
-    ('超级管理员', 'R_SUPER', '拥有系统所有权限'),
-    ('管理员',     'R_ADMIN', '拥有大部分管理权限'),
-    ('普通用户',   'R_USER',  '仅拥有基本操作权限');

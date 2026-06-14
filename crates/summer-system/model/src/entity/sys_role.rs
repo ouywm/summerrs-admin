@@ -13,7 +13,7 @@ pub struct Model {
     /// 角色名称
     pub role_name: String,
     /// 角色编码（唯一，如 R_SUPER, R_ADMIN, R_USER）
-    #[sea_orm(unique)]
+    #[sea_orm(unique_key = "uk_sys_role_role_code")]
     pub role_code: String,
     /// 角色描述
     pub description: String,

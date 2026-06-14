@@ -3,6 +3,7 @@ use sea_orm::Set;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+use super::sys_user::normalize_text;
 use crate::entity::sys_user::{self, Gender};
 
 /// 修改个人密码请求参数
@@ -31,7 +32,7 @@ pub struct UpdateProfileDto {
     pub email: Option<String>,
 
     /// 手机号
-    #[validate(length(max = 32, message = "手机号长度不能超过32"))]
+    #[validate(length(min = 1, max = 32, message = "手机号长度必须在1-32之间"))]
     pub phone: Option<String>,
 
     /// 性别
@@ -49,10 +50,10 @@ impl UpdateProfileDto {
             active.nick_name = Set(nick_name);
         }
         if let Some(email) = self.email {
-            active.email = Set(email);
+            active.email = Set(normalize_text(email));
         }
         if let Some(phone) = self.phone {
-            active.phone = Set(phone);
+            active.phone = Set(normalize_text(phone));
         }
         if let Some(gender) = self.gender {
             active.gender = Set(gender);

@@ -39,7 +39,7 @@ pub struct Model {
     /// 字典名称
     pub dict_name: String,
     /// 字典类型编码（唯一）
-    #[sea_orm(unique)]
+    #[sea_orm(unique_key = "uk_sys_dict_type_dict_type")]
     pub dict_type: String,
     /// 状态
     pub status: DictStatus,

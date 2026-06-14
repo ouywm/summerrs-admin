@@ -20,6 +20,7 @@ sea-orm = { workspace = true, features = [
 ] }
 serde = { workspace = true, features = ["derive"] }
 summer = { workspace = true }
+summer-migration = { workspace = true }
 summer-sea-orm = { workspace = true, features = [
     "postgres",
     "rustls",

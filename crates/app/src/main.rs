@@ -6,7 +6,10 @@ use summer_job::JobConfigurator;
 use summer_job::JobPlugin;
 use summer_mail::MailPlugin;
 use summer_mcp::McpPlugin;
-use summer_plugins::{BackgroundTaskPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin, S3Plugin};
+use summer_plugins::{
+    BackgroundTaskPlugin, EntitySchemaSyncPlugin, Ip2RegionPlugin, LogBatchCollectorPlugin,
+    S3Plugin, SystemSeedPlugin,
+};
 use summer_redis::RedisPlugin;
 use summer_sea_orm::SeaOrmPlugin;
 use summer_system::job::ratch_client::RatchJobClientPlugin;
@@ -21,6 +24,8 @@ async fn main() {
     let mut app = App::new();
     app.add_plugin(WebPlugin)
         .add_plugin(SeaOrmPlugin)
+        .add_plugin(EntitySchemaSyncPlugin)
+        .add_plugin(SystemSeedPlugin)
         .add_plugin(RedisPlugin)
         .add_plugin(JobPlugin)
         .add_plugin(XxlJobPlugin)

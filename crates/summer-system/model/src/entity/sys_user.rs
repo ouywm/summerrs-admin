@@ -64,7 +64,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     /// 用户名（唯一）
-    #[sea_orm(unique)]
+    #[sea_orm(unique_key = "uk_sys_user_user_name")]
     pub user_name: String,
     /// 密码（Argon2 哈希）
     pub password: String,
@@ -73,8 +73,10 @@ pub struct Model {
     /// 性别
     pub gender: Gender,
     /// 手机号
+    #[sea_orm(unique_key = "uk_sys_user_phone")]
     pub phone: String,
     /// 邮箱
+    #[sea_orm(unique_key = "uk_sys_user_email")]
     pub email: String,
     /// 头像地址
     pub avatar: String,

@@ -79,38 +79,3 @@ COMMENT ON COLUMN sys.config.create_by IS '创建人';
 COMMENT ON COLUMN sys.config.create_time IS '创建时间';
 COMMENT ON COLUMN sys.config.update_by IS '更新人';
 COMMENT ON COLUMN sys.config.update_time IS '更新时间';
-
--- ============================================================
--- 初始化基础配置
--- ============================================================
-
--- 初始化配置分组
-INSERT INTO sys.config_group (
-    group_name, group_code, group_sort, enabled, is_system, remark, create_by
-) VALUES
-    ('基础设置', 'basic', 10, TRUE, TRUE, '站点基础信息相关配置', 'system'),
-    ('安全设置', 'security', 20, TRUE, TRUE, '登录与账号安全相关配置', 'system');
-
--- 基础设置
-INSERT INTO sys.config (
-    config_name, config_key, config_value, default_value, value_type,
-    config_group_id, config_sort, enabled, is_system, remark, create_by
-) VALUES
-    ('站点名称', 'sys.site.name', 'Summer Admin', 'Summer Admin', 1,
-     (SELECT id FROM sys.config_group WHERE group_code = 'basic'), 1, TRUE, TRUE, '系统显示的站点名称', 'system'),
-    ('站点 Logo', 'sys.site.logo', '', '', 8,
-     (SELECT id FROM sys.config_group WHERE group_code = 'basic'), 2, TRUE, TRUE, '站点 Logo 图片地址', 'system'),
-    ('版权信息', 'sys.site.copyright', 'Copyright © 2026 Summer', 'Copyright © 2026 Summer', 1,
-     (SELECT id FROM sys.config_group WHERE group_code = 'basic'), 3, TRUE, TRUE, '页面底部版权文案', 'system');
-
--- 安全设置
-INSERT INTO sys.config (
-    config_name, config_key, config_value, default_value, value_type,
-    config_group_id, config_sort, enabled, is_system, remark, create_by
-) VALUES
-    ('登录验证码开关', 'sys.security.captcha_enabled', 'true', 'true', 3,
-     (SELECT id FROM sys.config_group WHERE group_code = 'security'), 1, TRUE, TRUE, '登录页是否启用验证码', 'system'),
-    ('用户初始密码', 'sys.user.init_password', '123456', '123456', 7,
-     (SELECT id FROM sys.config_group WHERE group_code = 'security'), 2, TRUE, TRUE, '后台创建用户时使用的初始密码', 'system'),
-    ('开放注册开关', 'sys.user.register_enabled', 'false', 'false', 3,
-     (SELECT id FROM sys.config_group WHERE group_code = 'security'), 3, TRUE, TRUE, '是否允许新用户自主注册', 'system');

@@ -1,6 +1,6 @@
 # SQL Layout
 
-更新时间：2026-03-21
+更新时间：2026-06-13
 
 当前 SQL 已按业务域拆目录，也是仓库内数据库结构的 source of truth：
 
@@ -15,6 +15,7 @@
 
 - `sql/sys/menu_data/`：系统菜单种子数据与路由转 SQL 辅助文件
 - `sql/sys/menu_data_all.sql`：菜单合并 SQL 产物
+- `sql/sys/seed/`：系统域基础数据种子，DDL 文件不再内联数据写入
 
 命名约定：
 
@@ -28,9 +29,8 @@
 2. `sql/tenant/`
 3. `sql/biz/`
 4. `sql/ai/`（先看 `sql/ai/README.md` 再进入子目录）
-5. 按需导入 `sql/sys/menu_data_all.sql`
-6. 导入 `sql/sys/role_menu.sql` 后，再导入 `sql/sys/resource.sql`（资源种子依赖菜单按钮）
-7. 仅在老库改造时执行 `sql/migration/`
+5. 按需导入 `sql/sys/seed/system_data.sql`，本地 dev 启动时也可由 SeaORM migration 自动执行
+6. 仅在老库改造时执行 `sql/migration/`
 
 关于 PostgreSQL schema：
 

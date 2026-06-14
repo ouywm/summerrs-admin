@@ -54,7 +54,7 @@ pub struct Model {
     /// 配置名称
     pub config_name: String,
     /// 配置键（唯一标识，如 sys.site.name）
-    #[sea_orm(unique)]
+    #[sea_orm(unique_key = "uk_sys_config_config_key")]
     pub config_key: String,
     /// 当前配置值，统一按字符串存储，按 value_type 解析
     #[sea_orm(column_type = "Text")]

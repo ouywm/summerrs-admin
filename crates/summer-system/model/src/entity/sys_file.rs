@@ -11,7 +11,7 @@ pub struct Model {
     pub id: i64,
 
     /// 对外业务编号
-    #[sea_orm(unique)]
+    #[sea_orm(unique_key = "uk_sys_file_file_no")]
     pub file_no: String,
 
     /// 存储服务提供方（如 ALIYUN_OSS/S3/MINIO 等）
@@ -52,7 +52,8 @@ pub struct Model {
     /// 状态（如 NORMAL/DISABLED）
     pub status: String,
     /// 公开访问令牌
-    pub public_token: String,
+    #[sea_orm(unique_key = "uk_sys_file_public_token")]
+    pub public_token: Option<String>,
     /// 公开链接过期时间
     pub public_url_expires_at: Option<DateTime>,
 

@@ -68,7 +68,7 @@ CREATE TABLE sys.file (
     -- 访问控制信息
     visibility          VARCHAR(32)     NOT NULL DEFAULT 'PRIVATE',
     status              VARCHAR(32)     NOT NULL DEFAULT 'NORMAL',
-    public_token        VARCHAR(64)     NOT NULL DEFAULT '',
+    public_token        VARCHAR(64),
     public_url_expires_at TIMESTAMP,
 
     -- 管理与扩展信息
@@ -94,8 +94,7 @@ CREATE TABLE sys.file (
 
 CREATE UNIQUE INDEX uk_sys_file_file_no ON sys.file (file_no);
 CREATE UNIQUE INDEX uk_sys_file_public_token
-    ON sys.file (public_token)
-    WHERE public_token <> '';
+    ON sys.file (public_token);
 
 CREATE INDEX idx_sys_file_object
     ON sys.file (provider, bucket, object_key);

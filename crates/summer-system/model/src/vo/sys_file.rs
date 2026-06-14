@@ -113,7 +113,7 @@ impl FileVo {
             page_count: model.page_count,
             visibility: model.visibility,
             status: model.status,
-            public_token: model.public_token,
+            public_token: model.public_token.unwrap_or_default(),
             public_url_expires_at: model.public_url_expires_at,
             tags: model.tags,
             remark: model.remark,

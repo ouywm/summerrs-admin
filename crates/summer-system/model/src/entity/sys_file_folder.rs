@@ -11,10 +11,12 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     /// 父级文件夹ID（0表示根）
+    #[sea_orm(unique_key = "uk_sys_file_folder_parent_slug")]
     pub parent_id: i64,
     /// 文件夹名称
     pub name: String,
     /// 文件夹slug（同级唯一，可用于路由/检索）
+    #[sea_orm(unique_key = "uk_sys_file_folder_parent_slug")]
     pub slug: String,
     /// 可见性（如 PUBLIC/PRIVATE）
     pub visibility: String,

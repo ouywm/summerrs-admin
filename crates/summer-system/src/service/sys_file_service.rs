@@ -301,7 +301,7 @@ impl SysFileService {
             .map(|s| now + chrono::Duration::seconds(s as i64));
 
         let mut active: sys_file::ActiveModel = file.into();
-        active.public_token = Set(token.clone());
+        active.public_token = Set(Some(token.clone()));
         active.public_url_expires_at = Set(expires_at);
         active.visibility = Set("PUBLIC".to_string());
         active
@@ -326,7 +326,7 @@ impl SysFileService {
             .ok_or_else(|| ApiErrors::NotFound("文件不存在".to_string()))?;
 
         let mut active: sys_file::ActiveModel = file.into();
-        active.public_token = Set("".to_string());
+        active.public_token = Set(None);
         active.public_url_expires_at = Set(None);
         active.visibility = Set("PRIVATE".to_string());
         active

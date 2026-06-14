@@ -12,10 +12,10 @@ pub struct CreateUserDto {
     #[validate(length(min = 1, max = 64, message = "昵称长度必须在1-64之间"))]
     pub nick_name: String,
     pub gender: Option<Gender>,
-    #[validate(length(max = 32, message = "手机号长度不能超过32"))]
-    pub phone: Option<String>,
+    #[validate(length(min = 1, max = 32, message = "手机号长度必须在1-32之间"))]
+    pub phone: String,
     #[validate(email(message = "邮箱格式不正确"))]
-    pub email: Option<String>,
+    pub email: String,
     #[validate(length(max = 512, message = "头像URL长度不能超过512"))]
     pub avatar: Option<String>,
     pub status: Option<UserStatus>,
@@ -35,8 +35,8 @@ impl CreateUserDto {
             password: Set(hashed_password),
             nick_name: Set(self.nick_name),
             gender: Set(self.gender.unwrap_or(Gender::Unknown)),
-            phone: Set(self.phone.unwrap_or_default()),
-            email: Set(self.email.unwrap_or_default()),
+            phone: Set(normalize_text(self.phone)),
+            email: Set(normalize_text(self.email)),
             avatar: Set(self.avatar.unwrap_or_default()),
             status: Set(self.status.unwrap_or(UserStatus::Enabled)),
             create_by: Set(operator.clone()),
@@ -53,7 +53,7 @@ pub struct UpdateUserDto {
     #[validate(length(min = 1, max = 64, message = "昵称长度必须在1-64之间"))]
     pub nick_name: Option<String>,
     pub gender: Option<Gender>,
-    #[validate(length(max = 32, message = "手机号长度不能超过32"))]
+    #[validate(length(min = 1, max = 32, message = "手机号长度必须在1-32之间"))]
     pub phone: Option<String>,
     #[validate(email(message = "邮箱格式不正确"))]
     pub email: Option<String>,
@@ -74,10 +74,10 @@ impl UpdateUserDto {
             active.gender = Set(gender);
         }
         if let Some(phone) = self.phone {
-            active.phone = Set(phone);
+            active.phone = Set(normalize_text(phone));
         }
         if let Some(email) = self.email {
-            active.email = Set(email);
+            active.email = Set(normalize_text(email));
         }
         if let Some(avatar) = self.avatar {
             active.avatar = Set(avatar);
@@ -127,4 +127,8 @@ pub struct ResetPasswordDto {
     /// 新密码（长度至少6位）
     #[validate(length(min = 6, message = "密码长度至少6位"))]
     pub new_password: String,
+}
+
+pub(crate) fn normalize_text(value: String) -> String {
+    value.trim().to_string()
 }

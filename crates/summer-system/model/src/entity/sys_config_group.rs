@@ -13,7 +13,7 @@ pub struct Model {
     /// 分组名称
     pub group_name: String,
     /// 分组编码（唯一标识，如 basic/security）
-    #[sea_orm(unique)]
+    #[sea_orm(unique_key = "uk_sys_config_group_group_code")]
     pub group_code: String,
     /// 分组排序，值越小越靠前
     pub group_sort: i32,

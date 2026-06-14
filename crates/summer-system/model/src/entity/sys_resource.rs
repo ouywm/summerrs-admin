@@ -59,7 +59,7 @@ pub struct Model {
     /// 资源名称
     pub resource_name: String,
     /// 资源编码
-    #[sea_orm(unique)]
+    #[sea_orm(unique_key = "uk_sys_resource_code")]
     pub resource_code: String,
     /// HTTP 方法
     #[sea_orm(unique_key = "uk_sys_resource_method_path")]
