@@ -1,13 +1,12 @@
 use std::sync::{Arc, RwLock};
 
-use crate::{GroupAuthStrategy, JwtStrategy, PathAuthConfig, UserSession, permission_matches};
-use summer::async_trait;
+use crate::{AuthError, UserSession, permission_matches};
 use summer_web::axum::body::Body;
 use summer_web::axum::extract::{OriginalUri, Request};
 use summer_web::axum::http::Method;
 use summer_web::axum::response::{IntoResponse, Response};
 use summer_web::extractor::RequestPartsExt;
-use summer_web::problem_details::ProblemDetails;
+use tower_layer::Layer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourcePermissionDecision {
@@ -146,75 +145,105 @@ impl ResourcePermissionRegistry {
     }
 }
 
-#[derive(Clone)]
-pub struct ResourcePermissionStrategy {
-    jwt: JwtStrategy,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResourcePermissionLayer;
 
-impl ResourcePermissionStrategy {
+impl ResourcePermissionLayer {
     #[must_use]
-    pub fn for_group(group: &'static str) -> Self {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl<Inner> Layer<Inner> for ResourcePermissionLayer
+where
+    Inner: Clone,
+{
+    type Service = ResourcePermissionMiddleware<Inner>;
+
+    fn layer(&self, inner: Inner) -> Self::Service {
+        ResourcePermissionMiddleware { inner }
+    }
+}
+
+#[derive(Debug)]
+pub struct ResourcePermissionMiddleware<Inner> {
+    inner: Inner,
+}
+
+impl<Inner: Clone> Clone for ResourcePermissionMiddleware<Inner> {
+    fn clone(&self) -> Self {
         Self {
-            jwt: JwtStrategy::for_group(group),
+            inner: self.inner.clone(),
         }
     }
 }
 
-#[async_trait]
-impl GroupAuthStrategy for ResourcePermissionStrategy {
-    fn group(&self) -> &'static str {
-        self.jwt.group()
+impl<Inner> tower_service::Service<Request<Body>> for ResourcePermissionMiddleware<Inner>
+where
+    Inner:
+        tower_service::Service<Request<Body>, Response = Response<Body>> + Clone + Send + 'static,
+    Inner::Future: Send + 'static,
+{
+    type Response = Response<Body>;
+    type Error = Inner::Error;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
     }
 
-    fn path_config(&self) -> &PathAuthConfig {
-        self.jwt.path_config()
-    }
+    fn call(&mut self, mut req: Request<Body>) -> Self::Future {
+        let mut inner = self.inner.clone();
+        std::mem::swap(&mut inner, &mut self.inner);
 
-    async fn authenticate(&self, req: &mut Request<Body>) -> Result<(), Response<Body>> {
-        self.jwt.authenticate(req).await?;
+        Box::pin(async move {
+            if let Err(error) = authorize_resource(&mut req) {
+                return Ok(error.into_response());
+            }
 
-        let Some(session) = req.extensions().get::<UserSession>() else {
-            return Ok(());
-        };
-        let user_permissions = session.profile.permissions().to_vec();
-
-        let method = req.method().clone();
-        let path = req.uri().path().to_string();
-        let original_path = req
-            .extensions()
-            .get::<OriginalUri>()
-            .map(|OriginalUri(uri)| uri.path().to_string());
-
-        let (parts, body) = std::mem::take(req).into_parts();
-        let registry = parts
-            .get_component::<ResourcePermissionRegistry>()
-            .map_err(|error| internal_error_response(error.to_string()))?;
-        *req = Request::from_parts(parts, body);
-
-        let mut paths = vec![path.as_str()];
-        if let Some(original_path) = original_path.as_deref()
-            && original_path != path
-        {
-            paths.push(original_path);
-        }
-
-        match registry.check_any_path(&method, &paths, &user_permissions) {
-            ResourcePermissionDecision::Allowed => Ok(()),
-            ResourcePermissionDecision::Forbidden => Err(forbidden_response()),
-        }
+            inner.call(req).await
+        })
     }
 }
 
-fn forbidden_response() -> Response<Body> {
-    ProblemDetails::new("permission-denied", "Forbidden", 403)
-        .with_detail("无权限访问该资源")
-        .into_response()
-}
+fn authorize_resource(req: &mut Request<Body>) -> Result<(), AuthError> {
+    let Some(session) = req.extensions().get::<UserSession>() else {
+        return Ok(());
+    };
+    let user_permissions = session.profile.permissions().to_vec();
 
-fn internal_error_response(detail: String) -> Response<Body> {
-    ProblemDetails::new("resource-permission-error", "Internal Server Error", 500)
-        .with_detail(detail)
-        .into_response()
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let original_path = req
+        .extensions()
+        .get::<OriginalUri>()
+        .map(|OriginalUri(uri)| uri.path().to_string());
+
+    let (parts, body) = std::mem::take(req).into_parts();
+    let registry = parts
+        .get_component::<ResourcePermissionRegistry>()
+        .map_err(|error| AuthError::Internal(error.to_string()))?;
+    *req = Request::from_parts(parts, body);
+
+    let mut paths = vec![path.as_str()];
+    if let Some(original_path) = original_path.as_deref()
+        && original_path != path
+    {
+        paths.push(original_path);
+    }
+
+    match registry.check_any_path(&method, &paths, &user_permissions) {
+        ResourcePermissionDecision::Allowed => Ok(()),
+        ResourcePermissionDecision::Forbidden => {
+            Err(AuthError::NoPermission("访问该资源".to_string()))
+        }
+    }
 }
 
 impl ResourcePermissionRule {

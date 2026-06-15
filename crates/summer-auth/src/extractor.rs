@@ -2,6 +2,7 @@ use summer_web::axum::extract::FromRequestParts;
 use summer_web::axum::http::request::Parts;
 use summer_web::axum::response::IntoResponse;
 
+use crate::AuthError;
 use crate::session::model::{UserProfile, UserSession};
 use crate::user_type::LoginId;
 
@@ -69,7 +70,5 @@ impl summer_web::aide::OperationInput for OptionalLoginUser {}
 
 /// 401 未登录响应
 fn unauthorized() -> summer_web::axum::response::Response {
-    summer_web::problem_details::ProblemDetails::new("not-authenticated", "Unauthorized", 401)
-        .with_detail("未登录或登录已过期")
-        .into_response()
+    AuthError::NotLogin.into_response()
 }

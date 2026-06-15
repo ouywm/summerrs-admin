@@ -8,18 +8,23 @@ use tower_http::catch_panic::CatchPanicLayer;
 
 /// 拼装最终 axum [`Router`]。
 ///
-/// 每个 crate 自己负责"路由 + 自家中间件"打包(`router_with_layers`),app crate
-/// 只做拼装:
+/// app crate 只负责收集 inventory 路由并按域分发:
 ///
-/// - `summer-system::router_with_layers()` —— 挂 JWT
-/// - `auto_grouped_routers().default` —— 没显式 group 的 handler
+/// - `summer-system` group —— 交给 `summer-system::router_with_layers` 挂 JWT 和资源权限
+/// - default group —— 没显式 group 的 handler,直接合并到根 router
 ///
-/// 全局 [`CatchPanicLayer`] 覆盖 admin / system / default 域,
+/// 这里只调用一次 [`auto_grouped_routers`],避免重复扫描 inventory 导致 OpenAPI
+/// 文档重复注册。
+///
+/// 全局 [`CatchPanicLayer`] 覆盖 system / default 域,
 /// 它们的 panic 转 RFC 7807。
 pub fn router() -> Router {
-    let api_router = summer_system::router_with_layers();
+    let mut grouped = auto_grouped_routers();
 
-    let default_router = auto_grouped_routers().default;
+    let api_router =
+        summer_system::router_with_layers(grouped.take_group(summer_system::system_group()));
+
+    let default_router = grouped.take_default();
 
     Router::new()
         .nest("/api", api_router)
@@ -28,7 +33,7 @@ pub fn router() -> Router {
         .layer(ClientIpSource::ConnectInfo.into_extension())
 }
 
-/// 全局 panic 兜底(仅 admin / system / default 域):把 panic 转成 RFC 7807 ProblemDetails 500 响应,
+/// 全局 panic 兜底(仅 system / default 域):把 panic 转成 RFC 7807 ProblemDetails 500 响应,
 /// 避免连接被直接中断或返 axum 默认的 plain text。
 fn handle_panic(err: Box<dyn Any + Send + 'static>) -> Response {
     let detail = if let Some(s) = err.downcast_ref::<String>() {

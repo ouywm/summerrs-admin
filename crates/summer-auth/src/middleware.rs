@@ -5,7 +5,7 @@ use summer_web::axum::extract::Request;
 use summer_web::axum::http;
 use summer_web::axum::response::IntoResponse;
 use summer_web::axum::response::Response;
-use summer_web::problem_details::ProblemDetails;
+use summer_web::extractor::RequestPartsExt;
 use tower_layer::Layer;
 
 use crate::config::AuthConfig;
@@ -17,16 +17,24 @@ use crate::session::model::{UserProfile, UserSession, ValidatedAccess};
 /// `AuthLayer` — Axum Layer
 #[derive(Clone)]
 pub struct AuthLayer {
-    manager: SessionManager,
-    path_config: Option<PathAuthConfig>,
+    path_config: PathAuthConfig,
 }
 
 impl AuthLayer {
     #[must_use]
-    pub const fn new(manager: SessionManager, path_config: Option<PathAuthConfig>) -> Self {
+    pub const fn new(path_config: PathAuthConfig) -> Self {
+        Self { path_config }
+    }
+
+    #[must_use]
+    pub fn for_group(group: &'static str) -> Self {
+        Self::for_group_with(group, PathAuthConfig::new().include("/**"))
+    }
+
+    #[must_use]
+    pub fn for_group_with(group: &'static str, path_config: PathAuthConfig) -> Self {
         Self {
-            manager,
-            path_config,
+            path_config: path_config.extend_excludes_from_public_routes(group),
         }
     }
 }
@@ -37,7 +45,6 @@ impl<S: Clone> Layer<S> for AuthLayer {
     fn layer(&self, inner: S) -> Self::Service {
         AuthMiddleware {
             inner,
-            manager: self.manager.clone(),
             path_config: self.path_config.clone(),
         }
     }
@@ -47,8 +54,7 @@ impl<S: Clone> Layer<S> for AuthLayer {
 #[derive(Clone)]
 pub struct AuthMiddleware<S> {
     inner: S,
-    manager: SessionManager,
-    path_config: Option<PathAuthConfig>,
+    path_config: PathAuthConfig,
 }
 
 impl<S> tower_service::Service<Request> for AuthMiddleware<S>
@@ -70,20 +76,23 @@ where
     }
 
     fn call(&mut self, mut req: Request) -> Self::Future {
-        let manager = self.manager.clone();
         let path_config = self.path_config.clone();
         let mut inner = self.inner.clone();
+        std::mem::swap(&mut inner, &mut self.inner);
 
         Box::pin(async move {
             let method = req.method().clone();
             let path = req.uri().path().to_string();
-            let config = manager.config();
 
-            // 检查路径是否需要鉴权
-            let requires_auth = path_config
-                .as_ref()
-                .map(|value| value.requires_auth(&method, &path))
-                .unwrap_or(true);
+            let (parts, body) = std::mem::take(&mut req).into_parts();
+            let manager = match parts.get_component::<SessionManager>() {
+                Ok(manager) => manager,
+                Err(error) => return Ok(AuthError::Internal(error.to_string()).into_response()),
+            };
+            req = Request::from_parts(parts, body);
+
+            let config = manager.config();
+            let requires_auth = path_config.requires_auth(&method, &path);
 
             // 提取 token：优先 Header，其次 Cookie
             let token = extract_token(&req, config);
@@ -102,23 +111,15 @@ where
 
                         req.extensions_mut().insert(session);
                     }
-                    Err(AuthError::AccountBanned) if requires_auth => {
-                        return Ok(banned_response());
-                    }
-                    // 不需要鉴权的路径，封禁用户也继续
-                    Err(AuthError::RefreshRequired) if requires_auth => {
-                        return Ok(refresh_required_response());
-                    }
-                    // 不需要鉴权的路径，继续
-                    Err(_) if requires_auth => {
-                        return Ok(unauthorized_response());
+                    Err(error) if requires_auth => {
+                        return Ok(error.into_response());
                     }
                     // Token 无效 + 不需要鉴权 -> 继续
                     Err(_) => {}
                 }
             } else if requires_auth {
                 // 无 token + 需要鉴权 -> 401
-                return Ok(unauthorized_response());
+                return Ok(AuthError::NotLogin.into_response());
             }
 
             inner.call(req).await
@@ -198,25 +199,4 @@ fn build_profile_from_validated(validated: &ValidatedAccess) -> UserProfile {
         roles: validated.roles.clone(),
         permissions: validated.permissions.clone(),
     }
-}
-
-/// 构建 401 未授权响应
-fn unauthorized_response() -> Response<Body> {
-    ProblemDetails::new("not-authenticated", "Unauthorized", 401)
-        .with_detail("未登录或登录已过期")
-        .into_response()
-}
-
-/// 构建 403 封禁响应
-fn banned_response() -> Response<Body> {
-    ProblemDetails::new("account-banned", "Forbidden", 403)
-        .with_detail("账号已被封禁")
-        .into_response()
-}
-
-/// 构建 401 需要刷新响应
-fn refresh_required_response() -> Response<Body> {
-    ProblemDetails::new("token-refresh-required", "Unauthorized", 401)
-        .with_detail("Token 需要刷新")
-        .into_response()
 }

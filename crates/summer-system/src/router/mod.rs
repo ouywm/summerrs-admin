@@ -19,18 +19,20 @@ pub mod sys_user;
 pub mod user_notice;
 pub mod user_profile;
 
-use summer_auth::{GroupAuthLayer, ResourcePermissionStrategy};
+use summer_auth::{AuthLayer, ResourcePermissionLayer};
 use summer_web::Router;
 
 #[derive(Clone)]
 pub struct SystemAdminRouteGroup(pub Router);
 
-/// 组装 system 域 Router,挂上 JWT 鉴权 layer。
+/// 组装 system 域 Router,挂上 JWT 鉴权和资源权限 layer。
 ///
-/// app crate 直接调这个函数即可,不需要 import [`JwtStrategy`]。inventory 注册的
-/// 全部 system handler 都属于 [`crate::system_group`],一次 `grouped_router` 拿全。
-pub fn router_with_layers() -> Router {
-    summer_web::handler::grouped_router(crate::system_group()).layer(GroupAuthLayer::new(
-        ResourcePermissionStrategy::for_group(crate::system_group()),
-    ))
+/// app crate 直接调这个函数即可。inventory 注册的全部 system handler
+/// 都属于 [`crate::system_group`],一次 `grouped_router` 拿全。
+pub fn router_with_layers(router: Router) -> Router {
+    let group = crate::system_group();
+
+    router
+        .layer(ResourcePermissionLayer::new())
+        .layer(AuthLayer::for_group(group))
 }
