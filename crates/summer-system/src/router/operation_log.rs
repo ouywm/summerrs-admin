@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, log};
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query};
 use summer_common::response::Json;
@@ -11,6 +11,7 @@ use crate::service::operation_log_service::OperationLogService;
 use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "操作日志", action = "查询操作日志", biz_type = Query)]
+#[has_perm("system:operation-log:list")]
 #[get_api("/operation-log/list")]
 pub async fn list_operation_logs(
     Component(svc): Component<OperationLogService>,
@@ -22,6 +23,7 @@ pub async fn list_operation_logs(
 }
 
 #[log(module = "操作日志", action = "查询操作日志详情", biz_type = Query)]
+#[has_perm("system:operation-log:detail")]
 #[get_api("/operation-log/{id}")]
 pub async fn get_operation_log_detail(
     Component(svc): Component<OperationLogService>,

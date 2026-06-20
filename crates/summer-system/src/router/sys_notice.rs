@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, log};
 use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
@@ -12,6 +12,7 @@ use crate::service::sys_notice_service::SysNoticeService;
 use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "系统公告", action = "查询列表", biz_type = Query)]
+#[has_perm("system:notice:list")]
 #[get_api("/notice/list")]
 pub async fn list(
     Component(svc): Component<SysNoticeService>,
@@ -23,6 +24,7 @@ pub async fn list(
 }
 
 #[log(module = "系统公告", action = "查询详情", biz_type = Query)]
+#[has_perm("system:notice:detail")]
 #[get_api("/notice/{id}")]
 pub async fn detail(
     Component(svc): Component<SysNoticeService>,
@@ -33,6 +35,7 @@ pub async fn detail(
 }
 
 #[log(module = "系统公告", action = "创建", biz_type = Create)]
+#[has_perm("system:notice:create")]
 #[post_api("/notice")]
 pub async fn create(
     LoginUser { profile, .. }: LoginUser,
@@ -44,6 +47,7 @@ pub async fn create(
 }
 
 #[log(module = "系统公告", action = "更新", biz_type = Update)]
+#[has_perm("system:notice:update")]
 #[put_api("/notice/{id}")]
 pub async fn update(
     LoginUser { profile, .. }: LoginUser,
@@ -56,6 +60,7 @@ pub async fn update(
 }
 
 #[log(module = "系统公告", action = "删除", biz_type = Delete)]
+#[has_perm("system:notice:delete")]
 #[delete_api("/notice/{id}")]
 pub async fn delete(
     Component(svc): Component<SysNoticeService>,
@@ -66,6 +71,7 @@ pub async fn delete(
 }
 
 #[log(module = "系统公告", action = "发布公告", biz_type = Update)]
+#[has_perm("system:notice:publish")]
 #[put_api("/notice/{id}/publish")]
 pub async fn publish(
     LoginUser { profile, .. }: LoginUser,
@@ -77,6 +83,7 @@ pub async fn publish(
 }
 
 #[log(module = "系统公告", action = "撤回公告", biz_type = Update)]
+#[has_perm("system:notice:revoke")]
 #[put_api("/notice/{id}/revoke")]
 pub async fn revoke(
     LoginUser { profile, .. }: LoginUser,
@@ -88,6 +95,7 @@ pub async fn revoke(
 }
 
 #[log(module = "系统公告", action = "置顶公告", biz_type = Update)]
+#[has_perm("system:notice:pin")]
 #[put_api("/notice/{id}/pin")]
 pub async fn pin(
     LoginUser { profile, .. }: LoginUser,
@@ -99,6 +107,7 @@ pub async fn pin(
 }
 
 #[log(module = "系统公告", action = "取消置顶", biz_type = Update)]
+#[has_perm("system:notice:pin")]
 #[put_api("/notice/{id}/unpin")]
 pub async fn unpin(
     LoginUser { profile, .. }: LoginUser,

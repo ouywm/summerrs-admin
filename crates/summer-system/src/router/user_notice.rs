@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, log};
 use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query};
@@ -12,6 +12,7 @@ use crate::service::user_notice_service::UserNoticeService;
 use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "公告中心", action = "查询公告列表", biz_type = Query)]
+#[has_perm("system:user-notice:list")]
 #[get_api("/user/notice/list")]
 pub async fn list(
     LoginUser { login_id, .. }: LoginUser,
@@ -24,6 +25,7 @@ pub async fn list(
 }
 
 #[log(module = "公告中心", action = "查询最新公告", biz_type = Query)]
+#[has_perm("system:user-notice:list")]
 #[get_api("/user/notice/latest")]
 pub async fn latest(
     LoginUser { login_id, .. }: LoginUser,
@@ -35,6 +37,7 @@ pub async fn latest(
 }
 
 #[log(module = "公告中心", action = "查询未读数量", biz_type = Query)]
+#[has_perm("system:user-notice:list")]
 #[get_api("/user/notice/unread-count")]
 pub async fn unread_count(
     LoginUser { login_id, .. }: LoginUser,
@@ -45,6 +48,7 @@ pub async fn unread_count(
 }
 
 #[log(module = "公告中心", action = "查询公告详情", biz_type = Query)]
+#[has_perm("system:user-notice:detail")]
 #[get_api("/user/notice/{id}")]
 pub async fn detail(
     LoginUser { login_id, .. }: LoginUser,
@@ -56,6 +60,7 @@ pub async fn detail(
 }
 
 #[log(module = "公告中心", action = "标记已读", biz_type = Update)]
+#[has_perm("system:user-notice:read")]
 #[put_api("/user/notice/{id}/read")]
 pub async fn read(
     LoginUser { login_id, .. }: LoginUser,
@@ -67,6 +72,7 @@ pub async fn read(
 }
 
 #[log(module = "公告中心", action = "全部已读", biz_type = Update)]
+#[has_perm("system:user-notice:read")]
 #[put_api("/user/notice/read-all")]
 pub async fn read_all(
     LoginUser { login_id, .. }: LoginUser,

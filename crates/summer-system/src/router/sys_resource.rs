@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, has_perms, log};
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -16,6 +16,7 @@ use summer_web::{delete_api, get_api, post_api, put_api};
 use crate::service::sys_resource_service::SysResourceService;
 
 #[log(module = "资源权限管理", action = "查询资源列表", biz_type = Query)]
+#[has_perms(or("system:resource:list", "system:resource:bind", "bind"))]
 #[get_api("/system/resource/list")]
 pub async fn list(
     Component(svc): Component<SysResourceService>,
@@ -27,6 +28,7 @@ pub async fn list(
 }
 
 #[log(module = "资源权限管理", action = "查询资源选项", biz_type = Query)]
+#[has_perms(or("system:resource:list", "system:resource:bind", "bind"))]
 #[get_api("/system/resource/options")]
 pub async fn options(
     Component(svc): Component<SysResourceService>,
@@ -36,6 +38,7 @@ pub async fn options(
 }
 
 #[log(module = "资源权限管理", action = "查询资源详情", biz_type = Query)]
+#[has_perm("system:resource:detail")]
 #[get_api("/system/resource/{id}")]
 pub async fn detail(
     Component(svc): Component<SysResourceService>,
@@ -46,6 +49,7 @@ pub async fn detail(
 }
 
 #[log(module = "资源权限管理", action = "创建资源", biz_type = Create)]
+#[has_perm("system:resource:create")]
 #[post_api("/system/resource")]
 pub async fn create(
     Component(svc): Component<SysResourceService>,
@@ -56,6 +60,7 @@ pub async fn create(
 }
 
 #[log(module = "资源权限管理", action = "更新资源", biz_type = Update)]
+#[has_perm("system:resource:update")]
 #[put_api("/system/resource/{id}")]
 pub async fn update(
     Component(svc): Component<SysResourceService>,
@@ -67,6 +72,7 @@ pub async fn update(
 }
 
 #[log(module = "资源权限管理", action = "启停资源", biz_type = Update)]
+#[has_perm("system:resource:update")]
 #[put_api("/system/resource/{id}/enabled")]
 pub async fn update_enabled(
     Component(svc): Component<SysResourceService>,
@@ -78,6 +84,7 @@ pub async fn update_enabled(
 }
 
 #[log(module = "资源权限管理", action = "删除资源", biz_type = Delete)]
+#[has_perm("system:resource:delete")]
 #[delete_api("/system/resource/{id}")]
 pub async fn delete(
     Component(svc): Component<SysResourceService>,
@@ -88,6 +95,7 @@ pub async fn delete(
 }
 
 #[log(module = "资源权限管理", action = "查询按钮资源绑定", biz_type = Query)]
+#[has_perms(or("system:resource:bind", "bind"))]
 #[get_api("/system/action-resource/action/{action_menu_id}")]
 pub async fn get_action_resources(
     Component(svc): Component<SysResourceService>,
@@ -98,6 +106,7 @@ pub async fn get_action_resources(
 }
 
 #[log(module = "资源权限管理", action = "保存按钮资源绑定", biz_type = Update)]
+#[has_perms(or("system:resource:bind", "bind"))]
 #[put_api("/system/action-resource/action/{action_menu_id}")]
 pub async fn save_action_resources(
     Component(svc): Component<SysResourceService>,
@@ -109,6 +118,7 @@ pub async fn save_action_resources(
 }
 
 #[log(module = "资源权限管理", action = "查询资源关联按钮", biz_type = Query)]
+#[has_perms(or("system:resource:list", "system:resource:bind", "bind"))]
 #[get_api("/system/action-resource/resource/{resource_id}")]
 pub async fn get_resource_actions(
     Component(svc): Component<SysResourceService>,
@@ -119,6 +129,7 @@ pub async fn get_resource_actions(
 }
 
 #[log(module = "资源权限管理", action = "刷新资源权限策略", biz_type = Update)]
+#[has_perm("system:resource:reload")]
 #[post_api("/system/resource-permission/reload")]
 pub async fn reload_policy(Component(svc): Component<SysResourceService>) -> ApiResult<()> {
     svc.reload_policy().await?;

@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, has_perms, log};
 use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, ValidatedJson};
@@ -25,6 +25,14 @@ pub async fn get_menu_tree(
 
 /// 获取所有菜单列表（管理用）
 #[log(module = "菜单管理", action = "查询菜单列表", biz_type = Query)]
+#[has_perms(or(
+    "system:role:permission",
+    "system:menu:list",
+    "system:menu:create",
+    "system:menu:update",
+    "system:button:create",
+    "system:button:update"
+))]
 #[get_api("/system/menu/list")]
 pub async fn list_menus(
     Component(svc): Component<SysMenuService>,
@@ -35,6 +43,7 @@ pub async fn list_menus(
 
 /// 创建菜单
 #[log(module = "菜单管理", action = "创建菜单", biz_type = Create)]
+#[has_perm("system:menu:create")]
 #[post_api("/system/menu")]
 pub async fn create_menu(
     Component(svc): Component<SysMenuService>,
@@ -46,6 +55,7 @@ pub async fn create_menu(
 
 /// 创建按钮
 #[log(module = "菜单管理", action = "创建按钮", biz_type = Create)]
+#[has_perm("system:button:create")]
 #[post_api("/system/button")]
 pub async fn create_button(
     Component(svc): Component<SysMenuService>,
@@ -57,6 +67,7 @@ pub async fn create_button(
 
 /// 更新菜单
 #[log(module = "菜单管理", action = "更新菜单", biz_type = Update)]
+#[has_perm("system:menu:update")]
 #[put_api("/system/menu/{id}")]
 pub async fn update_menu(
     Component(svc): Component<SysMenuService>,
@@ -69,6 +80,7 @@ pub async fn update_menu(
 
 /// 更新按钮
 #[log(module = "菜单管理", action = "更新按钮", biz_type = Update)]
+#[has_perm("system:button:update")]
 #[put_api("/system/button/{id}")]
 pub async fn update_button(
     Component(svc): Component<SysMenuService>,
@@ -81,6 +93,7 @@ pub async fn update_button(
 
 /// 删除菜单/按钮
 #[log(module = "菜单管理", action = "删除菜单", biz_type = Delete)]
+#[has_perm("system:menu:delete")]
 #[delete_api("/system/menu/{id}")]
 pub async fn delete_menu(
     Component(svc): Component<SysMenuService>,

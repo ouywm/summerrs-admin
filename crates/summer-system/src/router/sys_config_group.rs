@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, has_perms, log};
 use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
@@ -14,6 +14,12 @@ use crate::service::sys_config_group_service::SysConfigGroupService;
 use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "系统参数分组", action = "查询列表", biz_type = Query)]
+#[has_perms(or(
+    "system:config-group:list",
+    "system:config:list",
+    "system:config:create",
+    "system:config:update"
+))]
 #[get_api("/config/group/list")]
 pub async fn list(
     Component(svc): Component<SysConfigGroupService>,
@@ -25,6 +31,7 @@ pub async fn list(
 }
 
 #[log(module = "系统参数分组", action = "查询详情", biz_type = Query)]
+#[has_perm("system:config-group:detail")]
 #[get_api("/config/group/{id}")]
 pub async fn detail(
     Component(svc): Component<SysConfigGroupService>,
@@ -35,6 +42,7 @@ pub async fn detail(
 }
 
 #[log(module = "系统参数分组", action = "创建", biz_type = Create)]
+#[has_perm("system:config-group:create")]
 #[post_api("/config/group")]
 pub async fn create(
     LoginUser { profile, .. }: LoginUser,
@@ -46,6 +54,7 @@ pub async fn create(
 }
 
 #[log(module = "系统参数分组", action = "更新", biz_type = Update)]
+#[has_perm("system:config-group:update")]
 #[put_api("/config/group/{id}")]
 pub async fn update(
     LoginUser { profile, .. }: LoginUser,
@@ -58,6 +67,7 @@ pub async fn update(
 }
 
 #[log(module = "系统参数分组", action = "删除", biz_type = Delete)]
+#[has_perm("system:config-group:delete")]
 #[delete_api("/config/group/{id}")]
 pub async fn delete(
     Component(svc): Component<SysConfigGroupService>,

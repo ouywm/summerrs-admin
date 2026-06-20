@@ -9,11 +9,6 @@ pub struct SystemSeedPlugin;
 #[async_trait]
 impl Plugin for SystemSeedPlugin {
     async fn build(&self, app: &mut AppBuilder) {
-        if !cfg!(debug_assertions) {
-            tracing::info!("System seed skipped outside debug build");
-            return;
-        }
-
         let db: DatabaseConnection = app
             .get_component::<DatabaseConnection>()
             .expect("DatabaseConnection not found; ensure SeaOrmPlugin is registered before SystemSeedPlugin");

@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, log};
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query};
 use summer_common::response::Json;
@@ -12,6 +12,7 @@ use crate::service::monitor_service::{CacheMonitorService, ServerMonitorService}
 // ─── 服务监控 ────────────────────────────────────────────────────────────────
 
 #[log(module = "服务监控", action = "查询服务器信息", biz_type = Query)]
+#[has_perm("system:monitor:server")]
 #[get_api("/monitor/server")]
 pub async fn server_info(
     Component(svc): Component<ServerMonitorService>,
@@ -23,6 +24,7 @@ pub async fn server_info(
 // ─── 缓存监控 ────────────────────────────────────────────────────────────────
 
 #[log(module = "缓存监控", action = "查询缓存信息", biz_type = Query)]
+#[has_perm("system:monitor:cache")]
 #[get_api("/monitor/cache/info")]
 pub async fn cache_info(
     Component(svc): Component<CacheMonitorService>,
@@ -32,6 +34,7 @@ pub async fn cache_info(
 }
 
 #[log(module = "缓存监控", action = "查询缓存键列表", biz_type = Query)]
+#[has_perm("system:monitor:cache")]
 #[get_api("/monitor/cache/keys")]
 pub async fn cache_keys(
     Component(svc): Component<CacheMonitorService>,
@@ -42,6 +45,7 @@ pub async fn cache_keys(
 }
 
 #[log(module = "缓存监控", action = "查询缓存键详情", biz_type = Query)]
+#[has_perm("system:monitor:cache")]
 #[get_api("/monitor/cache/keys/{key}/value")]
 pub async fn cache_key_detail(
     Component(svc): Component<CacheMonitorService>,
@@ -52,6 +56,7 @@ pub async fn cache_key_detail(
 }
 
 #[log(module = "缓存监控", action = "删除缓存键", biz_type = Delete)]
+#[has_perm("system:monitor:cache-delete")]
 #[delete_api("/monitor/cache/keys/{key}")]
 pub async fn delete_cache_key(
     Component(svc): Component<CacheMonitorService>,
@@ -62,6 +67,7 @@ pub async fn delete_cache_key(
 }
 
 #[log(module = "缓存监控", action = "批量删除缓存键", biz_type = Delete)]
+#[has_perm("system:monitor:cache-delete")]
 #[delete_api("/monitor/cache/keys")]
 pub async fn delete_cache_keys_by_pattern(
     Component(svc): Component<CacheMonitorService>,

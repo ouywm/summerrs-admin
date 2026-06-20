@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, has_perms, log};
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -13,6 +13,14 @@ use crate::service::sys_role_service::SysRoleService;
 use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "角色管理", action = "查询角色列表", biz_type = Query)]
+#[has_perms(or(
+    "system:user:create",
+    "system:user:update",
+    "system:notice:create",
+    "system:notice:update",
+    "system:role:list",
+    "system:role:update"
+))]
 #[get_api("/role/list")]
 pub async fn list_roles(
     Component(svc): Component<SysRoleService>,
@@ -24,6 +32,7 @@ pub async fn list_roles(
 }
 
 #[log(module = "角色管理", action = "创建角色", biz_type = Create)]
+#[has_perm("system:role:create")]
 #[post_api("/role")]
 pub async fn create_role(
     Component(svc): Component<SysRoleService>,
@@ -34,6 +43,7 @@ pub async fn create_role(
 }
 
 #[log(module = "角色管理", action = "更新角色", biz_type = Update)]
+#[has_perm("system:role:update")]
 #[put_api("/role/{role_id}")]
 pub async fn update_role(
     Component(svc): Component<SysRoleService>,
@@ -45,6 +55,7 @@ pub async fn update_role(
 }
 
 #[log(module = "角色管理", action = "删除角色", biz_type = Delete)]
+#[has_perm("system:role:delete")]
 #[delete_api("/role/{role_id}")]
 pub async fn delete_role(
     Component(svc): Component<SysRoleService>,
@@ -55,6 +66,7 @@ pub async fn delete_role(
 }
 
 #[log(module = "角色管理", action = "查询角色权限", biz_type = Query)]
+#[has_perm("system:role:permission")]
 #[get_api("/role/{role_id}/permissions")]
 pub async fn get_role_permissions(
     Component(svc): Component<SysRoleService>,
@@ -65,6 +77,7 @@ pub async fn get_role_permissions(
 }
 
 #[log(module = "角色管理", action = "保存角色权限", biz_type = Update)]
+#[has_perm("system:role:permission")]
 #[put_api("/role/{role_id}/permissions")]
 pub async fn save_role_permissions(
     Component(svc): Component<SysRoleService>,

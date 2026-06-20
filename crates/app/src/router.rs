@@ -12,12 +12,6 @@ use tower_http::catch_panic::CatchPanicLayer;
 ///
 /// - `summer-system` group —— 交给 `summer-system::router_with_layers` 挂 JWT 和资源权限
 /// - default group —— 没显式 group 的 handler,直接合并到根 router
-///
-/// 这里只调用一次 [`auto_grouped_routers`],避免重复扫描 inventory 导致 OpenAPI
-/// 文档重复注册。
-///
-/// 全局 [`CatchPanicLayer`] 覆盖 system / default 域,
-/// 它们的 panic 转 RFC 7807。
 pub fn router() -> Router {
     let mut grouped = auto_grouped_routers();
 

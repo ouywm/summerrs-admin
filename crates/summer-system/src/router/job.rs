@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, has_perms, log};
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
 use summer_common::response::Json;
@@ -13,6 +13,7 @@ use summer_web::{delete_api, get_api, post_api, put_api};
 use crate::service::job_service::JobService;
 
 #[log(module = "任务管理", action = "查询任务列表", biz_type = Query)]
+#[has_perms(or("scheduler:job:list", "scheduler:run:list"))]
 #[get_api("/job/list")]
 pub async fn list_jobs(
     Component(svc): Component<JobService>,
@@ -24,6 +25,7 @@ pub async fn list_jobs(
 }
 
 #[log(module = "任务管理", action = "获取任务详情", biz_type = Query)]
+#[has_perm("scheduler:job:detail")]
 #[get_api("/job/{id}")]
 pub async fn get_job(
     Component(svc): Component<JobService>,
@@ -34,6 +36,7 @@ pub async fn get_job(
 }
 
 #[log(module = "任务管理", action = "创建任务", biz_type = Create)]
+#[has_perm("scheduler:job:create")]
 #[post_api("/job")]
 pub async fn create_job(
     Component(svc): Component<JobService>,
@@ -44,6 +47,7 @@ pub async fn create_job(
 }
 
 #[log(module = "任务管理", action = "更新任务", biz_type = Update)]
+#[has_perm("scheduler:job:update")]
 #[put_api("/job/{id}")]
 pub async fn update_job(
     Component(svc): Component<JobService>,
@@ -55,6 +59,7 @@ pub async fn update_job(
 }
 
 #[log(module = "任务管理", action = "删除任务", biz_type = Delete)]
+#[has_perm("scheduler:job:delete")]
 #[delete_api("/job/{id}")]
 pub async fn remove_job(
     Component(svc): Component<JobService>,
@@ -65,6 +70,7 @@ pub async fn remove_job(
 }
 
 #[log(module = "任务管理", action = "触发任务", biz_type = Update)]
+#[has_perm("scheduler:job:trigger")]
 #[post_api("/job/{id}/trigger")]
 pub async fn trigger_job(
     Component(svc): Component<JobService>,
@@ -76,6 +82,7 @@ pub async fn trigger_job(
 }
 
 #[log(module = "任务管理", action = "启用任务", biz_type = Update)]
+#[has_perm("scheduler:job:toggle")]
 #[put_api("/job/{id}/enable")]
 pub async fn enable_job(
     Component(svc): Component<JobService>,
@@ -86,6 +93,7 @@ pub async fn enable_job(
 }
 
 #[log(module = "任务管理", action = "停用任务", biz_type = Update)]
+#[has_perm("scheduler:job:toggle")]
 #[put_api("/job/{id}/disable")]
 pub async fn disable_job(
     Component(svc): Component<JobService>,
@@ -96,6 +104,7 @@ pub async fn disable_job(
 }
 
 #[log(module = "任务管理", action = "查询任务执行记录", biz_type = Query)]
+#[has_perm("scheduler:run:list")]
 #[get_api("/job/{id}/tasks")]
 pub async fn list_job_tasks(
     Component(svc): Component<JobService>,
@@ -108,6 +117,7 @@ pub async fn list_job_tasks(
 }
 
 #[log(module = "任务管理", action = "查询任务最新执行历史", biz_type = Query)]
+#[has_perms(or("scheduler:run:list", "scheduler:run:detail"))]
 #[get_api("/job/{id}/latest-history")]
 pub async fn list_latest_history(
     Component(svc): Component<JobService>,
@@ -140,6 +150,7 @@ pub async fn query_job_by_key(
 }
 
 #[log(module = "任务管理", action = "查询任务命名空间", biz_type = Query)]
+#[has_perms(or("scheduler:job:list", "scheduler:job:create", "scheduler:job:update"))]
 #[get_api("/job/namespaces")]
 pub async fn list_namespaces(
     Component(svc): Component<JobService>,
@@ -149,6 +160,7 @@ pub async fn list_namespaces(
 }
 
 #[log(module = "任务管理", action = "查询任务应用列表", biz_type = Query)]
+#[has_perms(or("scheduler:job:list", "scheduler:job:create", "scheduler:job:update"))]
 #[get_api("/job/apps")]
 pub async fn list_apps(Component(svc): Component<JobService>) -> ApiResult<Json<Vec<String>>> {
     let vo = svc.list_apps().await?;

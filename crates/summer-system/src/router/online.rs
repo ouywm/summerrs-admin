@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, log};
 use summer_common::error::ApiResult;
 use summer_common::response::Json;
 use summer_system_model::vo::online::OnlineUserVo;
@@ -10,6 +10,7 @@ use crate::service::online_service::OnlineUserService;
 use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "在线用户", action = "查询在线用户列表", biz_type = Query)]
+#[has_perm("system:online:list")]
 #[get_api("/online/list")]
 pub async fn list_online_users(
     Component(svc): Component<OnlineUserService>,
@@ -20,6 +21,7 @@ pub async fn list_online_users(
 }
 
 #[log(module = "在线用户", action = "强制下线", biz_type = Delete)]
+#[has_perm("system:online:kick")]
 #[delete_api("/online/{login_id}")]
 pub async fn kick_online_user(
     Component(svc): Component<OnlineUserService>,
@@ -30,6 +32,7 @@ pub async fn kick_online_user(
 }
 
 #[log(module = "在线用户", action = "踢下指定设备", biz_type = Delete)]
+#[has_perm("system:online:kick")]
 #[delete_api("/online/{login_id}/{device}")]
 pub async fn kick_online_device(
     Component(svc): Component<OnlineUserService>,

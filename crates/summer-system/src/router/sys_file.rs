@@ -1,6 +1,6 @@
 //! 系统文件管理路由（列表、详情、删除）
 
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, log};
 use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
@@ -18,6 +18,7 @@ use summer_sea_orm::pagination::Pagination;
 
 /// 文件列表（分页）
 #[log(module = "文件管理", action = "查询文件列表", biz_type = Query)]
+#[has_perm("file:manage:list")]
 #[get_api("/file/list")]
 pub async fn list_files(
     Component(svc): Component<SysFileService>,
@@ -30,6 +31,7 @@ pub async fn list_files(
 
 /// 文件详情
 #[log(module = "文件管理", action = "查询文件详情", biz_type = Query)]
+#[has_perm("file:manage:detail")]
 #[get_api("/file/{id}")]
 pub async fn get_file(
     Component(svc): Component<SysFileService>,
@@ -41,6 +43,7 @@ pub async fn get_file(
 
 /// 删除文件
 #[log(module = "文件管理", action = "删除文件", biz_type = Delete)]
+#[has_perm("file:manage:delete")]
 #[delete_api("/file/{id}")]
 pub async fn delete_file(
     LoginUser { login_id, .. }: LoginUser,
@@ -53,6 +56,7 @@ pub async fn delete_file(
 
 /// 生成公开分享链接
 #[log(module = "文件管理", action = "生成公开分享链接", biz_type = Create)]
+#[has_perm("file:manage:share")]
 #[post_api("/file/{id}/public-link")]
 pub async fn generate_public_link(
     Component(svc): Component<SysFileService>,
@@ -65,6 +69,7 @@ pub async fn generate_public_link(
 
 /// 撤销公开分享链接
 #[log(module = "文件管理", action = "撤销公开分享链接", biz_type = Delete)]
+#[has_perm("file:manage:share")]
 #[delete_api("/file/{id}/public-link")]
 pub async fn revoke_public_link(
     Component(svc): Component<SysFileService>,
@@ -76,6 +81,7 @@ pub async fn revoke_public_link(
 
 /// 更新可见性
 #[log(module = "文件管理", action = "更新文件可见性", biz_type = Update)]
+#[has_perm("file:manage:update")]
 #[put_api("/file/{id}/visibility")]
 pub async fn update_visibility(
     Component(svc): Component<SysFileService>,
@@ -88,6 +94,7 @@ pub async fn update_visibility(
 
 /// 更新状态
 #[log(module = "文件管理", action = "更新文件状态", biz_type = Update)]
+#[has_perm("file:manage:update")]
 #[put_api("/file/{id}/status")]
 pub async fn update_status(
     Component(svc): Component<SysFileService>,
@@ -100,6 +107,7 @@ pub async fn update_status(
 
 /// 更新展示名称
 #[log(module = "文件管理", action = "更新展示名称", biz_type = Update)]
+#[has_perm("file:manage:update")]
 #[put_api("/file/{id}/display-name")]
 pub async fn update_display_name(
     Component(svc): Component<SysFileService>,
@@ -112,6 +120,7 @@ pub async fn update_display_name(
 
 /// 移动文件
 #[log(module = "文件管理", action = "移动文件", biz_type = Update)]
+#[has_perm("file:manage:update")]
 #[put_api("/file/{id}/move")]
 pub async fn move_file(
     Component(svc): Component<SysFileService>,

@@ -1,6 +1,6 @@
 //! 文件上传 / 下载路由
 
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, log};
 use summer_auth::LoginUser;
 use summer_common::error::{ApiErrors, ApiResult};
 use summer_common::extractor::{Multipart, Path, Query, ValidatedJson};
@@ -26,6 +26,7 @@ use crate::service::sys_file_upload_service::SysFileUploadService;
 
 /// 单文件上传（multipart/form-data）
 #[log(module = "文件管理", action = "上传文件", biz_type = Create, save_params = false)]
+#[has_perm("file:manage:upload")]
 #[post_api("/file/upload")]
 pub async fn upload_file(
     LoginUser {
@@ -60,6 +61,7 @@ pub async fn upload_file(
 
 /// 批量文件上传（multipart/form-data，多文件）
 #[log(module = "文件管理", action = "批量上传", biz_type = Create, save_params = false)]
+#[has_perm("file:manage:upload")]
 #[post_api("/file/upload/batch")]
 pub async fn batch_upload(
     LoginUser {
@@ -96,6 +98,7 @@ pub async fn batch_upload(
 
 /// 获取上传用 presigned URL（前端直传）
 #[log(module = "文件管理", action = "获取上传链接", biz_type = Query)]
+#[has_perm("file:manage:upload")]
 #[post_api("/file/presign/upload")]
 pub async fn presign_upload(
     LoginUser {
@@ -112,6 +115,7 @@ pub async fn presign_upload(
 
 /// 前端直传完成回调
 #[log(module = "文件管理", action = "确认上传", biz_type = Create)]
+#[has_perm("file:manage:upload")]
 #[post_api("/file/presign/upload/callback")]
 pub async fn presign_upload_callback(
     LoginUser {
@@ -128,6 +132,7 @@ pub async fn presign_upload_callback(
 
 /// 获取下载用 presigned URL
 #[log(module = "文件管理", action = "获取下载链接", biz_type = Query)]
+#[has_perm("file:manage:download")]
 #[get_api("/file/{id}/presign/download")]
 pub async fn presign_download(
     Component(svc): Component<SysFileUploadService>,
@@ -139,6 +144,7 @@ pub async fn presign_download(
 
 /// 服务端代理下载（返回二进制流）
 #[log(module = "文件管理", action = "服务端代理下载", biz_type = Query, save_response = false)]
+#[has_perm("file:manage:download")]
 #[get_api("/file/{id}/download")]
 pub async fn download_file(
     Component(svc): Component<SysFileUploadService>,
@@ -179,6 +185,7 @@ pub async fn download_file(
 
 /// 初始化分片上传（含秒传检查）
 #[log(module = "文件管理", action = "初始化分片上传", biz_type = Create)]
+#[has_perm("file:manage:upload")]
 #[post_api("/file/multipart/init")]
 pub async fn multipart_init(
     LoginUser {
@@ -195,6 +202,7 @@ pub async fn multipart_init(
 
 /// 查询已上传分片（断点续传）
 #[log(module = "文件管理", action = "查询已上传分片", biz_type = Query)]
+#[has_perm("file:manage:upload")]
 #[get_api("/file/multipart/parts")]
 pub async fn multipart_list_parts(
     Component(svc): Component<SysFileUploadService>,
@@ -206,6 +214,7 @@ pub async fn multipart_list_parts(
 
 /// 完成分片上传
 #[log(module = "文件管理", action = "完成分片上传", biz_type = Create)]
+#[has_perm("file:manage:upload")]
 #[post_api("/file/multipart/complete")]
 pub async fn multipart_complete(
     LoginUser {
@@ -222,6 +231,7 @@ pub async fn multipart_complete(
 
 /// 取消分片上传
 #[log(module = "文件管理", action = "取消分片上传", biz_type = Delete)]
+#[has_perm("file:manage:upload")]
 #[post_api("/file/multipart/abort")]
 pub async fn multipart_abort(
     LoginUser { .. }: LoginUser,

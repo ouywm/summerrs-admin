@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, has_perms, log};
 use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
@@ -24,6 +24,7 @@ pub async fn get_user_info(
 }
 
 #[log(module = "用户管理", action = "查询用户列表", biz_type = Query)]
+#[has_perms(or("system:user:list", "system:notice:create", "system:notice:update"))]
 #[get_api("/user/list")]
 pub async fn list_users(
     Component(svc): Component<SysUserService>,
@@ -35,6 +36,7 @@ pub async fn list_users(
 }
 
 #[log(module = "用户管理", action = "获取用户详情", biz_type = Query)]
+#[has_perm("system:user:detail")]
 #[get_api("/user/{id}")]
 pub async fn get_user_detail(
     Component(svc): Component<SysUserService>,
@@ -45,6 +47,7 @@ pub async fn get_user_detail(
 }
 
 #[log(module = "用户管理", action = "创建用户", biz_type = Create)]
+#[has_perm("system:user:create")]
 #[post_api("/user")]
 pub async fn create_user(
     LoginUser { profile, .. }: LoginUser,
@@ -56,6 +59,7 @@ pub async fn create_user(
 }
 
 #[log(module = "用户管理", action = "更新用户", biz_type = Update)]
+#[has_perm("system:user:update")]
 #[put_api("/user/{id}")]
 pub async fn update_user(
     LoginUser { profile, .. }: LoginUser,
@@ -68,6 +72,7 @@ pub async fn update_user(
 }
 
 #[log(module = "用户管理", action = "删除用户", biz_type = Delete)]
+#[has_perm("system:user:delete")]
 #[delete_api("/user/{id}")]
 pub async fn delete_user(
     Component(svc): Component<SysUserService>,
@@ -78,6 +83,7 @@ pub async fn delete_user(
 }
 
 #[log(module = "用户管理", action = "重置用户密码", biz_type = Update, save_params = false)]
+#[has_perm("system:user:reset-password")]
 #[put_api("/user/{id}/reset-password")]
 pub async fn reset_user_password(
     Component(svc): Component<SysUserService>,

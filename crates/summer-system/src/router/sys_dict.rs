@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, has_perms, log};
 use summer_auth::LoginUser;
 use summer_common::error::ApiResult;
 use summer_common::extractor::{Path, Query, ValidatedJson};
@@ -20,6 +20,15 @@ use summer_sea_orm::pagination::{Page, Pagination};
 // ============================================================
 
 #[log(module = "字典管理", action = "查询字典类型列表", biz_type = Query)]
+#[has_perms(or(
+    "system:dict-type:list",
+    "system:dict-type:update",
+    "system:config:list",
+    "system:config:create",
+    "system:config:update",
+    "system:dict-data:create",
+    "system:dict-data:update"
+))]
 #[get_api("/dict/type/list")]
 pub async fn list_dict_types(
     Component(svc): Component<SysDictService>,
@@ -31,6 +40,7 @@ pub async fn list_dict_types(
 }
 
 #[log(module = "字典管理", action = "创建字典类型", biz_type = Create)]
+#[has_perm("system:dict-type:create")]
 #[post_api("/dict/type")]
 pub async fn create_dict_type(
     LoginUser { profile, .. }: LoginUser,
@@ -42,6 +52,7 @@ pub async fn create_dict_type(
 }
 
 #[log(module = "字典管理", action = "更新字典类型", biz_type = Update)]
+#[has_perm("system:dict-type:update")]
 #[put_api("/dict/type/{id}")]
 pub async fn update_dict_type(
     LoginUser { profile, .. }: LoginUser,
@@ -54,6 +65,7 @@ pub async fn update_dict_type(
 }
 
 #[log(module = "字典管理", action = "删除字典类型", biz_type = Delete)]
+#[has_perm("system:dict-type:delete")]
 #[delete_api("/dict/type/{id}")]
 pub async fn delete_dict_type(
     Component(svc): Component<SysDictService>,
@@ -68,6 +80,7 @@ pub async fn delete_dict_type(
 // ============================================================
 
 #[log(module = "字典管理", action = "查询字典数据列表", biz_type = Query)]
+#[has_perm("system:dict-data:list")]
 #[get_api("/dict/data/list")]
 pub async fn list_dict_data(
     Component(svc): Component<SysDictService>,
@@ -79,6 +92,7 @@ pub async fn list_dict_data(
 }
 
 #[log(module = "字典管理", action = "根据类型获取字典数据", biz_type = Query, save_params = false)]
+#[has_perm("system:dict-data:list")]
 #[get_api("/dict/data/by-type/{dict_type}")]
 pub async fn get_dict_data_by_type(
     Component(svc): Component<SysDictService>,
@@ -89,6 +103,7 @@ pub async fn get_dict_data_by_type(
 }
 
 #[log(module = "字典管理", action = "获取全量字典数据", biz_type = Query, save_params = false)]
+#[has_perm("system:dict-data:list")]
 #[get_api("/dict/all")]
 pub async fn get_all_dict_data(
     Component(svc): Component<SysDictService>,
@@ -98,6 +113,7 @@ pub async fn get_all_dict_data(
 }
 
 #[log(module = "字典管理", action = "创建字典数据", biz_type = Create)]
+#[has_perm("system:dict-data:create")]
 #[post_api("/dict/data")]
 pub async fn create_dict_data(
     LoginUser { profile, .. }: LoginUser,
@@ -109,6 +125,7 @@ pub async fn create_dict_data(
 }
 
 #[log(module = "字典管理", action = "更新字典数据", biz_type = Update)]
+#[has_perm("system:dict-data:update")]
 #[put_api("/dict/data/{id}")]
 pub async fn update_dict_data(
     LoginUser { profile, .. }: LoginUser,
@@ -121,6 +138,7 @@ pub async fn update_dict_data(
 }
 
 #[log(module = "字典管理", action = "删除字典数据", biz_type = Delete)]
+#[has_perm("system:dict-data:delete")]
 #[delete_api("/dict/data/{id}")]
 pub async fn delete_dict_data(
     Component(svc): Component<SysDictService>,

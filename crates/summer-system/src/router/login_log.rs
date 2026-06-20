@@ -1,4 +1,4 @@
-use summer_admin_macros::log;
+use summer_admin_macros::{has_perm, log};
 use summer_common::error::ApiResult;
 use summer_common::extractor::Query;
 use summer_common::response::Json;
@@ -11,6 +11,7 @@ use crate::service::login_log_service::LoginLogService;
 use summer_sea_orm::pagination::{Page, Pagination};
 
 #[log(module = "登录日志", action = "查询登录日志", biz_type = Query)]
+#[has_perm("system:login-log:list")]
 #[get_api("/login-log/list")]
 pub async fn list_login_logs(
     Component(svc): Component<LoginLogService>,
