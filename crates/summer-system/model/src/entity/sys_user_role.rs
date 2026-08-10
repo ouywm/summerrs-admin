@@ -18,10 +18,10 @@ pub struct Model {
     pub role_id: i64,
     /// 关联用户（多对一）
     #[sea_orm(belongs_to, from = "user_id", to = "id", skip_fk)]
-    pub user: Option<super::sys_user::Entity>,
+    pub user: BelongsTo<super::sys_user::Entity>,
     /// 关联角色（多对一）
     #[sea_orm(belongs_to, from = "role_id", to = "id", skip_fk)]
-    pub role: Option<super::sys_role::Entity>,
+    pub role: BelongsTo<super::sys_role::Entity>,
 }
 
 impl sea_orm::ActiveModelBehavior for self::ActiveModel {}

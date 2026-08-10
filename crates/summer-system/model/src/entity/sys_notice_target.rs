@@ -46,7 +46,7 @@ pub struct Model {
     pub create_time: DateTime,
     /// 关联公告（多对一）
     #[sea_orm(belongs_to, from = "notice_id", to = "id", skip_fk)]
-    pub notice: Option<super::sys_notice::Entity>,
+    pub notice: BelongsTo<super::sys_notice::Entity>,
 }
 
 #[sea_orm::entity::prelude::async_trait::async_trait]

@@ -88,10 +88,10 @@ pub struct Model {
 
     /// 关联文件夹（多对一）
     #[sea_orm(belongs_to, from = "folder_id", to = "id", skip_fk)]
-    pub folder: Option<super::sys_file_folder::Entity>,
+    pub folder: BelongsTo<Option<super::sys_file_folder::Entity>>,
     /// 关联创建人（多对一）
     #[sea_orm(belongs_to, from = "creator_id", to = "id", skip_fk)]
-    pub creator: Option<super::sys_user::Entity>,
+    pub creator: BelongsTo<Option<super::sys_user::Entity>>,
 }
 
 #[sea_orm::entity::prelude::async_trait::async_trait]

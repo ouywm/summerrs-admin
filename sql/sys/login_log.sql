@@ -4,7 +4,7 @@ CREATE SCHEMA IF NOT EXISTS sys;
 CREATE TABLE sys.login_log
 (
     id             BIGSERIAL PRIMARY KEY,
-    user_id        BIGSERIAL NOT NULL,
+    user_id        BIGINT NOT NULL,
     user_name      VARCHAR(50)  NOT NULL,
     login_time     TIMESTAMP    NOT NULL,
     login_ip       INET         NOT NULL,

@@ -44,8 +44,11 @@ Example:
 
 ```rust
 #[sea_orm(belongs_to, from = "user_id", to = "id", skip_fk)]
-pub user: Option<super::sys_user::Entity>,
+pub user: BelongsTo<super::sys_user::Entity>,
 ```
+
+Use `BelongsTo<Option<Entity>>` only when the corresponding foreign-key column is
+nullable.
 
 This preserves SeaORM relation and join ergonomics without forcing database
 foreign keys into the schema.

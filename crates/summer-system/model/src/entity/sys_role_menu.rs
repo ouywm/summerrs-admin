@@ -18,10 +18,10 @@ pub struct Model {
     pub menu_id: i64,
     /// 关联角色（多对一）
     #[sea_orm(belongs_to, from = "role_id", to = "id", skip_fk)]
-    pub role: Option<super::sys_role::Entity>,
+    pub role: BelongsTo<super::sys_role::Entity>,
     /// 关联菜单（多对一）
     #[sea_orm(belongs_to, from = "menu_id", to = "id", skip_fk)]
-    pub menu: Option<super::sys_menu::Entity>,
+    pub menu: BelongsTo<super::sys_menu::Entity>,
 }
 
 impl sea_orm::ActiveModelBehavior for self::ActiveModel {}

@@ -18,10 +18,10 @@ pub struct Model {
     pub resource_id: i64,
     /// 关联操作（多对一）
     #[sea_orm(belongs_to, from = "action_menu_id", to = "id", skip_fk)]
-    pub action_menu: Option<super::sys_menu::Entity>,
+    pub action_menu: BelongsTo<super::sys_menu::Entity>,
     /// 关联资源（多对一）
     #[sea_orm(belongs_to, from = "resource_id", to = "id", skip_fk)]
-    pub resource: Option<super::sys_resource::Entity>,
+    pub resource: BelongsTo<super::sys_resource::Entity>,
 }
 
 impl sea_orm::ActiveModelBehavior for self::ActiveModel {}

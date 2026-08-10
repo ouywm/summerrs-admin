@@ -1,8 +1,9 @@
 [package]
 description = "Authentication and authorization plugin for summer-rs"
-edition = "2024"
+edition.workspace = true
 name = "summer-auth"
-version = "0.1.0"
+rust-version.workspace = true
+version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }

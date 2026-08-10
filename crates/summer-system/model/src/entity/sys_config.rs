@@ -86,7 +86,7 @@ pub struct Model {
     pub update_time: DateTime,
     /// 关联配置分组（多对一）
     #[sea_orm(belongs_to, from = "config_group_id", to = "id", skip_fk)]
-    pub group: Option<super::sys_config_group::Entity>,
+    pub group: BelongsTo<super::sys_config_group::Entity>,
 }
 
 #[sea_orm::entity::prelude::async_trait::async_trait]

@@ -18,15 +18,9 @@ impl Plugin for EntitySchemaSyncPlugin {
             .await
             .expect("failed to create sys schema before entity schema sync");
 
-        // sea-schema 的 PostgreSQL discovery future 不是 Send，无法跨越本
-        // async fn(#[async_trait] 要求 Send)的 await 点。把它整体隔离到
-        // block_in_place 内执行，!Send future 在闭包里创建并消费完毕，
-        // 不逃逸到外层 Send future，也避免跨 runtime 使用 SQLx pool。
-        let sync_db = db.clone();
-        tokio::task::block_in_place(move || {
-            tokio::runtime::Handle::current().block_on(summer_system_model::sync_schema(&sync_db))
-        })
-        .unwrap_or_else(|error| panic!("entity schema sync failed: {error}"));
+        summer_system_model::sync_schema(&db)
+            .await
+            .unwrap_or_else(|error| panic!("entity schema sync failed: {error}"));
 
         tracing::info!("Entity schema synced from entity definitions");
     }
